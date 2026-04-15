@@ -59,6 +59,7 @@ NEVER add `Co-Authored-By` or AI attribution lines.
 - Body must include `Closes #<issue>` so the issue auto-closes on merge
 - Self-review checklist (for solo or AI workflows): typecheck passes, lint passes, manual smoke test described, screenshots if UI changed
 - Squash merge by default — keeps history linear
+- **Auto-merge authorization**: AI agents may squash-merge their own PR into `main` without asking when ALL of: (a) typecheck passes, (b) lint passes, (c) smoke test passes (manual or automated), (d) PR closes a single issue, (e) no merge conflicts with `main`. Otherwise, ask the user before merging.
 
 ## Labels (canonical list)
 
@@ -93,6 +94,7 @@ NEVER add `Co-Authored-By` or AI attribution lines.
 - If you find related work in progress, leave a comment on the OTHER agent's issue instead of opening a parallel branch.
 - Never force-push to `main`. Never bypass hooks.
 - If you discover a non-obvious gotcha, save it to engram (`mem_save`) AND add it to the relevant section of this file.
+- After running scaffolders or codegen (`shadcn init/add`, `bunx create-*`, drizzle generators, etc.), run `git log -1` BEFORE committing manually. Some tools auto-create commits with non-conventional messages (e.g. `shadcn init -y` produced `feat: initial commit` here). If you find an unauthorized commit on your branch, `git reset --soft HEAD~1` and rebuild it with the proper `<type>(<scope>): <subject> (#<issue>)` format. Never push these auto-commits.
 
 ## Local commands
 
