@@ -59,6 +59,7 @@ NEVER add `Co-Authored-By` or AI attribution lines.
 - Body must include `Closes #<issue>` so the issue auto-closes on merge
 - Self-review checklist (for solo or AI workflows): typecheck passes, lint passes, manual smoke test described, screenshots if UI changed
 - Squash merge by default — keeps history linear
+- **Auto-merge authorization**: AI agents may squash-merge their own PR into `main` without asking when ALL of: (a) typecheck passes, (b) lint passes, (c) smoke test passes (manual or automated), (d) PR closes a single issue, (e) no merge conflicts with `main`. Otherwise, ask the user before merging.
 
 ## Labels (canonical list)
 
