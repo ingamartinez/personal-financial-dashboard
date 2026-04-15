@@ -1,0 +1,50 @@
+import { sql } from "drizzle-orm";
+import { db as defaultDb, type DB } from "@/lib/db";
+
+export type RuleMatch = {
+  categorySlug: string;
+  ruleId: number;
+  confidence: 100;
+};
+
+export type ClassifiableTx = {
+  descriptionRaw: string;
+  descriptionClean?: string | null;
+  merchant?: string | null;
+};
+
+export async function classifyByRule(
+  tx: ClassifiableTx,
+  database: DB = defaultDb,
+): Promise<RuleMatch | null> {
+  const haystack = [tx.descriptionClean, tx.merchant, tx.descriptionRaw]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .join(" ");
+
+  if (!haystack) return null;
+
+  return database.transaction(async (trx) => {
+    const matched = await trx.execute<{ id: number; category_slug: string }>(sql`
+      SELECT id, category_slug
+      FROM classification_rules
+      WHERE active = true AND ${haystack} ILIKE pattern
+      ORDER BY priority ASC, id ASC
+      LIMIT 1
+    `);
+
+    const row = matched[0];
+    if (!row) return null;
+
+    await trx.execute(sql`
+      UPDATE classification_rules
+      SET hit_count = hit_count + 1, last_hit_at = now()
+      WHERE id = ${row.id}
+    `);
+
+    return {
+      categorySlug: row.category_slug,
+      ruleId: row.id,
+      confidence: 100,
+    };
+  });
+}
