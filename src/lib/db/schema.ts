@@ -164,6 +164,8 @@ export const recurringTransactions = pgTable("recurring_transactions", {
   dayOfMonth: smallint("day_of_month").notNull(),
   active: boolean("active").notNull().default(true),
   lastGeneratedAt: timestamp("last_generated_at", { withTimezone: true }),
+  skippedMonths: jsonb("skipped_months").$type<string[]>().notNull().default([]),
+  notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
