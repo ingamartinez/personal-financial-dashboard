@@ -1,3 +1,4 @@
+import { inArray } from "drizzle-orm";
 import { db } from "./index";
 import {
   accounts,
@@ -19,6 +20,8 @@ const seedAccounts: Array<{
   { name: "Bancolombia e-card (suscripciones)", institution: "Bancolombia", type: "credit_card", currency: "COP" },
   { name: "Bancolombia Préstamo Consolidado", institution: "Bancolombia", type: "loan", currency: "COP" },
   { name: "ARQ Ahorros", institution: "ARQ", type: "savings", currency: "USD" },
+  { name: "Efectivo COP", institution: "Cash", type: "savings", currency: "COP" },
+  { name: "Efectivo USD", institution: "Cash", type: "savings", currency: "USD" },
 ];
 
 const seedCategories: Array<{
@@ -109,7 +112,18 @@ async function seed() {
   await db.insert(categories).values(seedCategories).onConflictDoNothing();
 
   console.log("seeding accounts...");
-  await db.insert(accounts).values(seedAccounts).onConflictDoNothing();
+  const existing = await db
+    .select({ name: accounts.name })
+    .from(accounts)
+    .where(inArray(accounts.name, seedAccounts.map((a) => a.name)));
+  const existingNames = new Set(existing.map((e) => e.name));
+  const toInsert = seedAccounts.filter((a) => !existingNames.has(a.name));
+  if (toInsert.length > 0) {
+    await db.insert(accounts).values(toInsert);
+    console.log(`  inserted ${toInsert.length} new accounts`);
+  } else {
+    console.log("  all accounts already exist");
+  }
 
   console.log("seeding classification rules...");
   await db.insert(classificationRules).values(seedRules).onConflictDoNothing();
