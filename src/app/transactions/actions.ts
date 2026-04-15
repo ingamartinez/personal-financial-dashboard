@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { accounts, categories, transactions } from "@/lib/db/schema";
+import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 
 const updateSchema = z.object({
   txId: z.coerce.number().int().positive(),
@@ -84,4 +85,11 @@ export async function createManualExpense(input: {
 
   revalidatePath("/");
   revalidatePath("/transactions");
+}
+
+export async function runAiClassifier() {
+  const result = await classifyUnclassifiedBatch();
+  revalidatePath("/");
+  revalidatePath("/transactions");
+  return result;
 }
