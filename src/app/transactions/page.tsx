@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Toaster } from "@/components/ui/sonner";
 import { Filters } from "@/components/transactions/filters";
 import { TransactionTable } from "@/components/transactions/transaction-table";
 import {
@@ -110,7 +109,6 @@ export default async function TransactionsPage({
         ) : null}
       </div>
 
-      <Toaster />
     </main>
   );
 }

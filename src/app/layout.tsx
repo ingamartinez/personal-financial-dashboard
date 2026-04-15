@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Header } from "@/components/layout/header";
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
+import { QuickExpenseFab } from "@/components/transactions/quick-expense-fab";
+import { Toaster } from "@/components/ui/sonner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -33,6 +35,8 @@ export default function RootLayout({
         <Header />
         <Breadcrumbs />
         <div className="flex flex-1 flex-col">{children}</div>
+        <QuickExpenseFab />
+        <Toaster />
       </body>
     </html>
   );
