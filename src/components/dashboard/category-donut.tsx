@@ -1,0 +1,95 @@
+"use client";
+
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatCop } from "@/lib/money";
+
+const PALETTE = [
+  "#6366f1", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6",
+  "#06b6d4", "#ec4899", "#84cc16", "#f97316", "#14b8a6",
+];
+
+export type DonutSlice = {
+  slug: string;
+  name: string;
+  color: string | null;
+  value: number;
+};
+
+export function CategoryDonut({
+  slices,
+  monthLabel,
+}: {
+  slices: DonutSlice[];
+  monthLabel: string;
+}) {
+  const total = slices.reduce((acc, s) => acc + s.value, 0);
+
+  return (
+    <Card className="lg:col-span-2">
+      <CardHeader>
+        <CardDescription>Expenses by category · {monthLabel}</CardDescription>
+        <CardTitle className="text-2xl tabular-nums">
+          {formatCop(BigInt(Math.round(total)))}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {slices.length === 0 ? (
+          <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
+            No expenses this month
+          </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={slices}
+                    dataKey="value"
+                    nameKey="name"
+                    innerRadius={55}
+                    outerRadius={95}
+                    paddingAngle={2}
+                  >
+                    {slices.map((s, i) => (
+                      <Cell
+                        key={s.slug}
+                        fill={s.color ?? PALETTE[i % PALETTE.length]}
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value) =>
+                      formatCop(BigInt(Math.round(Number(value) || 0)))
+                    }
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <ul className="flex flex-col gap-1.5 text-sm">
+              {slices.slice(0, 8).map((s, i) => {
+                const pct = total > 0 ? (s.value / total) * 100 : 0;
+                return (
+                  <li key={s.slug} className="flex items-center gap-2">
+                    <span
+                      className="size-3 shrink-0 rounded-sm"
+                      style={{ background: s.color ?? PALETTE[i % PALETTE.length] }}
+                      aria-hidden
+                    />
+                    <span className="flex-1 truncate">{s.name}</span>
+                    <span className="tabular-nums text-muted-foreground">
+                      {pct.toFixed(1)}%
+                    </span>
+                    <span className="tabular-nums font-medium">
+                      {formatCop(BigInt(Math.round(s.value)))}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
