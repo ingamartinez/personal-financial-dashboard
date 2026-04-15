@@ -219,6 +219,7 @@ export function RecurringManager({
       )}
 
       <RecurringEditor
+        key={editor.editing?.id ?? (editor.open ? "new" : "closed")}
         open={editor.open}
         editing={editor.editing}
         accounts={accounts}
