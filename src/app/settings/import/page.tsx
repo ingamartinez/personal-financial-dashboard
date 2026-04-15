@@ -1,6 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts } from "@/lib/db/schema";
+import { ScreenshotUpload } from "@/components/import/screenshot-upload";
 import { ImportForm } from "./import-form";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +22,7 @@ export default async function ImportPage() {
         </p>
       </header>
       <ImportForm accounts={accs} />
+      <ScreenshotUpload accounts={accs} />
     </main>
   );
 }
