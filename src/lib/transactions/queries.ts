@@ -127,6 +127,14 @@ export async function listCategories() {
     .orderBy(asc(categories.sortOrder), asc(categories.name));
 }
 
+export async function countUnclassified(): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(transactions)
+    .where(eq(transactions.classificationMethod, "unclassified"));
+  return row?.n ?? 0;
+}
+
 export async function countTotal(filters: Omit<TxFilters, "cursor">): Promise<number> {
   const conditions = [];
   if (filters.from) conditions.push(gte(transactions.occurredAt, new Date(filters.from)));

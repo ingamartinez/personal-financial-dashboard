@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { AiClassifyButton } from "@/components/transactions/ai-classify-button";
 import { Filters } from "@/components/transactions/filters";
 import { TransactionTable } from "@/components/transactions/transaction-table";
 import {
   countTotal,
+  countUnclassified,
   listAccounts,
   listCategories,
   listTransactions,
@@ -48,18 +50,20 @@ export default async function TransactionsPage({
     cursor: sp.cursor,
   };
 
-  const [{ rows, nextCursor }, accounts, categories, total] = await Promise.all([
-    listTransactions(filters),
-    listAccounts(),
-    listCategories(),
-    countTotal({
-      from: filters.from,
-      to: filters.to,
-      accountId: filters.accountId,
-      categorySlug: filters.categorySlug,
-      q: filters.q,
-    }),
-  ]);
+  const [{ rows, nextCursor }, accounts, categories, total, unclassified] =
+    await Promise.all([
+      listTransactions(filters),
+      listAccounts(),
+      listCategories(),
+      countTotal({
+        from: filters.from,
+        to: filters.to,
+        accountId: filters.accountId,
+        categorySlug: filters.categorySlug,
+        q: filters.q,
+      }),
+      countUnclassified(),
+    ]);
 
   const baseQuery = {
     from: sp.from,
@@ -71,13 +75,14 @@ export default async function TransactionsPage({
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-6">
-      <header className="flex items-end justify-between">
+      <header className="flex items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Transactions</h1>
           <p className="text-sm text-muted-foreground">
-            {total.toLocaleString()} total · showing up to {PAGE_SIZE} per page
+            {total.toLocaleString()} total · {unclassified.toLocaleString()} unclassified · showing up to {PAGE_SIZE} per page
           </p>
         </div>
+        <AiClassifyButton unclassified={unclassified} />
       </header>
 
       <Filters
