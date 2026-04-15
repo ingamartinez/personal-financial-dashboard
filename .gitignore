@@ -43,4 +43,3 @@ next-env.d.ts
 # claude code per-user config
 .claude/
 CLAUDE.md
-AGENTS.md
