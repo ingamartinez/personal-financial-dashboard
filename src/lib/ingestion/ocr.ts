@@ -30,7 +30,7 @@ const responseSchema = z.object({
 
 const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 
-const PROMPT = `You extract transactions from a bank app screenshot.
+const PROMPT = `You extract transactions from a bank or fintech app screenshot.
 
 Return ONLY valid JSON matching this shape (no prose, no markdown):
 {
@@ -39,12 +39,18 @@ Return ONLY valid JSON matching this shape (no prose, no markdown):
   ]
 }
 
+The screenshot may be EITHER:
+(a) a LIST of transactions (one row per tx), OR
+(b) a DETAIL view of a SINGLE transaction (ARQ, Apple Wallet, etc.) — still return exactly one item.
+
 Rules:
-- "amount" is a NUMBER in the account's currency (no symbols). Use NEGATIVE for debits/expenses/withdrawals and POSITIVE for credits/deposits/refunds.
-- "date" in ISO YYYY-MM-DD. If the screenshot shows only day+month, use the most likely year from context; if ambiguous, use the current year.
-- Keep "description" concise (merchant + reference when visible).
-- Skip balance lines, totals, running balances, and UI chrome. Only real transactions.
-- If the screenshot is unreadable or contains no transactions, return {"transactions": []}.`;
+- "amount" is a JSON number (JSON uses "." as decimal separator). The screenshot may use "," as the decimal separator (e.g. Colombian/European locale): "25,54" = 25.54, NOT 2554. Thousands separators may be "." or "," — infer from context (two digits after the last separator = decimals).
+- NEGATIVE for debits/expenses/withdrawals/payments (usually shown with a minus sign or red/outgoing indicator). POSITIVE for credits/deposits/refunds/incoming.
+- Use the account's PRIMARY currency shown on the transaction (e.g. for ARQ use the USDc/USD amount, NOT the informational "Local amount" in COP). Treat USDc as USD.
+- "date" in ISO YYYY-MM-DD. Parse dates like "13 Apr 2026" or "13 abr 2026" into "2026-04-13". Ignore the time of day. If only day+month are shown, use the most likely year from context; if truly ambiguous, use the current year.
+- "description" = merchant name (+ short reference if visible). Prefer the merchant field (e.g. "PAYU*CINEMARK") over the app's category label (e.g. "Entertainment"). Keep it concise, no emojis, no card-mask strings like "··1356".
+- Skip balance totals, running balances, rate/FX lines, card numbers, status badges, and UI chrome. Only real transactions.
+- If unreadable or no transactions are visible, return {"transactions": []}.`;
 
 function toCents(amount: number): bigint {
   return BigInt(Math.round(amount * 100));
