@@ -12,6 +12,7 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed": "bun run src/lib/db/seed.ts",
+    "db:seed:tx": "bun run src/lib/db/seed-transactions.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
