@@ -10,6 +10,8 @@ import { MonthlyFlowCard } from "@/components/dashboard/monthly-flow-card";
 import { CategoryDonut } from "@/components/dashboard/category-donut";
 import { TopExpensesCard } from "@/components/dashboard/top-expenses-card";
 import { AccountsGrid } from "@/components/dashboard/accounts-grid";
+import { UpcomingCard } from "@/components/dashboard/upcoming-card";
+import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
 
 export const dynamic = "force-dynamic";
 
@@ -19,13 +21,24 @@ export default async function DashboardPage() {
   const now = new Date();
   const monthLabel = monthFmt.format(now);
 
-  const [netWorth, flow, slices, top, accounts] = await Promise.all([
+  const [netWorth, flow, slices, top, accounts, upcoming] = await Promise.all([
     getNetWorth(),
     getMonthlyFlow(now),
     getCategoryBreakdown(now),
     getTopExpenses(now, 5),
     getAccountStatuses(),
+    getUpcomingForMonth({
+      year: now.getFullYear(),
+      month: now.getMonth() + 1,
+      includeDismissed: true,
+      today: now,
+    }),
   ]);
+
+  const upcomingItems = upcoming.map((u) => ({
+    ...u,
+    amountCents: u.amountCents.toString(),
+  }));
 
   const donutSlices = slices.map((s) => ({
     slug: s.slug,
@@ -49,6 +62,7 @@ export default async function DashboardPage() {
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <TopExpensesCard rows={top} monthLabel={monthLabel} />
+        <UpcomingCard items={upcomingItems} monthLabel={monthLabel} />
       </section>
 
       <section className="flex flex-col gap-3">
