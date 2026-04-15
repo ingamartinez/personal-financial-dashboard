@@ -182,6 +182,17 @@ export const ingestionLogs = pgTable("ingestion_logs", {
   finishedAt: timestamp("finished_at", { withTimezone: true }),
 });
 
+export const insightsReports = pgTable("insights_reports", {
+  id: serial("id").primaryKey(),
+  yearMonth: varchar("year_month", { length: 7 }).notNull().unique(),
+  generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+  inputHash: varchar("input_hash", { length: 64 }).notNull(),
+  markdown: text("markdown").notNull(),
+  model: varchar("model", { length: 50 }).notNull(),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+});
+
 export const accountSnapshots = pgTable(
   "account_snapshots",
   {
