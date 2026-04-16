@@ -50,8 +50,8 @@ export default async function DashboardPage() {
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 sm:p-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="text-sm text-muted-foreground capitalize">{monthLabel}</p>
+        <h1 className="text-h1">Dashboard</h1>
+        <p className="text-body text-muted-foreground capitalize">{monthLabel}</p>
       </header>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-4">
@@ -66,7 +66,7 @@ export default async function DashboardPage() {
       </section>
 
       <section className="flex flex-col gap-3">
-        <h2 className="text-lg font-semibold tracking-tight">Accounts</h2>
+        <h2 className="text-h2">Accounts</h2>
         <AccountsGrid accounts={accounts} />
       </section>
     </main>

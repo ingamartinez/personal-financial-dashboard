@@ -365,7 +365,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
                           <div className="text-xs text-muted-foreground tabular-nums">
                             {formatMoney(r.amountCents, currency)}
                           </div>
-                          <div className="text-[10px] text-muted-foreground tabular-nums">
+                          <div className="text-[10px] text-muted-foreground">
                             {dateFmt.format(
                               new Date(`${r.occurredOn}T12:00:00Z`),
                             )}

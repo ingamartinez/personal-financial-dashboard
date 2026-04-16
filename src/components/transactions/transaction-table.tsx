@@ -113,7 +113,7 @@ export function TransactionTable({
                   </Badge>
                 </TableCell>
                 <TableCell
-                  className={`text-right font-mono ${isExpense ? "text-destructive" : "text-emerald-600"}`}
+                  className={`text-right money ${isExpense ? "text-destructive" : "text-emerald-600"}`}
                 >
                   {formatAmount(tx.amountCents, tx.currency)}
                 </TableCell>

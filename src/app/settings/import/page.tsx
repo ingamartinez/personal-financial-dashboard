@@ -16,8 +16,8 @@ export default async function ImportPage() {
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Import</h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="text-h1">Import</h1>
+        <p className="text-body text-muted-foreground">
           Bulk-import transactions from a bank export.
         </p>
       </header>

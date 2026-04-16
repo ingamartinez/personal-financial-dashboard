@@ -37,8 +37,8 @@ export default async function InsightsPage({
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-4 sm:p-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Insights</h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="text-h1">Insights</h1>
+        <p className="text-body text-muted-foreground">
           Reporte mensual generado con Claude Sonnet. Se regenera si pasaron 24h
           o aparecieron nuevas transacciones en el mes.
         </p>

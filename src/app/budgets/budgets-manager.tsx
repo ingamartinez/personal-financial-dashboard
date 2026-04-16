@@ -98,7 +98,7 @@ export function BudgetsManager({
           >
             <ChevronLeftIcon className="size-4" />
           </Button>
-          <div className="px-2 text-sm font-medium capitalize tabular-nums">
+          <div className="px-2 text-sm font-medium capitalize">
             {formatMonth(ym)}
           </div>
           <Button

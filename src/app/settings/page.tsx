@@ -25,7 +25,7 @@ export default function SettingsPage() {
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <h1 className="text-h1">Settings</h1>
       </header>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {LINKS.map((l) => (
