@@ -256,6 +256,43 @@ describe("POST /api/ingest/sms", () => {
     expect(rows[0].merchant).toBe("ESTEBAN LEONARDO SARMIENTO GOMEZ");
   });
 
+  it("inserts a tc_credit_received as positive abono on the TC account", async () => {
+    const body =
+      "Bancolombia: AIDA MALDONADO hizo un abono por $2,125,092 a tu tarjeta de credito terminada en **2575, el 03/12/2025 13:40. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+    const res = await POST(
+      makeRequest({
+        body: jsonBody({ body }),
+        headers: authedHeaders(),
+      }),
+    );
+    const json = (await res.json()) as { status: string; txId?: number };
+    expect(json.status).toBe("inserted");
+
+    const rows = await db.execute<{
+      amount_cents: string;
+      merchant: string | null;
+      account_id: number;
+      category_slug: string | null;
+      classification_method: string;
+      description_raw: string;
+    }>(sql`
+      SELECT amount_cents, merchant, account_id, category_slug, classification_method, description_raw
+      FROM transactions WHERE id = ${json.txId!}
+    `);
+    expect(BigInt(rows[0].amount_cents)).toBe(BigInt(212509200)); // positive — reduces TC debt
+    expect(rows[0].merchant).toBe("AIDA MALDONADO");
+    expect(rows[0].category_slug).toBe("pago-tc");
+    expect(rows[0].classification_method).toBe("manual");
+    expect(rows[0].description_raw).toBe("Abono de AIDA MALDONADO a TC *2575");
+
+    // Routes to the COP credit card with last4 2575
+    const accs = await db.execute<{ name: string; type: string }>(sql`
+      SELECT name, type FROM accounts WHERE id = ${rows[0].account_id}
+    `);
+    expect(accs[0].type).toBe("credit_card");
+    expect(accs[0].name).toMatch(/2575/);
+  });
+
   it("inserts an atm_withdrawal as expense from the savings linked to the debit card", async () => {
     const body =
       "Bancolombia: Retiraste $100.000,00 en 43AVENIDA de tu T.Deb **1802 el 19/02/2026 a las 16:36. Si tienes dudas, llamanos al 6045109095. Estamos cerca";

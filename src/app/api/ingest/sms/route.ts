@@ -228,6 +228,12 @@ function resolveAccountForParsed(
         parsed.currency,
         allAccounts,
       );
+    case "tc_credit_received":
+      return resolveAccountFromLast4(
+        parsed.toCardLast4,
+        parsed.currency,
+        allAccounts,
+      );
     case "provider_payment": {
       // SMS says "en tu cuenta de Ahorros" — no last4. Default to the single
       // Bancolombia savings account in the matching currency.
@@ -314,6 +320,14 @@ function buildTxFields(parsed: ParsedSms): {
         merchant: null,
         categorySlug: null,
         method: "unclassified",
+      };
+    case "tc_credit_received":
+      return {
+        amountCents: parsed.amountCents,
+        descriptionRaw: `Abono de ${parsed.senderName} a TC *${parsed.toCardLast4}`,
+        merchant: parsed.senderName,
+        categorySlug: "pago-tc",
+        method: "manual",
       };
   }
 }

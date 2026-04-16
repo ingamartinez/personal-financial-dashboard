@@ -53,6 +53,11 @@ export type ParsedSms =
       kind: "atm_withdrawal";
       atmCode: string;
       fromLast4: string;
+    })
+  | (ParsedSmsBase & {
+      kind: "tc_credit_received";
+      senderName: string;
+      toCardLast4: string;
     });
 
 export type SkippedSms = {
@@ -275,6 +280,14 @@ const PROVIDER_PAYMENT_SENT = new RegExp(
 // ATM code is short, alphanumeric, with no spaces (e.g. "43AVENIDA", "PQ_ESTRELL1").
 const ATM_WITHDRAWAL = new RegExp(
   `Retiraste\\s+${AMOUNT_GROUP}\\s+en\\s+(\\S+)\\s+de\\s+tu\\s+T\\.Deb\\s+\\*+(\\d{4})\\s+el\\s+${DATE_TIME}`,
+  "i",
+);
+
+// TC credit received (third party paid down my credit card):
+// "<SENDER> hizo un abono por AMOUNT a tu tarjeta de credito terminada en *NNNN, el DATE TIME"
+// Anchor on optional "Bancolombia:" prefix so it isn't captured into the sender name.
+const TC_CREDIT_RECEIVED = new RegExp(
+  `(?:Bancolombia:\\s*)?(.+?)\\s+hizo\\s+un\\s+abono\\s+por\\s+${AMOUNT_GROUP}\\s+a\\s+tu\\s+tarjeta\\s+de\\s+credito\\s+terminada\\s+en\\s+\\*+(\\d{4})[,.]?\\s+el\\s+${DATE_TIME}`,
   "i",
 );
 
@@ -617,6 +630,36 @@ export function parseSmsBancolombia(body: string): ParseResult {
           "atm-withdrawal",
           fromLast4,
           atmCode,
+          occurredOn,
+          occurredTime,
+          cents,
+        ]),
+        raw,
+      };
+    }
+  }
+
+  // TC credit received (third party paid down my credit card)
+  {
+    const m = raw.match(TC_CREDIT_RECEIVED);
+    if (m) {
+      const senderName = m[1].trim();
+      const { cents, currency } = parseSmsAmount(m[2]);
+      const toCardLast4 = m[3];
+      const occurredOn = parseSmsDate(m[4]);
+      const occurredTime = m[5];
+      return {
+        kind: "tc_credit_received",
+        amountCents: cents,
+        currency,
+        senderName,
+        toCardLast4,
+        occurredOn,
+        occurredTime,
+        externalId: hashId([
+          "tc-credit-received",
+          toCardLast4,
+          senderName,
           occurredOn,
           occurredTime,
           cents,
