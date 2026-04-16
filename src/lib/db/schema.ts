@@ -40,6 +40,12 @@ export const classificationMethod = pgEnum("classification_method", [
   "unclassified",
 ]);
 
+export const counterpartyType = pgEnum("counterparty_type", [
+  "person",
+  "merchant",
+  "unknown",
+]);
+
 export const accounts = pgTable("accounts", {
   id: serial("id").primaryKey(),
   name: varchar("name", { length: 100 }).notNull(),
@@ -83,6 +89,26 @@ export const categories = pgTable("categories", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const counterparties = pgTable(
+  "counterparties",
+  {
+    id: serial("id").primaryKey(),
+    key: varchar("key", { length: 60 }).notNull().unique(),
+    displayName: varchar("display_name", { length: 120 }).notNull(),
+    type: counterpartyType("type").notNull().default("unknown"),
+    defaultCategorySlug: varchar("default_category_slug", { length: 60 }).references(
+      () => categories.slug,
+      { onDelete: "set null" },
+    ),
+    notes: text("notes"),
+    hitCount: integer("hit_count").notNull().default(0),
+    lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("counterparties_key_idx").on(t.key)],
+);
+
 export const transactions = pgTable(
   "transactions",
   {
@@ -100,6 +126,10 @@ export const transactions = pgTable(
       () => categories.slug,
       { onDelete: "set null" },
     ),
+    counterpartyId: integer("counterparty_id").references(
+      () => counterparties.id,
+      { onDelete: "set null" },
+    ),
     classificationMethod: classificationMethod("classification_method")
       .notNull()
       .default("unclassified"),
@@ -114,6 +144,7 @@ export const transactions = pgTable(
   (t) => [
     index("transactions_account_occurred_idx").on(t.accountId, t.occurredAt),
     index("transactions_category_idx").on(t.categorySlug),
+    index("transactions_counterparty_idx").on(t.counterpartyId),
     index("transactions_occurred_idx").on(t.occurredAt),
     uniqueIndex("transactions_external_unique")
       .on(t.accountId, t.externalId)
