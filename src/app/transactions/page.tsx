@@ -8,6 +8,7 @@ import {
   countUnclassified,
   listAccounts,
   listCategories,
+  listCounterparties,
   listTransactions,
   PAGE_SIZE,
 } from "@/lib/transactions/queries";
@@ -50,20 +51,27 @@ export default async function TransactionsPage({
     cursor: sp.cursor,
   };
 
-  const [{ rows, nextCursor }, accounts, categories, total, unclassified] =
-    await Promise.all([
-      listTransactions(filters),
-      listAccounts(),
-      listCategories(),
-      countTotal({
-        from: filters.from,
-        to: filters.to,
-        accountId: filters.accountId,
-        categorySlug: filters.categorySlug,
-        q: filters.q,
-      }),
-      countUnclassified(),
-    ]);
+  const [
+    { rows, nextCursor },
+    accounts,
+    categories,
+    total,
+    unclassified,
+    allCounterparties,
+  ] = await Promise.all([
+    listTransactions(filters),
+    listAccounts(),
+    listCategories(),
+    countTotal({
+      from: filters.from,
+      to: filters.to,
+      accountId: filters.accountId,
+      categorySlug: filters.categorySlug,
+      q: filters.q,
+    }),
+    countUnclassified(),
+    listCounterparties(),
+  ]);
 
   const baseQuery = {
     from: sp.from,
@@ -97,7 +105,11 @@ export default async function TransactionsPage({
         }}
       />
 
-      <TransactionTable rows={rows} categories={categories} />
+      <TransactionTable
+        rows={rows}
+        categories={categories}
+        allCounterparties={allCounterparties}
+      />
 
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground">

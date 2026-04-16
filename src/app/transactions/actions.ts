@@ -190,3 +190,123 @@ export async function updateCounterparty(
 
   return { propagatedCount };
 }
+
+const mergeCounterpartySchema = z
+  .object({
+    sourceId: z.coerce.number().int().positive(),
+    targetId: z.coerce.number().int().positive(),
+  })
+  .refine((v) => v.sourceId !== v.targetId, {
+    message: "sourceId and targetId must differ",
+  });
+
+export type MergeCounterpartyInput = z.input<typeof mergeCounterpartySchema>;
+export type MergeCounterpartyResult = {
+  movedTxCount: number;
+  movedAliasCount: number;
+  inheritedCategoryFromSource: boolean;
+};
+
+/**
+ * Merges source counterparty into target: aliases and transactions are moved,
+ * source is deleted. If target has no default_category and source does, the
+ * category is inherited so users don't lose classification work.
+ *
+ * Alias collisions (same kind+value on both sides) shouldn't happen in
+ * practice because unique constraint would have prevented it at ingest. If it
+ * ever does, the source alias is silently dropped.
+ */
+export async function mergeCounterparty(
+  input: MergeCounterpartyInput,
+): Promise<MergeCounterpartyResult> {
+  const parsed = mergeCounterpartySchema.parse(input);
+
+  const result = await db.transaction(async (trx) => {
+    const [target] = await trx
+      .select({
+        id: counterparties.id,
+        defaultCategorySlug: counterparties.defaultCategorySlug,
+      })
+      .from(counterparties)
+      .where(eq(counterparties.id, parsed.targetId))
+      .limit(1);
+    const [source] = await trx
+      .select({
+        id: counterparties.id,
+        defaultCategorySlug: counterparties.defaultCategorySlug,
+        hitCount: counterparties.hitCount,
+      })
+      .from(counterparties)
+      .where(eq(counterparties.id, parsed.sourceId))
+      .limit(1);
+
+    if (!target) throw new Error("Target counterparty not found");
+    if (!source) throw new Error("Source counterparty not found");
+
+    const inheritCategory =
+      !target.defaultCategorySlug && !!source.defaultCategorySlug;
+    if (inheritCategory) {
+      await trx
+        .update(counterparties)
+        .set({
+          defaultCategorySlug: source.defaultCategorySlug,
+          updatedAt: new Date(),
+        })
+        .where(eq(counterparties.id, target.id));
+    }
+
+    // Move aliases (drop any that would violate unique kind+value on target).
+    const aliasMove = await trx.execute<{ id: number }>(sql`
+      UPDATE counterparty_aliases
+      SET counterparty_id = ${target.id}
+      WHERE counterparty_id = ${source.id}
+        AND NOT EXISTS (
+          SELECT 1 FROM counterparty_aliases existing
+          WHERE existing.counterparty_id = ${target.id}
+            AND existing.kind = counterparty_aliases.kind
+            AND existing.value = counterparty_aliases.value
+        )
+      RETURNING id
+    `);
+
+    // Reapunta todas las tx del source al target.
+    const txMove = await trx.execute<{ id: number }>(sql`
+      UPDATE transactions
+      SET counterparty_id = ${target.id}, updated_at = now()
+      WHERE counterparty_id = ${source.id}
+      RETURNING id
+    `);
+
+    // Accumulate hit_count so the merged entity reflects combined history.
+    await trx.execute(sql`
+      UPDATE counterparties
+      SET hit_count = hit_count + ${source.hitCount},
+          updated_at = now()
+      WHERE id = ${target.id}
+    `);
+
+    // Source counterparty (and any residual aliases / refs with SET NULL on
+    // tx FK — already moved above) removed. CASCADE cleans aliases.
+    await trx
+      .delete(counterparties)
+      .where(eq(counterparties.id, source.id));
+
+    return {
+      movedTxCount: txMove.length,
+      movedAliasCount: aliasMove.length,
+      inheritedCategoryFromSource: inheritCategory,
+    };
+  });
+
+  emit({
+    type: "transaction:bulk-updated",
+    count: result.movedTxCount,
+    reason: "counterparty-updated",
+    timestamp: Date.now(),
+  });
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+
+  return result;
+}

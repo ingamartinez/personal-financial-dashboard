@@ -46,6 +46,13 @@ export const counterpartyType = pgEnum("counterparty_type", [
   "unknown",
 ]);
 
+export const counterpartyKeyKind = pgEnum("counterparty_key_kind", [
+  "qr",
+  "breb",
+  "account",
+  "name",
+]);
+
 export const accounts = pgTable("accounts", {
   id: serial("id").primaryKey(),
   name: varchar("name", { length: 100 }).notNull(),
@@ -89,24 +96,36 @@ export const categories = pgTable("categories", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const counterparties = pgTable(
-  "counterparties",
+export const counterparties = pgTable("counterparties", {
+  id: serial("id").primaryKey(),
+  displayName: varchar("display_name", { length: 120 }).notNull(),
+  type: counterpartyType("type").notNull().default("unknown"),
+  defaultCategorySlug: varchar("default_category_slug", { length: 60 }).references(
+    () => categories.slug,
+    { onDelete: "set null" },
+  ),
+  notes: text("notes"),
+  hitCount: integer("hit_count").notNull().default(0),
+  lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const counterpartyAliases = pgTable(
+  "counterparty_aliases",
   {
     id: serial("id").primaryKey(),
-    key: varchar("key", { length: 60 }).notNull().unique(),
-    displayName: varchar("display_name", { length: 120 }).notNull(),
-    type: counterpartyType("type").notNull().default("unknown"),
-    defaultCategorySlug: varchar("default_category_slug", { length: 60 }).references(
-      () => categories.slug,
-      { onDelete: "set null" },
-    ),
-    notes: text("notes"),
-    hitCount: integer("hit_count").notNull().default(0),
-    lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
+    counterpartyId: integer("counterparty_id")
+      .notNull()
+      .references(() => counterparties.id, { onDelete: "cascade" }),
+    kind: counterpartyKeyKind("kind").notNull(),
+    value: varchar("value", { length: 120 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("counterparties_key_idx").on(t.key)],
+  (t) => [
+    uniqueIndex("counterparty_aliases_kind_value_unique").on(t.kind, t.value),
+    index("counterparty_aliases_counterparty_idx").on(t.counterpartyId),
+  ],
 );
 
 export const transactions = pgTable(

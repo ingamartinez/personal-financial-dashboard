@@ -1,7 +1,13 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { PencilIcon, UserIcon, BuildingIcon, CircleHelpIcon } from "lucide-react";
+import {
+  PencilIcon,
+  UserIcon,
+  BuildingIcon,
+  CircleHelpIcon,
+  MergeIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,24 +21,58 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { updateCounterparty } from "@/app/transactions/actions";
+import { updateCounterparty, mergeCounterparty } from "@/app/transactions/actions";
 import type { CategoryOption } from "./category-cell";
+
+export type CounterpartyAlias = {
+  kind: "qr" | "breb" | "account" | "name";
+  value: string;
+};
 
 export type CounterpartyValue = {
   id: number;
-  key: string;
   displayName: string;
   type: "person" | "merchant" | "unknown";
   defaultCategorySlug: string | null;
   notes: string | null;
+  aliases: CounterpartyAlias[];
 };
+
+export type CounterpartyBrief = {
+  id: number;
+  displayName: string;
+  type: "person" | "merchant" | "unknown";
+};
+
+const ALIAS_KIND_LABELS: Record<CounterpartyAlias["kind"], string> = {
+  qr: "QR",
+  breb: "Bre-b",
+  account: "Cuenta",
+  name: "Nombre",
+};
+
+function isPlaceholderName(cp: CounterpartyValue): boolean {
+  // Placeholder means the display_name still equals one of the raw alias
+  // values (the initial seed when nothing was renamed yet). "Cuenta *NNNN"
+  // style initialDisplayName is also considered placeholder via prefix match.
+  if (cp.aliases.some((a) => a.value === cp.displayName)) return true;
+  if (
+    cp.aliases.some(
+      (a) => a.kind === "account" && cp.displayName === `Cuenta *${a.value}`,
+    )
+  )
+    return true;
+  return false;
+}
 
 export function CounterpartyDialog({
   counterparty,
   categories,
+  allCounterparties,
 }: {
   counterparty: CounterpartyValue;
   categories: CategoryOption[];
+  allCounterparties: CounterpartyBrief[];
 }) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -42,14 +82,19 @@ export function CounterpartyDialog({
     counterparty.defaultCategorySlug ?? "",
   );
   const [notes, setNotes] = useState(counterparty.notes ?? "");
+  const [mergeTargetId, setMergeTargetId] = useState<string>("");
 
-  const placeholderName = counterparty.displayName === counterparty.key;
+  const placeholderName = isPlaceholderName(counterparty);
+  const mergeCandidates = allCounterparties.filter(
+    (c) => c.id !== counterparty.id,
+  );
 
   function reset() {
     setDisplayName(counterparty.displayName);
     setType(counterparty.type);
     setDefaultCategorySlug(counterparty.defaultCategorySlug ?? "");
     setNotes(counterparty.notes ?? "");
+    setMergeTargetId("");
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -73,6 +118,36 @@ export function CounterpartyDialog({
         setOpen(false);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to update");
+      }
+    });
+  }
+
+  function onMerge() {
+    const targetId = Number(mergeTargetId);
+    if (!Number.isFinite(targetId) || targetId <= 0) {
+      toast.error("Pick a target counterparty");
+      return;
+    }
+    const target = mergeCandidates.find((c) => c.id === targetId);
+    if (!target) return;
+    const confirmed = window.confirm(
+      `Merge "${counterparty.displayName}" into "${target.displayName}"?\n\n` +
+        `All aliases and transactions will move to "${target.displayName}". ` +
+        `"${counterparty.displayName}" will be deleted.`,
+    );
+    if (!confirmed) return;
+    startTransition(async () => {
+      try {
+        const result = await mergeCounterparty({
+          sourceId: counterparty.id,
+          targetId,
+        });
+        toast.success(
+          `Merged · ${result.movedTxCount} tx moved to "${target.displayName}"`,
+        );
+        setOpen(false);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Merge failed");
       }
     });
   }
@@ -112,12 +187,28 @@ export function CounterpartyDialog({
             {placeholderName ? "Identify counterparty" : "Edit counterparty"}
           </DialogTitle>
           <DialogDescription>
-            Key: <span className="font-mono">{counterparty.key}</span>. Setting
-            a default category will recategorize all unclassified transactions
-            for this counterparty.
+            Setting a default category will recategorize all unclassified
+            transactions for this counterparty.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label>Aliases</Label>
+            <div className="flex flex-wrap gap-1.5">
+              {counterparty.aliases.map((a) => (
+                <span
+                  key={`${a.kind}:${a.value}`}
+                  className="inline-flex items-center gap-1 rounded border bg-muted/50 px-1.5 py-0.5 text-xs font-mono text-muted-foreground"
+                >
+                  <span className="font-sans uppercase">
+                    {ALIAS_KIND_LABELS[a.kind]}
+                  </span>
+                  <span>{a.value}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cp-name">Display name</Label>
             <Input
@@ -197,6 +288,41 @@ export function CounterpartyDialog({
             </Button>
           </DialogFooter>
         </form>
+
+        {mergeCandidates.length > 0 ? (
+          <div className="mt-2 flex flex-col gap-1.5 border-t pt-3">
+            <Label htmlFor="cp-merge">Merge into</Label>
+            <p className="text-xs text-muted-foreground">
+              Use this if another counterparty is the same person or merchant.
+              All aliases and transactions move to the target.
+            </p>
+            <div className="flex gap-2">
+              <select
+                id="cp-merge"
+                value={mergeTargetId}
+                onChange={(e) => setMergeTargetId(e.target.value)}
+                className="h-9 flex-1 rounded-md border bg-background px-2 text-sm"
+                disabled={pending}
+              >
+                <option value="">— pick target —</option>
+                {mergeCandidates.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.displayName}
+                  </option>
+                ))}
+              </select>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onMerge}
+                disabled={pending || !mergeTargetId}
+              >
+                <MergeIcon className="size-3.5" />
+                Merge
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

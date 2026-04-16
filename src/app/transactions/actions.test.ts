@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 
@@ -8,7 +8,7 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-const { updateCounterparty } = await import("./actions");
+const { updateCounterparty, mergeCounterparty } = await import("./actions");
 
 // Scoped so parallel test files don't wipe each other's counterparty rows.
 async function cleanup() {
@@ -16,24 +16,34 @@ async function cleanup() {
     DELETE FROM transactions WHERE external_id LIKE 'test-cp-action:%'
   `);
   await db.execute(sql`
-    DELETE FROM counterparties WHERE key LIKE 'test-cp-%'
+    DELETE FROM counterparties WHERE id IN (
+      SELECT counterparty_id FROM counterparty_aliases WHERE value LIKE 'test-cp-%'
+    )
   `);
 }
 
 async function seedCounterparty(args: {
   key: string;
+  kind?: "qr" | "breb" | "account" | "name";
   displayName?: string;
   defaultCategory?: string | null;
 }): Promise<number> {
   const rows = await db.execute<{ id: number }>(sql`
-    INSERT INTO counterparties (key, display_name, type, default_category_slug)
+    INSERT INTO counterparties (display_name, type, default_category_slug)
     VALUES (
-      ${args.key},
       ${args.displayName ?? args.key},
       'unknown',
       ${args.defaultCategory ?? null}
     )
     RETURNING id
+  `);
+  await db.execute(sql`
+    INSERT INTO counterparty_aliases (counterparty_id, kind, value)
+    VALUES (
+      ${rows[0].id},
+      ${(args.kind ?? "qr")}::counterparty_key_kind,
+      ${args.key}
+    )
   `);
   return rows[0].id;
 }
@@ -67,10 +77,6 @@ async function seedTx(args: {
 
 describe("updateCounterparty", () => {
   afterEach(cleanup);
-  afterAll(async () => {
-    await db.$client.end({ timeout: 1 });
-  });
-
   beforeEach(async () => {
     await cleanup();
   });
@@ -189,5 +195,149 @@ describe("updateCounterparty", () => {
     });
 
     expect(result.propagatedCount).toBe(3);
+  });
+});
+
+describe("mergeCounterparty", () => {
+  afterEach(cleanup);
+  beforeEach(async () => {
+    await cleanup();
+  });
+
+  it("moves aliases and transactions from source to target, then deletes source", async () => {
+    const sourceId = await seedCounterparty({
+      key: "test-cp-source",
+      kind: "name",
+      displayName: "DILAN DEJANON",
+    });
+    const targetId = await seedCounterparty({
+      key: "test-cp-target",
+      kind: "account",
+      displayName: "Cuenta *91218413213",
+    });
+    const sourceTxA = await seedTx({
+      counterpartyId: sourceId,
+      externalId: "test-cp-action:mA",
+    });
+    const sourceTxB = await seedTx({
+      counterpartyId: sourceId,
+      externalId: "test-cp-action:mB",
+    });
+    const targetTx = await seedTx({
+      counterpartyId: targetId,
+      externalId: "test-cp-action:mT",
+    });
+
+    const result = await mergeCounterparty({ sourceId, targetId });
+
+    expect(result.movedTxCount).toBe(2);
+    expect(result.movedAliasCount).toBe(1);
+    expect(result.inheritedCategoryFromSource).toBe(false);
+
+    // Source deleted
+    const srcCheck = await db.execute<{ c: number }>(sql`
+      SELECT COUNT(*)::int AS c FROM counterparties WHERE id = ${sourceId}
+    `);
+    expect(srcCheck[0].c).toBe(0);
+
+    // All 3 tx now on target
+    const txs = await db.execute<{ counterparty_id: number | null }>(sql`
+      SELECT counterparty_id FROM transactions
+      WHERE id IN (${sourceTxA}, ${sourceTxB}, ${targetTx})
+    `);
+    for (const row of txs) {
+      expect(row.counterparty_id).toBe(targetId);
+    }
+
+    // Target has both aliases
+    const aliases = await db.execute<{ kind: string; value: string }>(sql`
+      SELECT kind::text, value FROM counterparty_aliases
+      WHERE counterparty_id = ${targetId}
+      ORDER BY kind
+    `);
+    expect(aliases).toHaveLength(2);
+    expect(aliases.map((a) => a.kind).sort()).toEqual(["account", "name"]);
+  });
+
+  it("inherits defaultCategory from source when target has none", async () => {
+    const sourceId = await seedCounterparty({
+      key: "test-cp-src2",
+      displayName: "Source",
+      defaultCategory: "alimentacion",
+    });
+    const targetId = await seedCounterparty({
+      key: "test-cp-tgt2",
+      displayName: "Target",
+    });
+
+    const result = await mergeCounterparty({ sourceId, targetId });
+
+    expect(result.inheritedCategoryFromSource).toBe(true);
+    const rows = await db.execute<{ default_category_slug: string }>(sql`
+      SELECT default_category_slug FROM counterparties WHERE id = ${targetId}
+    `);
+    expect(rows[0].default_category_slug).toBe("alimentacion");
+  });
+
+  it("does NOT override target's existing defaultCategory", async () => {
+    const sourceId = await seedCounterparty({
+      key: "test-cp-src3",
+      displayName: "Source",
+      defaultCategory: "alimentacion",
+    });
+    const targetId = await seedCounterparty({
+      key: "test-cp-tgt3",
+      displayName: "Target",
+      defaultCategory: "transferencias",
+    });
+
+    const result = await mergeCounterparty({ sourceId, targetId });
+
+    expect(result.inheritedCategoryFromSource).toBe(false);
+    const rows = await db.execute<{ default_category_slug: string }>(sql`
+      SELECT default_category_slug FROM counterparties WHERE id = ${targetId}
+    `);
+    expect(rows[0].default_category_slug).toBe("transferencias");
+  });
+
+  it("rejects merging a counterparty into itself", async () => {
+    const cpId = await seedCounterparty({ key: "test-cp-self" });
+    await expect(
+      mergeCounterparty({ sourceId: cpId, targetId: cpId }),
+    ).rejects.toThrow();
+  });
+
+  it("throws when source or target does not exist", async () => {
+    const cpId = await seedCounterparty({ key: "test-cp-exists" });
+    await expect(
+      mergeCounterparty({ sourceId: 999999, targetId: cpId }),
+    ).rejects.toThrow(/Source counterparty not found/);
+    await expect(
+      mergeCounterparty({ sourceId: cpId, targetId: 999999 }),
+    ).rejects.toThrow(/Target counterparty not found/);
+  });
+
+  it("accumulates hit_count from source into target", async () => {
+    const sourceId = await seedCounterparty({
+      key: "test-cp-hitA",
+      displayName: "A",
+    });
+    const targetId = await seedCounterparty({
+      key: "test-cp-hitB",
+      displayName: "B",
+    });
+    await db.execute(sql`
+      UPDATE counterparties SET hit_count = 5 WHERE id = ${sourceId}
+    `);
+    await db.execute(sql`
+      UPDATE counterparties SET hit_count = 3 WHERE id = ${targetId}
+    `);
+
+    await mergeCounterparty({ sourceId, targetId });
+
+    const rows = await db.execute<{ hit_count: number }>(sql`
+      SELECT hit_count FROM counterparties WHERE id = ${targetId}
+    `);
+    expect(rows[0].hit_count).toBe(8);
   });
 });

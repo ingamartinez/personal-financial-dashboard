@@ -1,11 +1,17 @@
-import { and, asc, desc, eq, ilike, lt, lte, gte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, lt, lte, gte, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
   categories,
   counterparties,
+  counterpartyAliases,
   transactions,
 } from "@/lib/db/schema";
+
+export type CounterpartyAlias = {
+  kind: "qr" | "breb" | "account" | "name";
+  value: string;
+};
 
 export const PAGE_SIZE = 50;
 
@@ -33,11 +39,11 @@ export type TxRow = {
   accountName: string;
   counterparty: {
     id: number;
-    key: string;
     displayName: string;
     type: "person" | "merchant" | "unknown";
     defaultCategorySlug: string | null;
     notes: string | null;
+    aliases: CounterpartyAlias[];
   } | null;
 };
 
@@ -111,11 +117,18 @@ export async function listTransactions(filters: TxFilters): Promise<TxListResult
       accountId: transactions.accountId,
       accountName: accounts.name,
       cpId: counterparties.id,
-      cpKey: counterparties.key,
       cpDisplayName: counterparties.displayName,
       cpType: counterparties.type,
       cpDefaultCategorySlug: counterparties.defaultCategorySlug,
       cpNotes: counterparties.notes,
+      cpAliases: sql<CounterpartyAlias[] | null>`(
+        SELECT COALESCE(
+          json_agg(json_build_object('kind', a.kind, 'value', a.value) ORDER BY a.id),
+          '[]'::json
+        )
+        FROM ${counterpartyAliases} a
+        WHERE a.counterparty_id = ${counterparties.id}
+      )`,
     })
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
@@ -145,16 +158,55 @@ export async function listTransactions(filters: TxFilters): Promise<TxListResult
     counterparty: r.cpId
       ? {
           id: r.cpId,
-          key: r.cpKey!,
           displayName: r.cpDisplayName!,
           type: r.cpType!,
           defaultCategorySlug: r.cpDefaultCategorySlug,
           notes: r.cpNotes,
+          aliases: r.cpAliases ?? [],
         }
       : null,
   }));
 
   return { rows: shaped, nextCursor };
+}
+
+export type CounterpartyBrief = {
+  id: number;
+  displayName: string;
+  type: "person" | "merchant" | "unknown";
+};
+
+/**
+ * Compact counterparty list for the merge selector in CounterpartyDialog.
+ * Ordered by hit_count DESC so the most-used show first.
+ */
+export async function listCounterparties(): Promise<CounterpartyBrief[]> {
+  return db
+    .select({
+      id: counterparties.id,
+      displayName: counterparties.displayName,
+      type: counterparties.type,
+    })
+    .from(counterparties)
+    .orderBy(desc(counterparties.hitCount), asc(counterparties.displayName));
+}
+
+/**
+ * Same as `listCounterparties` but excludes one id (used when building the
+ * merge target select — a counterparty cannot merge into itself).
+ */
+export async function listCounterpartiesExcept(
+  excludeId: number,
+): Promise<CounterpartyBrief[]> {
+  return db
+    .select({
+      id: counterparties.id,
+      displayName: counterparties.displayName,
+      type: counterparties.type,
+    })
+    .from(counterparties)
+    .where(ne(counterparties.id, excludeId))
+    .orderBy(desc(counterparties.hitCount), asc(counterparties.displayName));
 }
 
 export async function listAccounts() {
