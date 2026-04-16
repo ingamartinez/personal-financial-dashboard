@@ -149,11 +149,11 @@
   .text-caption {
     @apply text-xs text-muted-foreground leading-normal;
   }
-  .text-money {
+  .money {
     font-family: var(--font-numeric);
     @apply tabular-nums font-medium;
   }
-  .text-money-lg {
+  .money-lg {
     font-family: var(--font-numeric);
     @apply text-3xl font-semibold tabular-nums tracking-tight;
   }
