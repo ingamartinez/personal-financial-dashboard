@@ -127,3 +127,28 @@ bun run db:seed:test      # seed accounts/categories/rules
 
 After changing the schema, re-run `db:migrate:test` so the test DB stays
 in sync with `findash`.
+
+## Visual verification (Playwright)
+
+For UI-affecting PRs, agents without human eyes available can capture
+screenshots of every page and attach them to the PR body.
+
+First-time setup on a fresh clone:
+
+```bash
+bun run test:e2e:install   # download headless chromium (~280 MiB)
+```
+
+Capture screenshots:
+
+```bash
+bun run dev                # in another shell, leave running
+bun run test:e2e           # generates e2e/screenshots/*.png
+```
+
+The current spec (`e2e/screenshots.spec.ts`) is capture-only — no
+assertions. It loads `/`, `/transactions`, `/budgets`, `/insights`,
+`/settings` and writes full-page PNGs. Screenshots and `test-results/`
+are gitignored; treat them as ephemeral artifacts. Functional E2E tests
+with assertions are out of scope until needed; when added, follow the
+same conventions cc uses (`cc/docs/E2E_TESTING.md`).

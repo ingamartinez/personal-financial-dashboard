@@ -17,6 +17,8 @@
     "db:seed:test": "PGDATABASE=findash_test bun run src/lib/db/seed.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -42,6 +44,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4",
     "@types/bun": "^1.3.12",
     "@types/node": "^20",
