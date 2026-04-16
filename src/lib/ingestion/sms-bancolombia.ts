@@ -43,6 +43,11 @@ export type ParsedSms =
   | (ParsedSmsBase & {
       kind: "provider_payment";
       senderName: string;
+    })
+  | (ParsedSmsBase & {
+      kind: "provider_payment_sent";
+      providerName: string;
+      fromLast4: string;
     });
 
 export type SkippedSms = {
@@ -250,6 +255,14 @@ const TRANSFER_RECV_B = new RegExp(
 // Provider payment: "Recibiste un pago PROVEEDOR de SENDER por AMOUNT en tu cuenta de Ahorros el DATE a las TIME"
 const PROVIDER_PAYMENT = new RegExp(
   `Recibiste\\s+un\\s+pago\\s+PROVEEDOR\\s+de\\s+(.+?)\\s+por\\s+${AMOUNT_GROUP}\\s+en\\s+tu\\s+cuenta\\s+de\\s+Ahorros\\s+el\\s+${DATE_TIME}`,
+  "i",
+);
+
+// Provider payment sent (PSE / bill-pay):
+// "Pagaste AMOUNT a PROVIDER desde tu producto *NNNN el DD/MM/YYYY HH:MM:SS"
+// Time has seconds (HH:MM:SS) — kept optional. We discard the seconds.
+const PROVIDER_PAYMENT_SENT = new RegExp(
+  `Pagaste\\s+${AMOUNT_GROUP}\\s+a\\s+(.+?)\\s+desde\\s+tu\\s+producto\\s+\\*?(\\d{4,})\\s+el\\s+${DATE_GROUP}\\s+${TIME_GROUP}(?::\\d{2})?`,
   "i",
 );
 
@@ -532,6 +545,36 @@ export function parseSmsBancolombia(body: string): ParseResult {
         externalId: hashId([
           "provider-payment",
           senderName,
+          occurredOn,
+          occurredTime,
+          cents,
+        ]),
+        raw,
+      };
+    }
+  }
+
+  // Provider payment sent (PSE / bill-pay)
+  {
+    const m = raw.match(PROVIDER_PAYMENT_SENT);
+    if (m) {
+      const { cents, currency } = parseSmsAmount(m[1]);
+      const providerName = m[2].trim();
+      const fromLast4 = m[3].slice(-4);
+      const occurredOn = parseSmsDate(m[4]);
+      const occurredTime = m[5];
+      return {
+        kind: "provider_payment_sent",
+        amountCents: cents,
+        currency,
+        providerName,
+        fromLast4,
+        occurredOn,
+        occurredTime,
+        externalId: hashId([
+          "provider-payment-sent",
+          fromLast4,
+          providerName,
           occurredOn,
           occurredTime,
           cents,

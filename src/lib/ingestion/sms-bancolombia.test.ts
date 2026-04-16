@@ -380,6 +380,81 @@ describe("parseSmsBancolombia — transfer received", () => {
   });
 });
 
+describe("parseSmsBancolombia — provider_payment_sent (PSE / bill-pay)", () => {
+  it("parses utility payment with HH:MM:SS time", () => {
+    const body =
+      "Bancolombia: Pagaste $430,997.00 a EMPRESAS PUBLICAS DE MEDELLIN desde tu producto *6126 el 13/02/2026 10:39:06. ¿Dudas? Llamanos al 6045109095. Estamos cerca";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("provider_payment_sent");
+    if (r.kind !== "provider_payment_sent") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(43099700));
+    expect(r.currency).toBe("COP");
+    expect(r.providerName).toBe("EMPRESAS PUBLICAS DE MEDELLIN");
+    expect(r.fromLast4).toBe("6126");
+    expect(r.occurredOn).toBe("2026-02-13");
+    expect(r.occurredTime).toBe("10:39"); // seconds dropped
+    expect(r.externalId).toMatch(/^bcol-sms:[a-f0-9]{24}$/);
+  });
+
+  it("parses additional PSE samples from the historical dump", () => {
+    const samples = [
+      {
+        body:
+          "Bancolombia: Pagaste $1,839,400.00 a Arrendamientos Santa Fe EU desde tu producto *6126 el 02/01/2026 19:54:20. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
+        cents: BigInt(183940000),
+        provider: "Arrendamientos Santa Fe EU",
+        date: "2026-01-02",
+        time: "19:54",
+      },
+      {
+        body:
+          "Bancolombia: Pagaste $413,300.00 a APORTES EN LINEA desde tu producto *6126 el 02/01/2026 19:59:18. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
+        cents: BigInt(41330000),
+        provider: "APORTES EN LINEA",
+        date: "2026-01-02",
+        time: "19:59",
+      },
+      {
+        body:
+          "Bancolombia: Pagaste $71,090.00 a BANCO FALABELLA S A desde tu producto *6126 el 02/01/2026 20:06:46. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
+        cents: BigInt(7109000),
+        provider: "BANCO FALABELLA S A",
+        date: "2026-01-02",
+        time: "20:06",
+      },
+      {
+        body:
+          "Bancolombia: Pagaste $1,350,000.00 a FIDEICOMISO P.A. PLAN ROMBO desde tu producto *6126 el 14/01/2026 19:54:39. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
+        cents: BigInt(135000000),
+        provider: "FIDEICOMISO P.A. PLAN ROMBO",
+        date: "2026-01-14",
+        time: "19:54",
+      },
+    ] as const;
+
+    for (const s of samples) {
+      const r = parseSmsBancolombia(s.body);
+      expect(r.kind).toBe("provider_payment_sent");
+      if (r.kind !== "provider_payment_sent") throw new Error("type guard");
+      expect(r.amountCents).toBe(s.cents);
+      expect(r.providerName).toBe(s.provider);
+      expect(r.fromLast4).toBe("6126");
+      expect(r.occurredOn).toBe(s.date);
+      expect(r.occurredTime).toBe(s.time);
+    }
+  });
+
+  it("parses PSE without seconds in time", () => {
+    const body =
+      "Bancolombia: Pagaste $50,000.00 a EPM desde tu producto *6126 el 10/02/2026 14:30. ¿Dudas? Llamanos al 6045109095. Estamos cerca";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("provider_payment_sent");
+    if (r.kind !== "provider_payment_sent") throw new Error("type guard");
+    expect(r.providerName).toBe("EPM");
+    expect(r.occurredTime).toBe("14:30");
+  });
+});
+
 describe("parseSmsBancolombia — provider payment", () => {
   it("parses provider payment to Ahorros", () => {
     const body =
