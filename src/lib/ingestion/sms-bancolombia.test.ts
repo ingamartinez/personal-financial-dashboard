@@ -455,6 +455,43 @@ describe("parseSmsBancolombia — provider_payment_sent (PSE / bill-pay)", () =>
   });
 });
 
+describe("parseSmsBancolombia — atm_withdrawal", () => {
+  it("parses ATM withdrawal with alphanumeric code", () => {
+    const body =
+      "Bancolombia: Retiraste $100.000,00 en 43AVENIDA de tu T.Deb **1802 el 19/02/2026 a las 16:36. Si tienes dudas, llamanos al 6045109095. Estamos cerca";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("atm_withdrawal");
+    if (r.kind !== "atm_withdrawal") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(10000000));
+    expect(r.currency).toBe("COP");
+    expect(r.atmCode).toBe("43AVENIDA");
+    expect(r.fromLast4).toBe("1802");
+    expect(r.occurredOn).toBe("2026-02-19");
+    expect(r.occurredTime).toBe("16:36");
+    expect(r.externalId).toMatch(/^bcol-sms:[a-f0-9]{24}$/);
+  });
+
+  it("parses ATM withdrawal with code containing underscore", () => {
+    const body =
+      "Bancolombia: Retiraste $100.000,00 en PQ_ESTRELL1 de tu T.Deb **1802 el 26/02/2026 a las 20:47. Si tienes dudas, llamanos al 6045109095. Estamos cerca";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("atm_withdrawal");
+    if (r.kind !== "atm_withdrawal") throw new Error("type guard");
+    expect(r.atmCode).toBe("PQ_ESTRELL1");
+    expect(r.fromLast4).toBe("1802");
+  });
+
+  it("parses ATM withdrawal with single-asterisk last4", () => {
+    const body =
+      "Bancolombia: Retiraste $200.000,00 en CC_OVIEDO de tu T.Deb *1802 el 03/03/2026 a las 11:15. Si tienes dudas, llamanos al 6045109095. Estamos cerca";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("atm_withdrawal");
+    if (r.kind !== "atm_withdrawal") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(20000000));
+    expect(r.atmCode).toBe("CC_OVIEDO");
+  });
+});
+
 describe("parseSmsBancolombia — provider payment", () => {
   it("parses provider payment to Ahorros", () => {
     const body =
