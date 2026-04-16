@@ -130,37 +130,33 @@
   }
 }
 
-@layer components {
-  .text-display {
-    @apply text-3xl font-semibold tracking-tight leading-tight;
-  }
-  .text-h1 {
-    @apply text-2xl font-semibold tracking-tight leading-tight;
-  }
-  .text-h2 {
-    @apply text-lg font-semibold leading-snug;
-  }
-  .text-h3 {
-    @apply text-base font-semibold leading-snug;
-  }
-  .text-body {
-    @apply text-sm leading-normal;
-  }
-  .text-caption {
-    @apply text-xs text-muted-foreground leading-normal;
-  }
-  .money {
-    font-family: var(--font-numeric);
-    @apply tabular-nums font-medium;
-  }
-  .money-lg {
-    font-family: var(--font-numeric);
-    @apply text-3xl font-semibold tabular-nums tracking-tight;
-  }
+@utility text-display {
+  @apply text-3xl font-semibold tracking-tight leading-tight;
+}
+@utility text-h1 {
+  @apply text-2xl font-semibold tracking-tight leading-tight;
+}
+@utility text-h2 {
+  @apply text-lg font-semibold leading-snug;
+}
+@utility text-h3 {
+  @apply text-base font-semibold leading-snug;
+}
+@utility text-body {
+  @apply text-sm leading-normal;
+}
+@utility text-caption {
+  @apply text-xs text-muted-foreground leading-normal;
+}
+@utility money {
+  font-family: var(--font-numeric);
+  @apply tabular-nums font-medium;
+}
+@utility money-lg {
+  font-family: var(--font-numeric);
+  @apply text-3xl font-semibold tabular-nums tracking-tight;
 }
 
-@layer utilities {
-  .tabular-nums {
-    font-family: var(--font-numeric);
-  }
+.tabular-nums {
+  font-family: var(--font-numeric);
 }
