@@ -21,15 +21,66 @@ function makeRequest(init: {
 
 // Scoped to keys this file creates via SMS ingest, so parallel test files
 // touching `counterparties` don't stomp on each other.
+const QR_KEY_VALUES = ["0091498581"];
+const BREB_KEY_VALUES = ["3046262677"];
+const NAME_KEY_VALUES = ["ESTEBAN LEONARDO SARMIENTO GOMEZ"];
+
 async function cleanup() {
   await db.execute(sql`
     DELETE FROM transactions WHERE external_id LIKE ${TEST_EXTERNAL_ID_PREFIX + "%"}
   `);
   await db.execute(sql`DELETE FROM ingestion_logs WHERE source = 'sms'`);
   await db.execute(sql`
-    DELETE FROM counterparties WHERE key IN ('0091498581', '3046262677')
+    DELETE FROM counterparties WHERE id IN (
+      SELECT counterparty_id FROM counterparty_aliases
+      WHERE (kind = 'qr' AND value IN ('0091498581'))
+         OR (kind = 'breb' AND value IN ('3046262677'))
+         OR (kind = 'name' AND value IN ('ESTEBAN LEONARDO SARMIENTO GOMEZ'))
+    )
   `);
 }
+
+// Test helpers for the alias-based counterparty model.
+async function findCounterpartyByAlias(kind: string, value: string) {
+  const rows = await db.execute<{
+    id: number;
+    display_name: string;
+    type: string;
+    hit_count: number;
+    default_category_slug: string | null;
+  }>(sql`
+    SELECT c.id, c.display_name, c.type, c.hit_count, c.default_category_slug
+    FROM counterparty_aliases a
+    JOIN counterparties c ON c.id = a.counterparty_id
+    WHERE a.kind = ${kind}::counterparty_key_kind AND a.value = ${value}
+    LIMIT 1
+  `);
+  return rows[0] ?? null;
+}
+
+async function createCounterpartyWithAlias(args: {
+  kind: "qr" | "breb" | "account" | "name";
+  value: string;
+  displayName: string;
+  type?: "person" | "merchant" | "unknown";
+  defaultCategorySlug?: string | null;
+}) {
+  const rows = await db.execute<{ id: number }>(sql`
+    INSERT INTO counterparties (display_name, type, default_category_slug)
+    VALUES (
+      ${args.displayName},
+      ${args.type ?? "unknown"}::counterparty_type,
+      ${args.defaultCategorySlug ?? null}
+    )
+    RETURNING id
+  `);
+  await db.execute(sql`
+    INSERT INTO counterparty_aliases (counterparty_id, kind, value)
+    VALUES (${rows[0].id}, ${args.kind}::counterparty_key_kind, ${args.value})
+  `);
+  return rows[0].id;
+}
+void QR_KEY_VALUES; void BREB_KEY_VALUES; void NAME_KEY_VALUES;
 
 function jsonBody(payload: Record<string, unknown>): string {
   return JSON.stringify(payload);
@@ -527,20 +578,12 @@ describe("POST /api/ingest/sms", () => {
     const json = (await res.json()) as { status: string; txId?: number };
     expect(json.status).toBe("inserted");
 
-    const cpRows = await db.execute<{
-      display_name: string;
-      type: string;
-      hit_count: number;
-      default_category_slug: string | null;
-    }>(sql`
-      SELECT display_name, type, hit_count, default_category_slug
-      FROM counterparties WHERE key = ${QR_KEY}
-    `);
-    expect(cpRows).toHaveLength(1);
-    expect(cpRows[0].display_name).toBe(QR_KEY);
-    expect(cpRows[0].type).toBe("unknown");
-    expect(cpRows[0].hit_count).toBe(1);
-    expect(cpRows[0].default_category_slug).toBeNull();
+    const cp = await findCounterpartyByAlias("qr", QR_KEY);
+    expect(cp).not.toBeNull();
+    expect(cp!.display_name).toBe(QR_KEY);
+    expect(cp!.type).toBe("unknown");
+    expect(cp!.hit_count).toBe(1);
+    expect(cp!.default_category_slug).toBeNull();
 
     const txRows = await db.execute<{
       counterparty_id: number | null;
@@ -550,16 +593,18 @@ describe("POST /api/ingest/sms", () => {
       SELECT counterparty_id, category_slug, classification_method
       FROM transactions WHERE id = ${json.txId!}
     `);
-    expect(txRows[0].counterparty_id).not.toBeNull();
+    expect(txRows[0].counterparty_id).toBe(cp!.id);
     expect(txRows[0].category_slug).toBeNull();
     expect(txRows[0].classification_method).toBe("unclassified");
   });
 
   it("QR with existing counterparty (no default category) links but stays unclassified", async () => {
-    await db.execute(sql`
-      INSERT INTO counterparties (key, display_name, type)
-      VALUES (${QR_KEY}, 'Panadería del Barrio', 'merchant')
-    `);
+    const cpId = await createCounterpartyWithAlias({
+      kind: "qr",
+      value: QR_KEY,
+      displayName: "Panadería del Barrio",
+      type: "merchant",
+    });
     const res = await POST(
       makeRequest({
         body: jsonBody({ body: QR_BODY }),
@@ -577,21 +622,22 @@ describe("POST /api/ingest/sms", () => {
       SELECT counterparty_id, category_slug, classification_method
       FROM transactions WHERE id = ${json.txId!}
     `);
-    expect(rows[0].counterparty_id).not.toBeNull();
+    expect(rows[0].counterparty_id).toBe(cpId);
     expect(rows[0].category_slug).toBeNull();
     expect(rows[0].classification_method).toBe("unclassified");
 
-    const cpRows = await db.execute<{ hit_count: number }>(sql`
-      SELECT hit_count FROM counterparties WHERE key = ${QR_KEY}
-    `);
-    expect(cpRows[0].hit_count).toBe(1);
+    const cp = await findCounterpartyByAlias("qr", QR_KEY);
+    expect(cp!.hit_count).toBe(1);
   });
 
   it("QR with existing counterparty that has default_category inherits + method=rule", async () => {
-    await db.execute(sql`
-      INSERT INTO counterparties (key, display_name, type, default_category_slug)
-      VALUES (${QR_KEY}, 'Panadería del Barrio', 'merchant', 'alimentacion')
-    `);
+    await createCounterpartyWithAlias({
+      kind: "qr",
+      value: QR_KEY,
+      displayName: "Panadería del Barrio",
+      type: "merchant",
+      defaultCategorySlug: "alimentacion",
+    });
     const res = await POST(
       makeRequest({
         body: jsonBody({ body: QR_BODY }),
@@ -624,20 +670,12 @@ describe("POST /api/ingest/sms", () => {
     const json = (await res.json()) as { status: string; txId?: number };
     expect(json.status).toBe("inserted");
 
-    const cpRows = await db.execute<{
-      display_name: string;
-      type: string;
-      hit_count: number;
-      default_category_slug: string | null;
-    }>(sql`
-      SELECT display_name, type, hit_count, default_category_slug
-      FROM counterparties WHERE key = ${BREB_KEY}
-    `);
-    expect(cpRows).toHaveLength(1);
-    expect(cpRows[0].display_name).toBe("MARIA PAZ TORRES CARRILLO");
-    expect(cpRows[0].type).toBe("unknown");
-    expect(cpRows[0].hit_count).toBe(1);
-    expect(cpRows[0].default_category_slug).toBeNull();
+    const cp = await findCounterpartyByAlias("breb", BREB_KEY);
+    expect(cp).not.toBeNull();
+    expect(cp!.display_name).toBe("MARIA PAZ TORRES CARRILLO");
+    expect(cp!.type).toBe("unknown");
+    expect(cp!.hit_count).toBe(1);
+    expect(cp!.default_category_slug).toBeNull();
 
     const txRows = await db.execute<{
       counterparty_id: number | null;
@@ -647,7 +685,7 @@ describe("POST /api/ingest/sms", () => {
       SELECT counterparty_id, category_slug, classification_method
       FROM transactions WHERE id = ${json.txId!}
     `);
-    expect(txRows[0].counterparty_id).not.toBeNull();
+    expect(txRows[0].counterparty_id).toBe(cp!.id);
     expect(txRows[0].category_slug).toBeNull();
     expect(txRows[0].classification_method).toBe("unclassified");
   });
@@ -658,7 +696,6 @@ describe("POST /api/ingest/sms", () => {
     );
     expect((await first.json()).status).toBe("inserted");
 
-    // Second SMS with different amount/time — same recipient key
     const BREB_BODY_2 =
       "Bancolombia: ALEJANDRO, transferiste $25,000.00 a la llave 3046262677 desde tu cuenta *6126 a MARIA PAZ TORRES CARRILLO el 02/04/26 a las 09:10. Con Bre-b es de una y gratis. Dudas al 018000912345.";
     const second = await POST(
@@ -666,19 +703,24 @@ describe("POST /api/ingest/sms", () => {
     );
     expect((await second.json()).status).toBe("inserted");
 
-    const cpRows = await db.execute<{ c: number; hit_count: number }>(sql`
-      SELECT COUNT(*)::int AS c, MAX(hit_count) AS hit_count
-      FROM counterparties WHERE key = ${BREB_KEY}
+    const cp = await findCounterpartyByAlias("breb", BREB_KEY);
+    expect(cp!.hit_count).toBe(2);
+
+    const dupe = await db.execute<{ c: number }>(sql`
+      SELECT COUNT(*)::int AS c FROM counterparty_aliases
+      WHERE kind = 'breb'::counterparty_key_kind AND value = ${BREB_KEY}
     `);
-    expect(cpRows[0].c).toBe(1);
-    expect(cpRows[0].hit_count).toBe(2);
+    expect(dupe[0].c).toBe(1);
   });
 
   it("Bre-b with existing counterparty + default_category inherits on new tx", async () => {
-    await db.execute(sql`
-      INSERT INTO counterparties (key, display_name, type, default_category_slug)
-      VALUES (${BREB_KEY}, 'Maria Paz', 'person', 'transferencias')
-    `);
+    await createCounterpartyWithAlias({
+      kind: "breb",
+      value: BREB_KEY,
+      displayName: "Maria Paz",
+      type: "person",
+      defaultCategorySlug: "transferencias",
+    });
     const res = await POST(
       makeRequest({
         body: jsonBody({ body: BREB_BODY }),
@@ -700,12 +742,54 @@ describe("POST /api/ingest/sms", () => {
     expect(rows[0].category_slug).toBe("transferencias");
     expect(rows[0].classification_method).toBe("rule");
 
-    // Upsert preserves the original display_name (does not overwrite with SMS recipient)
-    const cpRows = await db.execute<{ display_name: string; hit_count: number }>(sql`
-      SELECT display_name, hit_count FROM counterparties WHERE key = ${BREB_KEY}
+    const cp = await findCounterpartyByAlias("breb", BREB_KEY);
+    expect(cp!.display_name).toBe("Maria Paz");
+    expect(cp!.hit_count).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Counterparty — transfer_sent (account kind) and transfer_received (name)
+  // ---------------------------------------------------------------------------
+
+  it("transfer_sent auto-creates counterparty by account number", async () => {
+    const body =
+      "Bancolombia: Transferiste $30,000.00 desde tu cuenta 6126 a la cuenta 91218413213, el 16/04/2026 12:00. ¿Dudas? Llamanos al 018000931987. Estamos cerca.";
+    const res = await POST(
+      makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }),
+    );
+    const json = (await res.json()) as { status: string; txId?: number };
+    expect(json.status).toBe("inserted");
+
+    const cp = await findCounterpartyByAlias("account", "91218413213");
+    expect(cp).not.toBeNull();
+    expect(cp!.display_name).toBe("Cuenta *91218413213");
+
+    const txRows = await db.execute<{ counterparty_id: number | null }>(sql`
+      SELECT counterparty_id FROM transactions WHERE id = ${json.txId!}
     `);
-    expect(cpRows[0].display_name).toBe("Maria Paz");
-    expect(cpRows[0].hit_count).toBe(1);
+    expect(txRows[0].counterparty_id).toBe(cp!.id);
+  });
+
+  it("transfer_received normalizes sender name and auto-creates by name kind", async () => {
+    const body =
+      "Bancolombia: ALEJANDRO, recibiste una transferencia de ESTEBAN LEONARDO SARMIENTO GOMEZ por $100,000.00 en tu cuenta *6126 conectada a la llave 3012998429 el 14/04/26 a las 15:28. Con llaves es de una y gratis. Dudas al 018000912345";
+    const res = await POST(
+      makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }),
+    );
+    const json = (await res.json()) as { status: string; txId?: number };
+    expect(json.status).toBe("inserted");
+
+    const cp = await findCounterpartyByAlias(
+      "name",
+      "ESTEBAN LEONARDO SARMIENTO GOMEZ",
+    );
+    expect(cp).not.toBeNull();
+    expect(cp!.display_name).toBe("ESTEBAN LEONARDO SARMIENTO GOMEZ");
+
+    const txRows = await db.execute<{ counterparty_id: number | null }>(sql`
+      SELECT counterparty_id FROM transactions WHERE id = ${json.txId!}
+    `);
+    expect(txRows[0].counterparty_id).toBe(cp!.id);
   });
 
   // ---------------------------------------------------------------------------

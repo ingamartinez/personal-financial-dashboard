@@ -9,7 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { TxRow } from "@/lib/transactions/queries";
+import type { CounterpartyBrief, TxRow } from "@/lib/transactions/queries";
 import { CategoryCell, type CategoryOption } from "./category-cell";
 import { CounterpartyDialog } from "./counterparty-dialog";
 
@@ -81,9 +81,11 @@ function formatDate(d: Date) {
 export function TransactionTable({
   rows,
   categories,
+  allCounterparties,
 }: {
   rows: TxRow[];
   categories: CategoryOption[];
+  allCounterparties: CounterpartyBrief[];
 }) {
   if (rows.length === 0) {
     return (
@@ -134,6 +136,7 @@ export function TransactionTable({
                       <CounterpartyDialog
                         counterparty={tx.counterparty}
                         categories={categories}
+                        allCounterparties={allCounterparties}
                       />
                     ) : null}
                   </div>

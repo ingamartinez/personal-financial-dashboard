@@ -213,46 +213,105 @@ type CounterpartyResolution = {
   inheritedCategory: string | null;
 };
 
+type AliasKind = "qr" | "breb" | "account" | "name";
+
+type KeyForKind = {
+  kind: AliasKind;
+  value: string;
+  initialDisplayName: string;
+};
+
 /**
- * For kinds that carry a counterparty key (qr_payment, bre_b_transfer):
- * always UPSERT by key so every tx gets a counterparty_id. This unifies
- * retroactive propagation (plain FK join) and UI logic.
+ * Normalizes a sender name so small whitespace/case variations from Bancolombia
+ * do not cause duplicate name-aliases for the same person.
+ */
+export function normalizeName(raw: string): string {
+  return raw.trim().toUpperCase().replace(/\s+/g, " ");
+}
+
+function keyForParsed(parsed: ParsedSms): KeyForKind | null {
+  switch (parsed.kind) {
+    case "qr_payment":
+      return {
+        kind: "qr",
+        value: parsed.toKey,
+        initialDisplayName: parsed.toKey,
+      };
+    case "bre_b_transfer":
+      return {
+        kind: "breb",
+        value: parsed.toKey,
+        initialDisplayName: parsed.recipientName,
+      };
+    case "transfer_sent":
+      return {
+        kind: "account",
+        value: parsed.toAccount,
+        initialDisplayName: `Cuenta *${parsed.toAccount}`,
+      };
+    case "transfer_received":
+      return {
+        kind: "name",
+        value: normalizeName(parsed.senderName),
+        initialDisplayName: parsed.senderName,
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Resolves (and lazily creates) a counterparty for any kind that carries an
+ * identifier: qr_payment, bre_b_transfer, transfer_sent, transfer_received.
  *
- * - bre_b_transfer: initial display_name = recipientName (from SMS).
- * - qr_payment: initial display_name = key (placeholder; user renames in UI).
+ * Lookup is by (alias.kind, alias.value). If the alias does not exist, a new
+ * counterparty + alias are inserted atomically in a transaction so we never
+ * leave an orphan counterparty if concurrent ingests race.
  *
- * ON CONFLICT preserves the existing display_name on subsequent hits, so
- * user renames stick. Hit counter bumped on every match/insert.
+ * Hit counter bumped on every match/insert.
  */
 export async function resolveCounterparty(
   parsed: ParsedSms,
   database: DB,
 ): Promise<CounterpartyResolution> {
-  if (parsed.kind !== "qr_payment" && parsed.kind !== "bre_b_transfer") {
-    return { counterpartyId: null, inheritedCategory: null };
-  }
+  const key = keyForParsed(parsed);
+  if (!key) return { counterpartyId: null, inheritedCategory: null };
 
-  const key = parsed.toKey;
-  const initialDisplayName =
-    parsed.kind === "bre_b_transfer" ? parsed.recipientName : key;
+  return database.transaction(async (trx) => {
+    const existing = await trx.execute<{
+      id: number;
+      default_category_slug: string | null;
+    }>(sql`
+      SELECT c.id, c.default_category_slug
+      FROM counterparty_aliases a
+      JOIN counterparties c ON c.id = a.counterparty_id
+      WHERE a.kind = ${key.kind}::counterparty_key_kind AND a.value = ${key.value}
+      LIMIT 1
+    `);
 
-  const rows = await database.execute<{
-    id: number;
-    default_category_slug: string | null;
-  }>(sql`
-    INSERT INTO counterparties (key, display_name, type, hit_count, last_hit_at)
-    VALUES (${key}, ${initialDisplayName}, 'unknown', 1, now())
-    ON CONFLICT (key) DO UPDATE
-      SET hit_count = counterparties.hit_count + 1,
-          last_hit_at = now(),
-          updated_at = now()
-    RETURNING id, default_category_slug
-  `);
-  const row = rows[0];
-  return {
-    counterpartyId: row.id,
-    inheritedCategory: row.default_category_slug,
-  };
+    if (existing.length > 0) {
+      await trx.execute(sql`
+        UPDATE counterparties
+        SET hit_count = hit_count + 1, last_hit_at = now()
+        WHERE id = ${existing[0].id}
+      `);
+      return {
+        counterpartyId: existing[0].id,
+        inheritedCategory: existing[0].default_category_slug,
+      };
+    }
+
+    const inserted = await trx.execute<{ id: number }>(sql`
+      INSERT INTO counterparties (display_name, type, hit_count, last_hit_at)
+      VALUES (${key.initialDisplayName}, 'unknown', 1, now())
+      RETURNING id
+    `);
+    await trx.execute(sql`
+      INSERT INTO counterparty_aliases (counterparty_id, kind, value)
+      VALUES (${inserted[0].id}, ${key.kind}::counterparty_key_kind, ${key.value})
+    `);
+    return { counterpartyId: inserted[0].id, inheritedCategory: null };
+  });
 }
 
 function resolveAccountForParsed(
