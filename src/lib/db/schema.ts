@@ -54,6 +54,8 @@ export const accounts = pgTable("accounts", {
 });
 
 export type AccountMetadata = {
+  last4s?: string[];
+  network?: "visa" | "mastercard" | "amex";
   creditLimitCents?: number;
   availableCreditCents?: number;
   cutoffDay?: number;

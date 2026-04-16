@@ -8,5 +8,6 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.test.ts"],
     testTimeout: 10_000,
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

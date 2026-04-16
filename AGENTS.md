@@ -108,3 +108,22 @@ psql -d findash          # direct DB access (peer auth, no password)
 ```
 
 `.env.local` is NOT committed — see `.env.example` for required vars.
+
+## Test database (findash_test)
+
+Integration tests DELETE rows during cleanup, so they MUST run against a
+separate database. `vitest.setup.ts` forces `PGDATABASE=findash_test`
+before any test imports — this cannot be overridden by `.env.local` or
+shell env. If the setup ever fails to apply, tests abort loudly instead
+of silently writing to the dev DB.
+
+First-time setup on a fresh clone:
+
+```bash
+createdb findash_test
+bun run db:migrate:test   # apply drizzle migrations to findash_test
+bun run db:seed:test      # seed accounts/categories/rules
+```
+
+After changing the schema, re-run `db:migrate:test` so the test DB stays
+in sync with `findash`.

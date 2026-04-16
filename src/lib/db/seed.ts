@@ -14,14 +14,43 @@ const seedAccounts: Array<{
   currency: "COP" | "USD";
   metadata?: AccountMetadata;
 }> = [
-  { name: "Bancolombia Ahorros", institution: "Bancolombia", type: "savings", currency: "COP" },
-  { name: "Bancolombia TC #1", institution: "Bancolombia", type: "credit_card", currency: "COP" },
-  { name: "Bancolombia TC #2", institution: "Bancolombia", type: "credit_card", currency: "COP" },
-  { name: "Bancolombia e-card (suscripciones)", institution: "Bancolombia", type: "credit_card", currency: "COP" },
-  { name: "Bancolombia Préstamo Consolidado", institution: "Bancolombia", type: "loan", currency: "COP" },
-  { name: "ARQ Ahorros", institution: "ARQ", type: "savings", currency: "USD" },
+  {
+    name: "Bancolombia Ahorros",
+    institution: "Bancolombia",
+    type: "savings",
+    currency: "COP",
+    metadata: { last4s: ["6126", "1802"] },
+  },
+  {
+    name: "ARQ Ahorros",
+    institution: "ARQ",
+    type: "savings",
+    currency: "USD",
+    metadata: { last4s: ["7073", "1356"] },
+  },
   { name: "Efectivo COP", institution: "Cash", type: "savings", currency: "COP" },
   { name: "Efectivo USD", institution: "Cash", type: "savings", currency: "USD" },
+  {
+    name: "Bancolombia Visa *2575",
+    institution: "Bancolombia",
+    type: "credit_card",
+    currency: "COP",
+    metadata: { last4s: ["2575"], network: "visa" },
+  },
+  {
+    name: "Bancolombia Mastercard *7291 (COP)",
+    institution: "Bancolombia",
+    type: "credit_card",
+    currency: "COP",
+    metadata: { last4s: ["7291"], network: "mastercard" },
+  },
+  {
+    name: "Bancolombia Mastercard *7291 (USD)",
+    institution: "Bancolombia",
+    type: "credit_card",
+    currency: "USD",
+    metadata: { last4s: ["7291"], network: "mastercard" },
+  },
 ];
 
 const seedCategories: Array<{
@@ -99,6 +128,9 @@ const seedRules: Array<{ pattern: string; categorySlug: string; priority?: numbe
   { pattern: "%APPLE.COM/BILL%", categorySlug: "suscripciones", priority: 10 },
   { pattern: "%ICLOUD%", categorySlug: "suscripciones", priority: 10 },
   { pattern: "%GOOGLE%STORAGE%", categorySlug: "suscripciones", priority: 10 },
+  { pattern: "%ANTHROPIC%", categorySlug: "suscripciones", priority: 10 },
+  { pattern: "%CLAUDE.AI%", categorySlug: "suscripciones", priority: 10 },
+  { pattern: "%JETSMAR%", categorySlug: "transporte", priority: 10 },
   { pattern: "%SURA%", categorySlug: "seguros", priority: 10 },
   { pattern: "%COLSANITAS%", categorySlug: "eps", priority: 10 },
   { pattern: "%COMPENSAR%", categorySlug: "eps", priority: 10 },
@@ -107,7 +139,7 @@ const seedRules: Array<{ pattern: string; categorySlug: string; priority?: numbe
   { pattern: "%LA REBAJA%", categorySlug: "medicamentos", priority: 10 },
 ];
 
-async function seed() {
+export async function runSeed() {
   console.log("seeding categories...");
   await db.insert(categories).values(seedCategories).onConflictDoNothing();
 
@@ -129,10 +161,13 @@ async function seed() {
   await db.insert(classificationRules).values(seedRules).onConflictDoNothing();
 
   console.log("done");
-  process.exit(0);
 }
 
-seed().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  runSeed()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}
