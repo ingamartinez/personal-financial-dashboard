@@ -16,11 +16,21 @@ Dashboard financiero personal para Colombia con clasificación AI, presupuestos 
 ```bash
 bun install
 cp .env.example .env.local
-# Editar .env.local con tu ANTHROPIC_API_KEY
+# Editar .env.local: ANTHROPIC_API_KEY y INGEST_WEBHOOK_TOKEN (ver abajo)
 bun run db:push        # crea las tablas
 bun run db:seed        # cuentas, categorías y reglas colombianas
 bun run dev            # arranca en http://localhost:3100
 ```
+
+## Environment variables
+
+`.env.example` tiene la plantilla. `.env.local` nunca se commitea.
+
+| Variable | Qué es | Cómo obtenerla |
+|---|---|---|
+| `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPORT`, `PGPASSWORD` | Conexión a PostgreSQL | Dejar en blanco usa defaults: `/var/run/postgresql` + `findash` + `$USER` (peer auth en Linux). |
+| `ANTHROPIC_API_KEY` | Clasificación AI, insights y OCR con Claude | https://console.anthropic.com/ |
+| `INGEST_WEBHOOK_TOKEN` | Bearer token para `/api/ingest/*` (iOS Shortcut Apple Pay, SMS, etc.) | Secreto compartido fijo entre server e iOS Shortcut. Generar una vez: `openssl rand -hex 32`. |
 
 ## Comandos DB
 
