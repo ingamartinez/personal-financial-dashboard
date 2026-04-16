@@ -298,6 +298,41 @@ describe("parseSmsBancolombia — transfer sent", () => {
   });
 });
 
+describe("parseSmsBancolombia — bre_b_transfer (named recipient + key)", () => {
+  it("parses real Bre-b sample from the historical dump", () => {
+    const body =
+      "Bancolombia: ALEJANDRO, transferiste $50,000.00 a la llave 3046262677 desde tu cuenta *6126 a MARIA PAZ TORRES CARRILLO el 01/04/26 a las 13:22. Con Bre-b es de una y gratis. Dudas al 018000912345.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("bre_b_transfer");
+    if (r.kind !== "bre_b_transfer") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(5000000));
+    expect(r.currency).toBe("COP");
+    expect(r.fromLast4).toBe("6126");
+    expect(r.toKey).toBe("3046262677");
+    expect(r.recipientName).toBe("MARIA PAZ TORRES CARRILLO");
+    expect(r.occurredOn).toBe("2026-04-01");
+    expect(r.occurredTime).toBe("13:22");
+    expect(r.externalId).toMatch(/^bcol-sms:[a-f0-9]{24}$/);
+  });
+
+  it("parses Bre-b with single-word recipient", () => {
+    const body =
+      "Bancolombia: ALEJANDRO, transferiste $25,000.00 a la llave 3001112233 desde tu cuenta *6126 a JUAN el 02/04/2026 a las 09:10. Con Bre-b es de una y gratis. Dudas al 018000912345.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("bre_b_transfer");
+    if (r.kind !== "bre_b_transfer") throw new Error("type guard");
+    expect(r.recipientName).toBe("JUAN");
+    expect(r.toKey).toBe("3001112233");
+  });
+
+  it("does NOT regress regular transfer_sent (which has no 'a la llave' segment)", () => {
+    const body =
+      "Bancolombia: Transferiste $30,000.00 desde tu cuenta 6126 a la cuenta *3137898857 el 15/04/2026 a las 15:01. ¿Dudas? Llamanos al 018000931987. Estamos cerca.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("transfer_sent");
+  });
+});
+
 describe("parseSmsBancolombia — QR payment", () => {
   it("parses QR payment with name prefix", () => {
     const body =
