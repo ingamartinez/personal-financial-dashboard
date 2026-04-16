@@ -9,13 +9,25 @@ const pages = [
   { name: "settings", path: "/settings" },
 ];
 
-for (const p of pages) {
-  test(`screenshot: ${p.name}`, async ({ page }) => {
-    await page.goto(p.path);
-    await page.waitForLoadState("networkidle");
-    await page.screenshot({
-      path: path.join("e2e/screenshots", `${p.name}.png`),
-      fullPage: true,
+const modes = ["light", "dark"] as const;
+
+for (const mode of modes) {
+  for (const p of pages) {
+    test(`screenshot: ${mode} ${p.name}`, async ({ page }) => {
+      await page.addInitScript((m) => {
+        window.localStorage.setItem("theme", m);
+      }, mode);
+      await page.goto(p.path);
+      await page.waitForLoadState("networkidle");
+      const donutPath = page.locator(".recharts-pie-sector path").first();
+      await donutPath.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+      if (await donutPath.count()) {
+        await page.waitForTimeout(1_800);
+      }
+      await page.screenshot({
+        path: path.join("e2e/screenshots", `${mode}-${p.name}.png`),
+        fullPage: true,
+      });
     });
-  });
+  }
 }

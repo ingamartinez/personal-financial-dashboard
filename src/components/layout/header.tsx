@@ -12,6 +12,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { Nav } from "./nav";
+import { ThemeToggle } from "./theme-toggle";
 
 export function Header() {
   const [open, setOpen] = useState(false);
@@ -28,22 +29,25 @@ export function Header() {
           <Nav orientation="horizontal" />
         </div>
 
-        <div className="ml-auto md:hidden">
-          <Sheet open={open} onOpenChange={setOpen}>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label="Open menu">
-                <MenuIcon className="size-5" />
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="w-64 p-0">
-              <SheetHeader className="border-b">
-                <SheetTitle>Menu</SheetTitle>
-              </SheetHeader>
-              <div className="p-3">
-                <Nav orientation="vertical" onNavigate={() => setOpen(false)} />
-              </div>
-            </SheetContent>
-          </Sheet>
+        <div className="ml-auto flex items-center gap-1">
+          <ThemeToggle />
+          <div className="md:hidden">
+            <Sheet open={open} onOpenChange={setOpen}>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="icon" aria-label="Open menu">
+                  <MenuIcon className="size-5" />
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="left" className="w-64 p-0">
+                <SheetHeader className="border-b">
+                  <SheetTitle>Menu</SheetTitle>
+                </SheetHeader>
+                <div className="p-3">
+                  <Nav orientation="vertical" onNavigate={() => setOpen(false)} />
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
         </div>
       </div>
     </header>
