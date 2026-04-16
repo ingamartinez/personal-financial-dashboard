@@ -311,6 +311,56 @@ describe("parseSmsBancolombia — skip reasons", () => {
     expect(r.reason).toBe("non_transactional");
   });
 
+  it("skips payments rejected by insufficient balance as 'failed'", () => {
+    const body =
+      "Bancolombia: Ups! El pago en EXPERIAN COLOMBIA por $ 23,900 fue rechazada por saldo insuficiente. Tu saldo actual es $ 2,728. Usa el saldo de bolsillos si lo deseas, alli tienes $ 40,000. Mueve tu plata facilmente desde nuestra App.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("skip");
+    if (r.kind !== "skip") throw new Error("type guard");
+    expect(r.reason).toBe("failed");
+  });
+
+  it("skips calendar/marketing reminders as non_transactional", () => {
+    const bodies = [
+      "Bancolombia:ALEJANDRO, es hora! Hay una actividad pendiente en Tu calendario. Revisala ya en app Mi Bancolombia >Explorar >Dia a Dia. Ya lo hiciste? Genial",
+      "Bancolombia:Alejandro, planea, recuerda y paga facil tu tarjeta de credito con Tu calendario, lo nuevo de app Mi Bancolombia! Explorar >Dia a Dia >Tu calendario",
+      "Bancolombia: Alejandro, tu recordatorio de pago esta activo, no dejes que se apague. Entra hoy a app Mi Bancolombia >Explorar >Dia a Dia >Tu Calendario",
+    ];
+    for (const body of bodies) {
+      const r = parseSmsBancolombia(body);
+      expect(r.kind).toBe("skip");
+      if (r.kind !== "skip") throw new Error("type guard");
+      expect(r.reason).toBe("non_transactional");
+    }
+  });
+
+  it("skips yearly summary marketing as non_transactional", () => {
+    const bodies = [
+      "Bancolombia: Alejandro, tus gastos entre diciembre y enero cambiaron en $5.637.273. Conocelos en app Mi Bancolombia >Dia a Dia >Tus informes",
+      "Bancolombia: Alejandro, quedan pocas horas para consultar tus gastos de $153.377.560 en 2025. Mi Bancolombia>Dia a Dia>Tus informes antes de que desaparezca",
+      "Bancolombia: Alejandro, ChatGPT con $252.075 fue tu Top 1 en 2025. Actualizamos #TuInforme2025 en app Mi Bancolombia>Explorar>Dia a Dia>Tus Informes",
+    ];
+    for (const body of bodies) {
+      const r = parseSmsBancolombia(body);
+      expect(r.kind).toBe("skip");
+      if (r.kind !== "skip") throw new Error("type guard");
+      expect(r.reason).toBe("non_transactional");
+    }
+  });
+
+  it("skips subscription heads-up and third-party-account registration", () => {
+    const bodies = [
+      "Bancolombia: Muy pronto cobraremos una suscripción asociada a tu tarjeta. Asegúrate de tener saldo suficiente. Verifícalo fácil en tu app. Contamos contigo.",
+      "Bancolombia: Muy bien. Inscribiste la cuenta de un tercero desde APP Bancolombia. Si no fuiste tu, llamanos ahora: 6045109095 o 018000931987. Juntos en cada paso.",
+    ];
+    for (const body of bodies) {
+      const r = parseSmsBancolombia(body);
+      expect(r.kind).toBe("skip");
+      if (r.kind !== "skip") throw new Error("type guard");
+      expect(r.reason).toBe("non_transactional");
+    }
+  });
+
   it("skips unknown formats as 'unknown'", () => {
     const body = "Bancolombia: mensaje totalmente desconocido que no matchea nada";
     const r = parseSmsBancolombia(body);

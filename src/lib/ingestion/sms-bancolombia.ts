@@ -159,8 +159,15 @@ function hashId(parts: (string | bigint | number)[]): string {
 
 const SKIP_PATTERNS: Array<{ pattern: RegExp; reason: SkippedSms["reason"] }> = [
   { pattern: /no\s+fue\s+exitosa/i, reason: "failed" },
+  { pattern: /fue\s+rechazada\s+por\s+saldo\s+insuficiente/i, reason: "failed" },
   { pattern: /actualizaste\s+tu\s+informacion\s+personal/i, reason: "non_transactional" },
   { pattern: /te\s+identificaste/i, reason: "non_transactional" },
+  { pattern: /tu\s+calendario/i, reason: "non_transactional" },
+  { pattern: /tus\s+gastos\b/i, reason: "non_transactional" },
+  { pattern: /fue\s+tu\s+Top\s+\d+/i, reason: "non_transactional" },
+  { pattern: /recordatorio\s+de\s+pago/i, reason: "non_transactional" },
+  { pattern: /muy\s+pronto\s+cobraremos/i, reason: "non_transactional" },
+  { pattern: /inscribiste\s+la\s+cuenta\s+de\s+un\s+tercero/i, reason: "non_transactional" },
 ];
 
 function detectSkip(body: string): SkippedSms["reason"] | null {
