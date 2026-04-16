@@ -206,6 +206,13 @@ const PURCHASE_B = new RegExp(
   "i",
 );
 
+// Purchase variant C: same as B but with TIME and DATE in reversed order:
+// "Compraste AMOUNT en MERCHANT, el TIME a las DATE. Esta compra esta asociada a T.{Cred|Deb} *NNNN"
+const PURCHASE_C = new RegExp(
+  `Compraste\\s+${AMOUNT_GROUP}\\s+en\\s+(.+?),\\s+el\\s+${TIME_GROUP}\\s+a\\s+las\\s+${DATE_GROUP}\\.\\s+Esta\\s+compra\\s+esta\\s+asociada\\s+a\\s+T\\.(Cred|Deb)\\s+\\*(\\d{4})`,
+  "i",
+);
+
 function cardKindFromMatch(token: string): "credit" | "debit" {
   return token.toLowerCase() === "deb" ? "debit" : "credit";
 }
@@ -297,6 +304,39 @@ export function parseSmsBancolombia(body: string): ParseResult {
       const merchant = m[2].trim();
       const occurredOn = parseSmsDate(m[3]);
       const occurredTime = m[4];
+      const cardKind = cardKindFromMatch(m[5]);
+      const cardLast4 = m[6];
+      return {
+        kind: "purchase",
+        amountCents: cents,
+        currency,
+        merchant,
+        cardLast4,
+        cardKind,
+        occurredOn,
+        occurredTime,
+        externalId: hashId([
+          "purchase",
+          cardLast4,
+          currency,
+          occurredOn,
+          occurredTime,
+          cents,
+          merchant,
+        ]),
+        raw,
+      };
+    }
+  }
+
+  // Purchase variant C (reversed TIME/DATE order)
+  {
+    const m = raw.match(PURCHASE_C);
+    if (m) {
+      const { cents, currency } = parseSmsAmount(m[1]);
+      const merchant = m[2].trim();
+      const occurredTime = m[3];
+      const occurredOn = parseSmsDate(m[4]);
       const cardKind = cardKindFromMatch(m[5]);
       const cardLast4 = m[6];
       return {
