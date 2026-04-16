@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
-import { db } from "@/lib/db";
+import { db, type DB } from "@/lib/db";
 import { accounts, ingestionLogs, transactions } from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
@@ -139,10 +139,16 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
   const { amountCents, descriptionRaw, merchant, categorySlug, method } =
     buildTxFields(parsed);
 
+  // Counterparty lookup (and auto-create for bre_b). For kinds with toKey,
+  // this is the preferred classification path over text-pattern rules.
+  const cp = await resolveCounterparty(parsed, db);
+
   // Purchases and PSE outgoing payments get rule-based classification attempted.
-  // Other kinds have hardcoded categories (pago-tc, transferencias, ingresos).
-  let finalCategory = categorySlug;
-  let finalMethod: "rule" | "manual" | "unclassified" = method;
+  // Other kinds have hardcoded categories (pago-tc, transferencias, ingresos)
+  // or inherit from counterparty (qr_payment, bre_b_transfer).
+  let finalCategory = cp.inheritedCategory ?? categorySlug;
+  let finalMethod: "rule" | "manual" | "unclassified" =
+    cp.inheritedCategory ? "rule" : method;
   let confidence: number | null = null;
   if (parsed.kind === "purchase" || parsed.kind === "provider_payment_sent") {
     const cls = await classifyByRule({
@@ -170,6 +176,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
         descriptionClean: null,
         merchant,
         categorySlug: finalCategory,
+        counterpartyId: cp.counterpartyId,
         classificationMethod: finalMethod,
         classificationConfidence: confidence,
         source: "sms",
@@ -199,6 +206,73 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
       reason: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+type CounterpartyResolution = {
+  counterpartyId: number | null;
+  inheritedCategory: string | null;
+};
+
+/**
+ * For kinds that carry a counterparty key (qr_payment, bre_b_transfer):
+ * - qr_payment: SELECT only. If no counterparty exists, return nulls — user
+ *   will register it manually from the UI the first time.
+ * - bre_b_transfer: UPSERT by key, pre-filling display_name from the SMS
+ *   recipient. Always returns a counterparty id; inheritedCategory only set
+ *   if the counterparty already had a default_category_slug.
+ *
+ * Hit counter is bumped on every match/insert. Uses ON CONFLICT for race-safe
+ * auto-create under concurrent SMS bursts.
+ */
+export async function resolveCounterparty(
+  parsed: ParsedSms,
+  database: DB,
+): Promise<CounterpartyResolution> {
+  if (parsed.kind !== "qr_payment" && parsed.kind !== "bre_b_transfer") {
+    return { counterpartyId: null, inheritedCategory: null };
+  }
+
+  const key = parsed.toKey;
+
+  if (parsed.kind === "bre_b_transfer") {
+    const rows = await database.execute<{
+      id: number;
+      default_category_slug: string | null;
+    }>(sql`
+      INSERT INTO counterparties (key, display_name, type, hit_count, last_hit_at)
+      VALUES (${key}, ${parsed.recipientName}, 'unknown', 1, now())
+      ON CONFLICT (key) DO UPDATE
+        SET hit_count = counterparties.hit_count + 1,
+            last_hit_at = now(),
+            updated_at = now()
+      RETURNING id, default_category_slug
+    `);
+    const row = rows[0];
+    return {
+      counterpartyId: row.id,
+      inheritedCategory: row.default_category_slug,
+    };
+  }
+
+  // qr_payment — SELECT only, no auto-create
+  const existing = await database.execute<{
+    id: number;
+    default_category_slug: string | null;
+  }>(sql`
+    SELECT id, default_category_slug FROM counterparties WHERE key = ${key}
+  `);
+  if (existing.length === 0) {
+    return { counterpartyId: null, inheritedCategory: null };
+  }
+  await database.execute(sql`
+    UPDATE counterparties
+    SET hit_count = hit_count + 1, last_hit_at = now()
+    WHERE id = ${existing[0].id}
+  `);
+  return {
+    counterpartyId: existing[0].id,
+    inheritedCategory: existing[0].default_category_slug,
+  };
 }
 
 function resolveAccountForParsed(
