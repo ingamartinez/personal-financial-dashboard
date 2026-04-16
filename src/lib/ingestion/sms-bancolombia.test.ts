@@ -178,6 +178,85 @@ describe("parseSmsBancolombia — purchase (variant B: 'Esta compra esta asociad
   });
 });
 
+describe("parseSmsBancolombia — purchase (variant C: reversed 'el TIME a las DATE')", () => {
+  it("parses USD credit purchase with reversed time/date (the #77 bug fix)", () => {
+    const body =
+      "Bancolombia: Compraste USD10,00 en GITHUB, INC., el 14:02 a las 05/12/2025. Esta compra esta asociada a T.Cred *7291. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("purchase");
+    if (r.kind !== "purchase") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(1000));
+    expect(r.currency).toBe("USD");
+    expect(r.merchant).toBe("GITHUB, INC.");
+    expect(r.cardLast4).toBe("7291");
+    expect(r.cardKind).toBe("credit");
+    expect(r.occurredOn).toBe("2025-12-05");
+    expect(r.occurredTime).toBe("14:02");
+  });
+
+  it("parses additional reversed-order samples from the historical dump", () => {
+    const samples = [
+      {
+        body:
+          "Bancolombia: Compraste COP65.000,00 en FC* FREEPIK PREMIUM, el 20:15 a las 07/12/2025. Esta compra esta asociada a T.Cred *2575. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
+        cents: BigInt(6500000),
+        currency: "COP",
+        merchant: "FC* FREEPIK PREMIUM",
+        last4: "2575",
+        date: "2025-12-07",
+        time: "20:15",
+      },
+      {
+        body:
+          "Bancolombia: Compraste USD149,00 en WWW.SPLASHTOP.COM, el 10:46 a las 17/02/2026. Esta compra esta asociada a T.Cred *7291. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
+        cents: BigInt(14900),
+        currency: "USD",
+        merchant: "WWW.SPLASHTOP.COM",
+        last4: "7291",
+        date: "2026-02-17",
+        time: "10:46",
+      },
+      {
+        body:
+          "Bancolombia: Compraste COP91.550,00 en RAPPI COLOMBIA*DL, el 13:44 a las 28/12/2025. Esta compra esta asociada a T.Cred *2575. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
+        cents: BigInt(9155000),
+        currency: "COP",
+        merchant: "RAPPI COLOMBIA*DL",
+        last4: "2575",
+        date: "2025-12-28",
+        time: "13:44",
+      },
+    ] as const;
+
+    for (const s of samples) {
+      const r = parseSmsBancolombia(s.body);
+      expect(r.kind).toBe("purchase");
+      if (r.kind !== "purchase") throw new Error("type guard");
+      expect(r.amountCents).toBe(s.cents);
+      expect(r.currency).toBe(s.currency);
+      expect(r.merchant).toBe(s.merchant);
+      expect(r.cardLast4).toBe(s.last4);
+      expect(r.cardKind).toBe("credit");
+      expect(r.occurredOn).toBe(s.date);
+      expect(r.occurredTime).toBe(s.time);
+    }
+  });
+
+  it("parses debit purchase with reversed time/date", () => {
+    const body =
+      "Bancolombia: Compraste $35.000,00 en TIENDA D1, el 09:12 a las 03/02/2026. Esta compra esta asociada a T.Deb *1802. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("purchase");
+    if (r.kind !== "purchase") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(3500000));
+    expect(r.merchant).toBe("TIENDA D1");
+    expect(r.cardLast4).toBe("1802");
+    expect(r.cardKind).toBe("debit");
+    expect(r.occurredOn).toBe("2026-02-03");
+    expect(r.occurredTime).toBe("09:12");
+  });
+});
+
 describe("parseSmsBancolombia — transfer sent", () => {
   it("parses standard transfer (US amount format, no QR)", () => {
     const body =
