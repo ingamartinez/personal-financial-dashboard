@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, ingestionLogs, transactions } from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
+import { emit } from "@/lib/events/bus";
 import {
   parseSmsBancolombia,
   resolveAccountFromLast4,
@@ -185,6 +186,12 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
       .returning({ id: transactions.id });
 
     if (result.length === 0) return { status: "duplicated" };
+    emit({
+      type: "transaction:created",
+      id: result[0].id,
+      source: "sms",
+      timestamp: Date.now(),
+    });
     return { status: "inserted", txId: result[0].id };
   } catch (err) {
     return {

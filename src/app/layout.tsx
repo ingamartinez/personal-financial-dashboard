@@ -6,6 +6,7 @@ import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 import { QuickExpenseFab } from "@/components/transactions/quick-expense-fab";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/providers/theme-provider";
+import { LiveRefresh } from "@/components/live-refresh";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -45,6 +46,7 @@ export default function RootLayout({
           <div className="flex flex-1 flex-col">{children}</div>
           <QuickExpenseFab />
           <Toaster />
+          <LiveRefresh />
         </ThemeProvider>
       </body>
     </html>

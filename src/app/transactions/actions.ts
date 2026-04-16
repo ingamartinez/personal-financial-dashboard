@@ -6,6 +6,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { accounts, categories, transactions } from "@/lib/db/schema";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
+import { emit } from "@/lib/events/bus";
 
 const updateSchema = z.object({
   txId: z.coerce.number().int().positive(),
@@ -68,23 +69,33 @@ export async function createManualExpense(input: {
   const cents = Math.round(parsed.amount * 100);
   const occurredAt = new Date(`${parsed.occurredOn}T12:00:00Z`);
 
-  await db.insert(transactions).values({
-    accountId: account.id,
-    occurredAt,
-    amountCents: BigInt(-cents),
-    currency: account.currency,
-    descriptionRaw: parsed.notes ?? "Manual expense",
-    descriptionClean: null,
-    merchant: null,
-    categorySlug: parsed.categorySlug,
-    classificationMethod: parsed.categorySlug ? "manual" : "unclassified",
-    classificationConfidence: parsed.categorySlug ? 100 : null,
-    source: "manual",
-    notes: parsed.notes,
-  });
+  const [inserted] = await db
+    .insert(transactions)
+    .values({
+      accountId: account.id,
+      occurredAt,
+      amountCents: BigInt(-cents),
+      currency: account.currency,
+      descriptionRaw: parsed.notes ?? "Manual expense",
+      descriptionClean: null,
+      merchant: null,
+      categorySlug: parsed.categorySlug,
+      classificationMethod: parsed.categorySlug ? "manual" : "unclassified",
+      classificationConfidence: parsed.categorySlug ? 100 : null,
+      source: "manual",
+      notes: parsed.notes,
+    })
+    .returning({ id: transactions.id });
 
   revalidatePath("/");
   revalidatePath("/transactions");
+
+  emit({
+    type: "transaction:created",
+    id: inserted.id,
+    source: "manual",
+    timestamp: Date.now(),
+  });
 }
 
 export async function runAiClassifier() {
