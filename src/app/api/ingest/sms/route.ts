@@ -215,14 +215,14 @@ type CounterpartyResolution = {
 
 /**
  * For kinds that carry a counterparty key (qr_payment, bre_b_transfer):
- * - qr_payment: SELECT only. If no counterparty exists, return nulls — user
- *   will register it manually from the UI the first time.
- * - bre_b_transfer: UPSERT by key, pre-filling display_name from the SMS
- *   recipient. Always returns a counterparty id; inheritedCategory only set
- *   if the counterparty already had a default_category_slug.
+ * always UPSERT by key so every tx gets a counterparty_id. This unifies
+ * retroactive propagation (plain FK join) and UI logic.
  *
- * Hit counter is bumped on every match/insert. Uses ON CONFLICT for race-safe
- * auto-create under concurrent SMS bursts.
+ * - bre_b_transfer: initial display_name = recipientName (from SMS).
+ * - qr_payment: initial display_name = key (placeholder; user renames in UI).
+ *
+ * ON CONFLICT preserves the existing display_name on subsequent hits, so
+ * user renames stick. Hit counter bumped on every match/insert.
  */
 export async function resolveCounterparty(
   parsed: ParsedSms,
@@ -233,45 +233,25 @@ export async function resolveCounterparty(
   }
 
   const key = parsed.toKey;
+  const initialDisplayName =
+    parsed.kind === "bre_b_transfer" ? parsed.recipientName : key;
 
-  if (parsed.kind === "bre_b_transfer") {
-    const rows = await database.execute<{
-      id: number;
-      default_category_slug: string | null;
-    }>(sql`
-      INSERT INTO counterparties (key, display_name, type, hit_count, last_hit_at)
-      VALUES (${key}, ${parsed.recipientName}, 'unknown', 1, now())
-      ON CONFLICT (key) DO UPDATE
-        SET hit_count = counterparties.hit_count + 1,
-            last_hit_at = now(),
-            updated_at = now()
-      RETURNING id, default_category_slug
-    `);
-    const row = rows[0];
-    return {
-      counterpartyId: row.id,
-      inheritedCategory: row.default_category_slug,
-    };
-  }
-
-  // qr_payment — SELECT only, no auto-create
-  const existing = await database.execute<{
+  const rows = await database.execute<{
     id: number;
     default_category_slug: string | null;
   }>(sql`
-    SELECT id, default_category_slug FROM counterparties WHERE key = ${key}
+    INSERT INTO counterparties (key, display_name, type, hit_count, last_hit_at)
+    VALUES (${key}, ${initialDisplayName}, 'unknown', 1, now())
+    ON CONFLICT (key) DO UPDATE
+      SET hit_count = counterparties.hit_count + 1,
+          last_hit_at = now(),
+          updated_at = now()
+    RETURNING id, default_category_slug
   `);
-  if (existing.length === 0) {
-    return { counterpartyId: null, inheritedCategory: null };
-  }
-  await database.execute(sql`
-    UPDATE counterparties
-    SET hit_count = hit_count + 1, last_hit_at = now()
-    WHERE id = ${existing[0].id}
-  `);
+  const row = rows[0];
   return {
-    counterpartyId: existing[0].id,
-    inheritedCategory: existing[0].default_category_slug,
+    counterpartyId: row.id,
+    inheritedCategory: row.default_category_slug,
   };
 }
 

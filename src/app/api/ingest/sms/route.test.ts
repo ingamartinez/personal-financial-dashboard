@@ -19,12 +19,16 @@ function makeRequest(init: {
   });
 }
 
+// Scoped to keys this file creates via SMS ingest, so parallel test files
+// touching `counterparties` don't stomp on each other.
 async function cleanup() {
   await db.execute(sql`
     DELETE FROM transactions WHERE external_id LIKE ${TEST_EXTERNAL_ID_PREFIX + "%"}
   `);
   await db.execute(sql`DELETE FROM ingestion_logs WHERE source = 'sms'`);
-  await db.execute(sql`DELETE FROM counterparties`);
+  await db.execute(sql`
+    DELETE FROM counterparties WHERE key IN ('0091498581', '3046262677')
+  `);
 }
 
 function jsonBody(payload: Record<string, unknown>): string {
@@ -513,7 +517,7 @@ describe("POST /api/ingest/sms", () => {
     "Bancolombia: ALEJANDRO, transferiste $50,000.00 a la llave 3046262677 desde tu cuenta *6126 a MARIA PAZ TORRES CARRILLO el 01/04/26 a las 13:22. Con Bre-b es de una y gratis. Dudas al 018000912345.";
   const BREB_KEY = "3046262677";
 
-  it("QR with new key does NOT auto-create counterparty; tx unclassified", async () => {
+  it("QR with new key auto-creates placeholder counterparty (key as display_name)", async () => {
     const res = await POST(
       makeRequest({
         body: jsonBody({ body: QR_BODY }),
@@ -523,6 +527,21 @@ describe("POST /api/ingest/sms", () => {
     const json = (await res.json()) as { status: string; txId?: number };
     expect(json.status).toBe("inserted");
 
+    const cpRows = await db.execute<{
+      display_name: string;
+      type: string;
+      hit_count: number;
+      default_category_slug: string | null;
+    }>(sql`
+      SELECT display_name, type, hit_count, default_category_slug
+      FROM counterparties WHERE key = ${QR_KEY}
+    `);
+    expect(cpRows).toHaveLength(1);
+    expect(cpRows[0].display_name).toBe(QR_KEY);
+    expect(cpRows[0].type).toBe("unknown");
+    expect(cpRows[0].hit_count).toBe(1);
+    expect(cpRows[0].default_category_slug).toBeNull();
+
     const txRows = await db.execute<{
       counterparty_id: number | null;
       category_slug: string | null;
@@ -531,14 +550,9 @@ describe("POST /api/ingest/sms", () => {
       SELECT counterparty_id, category_slug, classification_method
       FROM transactions WHERE id = ${json.txId!}
     `);
-    expect(txRows[0].counterparty_id).toBeNull();
+    expect(txRows[0].counterparty_id).not.toBeNull();
     expect(txRows[0].category_slug).toBeNull();
     expect(txRows[0].classification_method).toBe("unclassified");
-
-    const cpRows = await db.execute<{ c: number }>(sql`
-      SELECT COUNT(*)::int AS c FROM counterparties WHERE key = ${QR_KEY}
-    `);
-    expect(cpRows[0].c).toBe(0);
   });
 
   it("QR with existing counterparty (no default category) links but stays unclassified", async () => {

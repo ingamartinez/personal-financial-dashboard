@@ -1,10 +1,15 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { accounts, categories, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  counterparties,
+  transactions,
+} from "@/lib/db/schema";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { emit } from "@/lib/events/bus";
 
@@ -103,4 +108,85 @@ export async function runAiClassifier() {
   revalidatePath("/");
   revalidatePath("/transactions");
   return result;
+}
+
+const counterpartyTypeSchema = z.enum(["person", "merchant", "unknown"]);
+
+const updateCounterpartySchema = z.object({
+  id: z.coerce.number().int().positive(),
+  displayName: z.string().trim().min(1).max(120),
+  type: counterpartyTypeSchema,
+  defaultCategorySlug: z.string().min(1).max(60).nullable(),
+  notes: z.string().max(500).nullable(),
+});
+
+export type UpdateCounterpartyInput = z.input<typeof updateCounterpartySchema>;
+export type UpdateCounterpartyResult = {
+  propagatedCount: number;
+};
+
+/**
+ * Update a counterparty (rename, set type, set default category, notes).
+ *
+ * When defaultCategorySlug is set, propagates to all LINKED transactions that
+ * are still unclassified (category_slug IS NULL). Manually-classified tx are
+ * preserved — user intent wins over counterparty defaults.
+ *
+ * Returns the number of transactions whose category was updated by this call,
+ * for user feedback in the UI toast.
+ */
+export async function updateCounterparty(
+  input: UpdateCounterpartyInput,
+): Promise<UpdateCounterpartyResult> {
+  const parsed = updateCounterpartySchema.parse(input);
+
+  if (parsed.defaultCategorySlug) {
+    const [cat] = await db
+      .select({ slug: categories.slug })
+      .from(categories)
+      .where(eq(categories.slug, parsed.defaultCategorySlug))
+      .limit(1);
+    if (!cat) throw new Error("Category not found");
+  }
+
+  const propagatedCount = await db.transaction(async (trx) => {
+    await trx
+      .update(counterparties)
+      .set({
+        displayName: parsed.displayName,
+        type: parsed.type,
+        defaultCategorySlug: parsed.defaultCategorySlug,
+        notes: parsed.notes,
+        updatedAt: new Date(),
+      })
+      .where(eq(counterparties.id, parsed.id));
+
+    if (!parsed.defaultCategorySlug) return 0;
+
+    const updated = await trx.execute<{ id: number }>(sql`
+      UPDATE transactions SET
+        category_slug = ${parsed.defaultCategorySlug},
+        classification_method = 'rule'::classification_method,
+        classification_confidence = 100,
+        updated_at = now()
+      WHERE counterparty_id = ${parsed.id}
+        AND category_slug IS NULL
+      RETURNING id
+    `);
+    return updated.length;
+  });
+
+  if (propagatedCount > 0) {
+    emit({
+      type: "transaction:bulk-updated",
+      count: propagatedCount,
+      reason: "counterparty-updated",
+      timestamp: Date.now(),
+    });
+  }
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+
+  return { propagatedCount };
 }
