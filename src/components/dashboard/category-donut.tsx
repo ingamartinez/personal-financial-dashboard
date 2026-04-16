@@ -1,6 +1,6 @@
 "use client";
 
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { Cell, Pie, PieChart, Tooltip } from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCop } from "@/lib/money";
 
@@ -40,31 +40,29 @@ export function CategoryDonut({
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={slices}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={55}
-                    outerRadius={95}
-                    paddingAngle={2}
-                  >
-                    {slices.map((s, i) => (
-                      <Cell
-                        key={s.slug}
-                        fill={s.color ?? PALETTE[i % PALETTE.length]}
-                      />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    formatter={(value) =>
-                      formatCop(BigInt(Math.round(Number(value) || 0)))
-                    }
-                  />
-                </PieChart>
-              </ResponsiveContainer>
+            <div className="flex h-64 items-center justify-center">
+              <PieChart width={210} height={210}>
+                <Pie
+                  data={slices}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={55}
+                  outerRadius={95}
+                  paddingAngle={2}
+                >
+                  {slices.map((s, i) => (
+                    <Cell
+                      key={s.slug}
+                      fill={s.color ?? PALETTE[i % PALETTE.length]}
+                    />
+                  ))}
+                </Pie>
+                <Tooltip
+                  formatter={(value) =>
+                    formatCop(BigInt(Math.round(Number(value) || 0)))
+                  }
+                />
+              </PieChart>
             </div>
             <ul className="flex flex-col gap-1.5 text-sm">
               {slices.slice(0, 8).map((s, i) => {
