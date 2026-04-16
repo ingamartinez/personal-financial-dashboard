@@ -256,6 +256,42 @@ describe("POST /api/ingest/sms", () => {
     expect(rows[0].merchant).toBe("ESTEBAN LEONARDO SARMIENTO GOMEZ");
   });
 
+  it("inserts an atm_withdrawal as expense from the savings linked to the debit card", async () => {
+    const body =
+      "Bancolombia: Retiraste $100.000,00 en 43AVENIDA de tu T.Deb **1802 el 19/02/2026 a las 16:36. Si tienes dudas, llamanos al 6045109095. Estamos cerca";
+    const res = await POST(
+      makeRequest({
+        body: jsonBody({ body }),
+        headers: authedHeaders(),
+      }),
+    );
+    const json = (await res.json()) as { status: string; txId?: number };
+    expect(json.status).toBe("inserted");
+
+    const rows = await db.execute<{
+      amount_cents: string;
+      merchant: string | null;
+      account_id: number;
+      category_slug: string | null;
+      classification_method: string;
+      description_raw: string;
+    }>(sql`
+      SELECT amount_cents, merchant, account_id, category_slug, classification_method, description_raw
+      FROM transactions WHERE id = ${json.txId!}
+    `);
+    expect(BigInt(rows[0].amount_cents)).toBe(BigInt(-10000000));
+    expect(rows[0].merchant).toBeNull();
+    expect(rows[0].category_slug).toBeNull();
+    expect(rows[0].classification_method).toBe("unclassified");
+    expect(rows[0].description_raw).toBe("Retiro ATM 43AVENIDA");
+
+    const accs = await db.execute<{ name: string; currency: string }>(sql`
+      SELECT name, currency FROM accounts WHERE id = ${rows[0].account_id}
+    `);
+    expect(accs[0].name).toBe("Bancolombia Ahorros");
+    expect(accs[0].currency).toBe("COP");
+  });
+
   it("inserts a provider_payment_sent (PSE) as expense from *6126", async () => {
     const body =
       "Bancolombia: Pagaste $430,997.00 a EMPRESAS PUBLICAS DE MEDELLIN desde tu producto *6126 el 13/02/2026 10:39:06. ¿Dudas? Llamanos al 6045109095. Estamos cerca";

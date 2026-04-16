@@ -216,6 +216,7 @@ function resolveAccountForParsed(
     case "qr_payment":
     case "tc_payment":
     case "provider_payment_sent":
+    case "atm_withdrawal":
       return resolveAccountFromLast4(
         parsed.fromLast4,
         parsed.currency,
@@ -303,6 +304,14 @@ function buildTxFields(parsed: ParsedSms): {
         amountCents: -parsed.amountCents,
         descriptionRaw: `Pago a ${parsed.providerName}`,
         merchant: parsed.providerName,
+        categorySlug: null,
+        method: "unclassified",
+      };
+    case "atm_withdrawal":
+      return {
+        amountCents: -parsed.amountCents,
+        descriptionRaw: `Retiro ATM ${parsed.atmCode}`,
+        merchant: null,
         categorySlug: null,
         method: "unclassified",
       };

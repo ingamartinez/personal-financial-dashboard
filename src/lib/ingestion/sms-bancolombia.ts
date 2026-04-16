@@ -48,6 +48,11 @@ export type ParsedSms =
       kind: "provider_payment_sent";
       providerName: string;
       fromLast4: string;
+    })
+  | (ParsedSmsBase & {
+      kind: "atm_withdrawal";
+      atmCode: string;
+      fromLast4: string;
     });
 
 export type SkippedSms = {
@@ -263,6 +268,13 @@ const PROVIDER_PAYMENT = new RegExp(
 // Time has seconds (HH:MM:SS) — kept optional. We discard the seconds.
 const PROVIDER_PAYMENT_SENT = new RegExp(
   `Pagaste\\s+${AMOUNT_GROUP}\\s+a\\s+(.+?)\\s+desde\\s+tu\\s+producto\\s+\\*?(\\d{4,})\\s+el\\s+${DATE_GROUP}\\s+${TIME_GROUP}(?::\\d{2})?`,
+  "i",
+);
+
+// ATM withdrawal: "Retiraste AMOUNT en ATM_CODE de tu T.Deb *NNNN el DATE a las TIME"
+// ATM code is short, alphanumeric, with no spaces (e.g. "43AVENIDA", "PQ_ESTRELL1").
+const ATM_WITHDRAWAL = new RegExp(
+  `Retiraste\\s+${AMOUNT_GROUP}\\s+en\\s+(\\S+)\\s+de\\s+tu\\s+T\\.Deb\\s+\\*+(\\d{4})\\s+el\\s+${DATE_TIME}`,
   "i",
 );
 
@@ -575,6 +587,36 @@ export function parseSmsBancolombia(body: string): ParseResult {
           "provider-payment-sent",
           fromLast4,
           providerName,
+          occurredOn,
+          occurredTime,
+          cents,
+        ]),
+        raw,
+      };
+    }
+  }
+
+  // ATM withdrawal
+  {
+    const m = raw.match(ATM_WITHDRAWAL);
+    if (m) {
+      const { cents, currency } = parseSmsAmount(m[1]);
+      const atmCode = m[2];
+      const fromLast4 = m[3];
+      const occurredOn = parseSmsDate(m[4]);
+      const occurredTime = m[5];
+      return {
+        kind: "atm_withdrawal",
+        amountCents: cents,
+        currency,
+        atmCode,
+        fromLast4,
+        occurredOn,
+        occurredTime,
+        externalId: hashId([
+          "atm-withdrawal",
+          fromLast4,
+          atmCode,
           occurredOn,
           occurredTime,
           cents,
