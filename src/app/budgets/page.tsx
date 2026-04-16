@@ -90,8 +90,8 @@ export default async function BudgetsPage({
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Budgets</h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="text-h1">Budgets</h1>
+        <p className="text-body text-muted-foreground">
           Monthly spending caps per category. Each month starts fresh — no
           rollover. Progress tracks expenses (negative transactions) in the
           selected month.

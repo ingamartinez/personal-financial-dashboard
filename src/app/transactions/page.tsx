@@ -77,8 +77,8 @@ export default async function TransactionsPage({
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-6">
       <header className="flex items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Transactions</h1>
-          <p className="text-sm text-muted-foreground">
+          <h1 className="text-h1">Transactions</h1>
+          <p className="text-body text-muted-foreground">
             {total.toLocaleString()} total · {unclassified.toLocaleString()} unclassified · showing up to {PAGE_SIZE} per page
           </p>
         </div>

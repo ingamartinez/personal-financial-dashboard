@@ -128,3 +128,30 @@
     @apply font-sans;
   }
 }
+
+@layer components {
+  .text-display {
+    @apply text-3xl font-semibold tracking-tight leading-tight;
+  }
+  .text-h1 {
+    @apply text-2xl font-semibold tracking-tight leading-tight;
+  }
+  .text-h2 {
+    @apply text-lg font-semibold leading-snug;
+  }
+  .text-h3 {
+    @apply text-base font-semibold leading-snug;
+  }
+  .text-body {
+    @apply text-sm leading-normal;
+  }
+  .text-caption {
+    @apply text-xs text-muted-foreground leading-normal;
+  }
+  .text-money {
+    @apply tabular-nums font-medium;
+  }
+  .text-money-lg {
+    @apply text-3xl font-semibold tabular-nums tracking-tight;
+  }
+}

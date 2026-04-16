@@ -50,10 +50,8 @@ export default async function RecurringPage() {
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Recurring forecast
-        </h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="text-h1">Recurring forecast</h1>
+        <p className="text-body text-muted-foreground">
           Declare expected monthly items (rent, loan, subscriptions). These are
           FORECASTS — not real transactions. They appear as &ldquo;upcoming&rdquo;
           on the dashboard and auto-match when the real tx lands.
