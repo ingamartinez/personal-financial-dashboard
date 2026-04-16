@@ -1,4 +1,6 @@
+import { ReceiptTextIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Table,
   TableBody,
@@ -56,8 +58,12 @@ export function TransactionTable({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="rounded-md border bg-card p-8 text-center text-sm text-muted-foreground">
-        No transactions match the current filters.
+      <div className="rounded-md border bg-card">
+        <EmptyState
+          icon={<ReceiptTextIcon />}
+          title="No transactions"
+          description="Nothing matches the current filters. Adjust the date range or clear a filter to see more."
+        />
       </div>
     );
   }

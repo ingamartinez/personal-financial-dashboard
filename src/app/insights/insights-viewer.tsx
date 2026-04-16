@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { formatCop } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { generateInsight } from "./actions";
@@ -154,14 +155,17 @@ export function InsightsViewer({
         </Card>
       ) : (
         <Card>
-          <CardContent className="flex flex-col items-center gap-2 py-12 text-center text-sm text-muted-foreground">
-            <SparklesIcon className="size-8 text-muted-foreground/40" />
-            <p>No hay reporte para {formatMonth(ym)}.</p>
-            <p>
-              Generar un reporte llama a Claude Sonnet con el resumen del mes.
-              Se cachea por 24h.
-            </p>
-          </CardContent>
+          <EmptyState
+            icon={<SparklesIcon />}
+            title={`No hay reporte para ${formatMonth(ym)}`}
+            description="Generar un reporte llama a Claude Sonnet con el resumen del mes. Se cachea por 24h."
+            action={
+              <Button onClick={onGenerate} disabled={pending}>
+                <SparklesIcon className="size-4" />
+                {pending ? "Generando…" : "Generar reporte"}
+              </Button>
+            }
+          />
         </Card>
       )}
     </div>
