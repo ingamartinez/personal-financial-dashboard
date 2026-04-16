@@ -1,6 +1,11 @@
 import { and, asc, desc, eq, ilike, lt, lte, gte, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, categories, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  counterparties,
+  transactions,
+} from "@/lib/db/schema";
 
 export const PAGE_SIZE = 50;
 
@@ -26,6 +31,14 @@ export type TxRow = {
   source: "apple_pay" | "sms" | "ocr" | "csv" | "recurring" | "manual";
   accountId: number;
   accountName: string;
+  counterparty: {
+    id: number;
+    key: string;
+    displayName: string;
+    type: "person" | "merchant" | "unknown";
+    defaultCategorySlug: string | null;
+    notes: string | null;
+  } | null;
 };
 
 export type TxListResult = {
@@ -97,9 +110,16 @@ export async function listTransactions(filters: TxFilters): Promise<TxListResult
       source: transactions.source,
       accountId: transactions.accountId,
       accountName: accounts.name,
+      cpId: counterparties.id,
+      cpKey: counterparties.key,
+      cpDisplayName: counterparties.displayName,
+      cpType: counterparties.type,
+      cpDefaultCategorySlug: counterparties.defaultCategorySlug,
+      cpNotes: counterparties.notes,
     })
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
+    .leftJoin(counterparties, eq(counterparties.id, transactions.counterpartyId))
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(transactions.occurredAt), desc(transactions.id))
     .limit(PAGE_SIZE + 1);
@@ -109,7 +129,32 @@ export async function listTransactions(filters: TxFilters): Promise<TxListResult
   const last = page.at(-1);
   const nextCursor = hasMore && last ? encodeCursor(last.occurredAt, last.id) : null;
 
-  return { rows: page, nextCursor };
+  const shaped: TxRow[] = page.map((r) => ({
+    id: r.id,
+    occurredAt: r.occurredAt,
+    amountCents: r.amountCents,
+    currency: r.currency,
+    descriptionRaw: r.descriptionRaw,
+    descriptionClean: r.descriptionClean,
+    merchant: r.merchant,
+    categorySlug: r.categorySlug,
+    classificationMethod: r.classificationMethod,
+    source: r.source,
+    accountId: r.accountId,
+    accountName: r.accountName,
+    counterparty: r.cpId
+      ? {
+          id: r.cpId,
+          key: r.cpKey!,
+          displayName: r.cpDisplayName!,
+          type: r.cpType!,
+          defaultCategorySlug: r.cpDefaultCategorySlug,
+          notes: r.cpNotes,
+        }
+      : null,
+  }));
+
+  return { rows: shaped, nextCursor };
 }
 
 export async function listAccounts() {

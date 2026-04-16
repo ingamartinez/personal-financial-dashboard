@@ -7,6 +7,7 @@ import type { AppEvent } from "@/lib/events/bus";
 const DEFAULT_REFRESH_ON: AppEvent["type"][] = [
   "transaction:created",
   "transaction:updated",
+  "transaction:bulk-updated",
   "budget:updated",
 ];
 

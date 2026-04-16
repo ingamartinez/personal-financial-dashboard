@@ -1,4 +1,4 @@
-import { ReceiptTextIcon } from "lucide-react";
+import { ReceiptTextIcon, UserIcon, BuildingIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/table";
 import type { TxRow } from "@/lib/transactions/queries";
 import { CategoryCell, type CategoryOption } from "./category-cell";
+import { CounterpartyDialog } from "./counterparty-dialog";
 
 const sourceLabel: Record<TxRow["source"], string> = {
   apple_pay: "Apple Pay",
@@ -30,6 +31,34 @@ const methodVariant: Record<
   manual: "outline",
   unclassified: "destructive",
 };
+
+function CounterpartyTypeBadge({
+  type,
+}: {
+  type: NonNullable<TxRow["counterparty"]>["type"];
+}) {
+  if (type === "person") {
+    return (
+      <span
+        className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-muted-foreground"
+        title="Person"
+      >
+        <UserIcon className="size-2.5" />
+      </span>
+    );
+  }
+  if (type === "merchant") {
+    return (
+      <span
+        className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-muted-foreground"
+        title="Merchant"
+      >
+        <BuildingIcon className="size-2.5" />
+      </span>
+    );
+  }
+  return null;
+}
 
 function formatAmount(cents: bigint, currency: TxRow["currency"]) {
   const n = Number(cents) / 100;
@@ -91,10 +120,26 @@ export function TransactionTable({
                   {formatDate(tx.occurredAt)}
                 </TableCell>
                 <TableCell>
-                  <div className="font-medium">
-                    {tx.merchant ?? tx.descriptionClean ?? tx.descriptionRaw}
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium">
+                      {tx.counterparty?.displayName ??
+                        tx.merchant ??
+                        tx.descriptionClean ??
+                        tx.descriptionRaw}
+                    </span>
+                    {tx.counterparty ? (
+                      <CounterpartyTypeBadge type={tx.counterparty.type} />
+                    ) : null}
+                    {tx.counterparty ? (
+                      <CounterpartyDialog
+                        counterparty={tx.counterparty}
+                        categories={categories}
+                      />
+                    ) : null}
                   </div>
-                  {tx.merchant || tx.descriptionClean ? (
+                  {tx.counterparty ||
+                  tx.merchant ||
+                  tx.descriptionClean ? (
                     <div className="text-xs text-muted-foreground line-clamp-1">
                       {tx.descriptionRaw}
                     </div>

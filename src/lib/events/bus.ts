@@ -15,6 +15,12 @@ export type AppEvent =
       source: TransactionSource;
       timestamp: number;
     }
+  | {
+      type: "transaction:bulk-updated";
+      count: number;
+      reason: "counterparty-updated" | "counterparty-created";
+      timestamp: number;
+    }
   | { type: "budget:updated"; timestamp: number };
 
 // globalThis singleton survives Turbopack HMR, which otherwise re-evaluates
