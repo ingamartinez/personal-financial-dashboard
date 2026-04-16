@@ -15,7 +15,8 @@ Dashboard financiero personal para Colombia con clasificación AI, presupuestos 
 
 ```bash
 bun install
-# Crear .env.local con las variables de abajo (ver "Environment variables")
+cp .env.example .env.local
+# Editar .env.local: ANTHROPIC_API_KEY y INGEST_WEBHOOK_TOKEN (ver abajo)
 bun run db:push        # crea las tablas
 bun run db:seed        # cuentas, categorías y reglas colombianas
 bun run dev            # arranca en http://localhost:3100
@@ -23,26 +24,13 @@ bun run dev            # arranca en http://localhost:3100
 
 ## Environment variables
 
-`.env.local` no se commitea. Plantilla mínima para arrancar:
+`.env.example` tiene la plantilla. `.env.local` nunca se commitea.
 
-```bash
-# PostgreSQL — peer auth via Unix socket es el default en Linux.
-# Dejalas en blanco para usar host=/var/run/postgresql, database=findash, user=$USER.
-PGHOST=/var/run/postgresql
-PGDATABASE=findash
-PGUSER=
-PGPORT=
-PGPASSWORD=
-
-# Claude API — requerido para clasificación AI, insights y OCR
-# Obtené una key en https://console.anthropic.com/
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Ingestion webhook token — usado por /api/ingest/* (Apple Pay Shortcut, SMS, etc.)
-# Se envía como: Authorization: Bearer <token>
-# Generá un string largo random (ej: `openssl rand -hex 32`).
-INGEST_WEBHOOK_TOKEN=change-me-to-a-long-random-string
-```
+| Variable | Qué es | Cómo obtenerla |
+|---|---|---|
+| `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPORT`, `PGPASSWORD` | Conexión a PostgreSQL | Dejar en blanco usa defaults: `/var/run/postgresql` + `findash` + `$USER` (peer auth en Linux). |
+| `ANTHROPIC_API_KEY` | Clasificación AI, insights y OCR con Claude | https://console.anthropic.com/ |
+| `INGEST_WEBHOOK_TOKEN` | Bearer token para `/api/ingest/*` (iOS Shortcut Apple Pay, SMS, etc.) | Secreto compartido fijo entre server e iOS Shortcut. Generar una vez: `openssl rand -hex 32`. |
 
 ## Comandos DB
 
