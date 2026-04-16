@@ -492,6 +492,45 @@ describe("parseSmsBancolombia — atm_withdrawal", () => {
   });
 });
 
+describe("parseSmsBancolombia — tc_credit_received (third-party abono to my TC)", () => {
+  it("parses abono to TC *2575", () => {
+    const body =
+      "Bancolombia: AIDA MALDONADO hizo un abono por $2,125,092 a tu tarjeta de credito terminada en **2575, el 03/12/2025 13:40. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("tc_credit_received");
+    if (r.kind !== "tc_credit_received") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(212509200));
+    expect(r.currency).toBe("COP");
+    expect(r.senderName).toBe("AIDA MALDONADO");
+    expect(r.toCardLast4).toBe("2575");
+    expect(r.occurredOn).toBe("2025-12-03");
+    expect(r.occurredTime).toBe("13:40");
+    expect(r.externalId).toMatch(/^bcol-sms:[a-f0-9]{24}$/);
+  });
+
+  it("parses abono to a different TC (*7291) by the same sender", () => {
+    const body =
+      "Bancolombia: AIDA MALDONADO hizo un abono por $446,666 a tu tarjeta de credito terminada en **7291, el 03/12/2025 13:42. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("tc_credit_received");
+    if (r.kind !== "tc_credit_received") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(44666600));
+    expect(r.senderName).toBe("AIDA MALDONADO");
+    expect(r.toCardLast4).toBe("7291");
+  });
+
+  it("parses abono with multi-word sender", () => {
+    const body =
+      "Bancolombia: JOSE LUIS PEREZ GARCIA hizo un abono por $352,712 a tu tarjeta de credito terminada en **2575, el 13/12/2025 14:24. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("tc_credit_received");
+    if (r.kind !== "tc_credit_received") throw new Error("type guard");
+    expect(r.senderName).toBe("JOSE LUIS PEREZ GARCIA");
+    expect(r.toCardLast4).toBe("2575");
+    expect(r.amountCents).toBe(BigInt(35271200));
+  });
+});
+
 describe("parseSmsBancolombia — provider payment", () => {
   it("parses provider payment to Ahorros", () => {
     const body =
