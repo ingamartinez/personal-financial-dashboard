@@ -91,7 +91,7 @@ export function InsightsViewer({
           <Button variant="outline" size="sm" onClick={() => goMonth(-1)} aria-label="Previous">
             <ChevronLeftIcon className="size-4" />
           </Button>
-          <div className="px-2 text-sm font-medium capitalize tabular-nums">
+          <div className="px-2 text-sm font-medium capitalize">
             {formatMonth(ym)}
           </div>
           <Button variant="outline" size="sm" onClick={() => goMonth(1)} aria-label="Next">
