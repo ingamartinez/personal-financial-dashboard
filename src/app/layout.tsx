@@ -5,6 +5,7 @@ import { Header } from "@/components/layout/header";
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 import { QuickExpenseFab } from "@/components/transactions/quick-expense-fab";
 import { Toaster } from "@/components/ui/sonner";
+import { ThemeProvider } from "@/components/providers/theme-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -29,14 +30,22 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <Header />
-        <Breadcrumbs />
-        <div className="flex flex-1 flex-col">{children}</div>
-        <QuickExpenseFab />
-        <Toaster />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <Header />
+          <Breadcrumbs />
+          <div className="flex flex-1 flex-col">{children}</div>
+          <QuickExpenseFab />
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   );
