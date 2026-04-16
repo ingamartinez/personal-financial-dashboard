@@ -58,6 +58,12 @@ export type ParsedSms =
       kind: "tc_credit_received";
       senderName: string;
       toCardLast4: string;
+    })
+  | (ParsedSmsBase & {
+      kind: "bre_b_transfer";
+      fromLast4: string;
+      toKey: string;
+      recipientName: string;
     });
 
 export type SkippedSms = {
@@ -291,6 +297,16 @@ const TC_CREDIT_RECEIVED = new RegExp(
   "i",
 );
 
+// Bre-b transfer (instant interbank with named recipient + key):
+// "Bancolombia: <USER>, transferiste AMOUNT a la llave NNNN desde tu cuenta *NNNN
+//  a <RECIPIENT_NAME> el DATE a las TIME. Con Bre-b es de una y gratis..."
+// Distinct from TRANSFER_SENT: the "desde tu cuenta" appears AFTER "a la llave",
+// not immediately after AMOUNT, so TRANSFER_SENT will not collide.
+const BRE_B_TRANSFER = new RegExp(
+  `transferiste\\s+${AMOUNT_GROUP}\\s+a\\s+la\\s+llave\\s+(\\d+)\\s+desde\\s+tu\\s+cuenta\\s+\\*?(\\d{4,})\\s+a\\s+(.+?)\\s+el\\s+${DATE_TIME}`,
+  "i",
+);
+
 // -----------------------------------------------------------------------------
 // Main parser
 // -----------------------------------------------------------------------------
@@ -423,6 +439,38 @@ export function parseSmsBancolombia(body: string): ParseResult {
           "transfer-sent",
           fromLast4,
           toAccount,
+          occurredOn,
+          occurredTime,
+          cents,
+        ]),
+        raw,
+      };
+    }
+  }
+
+  // Bre-b transfer
+  {
+    const m = raw.match(BRE_B_TRANSFER);
+    if (m) {
+      const { cents, currency } = parseSmsAmount(m[1]);
+      const toKey = m[2];
+      const fromLast4 = m[3].slice(-4);
+      const recipientName = m[4].trim();
+      const occurredOn = parseSmsDate(m[5]);
+      const occurredTime = m[6];
+      return {
+        kind: "bre_b_transfer",
+        amountCents: cents,
+        currency,
+        fromLast4,
+        toKey,
+        recipientName,
+        occurredOn,
+        occurredTime,
+        externalId: hashId([
+          "bre-b-transfer",
+          fromLast4,
+          toKey,
           occurredOn,
           occurredTime,
           cents,

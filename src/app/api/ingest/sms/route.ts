@@ -217,6 +217,7 @@ function resolveAccountForParsed(
     case "tc_payment":
     case "provider_payment_sent":
     case "atm_withdrawal":
+    case "bre_b_transfer":
       return resolveAccountFromLast4(
         parsed.fromLast4,
         parsed.currency,
@@ -328,6 +329,14 @@ function buildTxFields(parsed: ParsedSms): {
         merchant: parsed.senderName,
         categorySlug: "pago-tc",
         method: "manual",
+      };
+    case "bre_b_transfer":
+      return {
+        amountCents: -parsed.amountCents,
+        descriptionRaw: `Transferencia Bre-b a ${parsed.recipientName}`,
+        merchant: parsed.recipientName,
+        categorySlug: null,
+        method: "unclassified",
       };
   }
 }
