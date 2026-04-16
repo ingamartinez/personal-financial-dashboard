@@ -4,6 +4,7 @@ import path from "node:path";
 const pages = [
   { name: "home", path: "/", hasDonut: true },
   { name: "transactions", path: "/transactions", hasDonut: false },
+  { name: "accounts", path: "/accounts", hasDonut: false },
   { name: "budgets", path: "/budgets", hasDonut: false },
   { name: "insights", path: "/insights", hasDonut: false },
   { name: "settings", path: "/settings", hasDonut: false },
