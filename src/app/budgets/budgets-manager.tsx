@@ -2,10 +2,11 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, PiggyBankIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Dialog,
   DialogContent,
@@ -132,10 +133,17 @@ export function BudgetsManager({
 
       {items.length === 0 ? (
         <Card>
-          <CardContent className="flex flex-col items-center gap-2 py-12 text-center text-sm text-muted-foreground">
-            <p>No budgets for {formatMonth(ym)}.</p>
-            <p>Set spending caps per category to track progress.</p>
-          </CardContent>
+          <EmptyState
+            icon={<PiggyBankIcon />}
+            title={`No budgets for ${formatMonth(ym)}`}
+            description="Set spending caps per category to track progress each month."
+            action={
+              <Button onClick={() => setEditor({ open: true, editing: null })}>
+                <PlusIcon className="size-4" />
+                New budget
+              </Button>
+            }
+          />
         </Card>
       ) : (
         <div className="grid gap-3">
