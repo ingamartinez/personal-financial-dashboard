@@ -10,6 +10,10 @@ export function LiveRefresh() {
         toast("Nueva transacción", {
           description: "Acaba de entrar un SMS de Bancolombia.",
           duration: 8_000,
+          style: {
+            background: "var(--muted)",
+            borderColor: "var(--border)",
+          },
         });
       }
     },
