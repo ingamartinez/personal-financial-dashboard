@@ -54,6 +54,8 @@ export function CategoryDonut({
                     <Cell
                       key={s.slug}
                       fill={s.color ?? PALETTE[i % PALETTE.length]}
+                      stroke="var(--card)"
+                      strokeWidth={2}
                     />
                   ))}
                 </Pie>

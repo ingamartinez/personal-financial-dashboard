@@ -19,6 +19,11 @@ for (const mode of modes) {
       }, mode);
       await page.goto(p.path);
       await page.waitForLoadState("networkidle");
+      const donutPath = page.locator(".recharts-pie-sector path").first();
+      await donutPath.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+      if (await donutPath.count()) {
+        await page.waitForTimeout(1_800);
+      }
       await page.screenshot({
         path: path.join("e2e/screenshots", `${mode}-${p.name}.png`),
         fullPage: true,
