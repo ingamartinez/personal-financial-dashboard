@@ -2,23 +2,17 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import type { AppEvent } from "@/lib/events/bus";
 
-type AppEventType =
-  | "transaction:created"
-  | "transaction:updated"
-  | "budget:updated";
-
-type WireEvent = { type: AppEventType };
-
-const DEFAULT_REFRESH_ON: AppEventType[] = [
+const DEFAULT_REFRESH_ON: AppEvent["type"][] = [
   "transaction:created",
   "transaction:updated",
   "budget:updated",
 ];
 
 export function useLiveEvents(options?: {
-  onEvent?: (type: AppEventType) => void;
-  refreshOn?: AppEventType[];
+  onEvent?: (event: AppEvent) => void;
+  refreshOn?: AppEvent["type"][];
 }) {
   const router = useRouter();
 
@@ -28,8 +22,8 @@ export function useLiveEvents(options?: {
 
     source.onmessage = (e) => {
       try {
-        const event = JSON.parse(e.data) as WireEvent;
-        options?.onEvent?.(event.type);
+        const event = JSON.parse(e.data) as AppEvent;
+        options?.onEvent?.(event);
         if (refreshOn.includes(event.type)) {
           router.refresh();
         }

@@ -12,10 +12,10 @@ describe("event bus", () => {
     const received: AppEvent[] = [];
     cleanups.push(subscribe((e) => received.push(e)));
 
-    emit({ type: "transaction:created", id: 42, timestamp: 1 });
+    emit({ type: "transaction:created", id: 42, source: "sms", timestamp: 1 });
 
     expect(received).toEqual([
-      { type: "transaction:created", id: 42, timestamp: 1 },
+      { type: "transaction:created", id: 42, source: "sms", timestamp: 1 },
     ]);
   });
 
@@ -35,9 +35,9 @@ describe("event bus", () => {
     const received: AppEvent[] = [];
     const off = subscribe((e) => received.push(e));
 
-    emit({ type: "transaction:created", id: 1, timestamp: 3 });
+    emit({ type: "transaction:created", id: 1, source: "manual", timestamp: 3 });
     off();
-    emit({ type: "transaction:created", id: 2, timestamp: 4 });
+    emit({ type: "transaction:created", id: 2, source: "manual", timestamp: 4 });
 
     expect(received).toHaveLength(1);
     expect(received[0]).toMatchObject({ id: 1 });

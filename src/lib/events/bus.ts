@@ -1,8 +1,20 @@
 import { EventEmitter } from "node:events";
 
+export type TransactionSource = "sms" | "manual";
+
 export type AppEvent =
-  | { type: "transaction:created"; id: number; timestamp: number }
-  | { type: "transaction:updated"; id: number; timestamp: number }
+  | {
+      type: "transaction:created";
+      id: number;
+      source: TransactionSource;
+      timestamp: number;
+    }
+  | {
+      type: "transaction:updated";
+      id: number;
+      source: TransactionSource;
+      timestamp: number;
+    }
   | { type: "budget:updated"; timestamp: number };
 
 // globalThis singleton survives Turbopack HMR, which otherwise re-evaluates

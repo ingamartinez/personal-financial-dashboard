@@ -189,6 +189,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
     emit({
       type: "transaction:created",
       id: result[0].id,
+      source: "sms",
       timestamp: Date.now(),
     });
     return { status: "inserted", txId: result[0].id };

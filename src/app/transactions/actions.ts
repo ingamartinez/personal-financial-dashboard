@@ -93,6 +93,7 @@ export async function createManualExpense(input: {
   emit({
     type: "transaction:created",
     id: inserted.id,
+    source: "manual",
     timestamp: Date.now(),
   });
 }
