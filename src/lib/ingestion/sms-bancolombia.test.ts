@@ -81,8 +81,8 @@ describe("parseSmsDate", () => {
   });
 });
 
-describe("parseSmsBancolombia — purchase TC (variant A: 'con tu T.Cred')", () => {
-  it("parses COP purchase", () => {
+describe("parseSmsBancolombia — purchase (variant A: 'con tu T.{Cred|Deb}')", () => {
+  it("parses COP credit purchase", () => {
     const body =
       "Bancolombia: Compraste COP35.450,00 en DLO*DiDi Food CO Pay con tu T.Cred *2575, el 15/04/2026 a las 20:34. Si tienes dudas, encuentranos aqui: 6045109095 o 018000931987. Estamos cerca.";
     const r = parseSmsBancolombia(body);
@@ -92,12 +92,13 @@ describe("parseSmsBancolombia — purchase TC (variant A: 'con tu T.Cred')", () 
     expect(r.currency).toBe("COP");
     expect(r.merchant).toBe("DLO*DiDi Food CO Pay");
     expect(r.cardLast4).toBe("2575");
+    expect(r.cardKind).toBe("credit");
     expect(r.occurredOn).toBe("2026-04-15");
     expect(r.occurredTime).toBe("20:34");
     expect(r.externalId).toMatch(/^bcol-sms:[a-f0-9]{24}$/);
   });
 
-  it("parses USD purchase", () => {
+  it("parses USD credit purchase", () => {
     const body =
       "Bancolombia: Compraste USD10,00 en ANTHROPIC con tu T.Cred *7291, el 15/04/2026 a las 02:58. Si tienes dudas, encuentranos aqui: 6045109095 o 018000931987. Estamos cerca.";
     const r = parseSmsBancolombia(body);
@@ -107,6 +108,7 @@ describe("parseSmsBancolombia — purchase TC (variant A: 'con tu T.Cred')", () 
     expect(r.currency).toBe("USD");
     expect(r.merchant).toBe("ANTHROPIC");
     expect(r.cardLast4).toBe("7291");
+    expect(r.cardKind).toBe("credit");
   });
 
   it("parses merchant with spaces and special chars", () => {
@@ -117,11 +119,27 @@ describe("parseSmsBancolombia — purchase TC (variant A: 'con tu T.Cred')", () 
     if (r.kind !== "purchase") throw new Error("type guard");
     expect(r.merchant).toBe("DROGUERIA CRUZ VERDE");
     expect(r.amountCents).toBe(BigInt(21702900));
+    expect(r.cardKind).toBe("credit");
+  });
+
+  it("parses COP debit purchase (the #73 bug fix)", () => {
+    const body =
+      "Bancolombia: Compraste $23.900,00 en EXPERIAN COLOMBIA con tu T.Deb *1802, el 16/04/2026 a las 06:30. Si tienes dudas, encuentranos aqui: 6045109095 o 018000931987. Estamos cerca.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("purchase");
+    if (r.kind !== "purchase") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(2390000));
+    expect(r.currency).toBe("COP");
+    expect(r.merchant).toBe("EXPERIAN COLOMBIA");
+    expect(r.cardLast4).toBe("1802");
+    expect(r.cardKind).toBe("debit");
+    expect(r.occurredOn).toBe("2026-04-16");
+    expect(r.occurredTime).toBe("06:30");
   });
 });
 
-describe("parseSmsBancolombia — purchase TC (variant B: 'Esta compra esta asociada')", () => {
-  it("parses COP purchase with alternate phrasing", () => {
+describe("parseSmsBancolombia — purchase (variant B: 'Esta compra esta asociada')", () => {
+  it("parses COP credit purchase with alternate phrasing", () => {
     const body =
       "Bancolombia: Compraste COP71.950,00 en RAPPI COLOMBIA*DL, el 15/04/2026 a las 12:50. Esta compra esta asociada a T.Cred *2575. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.";
     const r = parseSmsBancolombia(body);
@@ -131,9 +149,10 @@ describe("parseSmsBancolombia — purchase TC (variant B: 'Esta compra esta asoc
     expect(r.currency).toBe("COP");
     expect(r.merchant).toBe("RAPPI COLOMBIA*DL");
     expect(r.cardLast4).toBe("2575");
+    expect(r.cardKind).toBe("credit");
   });
 
-  it("parses USD purchase with alternate phrasing", () => {
+  it("parses USD credit purchase with alternate phrasing", () => {
     const body =
       "Bancolombia: Compraste USD195,26 en CLAUDE.AI SUBSCRIPTI, el 15/04/2026 a las 01:09. Esta compra esta asociada a T.Cred *7291. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.";
     const r = parseSmsBancolombia(body);
@@ -143,6 +162,19 @@ describe("parseSmsBancolombia — purchase TC (variant B: 'Esta compra esta asoc
     expect(r.currency).toBe("USD");
     expect(r.merchant).toBe("CLAUDE.AI SUBSCRIPTI");
     expect(r.cardLast4).toBe("7291");
+    expect(r.cardKind).toBe("credit");
+  });
+
+  it("parses COP debit purchase with alternate phrasing", () => {
+    const body =
+      "Bancolombia: Compraste $48.500,00 en SUPERMERCADO LA 14, el 14/04/2026 a las 11:22. Esta compra esta asociada a T.Deb *1802. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("purchase");
+    if (r.kind !== "purchase") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(4850000));
+    expect(r.merchant).toBe("SUPERMERCADO LA 14");
+    expect(r.cardLast4).toBe("1802");
+    expect(r.cardKind).toBe("debit");
   });
 });
 

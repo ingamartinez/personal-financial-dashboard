@@ -17,6 +17,7 @@ export type ParsedSms =
       kind: "purchase";
       merchant: string;
       cardLast4: string;
+      cardKind: "credit" | "debit";
     })
   | (ParsedSmsBase & {
       kind: "transfer_sent";
@@ -193,17 +194,21 @@ const DATE_GROUP = /(\d{1,4}\/\d{1,2}\/\d{1,4})/.source;
 const TIME_GROUP = /(\d{1,2}:\d{2})/.source;
 const DATE_TIME = `${DATE_GROUP}(?:\\s+a\\s+las\\s+|\\s+)${TIME_GROUP}`;
 
-// Purchase variant A: "Compraste AMOUNT en MERCHANT con tu T.Cred *NNNN, el DATE a las TIME"
+// Purchase variant A: "Compraste AMOUNT en MERCHANT con tu T.{Cred|Deb} *NNNN, el DATE a las TIME"
 const PURCHASE_A = new RegExp(
-  `Compraste\\s+${AMOUNT_GROUP}\\s+en\\s+(.+?)\\s+con\\s+tu\\s+T\\.Cred\\s+\\*(\\d{4})[,.]?\\s+el\\s+${DATE_TIME}`,
+  `Compraste\\s+${AMOUNT_GROUP}\\s+en\\s+(.+?)\\s+con\\s+tu\\s+T\\.(Cred|Deb)\\s+\\*(\\d{4})[,.]?\\s+el\\s+${DATE_TIME}`,
   "i",
 );
 
-// Purchase variant B: "Compraste AMOUNT en MERCHANT, el DATE a las TIME. Esta compra esta asociada a T.Cred *NNNN"
+// Purchase variant B: "Compraste AMOUNT en MERCHANT, el DATE a las TIME. Esta compra esta asociada a T.{Cred|Deb} *NNNN"
 const PURCHASE_B = new RegExp(
-  `Compraste\\s+${AMOUNT_GROUP}\\s+en\\s+(.+?),\\s+el\\s+${DATE_TIME}\\.\\s+Esta\\s+compra\\s+esta\\s+asociada\\s+a\\s+T\\.Cred\\s+\\*(\\d{4})`,
+  `Compraste\\s+${AMOUNT_GROUP}\\s+en\\s+(.+?),\\s+el\\s+${DATE_TIME}\\.\\s+Esta\\s+compra\\s+esta\\s+asociada\\s+a\\s+T\\.(Cred|Deb)\\s+\\*(\\d{4})`,
   "i",
 );
+
+function cardKindFromMatch(token: string): "credit" | "debit" {
+  return token.toLowerCase() === "deb" ? "debit" : "credit";
+}
 
 // Transfer sent: "Transferiste AMOUNT [por QR] desde tu cuenta *NNNN a la cuenta *NNNN[,] el DATE [a las] TIME"
 const TRANSFER_SENT = new RegExp(
@@ -257,15 +262,17 @@ export function parseSmsBancolombia(body: string): ParseResult {
     if (m) {
       const { cents, currency } = parseSmsAmount(m[1]);
       const merchant = m[2].trim();
-      const cardLast4 = m[3];
-      const occurredOn = parseSmsDate(m[4]);
-      const occurredTime = m[5];
+      const cardKind = cardKindFromMatch(m[3]);
+      const cardLast4 = m[4];
+      const occurredOn = parseSmsDate(m[5]);
+      const occurredTime = m[6];
       return {
         kind: "purchase",
         amountCents: cents,
         currency,
         merchant,
         cardLast4,
+        cardKind,
         occurredOn,
         occurredTime,
         externalId: hashId([
@@ -290,13 +297,15 @@ export function parseSmsBancolombia(body: string): ParseResult {
       const merchant = m[2].trim();
       const occurredOn = parseSmsDate(m[3]);
       const occurredTime = m[4];
-      const cardLast4 = m[5];
+      const cardKind = cardKindFromMatch(m[5]);
+      const cardLast4 = m[6];
       return {
         kind: "purchase",
         amountCents: cents,
         currency,
         merchant,
         cardLast4,
+        cardKind,
         occurredOn,
         occurredTime,
         externalId: hashId([
