@@ -256,6 +256,38 @@ describe("POST /api/ingest/sms", () => {
     expect(rows[0].merchant).toBe("ESTEBAN LEONARDO SARMIENTO GOMEZ");
   });
 
+  it("inserts a provider_payment_sent (PSE) as expense from *6126", async () => {
+    const body =
+      "Bancolombia: Pagaste $430,997.00 a EMPRESAS PUBLICAS DE MEDELLIN desde tu producto *6126 el 13/02/2026 10:39:06. ¿Dudas? Llamanos al 6045109095. Estamos cerca";
+    const res = await POST(
+      makeRequest({
+        body: jsonBody({ body }),
+        headers: authedHeaders(),
+      }),
+    );
+    const json = (await res.json()) as { status: string; txId?: number };
+    expect(json.status).toBe("inserted");
+
+    const rows = await db.execute<{
+      amount_cents: string;
+      merchant: string | null;
+      account_id: number;
+      classification_method: string;
+    }>(sql`
+      SELECT amount_cents, merchant, account_id, classification_method
+      FROM transactions WHERE id = ${json.txId!}
+    `);
+    expect(BigInt(rows[0].amount_cents)).toBe(BigInt(-43099700));
+    expect(rows[0].merchant).toBe("EMPRESAS PUBLICAS DE MEDELLIN");
+
+    // Routes to the COP savings account that owns last4 6126
+    const accs = await db.execute<{ name: string; currency: string }>(sql`
+      SELECT name, currency FROM accounts WHERE id = ${rows[0].account_id}
+    `);
+    expect(accs[0].currency).toBe("COP");
+    expect(accs[0].name).toBe("Bancolombia Ahorros");
+  });
+
   it("inserts a provider_payment into Bancolombia Ahorros (no last-4 in SMS)", async () => {
     const body =
       "Bancolombia: Recibiste un pago PROVEEDOR de PEXTO COLOMBIA por $6,000,000.00 en tu cuenta de Ahorros el 14/04/2026 a las 21:43. Si tienes dudas, llamanos al 018000931987. A tu lado siempre.";

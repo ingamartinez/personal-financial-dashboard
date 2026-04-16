@@ -139,12 +139,12 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
   const { amountCents, descriptionRaw, merchant, categorySlug, method } =
     buildTxFields(parsed);
 
-  // Only purchases get rule-based classification attempted.
+  // Purchases and PSE outgoing payments get rule-based classification attempted.
   // Other kinds have hardcoded categories (pago-tc, transferencias, ingresos).
   let finalCategory = categorySlug;
   let finalMethod: "rule" | "manual" | "unclassified" = method;
   let confidence: number | null = null;
-  if (parsed.kind === "purchase") {
+  if (parsed.kind === "purchase" || parsed.kind === "provider_payment_sent") {
     const cls = await classifyByRule({
       descriptionRaw,
       merchant,
@@ -215,6 +215,7 @@ function resolveAccountForParsed(
     case "transfer_sent":
     case "qr_payment":
     case "tc_payment":
+    case "provider_payment_sent":
       return resolveAccountFromLast4(
         parsed.fromLast4,
         parsed.currency,
@@ -296,6 +297,14 @@ function buildTxFields(parsed: ParsedSms): {
         merchant: parsed.senderName,
         categorySlug: "ingresos",
         method: "manual",
+      };
+    case "provider_payment_sent":
+      return {
+        amountCents: -parsed.amountCents,
+        descriptionRaw: `Pago a ${parsed.providerName}`,
+        merchant: parsed.providerName,
+        categorySlug: null,
+        method: "unclassified",
       };
   }
 }
