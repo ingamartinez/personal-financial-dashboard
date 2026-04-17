@@ -63,11 +63,6 @@ export function QuickExpenseDialog({
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const amtNum = Number(amount);
-    if (!Number.isFinite(amtNum) || amtNum <= 0) {
-      toast.error("Amount must be > 0");
-      return;
-    }
     if (!accountId) {
       toast.error("Pick an account");
       return;
@@ -76,7 +71,7 @@ export function QuickExpenseDialog({
       try {
         await createManualExpense({
           accountId: Number(accountId),
-          amount: amtNum,
+          amount: amount.trim(),
           categorySlug: categorySlug || null,
           occurredOn,
           notes: notes.trim() || null,
