@@ -140,7 +140,12 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
   let finalCategory = cp.inheritedCategory ?? categorySlug;
   let finalMethod: Exclude<ClassificationMethod, "ai"> = cp.inheritedCategory ? "rule" : method;
   let confidence: number | null = null;
-  if (parsed.kind === "purchase" || parsed.kind === "provider_payment_sent") {
+  const shouldAttemptRule =
+    !cp.inheritedCategory &&
+    (parsed.kind === "purchase" ||
+      parsed.kind === "provider_payment_sent" ||
+      parsed.kind === "qr_payment");
+  if (shouldAttemptRule) {
     const cls = await classifyByRule({
       descriptionRaw,
       merchant,

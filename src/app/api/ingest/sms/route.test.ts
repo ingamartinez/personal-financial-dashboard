@@ -235,7 +235,7 @@ describe("POST /api/ingest/sms", () => {
     expect(accs[0].name).toMatch(/Mastercard.*7291.*USD/);
   });
 
-  it("inserts a QR payment as expense from *6126 with unclassified category", async () => {
+  it("inserts a QR payment as expense from *6126 classified as transferencias via rule", async () => {
     const body =
       "Bancolombia: ALEJANDRO RAFAEL MARTINEZ MALDONADO pagaste $92,000.00 por codigo QR desde tu cuenta *6126 a la llave 0091498581 el 15/04/2026 a las 00:20. Con codigo QR es facil y de una. Dudas al 018000912345";
     const res = await POST(
@@ -256,8 +256,8 @@ describe("POST /api/ingest/sms", () => {
       FROM transactions WHERE id = ${json.txId!}
     `);
     expect(BigInt(rows[0].amount_cents)).toBe(BigInt(-9200000));
-    expect(rows[0].category_slug).toBeNull();
-    expect(rows[0].classification_method).toBe("unclassified");
+    expect(rows[0].category_slug).toBe("transferencias");
+    expect(rows[0].classification_method).toBe("rule");
   });
 
   it("inserts a TC payment as pago-tc expense from *6126", async () => {
@@ -560,7 +560,7 @@ describe("POST /api/ingest/sms", () => {
     "Bancolombia: ALEJANDRO, transferiste $50,000.00 a la llave 3046262677 desde tu cuenta *6126 a MARIA PAZ TORRES CARRILLO el 01/04/26 a las 13:22. Con Bre-b es de una y gratis. Dudas al 018000912345.";
   const BREB_KEY = "3046262677";
 
-  it("QR with new key auto-creates placeholder counterparty (key as display_name)", async () => {
+  it("QR with new key auto-creates placeholder counterparty and falls back to transferencias rule", async () => {
     const res = await POST(
       makeRequest({
         body: jsonBody({ body: QR_BODY }),
@@ -586,11 +586,11 @@ describe("POST /api/ingest/sms", () => {
       FROM transactions WHERE id = ${json.txId!}
     `);
     expect(txRows[0].counterparty_id).toBe(cp!.id);
-    expect(txRows[0].category_slug).toBeNull();
-    expect(txRows[0].classification_method).toBe("unclassified");
+    expect(txRows[0].category_slug).toBe("transferencias");
+    expect(txRows[0].classification_method).toBe("rule");
   });
 
-  it("QR with existing counterparty (no default category) links but stays unclassified", async () => {
+  it("QR with existing counterparty (no default category) links and falls back to transferencias rule", async () => {
     const cpId = await createCounterpartyWithAlias({
       kind: "qr",
       value: QR_KEY,
@@ -615,8 +615,8 @@ describe("POST /api/ingest/sms", () => {
       FROM transactions WHERE id = ${json.txId!}
     `);
     expect(rows[0].counterparty_id).toBe(cpId);
-    expect(rows[0].category_slug).toBeNull();
-    expect(rows[0].classification_method).toBe("unclassified");
+    expect(rows[0].category_slug).toBe("transferencias");
+    expect(rows[0].classification_method).toBe("rule");
 
     const cp = await findCounterpartyByAlias("qr", QR_KEY);
     expect(cp!.hit_count).toBe(1);
