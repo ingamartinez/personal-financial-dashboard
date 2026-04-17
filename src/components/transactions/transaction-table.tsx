@@ -78,6 +78,19 @@ function formatDate(d: Date) {
   });
 }
 
+function primaryDescription(tx: TxRow): string {
+  return (
+    tx.counterparty?.displayName ??
+    tx.merchant ??
+    tx.descriptionClean ??
+    tx.descriptionRaw
+  );
+}
+
+function hasSecondaryDescription(tx: TxRow): boolean {
+  return Boolean(tx.counterparty || tx.merchant || tx.descriptionClean);
+}
+
 export function TransactionTable({
   rows,
   categories,
@@ -100,37 +113,97 @@ export function TransactionTable({
   }
 
   return (
-    <div className="rounded-md border bg-card">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-[110px]">Date</TableHead>
-            <TableHead>Description</TableHead>
-            <TableHead className="w-[150px]">Account</TableHead>
-            <TableHead className="w-[200px]">Category</TableHead>
-            <TableHead className="w-[110px]">Source</TableHead>
-            <TableHead className="w-[110px]">Method</TableHead>
-            <TableHead className="w-[140px] text-right">Amount</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((tx) => {
-            const isExpense = tx.amountCents < BigInt(0);
-            return (
-              <TableRow key={tx.id}>
-                <TableCell
-                  className="text-muted-foreground"
-                  suppressHydrationWarning
-                >
-                  {formatDate(tx.occurredAt)}
-                </TableCell>
-                <TableCell>
+    <>
+      <div className="hidden rounded-md border bg-card md:block">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[110px]">Date</TableHead>
+              <TableHead>Description</TableHead>
+              <TableHead className="w-[150px]">Account</TableHead>
+              <TableHead className="w-[200px]">Category</TableHead>
+              <TableHead className="w-[110px]">Source</TableHead>
+              <TableHead className="w-[110px]">Method</TableHead>
+              <TableHead className="w-[140px] text-right">Amount</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((tx) => {
+              const isExpense = tx.amountCents < BigInt(0);
+              return (
+                <TableRow key={tx.id}>
+                  <TableCell
+                    className="text-muted-foreground"
+                    suppressHydrationWarning
+                  >
+                    {formatDate(tx.occurredAt)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium">
+                        {primaryDescription(tx)}
+                      </span>
+                      {tx.counterparty ? (
+                        <CounterpartyTypeBadge type={tx.counterparty.type} />
+                      ) : null}
+                      {tx.counterparty ? (
+                        <CounterpartyDialog
+                          counterparty={tx.counterparty}
+                          categories={categories}
+                          allCounterparties={allCounterparties}
+                        />
+                      ) : null}
+                    </div>
+                    {hasSecondaryDescription(tx) ? (
+                      <div className="text-xs text-muted-foreground line-clamp-1">
+                        {tx.descriptionRaw}
+                      </div>
+                    ) : null}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {tx.accountName}
+                  </TableCell>
+                  <TableCell>
+                    <CategoryCell
+                      txId={tx.id}
+                      value={tx.categorySlug}
+                      options={categories}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{sourceLabel[tx.source]}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={methodVariant[tx.classificationMethod]}>
+                      {tx.classificationMethod}
+                    </Badge>
+                  </TableCell>
+                  <TableCell
+                    className={`text-right money ${isExpense ? "text-destructive" : "text-emerald-600"}`}
+                    suppressHydrationWarning
+                  >
+                    {formatAmount(tx.amountCents, tx.currency)}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+
+      <ul className="flex flex-col gap-2 md:hidden">
+        {rows.map((tx) => {
+          const isExpense = tx.amountCents < BigInt(0);
+          return (
+            <li
+              key={tx.id}
+              className="flex flex-col gap-2 rounded-md border bg-card p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
-                    <span className="font-medium">
-                      {tx.counterparty?.displayName ??
-                        tx.merchant ??
-                        tx.descriptionClean ??
-                        tx.descriptionRaw}
+                    <span className="truncate font-medium">
+                      {primaryDescription(tx)}
                     </span>
                     {tx.counterparty ? (
                       <CounterpartyTypeBadge type={tx.counterparty.type} />
@@ -143,43 +216,47 @@ export function TransactionTable({
                       />
                     ) : null}
                   </div>
-                  {tx.counterparty ||
-                  tx.merchant ||
-                  tx.descriptionClean ? (
-                    <div className="text-xs text-muted-foreground line-clamp-1">
+                  {hasSecondaryDescription(tx) ? (
+                    <p className="line-clamp-1 text-xs text-muted-foreground">
                       {tx.descriptionRaw}
-                    </div>
+                    </p>
                   ) : null}
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {tx.accountName}
-                </TableCell>
-                <TableCell>
-                  <CategoryCell
-                    txId={tx.id}
-                    value={tx.categorySlug}
-                    options={categories}
-                  />
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline">{sourceLabel[tx.source]}</Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={methodVariant[tx.classificationMethod]}>
-                    {tx.classificationMethod}
-                  </Badge>
-                </TableCell>
-                <TableCell
-                  className={`text-right money ${isExpense ? "text-destructive" : "text-emerald-600"}`}
+                </div>
+                <span
+                  className={`money shrink-0 text-right text-sm font-semibold ${
+                    isExpense ? "text-destructive" : "text-emerald-600"
+                  }`}
                   suppressHydrationWarning
                 >
                   {formatAmount(tx.amountCents, tx.currency)}
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
-    </div>
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                <span suppressHydrationWarning>{formatDate(tx.occurredAt)}</span>
+                <span aria-hidden="true">·</span>
+                <span className="truncate">{tx.accountName}</span>
+                <span aria-hidden="true">·</span>
+                <Badge variant="outline" className="font-normal">
+                  {sourceLabel[tx.source]}
+                </Badge>
+                <Badge
+                  variant={methodVariant[tx.classificationMethod]}
+                  className="font-normal"
+                >
+                  {tx.classificationMethod}
+                </Badge>
+              </div>
+
+              <CategoryCell
+                txId={tx.id}
+                value={tx.categorySlug}
+                options={categories}
+              />
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }

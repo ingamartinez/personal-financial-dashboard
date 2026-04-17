@@ -210,7 +210,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
               id="ocr-account"
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="h-9 rounded-md border bg-background text-sm chevron-select"
               required
             >
               {accounts.map((a) => (

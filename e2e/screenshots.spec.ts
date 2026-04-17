@@ -14,7 +14,8 @@ const modes = ["light", "dark"] as const;
 
 for (const mode of modes) {
   for (const p of pages) {
-    test(`screenshot: ${mode} ${p.name}`, async ({ page }) => {
+    test(`screenshot: ${mode} ${p.name}`, async ({ page }, testInfo) => {
+      const projectName = testInfo.project.name;
       await page.addInitScript((m) => {
         window.localStorage.setItem("theme", m);
       }, mode);
@@ -27,7 +28,10 @@ for (const mode of modes) {
         await page.waitForTimeout(1_800);
       }
       await page.screenshot({
-        path: path.join("e2e/screenshots", `${mode}-${p.name}.png`),
+        path: path.join(
+          "e2e/screenshots",
+          `${projectName}-${mode}-${p.name}.png`,
+        ),
         fullPage: true,
       });
     });

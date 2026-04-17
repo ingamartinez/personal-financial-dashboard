@@ -2,8 +2,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export default function TransactionsLoading() {
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-6">
-      <header className="flex items-end justify-between gap-3">
+    <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 sm:p-6">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-4 w-64" />
@@ -17,7 +17,7 @@ export default function TransactionsLoading() {
         ))}
       </div>
 
-      <div className="overflow-hidden rounded-md border bg-card">
+      <div className="hidden overflow-hidden rounded-md border bg-card md:block">
         <div className="border-b px-4 py-3">
           <Skeleton className="h-4 w-full max-w-3xl" />
         </div>
@@ -39,6 +39,22 @@ export default function TransactionsLoading() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="flex flex-col gap-2 md:hidden">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div
+            key={i}
+            className="flex flex-col gap-2 rounded-md border bg-card p-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-4 w-20" />
+            </div>
+            <Skeleton className="h-3 w-56" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ))}
       </div>
     </main>
   );

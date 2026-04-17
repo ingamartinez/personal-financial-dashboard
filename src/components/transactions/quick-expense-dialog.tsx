@@ -99,11 +99,11 @@ export function QuickExpenseDialog({
       <DialogTrigger asChild>
         <Button
           size="lg"
-          className="fixed bottom-6 right-6 z-30 h-14 rounded-full shadow-lg"
+          className="fixed bottom-6 right-6 z-30 h-14 w-14 rounded-full p-0 shadow-lg sm:w-auto sm:px-6"
           aria-label="Add expense"
         >
           <PlusIcon className="size-5" />
-          <span className="ml-1">Expense</span>
+          <span className="ml-1 hidden sm:inline">Expense</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
@@ -164,7 +164,7 @@ export function QuickExpenseDialog({
               id="qe-account"
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="h-9 rounded-md border bg-background text-sm chevron-select"
               required
             >
               {accounts.map((a) => (
@@ -181,7 +181,7 @@ export function QuickExpenseDialog({
               id="qe-cat"
               value={categorySlug}
               onChange={(e) => setCategorySlug(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="h-9 rounded-md border bg-background text-sm chevron-select"
             >
               <option value="">— unclassified —</option>
               {categories.map((c) => (

@@ -252,7 +252,7 @@ export function CounterpartyDialog({
               id="cp-cat"
               value={defaultCategorySlug}
               onChange={(e) => setDefaultCategorySlug(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="h-9 rounded-md border bg-background text-sm chevron-select"
             >
               <option value="">— none —</option>
               {categories.map((c) => (
@@ -301,7 +301,7 @@ export function CounterpartyDialog({
                 id="cp-merge"
                 value={mergeTargetId}
                 onChange={(e) => setMergeTargetId(e.target.value)}
-                className="h-9 flex-1 rounded-md border bg-background px-2 text-sm"
+                className="h-9 flex-1 rounded-md border bg-background text-sm chevron-select"
                 disabled={pending}
               >
                 <option value="">— pick target —</option>
