@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeName } from "./route";
+import { normalizeName } from "@/lib/counterparties/alias-key";
 
 describe("normalizeName", () => {
   it("uppercases and trims simple names", () => {

@@ -24,7 +24,7 @@ export type AppEvent =
   | {
       type: "counterparty:updated";
       id: number;
-      reason: "edit" | "merge";
+      reason: "edit" | "merge" | "split";
       timestamp: number;
     }
   | { type: "budget:updated"; timestamp: number };
