@@ -12,6 +12,7 @@ import { TopExpensesCard } from "@/components/dashboard/top-expenses-card";
 import { AccountsGrid } from "@/components/dashboard/accounts-grid";
 import { UpcomingCard } from "@/components/dashboard/upcoming-card";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
+import { getCurrentFxRate } from "@/lib/fx/repo";
 
 export const dynamic = "force-dynamic";
 
@@ -21,11 +22,12 @@ export default async function DashboardPage() {
   const now = new Date();
   const monthLabel = monthFmt.format(now);
 
+  const fx = await getCurrentFxRate();
   const [netWorth, flow, slices, top, accounts, upcoming] = await Promise.all([
-    getNetWorth(),
-    getMonthlyFlow(now),
-    getCategoryBreakdown(now),
-    getTopExpenses(now, 5),
+    getNetWorth(fx.rate),
+    getMonthlyFlow(fx.rate, now),
+    getCategoryBreakdown(fx.rate, now),
+    getTopExpenses(fx.rate, now, 5),
     getAccountStatuses(),
     getUpcomingForMonth({
       year: now.getFullYear(),
@@ -55,7 +57,7 @@ export default async function DashboardPage() {
       </header>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-4">
-        <NetWorthCard data={netWorth} />
+        <NetWorthCard data={netWorth} fx={fx} />
         <MonthlyFlowCard data={flow} monthLabel={monthLabel} />
         <CategoryDonut slices={donutSlices} monthLabel={monthLabel} />
       </section>

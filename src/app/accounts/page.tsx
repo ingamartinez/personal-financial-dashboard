@@ -14,8 +14,14 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { getNetWorth } from "@/lib/dashboard/queries";
 import { listAccountsDetailed, type AccountDetail } from "@/lib/accounts/queries";
-import { COP_PER_USD, formatCop, formatMoney } from "@/lib/money";
+import { getCurrentFxRate } from "@/lib/fx/repo";
+import { toCop, formatCop, formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
+
+const RATE_FMT = new Intl.NumberFormat("es-CO", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
 
 export const dynamic = "force-dynamic";
 
@@ -27,19 +33,20 @@ const TYPE_LABEL: Record<AccountDetail["type"], string> = {
 
 const TYPE_ORDER: AccountDetail["type"][] = ["savings", "credit_card", "loan"];
 
-function sumBalanceCopCents(list: AccountDetail[]): bigint {
+function sumBalanceCopCents(list: AccountDetail[], copPerUsd: number): bigint {
   let cop = BigInt(0);
   let usd = BigInt(0);
   for (const a of list) {
     if (a.currency === "USD") usd += a.balanceCents;
     else cop += a.balanceCents;
   }
-  return cop + usd * BigInt(COP_PER_USD);
+  return cop + toCop(usd, "USD", copPerUsd);
 }
 
 export default async function AccountsPage() {
+  const fx = await getCurrentFxRate();
   const [netWorth, all] = await Promise.all([
-    getNetWorth(),
+    getNetWorth(fx.rate),
     listAccountsDetailed(),
   ]);
 
@@ -57,7 +64,8 @@ export default async function AccountsPage() {
         <h1 className="text-h1">Accounts</h1>
         <p className="text-body text-muted-foreground">
           Saldos por cuenta agrupados por tipo. El patrimonio neto convierte USD
-          a COP a {COP_PER_USD.toLocaleString("es-CO")} COP/USD.
+          a COP a {RATE_FMT.format(fx.rate)} COP/USD
+          {fx.source === "fallback" ? " (fallback)" : ` (TRM ${fx.asOf})`}.
         </p>
       </header>
 
@@ -78,7 +86,7 @@ export default async function AccountsPage() {
       ) : null}
 
       {grouped.map(({ type, items }) => (
-        <AccountTypeSection key={type} type={type} items={items} />
+        <AccountTypeSection key={type} type={type} items={items} copPerUsd={fx.rate} />
       ))}
 
       {inactive.length > 0 ? (
@@ -126,16 +134,18 @@ function SummaryCard({
 function AccountTypeSection({
   type,
   items,
+  copPerUsd,
 }: {
   type: AccountDetail["type"];
   items: AccountDetail[];
+  copPerUsd: number;
 }) {
   const Icon = type === "credit_card"
     ? CreditCardIcon
     : type === "loan"
       ? LandmarkIcon
       : PiggyBankIcon;
-  const subtotal = sumBalanceCopCents(items);
+  const subtotal = sumBalanceCopCents(items, copPerUsd);
 
   return (
     <section className="flex flex-col gap-3">

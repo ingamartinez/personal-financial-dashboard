@@ -10,12 +10,14 @@ import {
   generateInsightsReport,
   hashSummary,
 } from "@/lib/ai/insights";
+import { getCurrentFxRate } from "@/lib/fx/repo";
 
 const ymSchema = z.string().regex(/^\d{4}-\d{2}$/);
 
 export async function generateInsight(ym: string) {
   const parsed = ymSchema.parse(ym);
-  const summary = await buildInsightsSummary(parsed);
+  const fx = await getCurrentFxRate();
+  const summary = await buildInsightsSummary(parsed, fx.rate);
   const inputHash = hashSummary(summary);
   const result = await generateInsightsReport({ summary });
 

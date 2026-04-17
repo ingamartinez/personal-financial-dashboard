@@ -245,6 +245,25 @@ export const insightsReports = pgTable("insights_reports", {
   outputTokens: integer("output_tokens").notNull().default(0),
 });
 
+export const fxRates = pgTable(
+  "fx_rates",
+  {
+    id: serial("id").primaryKey(),
+    base: varchar("base", { length: 3 }).notNull(),
+    quote: varchar("quote", { length: 3 }).notNull(),
+    rateMicros: bigint("rate_micros", { mode: "bigint" }).notNull(),
+    asOf: date("as_of").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    source: varchar("source", { length: 40 }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("fx_rates_pair_asof_unique").on(t.base, t.quote, t.asOf),
+    index("fx_rates_pair_fetched_idx").on(t.base, t.quote, t.fetchedAt),
+  ],
+);
+
 export const accountSnapshots = pgTable(
   "account_snapshots",
   {

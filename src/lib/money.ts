@@ -1,7 +1,13 @@
-export const COP_PER_USD = 4000;
+export const FALLBACK_COP_PER_USD = 4000;
 
-export function toCop(amountCents: bigint, currency: "COP" | "USD"): bigint {
-  return currency === "USD" ? amountCents * BigInt(COP_PER_USD) : amountCents;
+export function toCop(
+  amountCents: bigint,
+  currency: "COP" | "USD",
+  copPerUsd: number,
+): bigint {
+  if (currency === "COP") return amountCents;
+  const micros = BigInt(Math.round(copPerUsd * 1_000_000));
+  return (amountCents * micros) / BigInt(1_000_000);
 }
 
 export function formatCop(amountCents: bigint): string {

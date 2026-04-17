@@ -1,7 +1,7 @@
 import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, transactions } from "@/lib/db/schema";
-import { COP_PER_USD, toCop } from "@/lib/money";
+import { toCop } from "@/lib/money";
 
 export function currentMonthRange(now = new Date()): { start: Date; end: Date } {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -39,16 +39,15 @@ export type NetWorth = {
   usdCents: bigint;
 };
 
-export async function getNetWorth(): Promise<NetWorth> {
+export async function getNetWorth(copPerUsd: number): Promise<NetWorth> {
   const list = await getAccountStatuses();
   let copCents = BigInt(0);
   let usdCents = BigInt(0);
   for (const a of list) {
-    // savings positive, credit_card / loan typically negative balance.
     if (a.currency === "USD") usdCents += a.balanceCents;
     else copCents += a.balanceCents;
   }
-  const totalCopCents = copCents + usdCents * BigInt(COP_PER_USD);
+  const totalCopCents = copCents + toCop(usdCents, "USD", copPerUsd);
   return { totalCopCents, copCents, usdCents };
 }
 
@@ -58,7 +57,10 @@ export type MonthlyFlow = {
   netCopCents: bigint;
 };
 
-export async function getMonthlyFlow(now = new Date()): Promise<MonthlyFlow> {
+export async function getMonthlyFlow(
+  copPerUsd: number,
+  now = new Date(),
+): Promise<MonthlyFlow> {
   const { start, end } = currentMonthRange(now);
 
   const rows = await db
@@ -74,8 +76,8 @@ export async function getMonthlyFlow(now = new Date()): Promise<MonthlyFlow> {
   let incomeCopCents = BigInt(0);
   let expenseCopCents = BigInt(0);
   for (const r of rows) {
-    incomeCopCents += toCop(BigInt(r.incomeCents), r.currency);
-    expenseCopCents += toCop(BigInt(r.expenseCents), r.currency);
+    incomeCopCents += toCop(BigInt(r.incomeCents), r.currency, copPerUsd);
+    expenseCopCents += toCop(BigInt(r.expenseCents), r.currency, copPerUsd);
   }
   return {
     incomeCopCents,
@@ -91,7 +93,10 @@ export type CategorySlice = {
   amountCopCents: bigint;
 };
 
-export async function getCategoryBreakdown(now = new Date()): Promise<CategorySlice[]> {
+export async function getCategoryBreakdown(
+  copPerUsd: number,
+  now = new Date(),
+): Promise<CategorySlice[]> {
   const { start, end } = currentMonthRange(now);
 
   const rows = await db
@@ -117,7 +122,7 @@ export async function getCategoryBreakdown(now = new Date()): Promise<CategorySl
   for (const r of rows) {
     const slug = r.slug ?? "uncategorized";
     const name = r.name ?? "Uncategorized";
-    const cents = toCop(BigInt(r.sumCents), r.currency);
+    const cents = toCop(BigInt(r.sumCents), r.currency, copPerUsd);
     const existing = merged.get(slug);
     if (existing) {
       existing.amountCopCents += cents;
@@ -142,8 +147,13 @@ export type TopExpense = {
   accountName: string;
 };
 
-export async function getTopExpenses(now = new Date(), limit = 5): Promise<TopExpense[]> {
+export async function getTopExpenses(
+  copPerUsd: number,
+  now = new Date(),
+  limit = 5,
+): Promise<TopExpense[]> {
   const { start, end } = currentMonthRange(now);
+  const rateMicros = Math.round(copPerUsd * 1_000_000);
   const rows = await db
     .select({
       id: transactions.id,
@@ -167,7 +177,7 @@ export async function getTopExpenses(now = new Date(), limit = 5): Promise<TopEx
       ),
     )
     .orderBy(
-      sql`(CASE WHEN ${transactions.currency} = 'USD' THEN -${transactions.amountCents} * ${COP_PER_USD} ELSE -${transactions.amountCents} END) DESC`,
+      sql`(CASE WHEN ${transactions.currency} = 'USD' THEN -${transactions.amountCents} * ${sql.raw(String(rateMicros))} / 1000000 ELSE -${transactions.amountCents} END) DESC`,
     )
     .limit(limit);
 
@@ -179,7 +189,7 @@ export async function getTopExpenses(now = new Date(), limit = 5): Promise<TopEx
     categoryName: r.categoryName,
     amountCents: r.amountCents,
     currency: r.currency,
-    amountCopCents: toCop(BigInt(-1) * r.amountCents, r.currency),
+    amountCopCents: toCop(BigInt(-1) * r.amountCents, r.currency, copPerUsd),
     accountName: r.accountName,
   }));
 }

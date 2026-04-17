@@ -63,15 +63,14 @@ function monthBounds(ym: string) {
   };
 }
 
-const COP_PER_USD_FX = 4000;
-
-function toCopNumber(cents: bigint, currency: "COP" | "USD"): number {
+function toCopNumber(cents: bigint, currency: "COP" | "USD", copPerUsd: number): number {
   const pesos = Number(cents) / 100;
-  return currency === "USD" ? pesos * COP_PER_USD_FX : pesos;
+  return currency === "USD" ? pesos * copPerUsd : pesos;
 }
 
 export async function buildInsightsSummary(
   ym: string,
+  copPerUsd: number,
   db: DB = defaultDb,
 ): Promise<InsightsSummary> {
   const prevYm = shiftMonth(ym, -1);
@@ -172,19 +171,19 @@ export async function buildInsightsSummary(
 
   const totals = { incomeCop: 0, expenseCop: 0, previousIncomeCop: 0, previousExpenseCop: 0 };
   for (const r of curTxTotals) {
-    totals.incomeCop += toCopNumber(BigInt(r.income), r.currency);
-    totals.expenseCop += toCopNumber(BigInt(r.expense), r.currency);
+    totals.incomeCop += toCopNumber(BigInt(r.income), r.currency, copPerUsd);
+    totals.expenseCop += toCopNumber(BigInt(r.expense), r.currency, copPerUsd);
   }
   for (const r of prevTxTotals) {
-    totals.previousIncomeCop += toCopNumber(BigInt(r.income), r.currency);
-    totals.previousExpenseCop += toCopNumber(BigInt(r.expense), r.currency);
+    totals.previousIncomeCop += toCopNumber(BigInt(r.income), r.currency, copPerUsd);
+    totals.previousExpenseCop += toCopNumber(BigInt(r.expense), r.currency, copPerUsd);
   }
 
   const catMap = new Map<string, { slug: string; name: string; spentCop: number; txCount: number }>();
   for (const r of curCats) {
     if (!r.slug) continue;
     const key = r.slug;
-    const cop = toCopNumber(BigInt(r.spent), r.currency);
+    const cop = toCopNumber(BigInt(r.spent), r.currency, copPerUsd);
     const existing = catMap.get(key);
     if (existing) {
       existing.spentCop += cop;
@@ -198,14 +197,14 @@ export async function buildInsightsSummary(
   const prevCatMap = new Map<string, number>();
   for (const r of prevCats) {
     if (!r.slug) continue;
-    prevCatMap.set(r.slug, (prevCatMap.get(r.slug) ?? 0) + toCopNumber(BigInt(r.spent), r.currency));
+    prevCatMap.set(r.slug, (prevCatMap.get(r.slug) ?? 0) + toCopNumber(BigInt(r.spent), r.currency, copPerUsd));
   }
   const categoriesPrevious = [...prevCatMap.entries()].map(([slug, spentCop]) => ({ slug, spentCop }));
 
   const merMap = new Map<string, { merchant: string; spentCop: number; txCount: number }>();
   for (const r of topMer) {
     if (!r.merchant) continue;
-    const cop = toCopNumber(BigInt(r.spent), r.currency);
+    const cop = toCopNumber(BigInt(r.spent), r.currency, copPerUsd);
     const existing = merMap.get(r.merchant);
     if (existing) {
       existing.spentCop += cop;
@@ -217,7 +216,7 @@ export async function buildInsightsSummary(
   const topMerchants = [...merMap.values()].sort((a, b) => b.spentCop - a.spentCop).slice(0, 10);
 
   const budgetsOut = budgetRows.map((b) => {
-    const amountCop = toCopNumber(b.amountCents, b.currency);
+    const amountCop = toCopNumber(b.amountCents, b.currency, copPerUsd);
     const spentCop = catMap.get(b.categorySlug)?.spentCop ?? 0;
     return {
       category: b.categorySlug,
@@ -230,7 +229,7 @@ export async function buildInsightsSummary(
   const recurringOut = recRows.map((r) => ({
     label: r.label,
     dayOfMonth: r.dayOfMonth,
-    amountCop: toCopNumber(r.amountCents, r.currency),
+    amountCop: toCopNumber(r.amountCents, r.currency, copPerUsd),
     categorySlug: r.categorySlug,
   }));
 
@@ -239,7 +238,7 @@ export async function buildInsightsSummary(
     institution: a.institution,
     type: a.type,
     currency: a.currency,
-    balanceCop: toCopNumber(a.balanceCents, a.currency),
+    balanceCop: toCopNumber(a.balanceCents, a.currency, copPerUsd),
   }));
 
   return {
