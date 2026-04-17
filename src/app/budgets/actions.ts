@@ -35,11 +35,14 @@ export async function upsertBudget(input: BudgetInput) {
   const { start, end } = monthRange(parsed.ym);
 
   const [cat] = await db
-    .select({ slug: categories.slug })
+    .select({ slug: categories.slug, parentSlug: categories.parentSlug })
     .from(categories)
     .where(eq(categories.slug, parsed.categorySlug))
     .limit(1);
   if (!cat) throw new Error("Category not found");
+  if (cat.parentSlug !== null) {
+    throw new Error("Budgets must target a root category (sub-categories roll up)");
+  }
 
   const amountCents = BigInt(Math.round(parsed.amount * 100));
 
