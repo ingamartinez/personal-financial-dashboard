@@ -55,6 +55,9 @@ jobs:
       - name: Apply migrations to test DB
         run: bun run db:migrate:test
 
+      - name: Seed test DB
+        run: bun run db:seed:test
+
       - name: Lint
         run: bun run lint
 
