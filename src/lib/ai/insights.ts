@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { aliasedTable, and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import {
   accounts,
@@ -110,29 +110,42 @@ export async function buildInsightsSummary(
           and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)),
         )
         .groupBy(transactions.currency),
-      db
-        .select({
-          slug: transactions.categorySlug,
-          name: categories.name,
-          currency: transactions.currency,
-          spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
-          txCount: sql<number>`COUNT(*)::int`,
-        })
-        .from(transactions)
-        .leftJoin(categories, eq(categories.slug, transactions.categorySlug))
-        .where(and(gte(transactions.occurredAt, cur.start), lte(transactions.occurredAt, cur.end)))
-        .groupBy(transactions.categorySlug, categories.name, transactions.currency),
-      db
-        .select({
-          slug: transactions.categorySlug,
-          currency: transactions.currency,
-          spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
-        })
-        .from(transactions)
-        .where(
-          and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)),
-        )
-        .groupBy(transactions.categorySlug, transactions.currency),
+      (() => {
+        const leaf = aliasedTable(categories, "cur_leaf");
+        const root = aliasedTable(categories, "cur_root");
+        const rootSlug = sql<string | null>`COALESCE(${leaf.parentSlug}, ${leaf.slug})`;
+        return db
+          .select({
+            slug: rootSlug,
+            name: root.name,
+            currency: transactions.currency,
+            spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
+            txCount: sql<number>`COUNT(*)::int`,
+          })
+          .from(transactions)
+          .leftJoin(leaf, eq(leaf.slug, transactions.categorySlug))
+          .leftJoin(root, eq(root.slug, rootSlug))
+          .where(
+            and(gte(transactions.occurredAt, cur.start), lte(transactions.occurredAt, cur.end)),
+          )
+          .groupBy(rootSlug, root.name, transactions.currency);
+      })(),
+      (() => {
+        const leaf = aliasedTable(categories, "prev_leaf");
+        const rootSlug = sql<string | null>`COALESCE(${leaf.parentSlug}, ${leaf.slug})`;
+        return db
+          .select({
+            slug: rootSlug,
+            currency: transactions.currency,
+            spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
+          })
+          .from(transactions)
+          .leftJoin(leaf, eq(leaf.slug, transactions.categorySlug))
+          .where(
+            and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)),
+          )
+          .groupBy(rootSlug, transactions.currency);
+      })(),
       db
         .select({
           merchant: transactions.merchant,

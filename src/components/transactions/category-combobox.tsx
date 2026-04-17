@@ -65,6 +65,7 @@ export function CategoryCombobox({
   triggerId,
   triggerClassName,
   allowClear = true,
+  rootsOnly = false,
 }: {
   value: string | null;
   options: CategoryOption[];
@@ -74,6 +75,7 @@ export function CategoryCombobox({
   triggerId?: string;
   triggerClassName?: string;
   allowClear?: boolean;
+  rootsOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const tree = useMemo(() => buildTree(options), [options]);
@@ -138,19 +140,21 @@ export function CategoryCombobox({
                     <span>{root.name}</span>
                     {value === root.slug ? <CheckIcon className="ml-auto size-4" /> : null}
                   </CommandItem>
-                  {children.map((child) => (
-                    <CommandItem
-                      key={child.slug}
-                      value={`${child.name} ${child.slug} ${parentKeywords}`}
-                      onSelect={() => {
-                        onChange(child.slug);
-                        setOpen(false);
-                      }}
-                    >
-                      <span className="text-muted-foreground pl-4">↳ {child.name}</span>
-                      {value === child.slug ? <CheckIcon className="ml-auto size-4" /> : null}
-                    </CommandItem>
-                  ))}
+                  {rootsOnly
+                    ? null
+                    : children.map((child) => (
+                        <CommandItem
+                          key={child.slug}
+                          value={`${child.name} ${child.slug} ${parentKeywords}`}
+                          onSelect={() => {
+                            onChange(child.slug);
+                            setOpen(false);
+                          }}
+                        >
+                          <span className="text-muted-foreground pl-4">↳ {child.name}</span>
+                          {value === child.slug ? <CheckIcon className="ml-auto size-4" /> : null}
+                        </CommandItem>
+                      ))}
                 </CommandGroup>
               );
             })}

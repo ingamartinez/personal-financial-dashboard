@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, lte, sql } from "drizzle-orm";
+import { aliasedTable, and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { budgets, categories, transactions } from "@/lib/db/schema";
 import { BudgetsManager } from "./budgets-manager";
@@ -56,19 +56,24 @@ export default async function BudgetsPage({
       .leftJoin(categories, eq(categories.slug, budgets.categorySlug))
       .where(eq(budgets.periodStart, startIso))
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
-    db
-      .select({
-        categorySlug: transactions.categorySlug,
-        spentCents: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
-      })
-      .from(transactions)
-      .where(and(gte(transactions.occurredAt, start), lte(transactions.occurredAt, end)))
-      .groupBy(transactions.categorySlug),
+    (() => {
+      const txCategory = aliasedTable(categories, "tx_category");
+      const rootSlug = sql<string | null>`COALESCE(${txCategory.parentSlug}, ${txCategory.slug})`;
+      return db
+        .select({
+          rootSlug,
+          spentCents: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
+        })
+        .from(transactions)
+        .leftJoin(txCategory, eq(txCategory.slug, transactions.categorySlug))
+        .where(and(gte(transactions.occurredAt, start), lte(transactions.occurredAt, end)))
+        .groupBy(rootSlug);
+    })(),
   ]);
 
   const spentMap = new Map<string, bigint>();
   for (const s of spentRows) {
-    if (s.categorySlug) spentMap.set(s.categorySlug, BigInt(s.spentCents));
+    if (s.rootSlug) spentMap.set(s.rootSlug, BigInt(s.spentCents));
   }
 
   const items = rows.map((r) => ({

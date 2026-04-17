@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CategoryCombobox } from "@/components/transactions/category-combobox";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { deleteBudget, upsertBudget } from "./actions";
@@ -257,7 +258,8 @@ function BudgetEditor({
 }) {
   const [pending, startTransition] = useTransition();
   const availableCategories = categories.filter(
-    (c) => !existingSlugs.has(c.slug) || c.slug === editing?.categorySlug,
+    (c) =>
+      c.parentSlug === null && (!existingSlugs.has(c.slug) || c.slug === editing?.categorySlug),
   );
 
   const [categorySlug, setCategorySlug] = useState(
@@ -310,20 +312,19 @@ function BudgetEditor({
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="b-cat">Category</Label>
-            <select
-              id="b-cat"
-              value={categorySlug}
-              onChange={(e) => setCategorySlug(e.target.value)}
-              className="bg-background h-9 rounded-md border px-2 text-sm"
-              required
+            <CategoryCombobox
+              triggerId="b-cat"
+              value={categorySlug || null}
+              options={availableCategories}
+              onChange={(next) => setCategorySlug(next ?? "")}
+              placeholder="Pick a category"
+              allowClear={false}
+              rootsOnly
               disabled={!!editing}
-            >
-              {availableCategories.map((c) => (
-                <option key={c.slug} value={c.slug}>
-                  {c.parentSlug ? `↳ ${c.name}` : c.name}
-                </option>
-              ))}
-            </select>
+            />
+            <p className="text-muted-foreground text-xs">
+              Budgets roll up sub-categories, so they live at the root level.
+            </p>
           </div>
 
           <div className="grid grid-cols-[1fr_auto] gap-3">
