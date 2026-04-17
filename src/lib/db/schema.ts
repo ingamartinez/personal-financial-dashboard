@@ -153,6 +153,10 @@ export const transactions = pgTable(
     classificationConfidence: smallint("classification_confidence"),
     source: txSource("source").notNull(),
     externalId: varchar("external_id", { length: 200 }),
+    recurringId: integer("recurring_id").references((): AnyPgColumn => recurringTransactions.id, {
+      onDelete: "set null",
+    }),
+    recurringYearMonth: varchar("recurring_year_month", { length: 7 }),
     rawData: jsonb("raw_data").notNull().default({}),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -166,6 +170,9 @@ export const transactions = pgTable(
     uniqueIndex("transactions_external_unique")
       .on(t.accountId, t.externalId)
       .where(sql`${t.externalId} IS NOT NULL`),
+    uniqueIndex("transactions_recurring_unique")
+      .on(t.recurringId, t.recurringYearMonth)
+      .where(sql`${t.recurringId} IS NOT NULL`),
   ],
 );
 
@@ -217,6 +224,22 @@ export const recurringTransactions = pgTable("recurring_transactions", {
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const recurringGaps = pgTable(
+  "recurring_gaps",
+  {
+    id: serial("id").primaryKey(),
+    recurringId: integer("recurring_id")
+      .notNull()
+      .references(() => recurringTransactions.id, { onDelete: "cascade" }),
+    yearMonth: varchar("year_month", { length: 7 }).notNull(),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("recurring_gaps_recurring_month_unique").on(t.recurringId, t.yearMonth),
+    index("recurring_gaps_detected_idx").on(t.detectedAt),
+  ],
+);
 
 export const ingestionLogs = pgTable("ingestion_logs", {
   id: serial("id").primaryKey(),

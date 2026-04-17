@@ -12,7 +12,9 @@ import { TopExpensesCard } from "@/components/dashboard/top-expenses-card";
 import { AccountsGrid } from "@/components/dashboard/accounts-grid";
 import { UpcomingCard } from "@/components/dashboard/upcoming-card";
 import { MonthSwitcher } from "@/components/dashboard/month-switcher";
+import { RecurringInboxCard } from "@/components/dashboard/recurring-inbox-card";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
+import { getOpenGaps } from "@/lib/recurring/gap-queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import {
   formatYearMonth,
@@ -37,7 +39,7 @@ export default async function DashboardPage({
   const [refYear, refMonth] = ym.split("-").map(Number);
 
   const fx = await getCurrentFxRate();
-  const [netWorth, flow, slices, top, accounts, upcoming] = await Promise.all([
+  const [netWorth, flow, slices, top, accounts, upcoming, openGaps] = await Promise.all([
     getNetWorth(fx.rate),
     getMonthlyFlow(fx.rate, refDate),
     getCategoryBreakdown(fx.rate, refDate),
@@ -49,11 +51,24 @@ export default async function DashboardPage({
       includeDismissed: true,
       today: now,
     }),
+    getOpenGaps(),
   ]);
 
   const upcomingItems = upcoming.map((u) => ({
     ...u,
     amountCents: u.amountCents.toString(),
+  }));
+
+  const gapItems = openGaps.map((g) => ({
+    gapId: g.gapId,
+    recurringId: g.recurringId,
+    yearMonth: g.yearMonth,
+    label: g.label,
+    accountName: g.accountName,
+    amountCents: g.amountCents.toString(),
+    currency: g.currency,
+    categoryName: g.categoryName,
+    dayOfMonth: g.dayOfMonth,
   }));
 
   const donutSlices = slices.map((s) => ({
@@ -83,6 +98,12 @@ export default async function DashboardPage({
         <TopExpensesCard rows={top} monthLabel={monthLabel} ym={ym} isFuture={isFuture} />
         <UpcomingCard items={upcomingItems} monthLabel={monthLabel} />
       </section>
+
+      {gapItems.length > 0 ? (
+        <section>
+          <RecurringInboxCard gaps={gapItems} />
+        </section>
+      ) : null}
 
       <section className="flex flex-col gap-3">
         <h2 className="text-h2">Accounts</h2>

@@ -12,6 +12,7 @@ import {
   type OcrMediaType,
   type OcrParsedRow,
 } from "@/lib/ingestion/ocr";
+import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 
 const previewSchema = z.object({
   accountId: z.coerce.number().int().positive(),
@@ -130,8 +131,10 @@ export async function confirmBancolombiaImport(input: ConfirmInput): Promise<Con
         })
         .returning({ id: transactions.id });
 
-      if (result.length > 0) inserted++;
-      else duplicated++;
+      if (result.length > 0) {
+        inserted++;
+        await autoLinkTransaction(result[0].id);
+      } else duplicated++;
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -284,8 +287,10 @@ export async function confirmOcrImport(input: ConfirmOcrInput): Promise<ConfirmR
         })
         .returning({ id: transactions.id });
 
-      if (result.length > 0) inserted++;
-      else duplicated++;
+      if (result.length > 0) {
+        inserted++;
+        await autoLinkTransaction(result[0].id);
+      } else duplicated++;
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
     }

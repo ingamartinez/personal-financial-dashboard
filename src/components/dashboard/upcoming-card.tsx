@@ -47,6 +47,7 @@ export function UpcomingCard({
       try {
         await promoteUpcoming({
           recurringId: item.recurringId,
+          yearMonth: item.yearMonth,
           occurredOn: item.expectedOn,
         });
         toast.success(`Imported "${item.label}"`);

@@ -4,6 +4,7 @@ import { db, type DB } from "@/lib/db";
 import { accounts, ingestionLogs, transactions } from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
+import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import {
   parseSmsBancolombia,
   resolveAccountFromLast4,
@@ -181,6 +182,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
       .returning({ id: transactions.id });
 
     if (result.length === 0) return { status: "duplicated" };
+    await autoLinkTransaction(result[0].id);
     emit({
       type: "transaction:created",
       id: result[0].id,
