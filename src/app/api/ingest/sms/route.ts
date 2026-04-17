@@ -13,6 +13,7 @@ import {
   type RoutableAccount,
 } from "@/lib/ingestion/sms-bancolombia";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
+import type { ClassificationMethod } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -137,7 +138,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
   // Other kinds have hardcoded categories (pago-tc, transferencias, ingresos)
   // or inherit from counterparty (qr_payment, bre_b_transfer).
   let finalCategory = cp.inheritedCategory ?? categorySlug;
-  let finalMethod: "rule" | "manual" | "unclassified" = cp.inheritedCategory ? "rule" : method;
+  let finalMethod: Exclude<ClassificationMethod, "ai"> = cp.inheritedCategory ? "rule" : method;
   let confidence: number | null = null;
   if (parsed.kind === "purchase" || parsed.kind === "provider_payment_sent") {
     const cls = await classifyByRule({
@@ -295,7 +296,7 @@ function buildTxFields(parsed: ParsedSms): {
   descriptionRaw: string;
   merchant: string | null;
   categorySlug: string | null;
-  method: "rule" | "manual" | "unclassified";
+  method: Exclude<ClassificationMethod, "ai">;
 } {
   switch (parsed.kind) {
     case "purchase":

@@ -7,12 +7,9 @@ import {
   counterpartyAliases,
   transactions,
 } from "@/lib/db/schema";
+import type { CounterpartyAlias, CounterpartyBrief, TxRow } from "@/lib/types";
 
-export type CounterpartyAlias = {
-  id: number;
-  kind: "qr" | "breb" | "account" | "name";
-  value: string;
-};
+export type { CounterpartyAlias, CounterpartyBrief, TxRow };
 
 export const PAGE_SIZE = 50;
 
@@ -23,29 +20,6 @@ export type TxFilters = {
   categorySlug?: string;
   q?: string;
   cursor?: string;
-};
-
-export type TxRow = {
-  id: number;
-  occurredAt: Date;
-  amountCents: bigint;
-  currency: "COP" | "USD";
-  descriptionRaw: string;
-  descriptionClean: string | null;
-  merchant: string | null;
-  categorySlug: string | null;
-  classificationMethod: "rule" | "ai" | "manual" | "unclassified";
-  source: "apple_pay" | "sms" | "ocr" | "csv" | "recurring" | "manual";
-  accountId: number;
-  accountName: string;
-  counterparty: {
-    id: number;
-    displayName: string;
-    type: "person" | "merchant" | "unknown";
-    defaultCategorySlug: string | null;
-    notes: string | null;
-    aliases: CounterpartyAlias[];
-  } | null;
 };
 
 export type TxListResult = {
@@ -170,12 +144,6 @@ export async function listTransactions(filters: TxFilters): Promise<TxListResult
 
   return { rows: shaped, nextCursor };
 }
-
-export type CounterpartyBrief = {
-  id: number;
-  displayName: string;
-  type: "person" | "merchant" | "unknown";
-};
 
 /**
  * Compact counterparty list for the merge selector in CounterpartyDialog.

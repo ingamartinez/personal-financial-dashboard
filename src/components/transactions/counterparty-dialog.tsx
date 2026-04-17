@@ -28,29 +28,11 @@ import {
   mergeCounterparty,
   splitCounterparty,
 } from "@/app/transactions/actions";
+import type { CounterpartyAlias, CounterpartyBrief, CounterpartyValue } from "@/lib/types";
 import type { CategoryOption } from "./category-cell";
 import { CategoryCombobox } from "./category-combobox";
 
-export type CounterpartyAlias = {
-  id: number;
-  kind: "qr" | "breb" | "account" | "name";
-  value: string;
-};
-
-export type CounterpartyValue = {
-  id: number;
-  displayName: string;
-  type: "person" | "merchant" | "unknown";
-  defaultCategorySlug: string | null;
-  notes: string | null;
-  aliases: CounterpartyAlias[];
-};
-
-export type CounterpartyBrief = {
-  id: number;
-  displayName: string;
-  type: "person" | "merchant" | "unknown";
-};
+export type { CounterpartyAlias, CounterpartyBrief, CounterpartyValue };
 
 const ALIAS_KIND_LABELS: Record<CounterpartyAlias["kind"], string> = {
   qr: "QR",

@@ -1,6 +1,5 @@
 import { EventEmitter } from "node:events";
-
-export type TransactionSource = "sms" | "manual" | "recurring" | "ocr";
+import type { TransactionSource } from "@/lib/types";
 
 export type AppEvent =
   | {

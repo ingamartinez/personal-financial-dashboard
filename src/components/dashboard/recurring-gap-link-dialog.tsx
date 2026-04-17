@@ -16,6 +16,7 @@ import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { linkTxToRecurring } from "@/app/settings/recurring/actions";
 import type { LinkCandidate } from "@/lib/recurring/gap-queries";
+import type { Currency } from "@/lib/types";
 
 const dateFmt = new Intl.DateTimeFormat("es-CO", {
   day: "2-digit",
@@ -41,7 +42,7 @@ export function RecurringGapLinkDialog({
   yearMonth: string;
   label: string;
   expectedAmountCents: bigint;
-  currency: "COP" | "USD";
+  currency: Currency;
   candidates: LinkCandidate[] | null;
   selectedTxId: number | null;
   onSelect: (txId: number) => void;

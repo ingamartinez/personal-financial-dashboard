@@ -17,11 +17,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { createManualExpense } from "@/app/transactions/actions";
+import type { Currency } from "@/lib/types";
 
 export type AccountOption = {
   id: number;
   name: string;
-  currency: "COP" | "USD";
+  currency: Currency;
 };
 
 export type CategoryOption = {

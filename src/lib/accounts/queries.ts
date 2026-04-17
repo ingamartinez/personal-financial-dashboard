@@ -1,13 +1,14 @@
 import { asc } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, type AccountMetadata } from "@/lib/db/schema";
+import type { AccountType, Currency } from "@/lib/types";
 
 export type AccountDetail = {
   id: number;
   name: string;
   institution: string;
-  type: "savings" | "credit_card" | "loan";
-  currency: "COP" | "USD";
+  type: AccountType;
+  currency: Currency;
   balanceCents: bigint;
   active: boolean;
   metadata: AccountMetadata;

@@ -4,13 +4,20 @@ import { revalidatePath } from "next/cache";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  counterparties,
+  counterpartyType,
+  transactions,
+} from "@/lib/db/schema";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { decimalStringToCents } from "@/lib/money";
+import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
 const updateSchema = z.object({
   txId: z.coerce.number().int().positive(),
@@ -145,7 +152,7 @@ export async function runAiClassifier() {
   return result;
 }
 
-const counterpartyTypeSchema = z.enum(["person", "merchant", "unknown"]);
+const counterpartyTypeSchema = z.enum(counterpartyType.enumValues);
 
 const updateCounterpartySchema = z.object({
   id: z.coerce.number().int().positive(),
@@ -394,7 +401,7 @@ export async function splitCounterparty(
   const [source] = await db.execute<{
     id: number;
     display_name: string;
-    type: "person" | "merchant" | "unknown";
+    type: CounterpartyType;
     default_category_slug: string | null;
   }>(sql`
     SELECT id, display_name, type, default_category_slug
@@ -406,7 +413,7 @@ export async function splitCounterparty(
 
   const allAliases = await db.execute<{
     id: number;
-    kind: "qr" | "breb" | "account" | "name";
+    kind: CounterpartyKind;
     value: string;
   }>(sql`
     SELECT id, kind, value

@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { POST } from "./route";
+import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
 const TEST_TOKEN = "test-token-vitest-sms-ingest";
 // SMS bodies used in tests — we clean up by externalId, not by marker,
@@ -56,10 +57,10 @@ async function findCounterpartyByAlias(kind: string, value: string) {
 }
 
 async function createCounterpartyWithAlias(args: {
-  kind: "qr" | "breb" | "account" | "name";
+  kind: CounterpartyKind;
   value: string;
   displayName: string;
-  type?: "person" | "merchant" | "unknown";
+  type?: CounterpartyType;
   defaultCategorySlug?: string | null;
 }) {
   const rows = await db.execute<{ id: number }>(sql`

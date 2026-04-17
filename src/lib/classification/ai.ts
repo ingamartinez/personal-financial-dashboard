@@ -1,10 +1,11 @@
 import { z } from "zod";
+import type { Currency } from "@/lib/types";
 
 export type AiClassifiable = {
   id: number;
   description: string;
   amountCents: bigint;
-  currency: "COP" | "USD";
+  currency: Currency;
 };
 
 export type AiCategoryOption = {

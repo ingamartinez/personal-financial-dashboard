@@ -11,8 +11,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { confirmBancolombiaImport, previewBancolombiaXlsx, type PreviewResult } from "./actions";
+import type { Currency } from "@/lib/types";
 
-type AccountOption = { id: number; name: string; currency: "COP" | "USD" };
+type AccountOption = { id: number; name: string; currency: Currency };
 
 function ParseButton() {
   const { pending } = useFormStatus();

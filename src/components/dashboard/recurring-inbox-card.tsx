@@ -17,6 +17,7 @@ import {
 } from "@/app/settings/recurring/actions";
 import { RecurringGapLinkDialog } from "@/components/dashboard/recurring-gap-link-dialog";
 import type { LinkCandidate } from "@/lib/recurring/gap-queries";
+import type { Currency } from "@/lib/types";
 
 export type RecurringGapItem = {
   gapId: number;
@@ -25,7 +26,7 @@ export type RecurringGapItem = {
   label: string;
   accountName: string;
   amountCents: string;
-  currency: "COP" | "USD";
+  currency: Currency;
   categoryName: string | null;
   dayOfMonth: number;
 };

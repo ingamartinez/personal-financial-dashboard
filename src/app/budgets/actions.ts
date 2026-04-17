@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { budgets, categories } from "@/lib/db/schema";
+import { budgets, categories, currency as currencyEnum } from "@/lib/db/schema";
 
 const ymSchema = z.string().regex(/^\d{4}-\d{2}$/);
 
@@ -20,7 +20,7 @@ const upsertSchema = z.object({
   id: z.coerce.number().int().positive().optional(),
   categorySlug: z.string().min(1).max(60),
   amount: z.coerce.number().finite().positive(),
-  currency: z.enum(["COP", "USD"]).default("COP"),
+  currency: z.enum(currencyEnum.enumValues).default("COP"),
   ym: ymSchema,
 });
 

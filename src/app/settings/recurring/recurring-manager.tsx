@@ -15,10 +15,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatMoney } from "@/lib/money";
+import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { deleteRecurring, toggleRecurringActive, upsertRecurring } from "./actions";
 
-type AccountOption = { id: number; name: string; currency: "COP" | "USD" };
+type AccountOption = { id: number; name: string; currency: Currency };
 type CategoryOption = {
   slug: string;
   name: string;
@@ -30,7 +31,7 @@ type RecurringRow = {
   accountName: string;
   label: string;
   amountCents: string;
-  currency: "COP" | "USD";
+  currency: Currency;
   categorySlug: string | null;
   dayOfMonth: number;
   active: boolean;

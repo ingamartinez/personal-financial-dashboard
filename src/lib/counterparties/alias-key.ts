@@ -1,9 +1,8 @@
 import type { ParsedSms } from "@/lib/ingestion/sms-bancolombia";
-
-export type AliasKind = "qr" | "breb" | "account" | "name";
+import type { CounterpartyKind } from "@/lib/types";
 
 export type KeyForKind = {
-  kind: AliasKind;
+  kind: CounterpartyKind;
   value: string;
   initialDisplayName: string;
 };
