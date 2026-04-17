@@ -13,6 +13,12 @@ const LINKS = [
     description:
       "Declare expected monthly items (rent, loan, subscriptions). Shows up as upcoming on the dashboard.",
   },
+  {
+    href: "/settings/ingestion",
+    title: "Ingesta SMS",
+    description:
+      "Salud de la ingestión por SMS: últimos 30 días, detección de drift y regla activa.",
+  },
 ];
 
 export default function SettingsPage() {
