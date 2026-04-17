@@ -180,6 +180,13 @@ export async function updateCounterparty(
     });
   }
 
+  emit({
+    type: "counterparty:updated",
+    id: parsed.id,
+    reason: "edit",
+    timestamp: Date.now(),
+  });
+
   revalidatePath("/");
   revalidatePath("/transactions");
 
@@ -294,6 +301,13 @@ export async function mergeCounterparty(
     type: "transaction:bulk-updated",
     count: result.movedTxCount,
     reason: "counterparty-updated",
+    timestamp: Date.now(),
+  });
+
+  emit({
+    type: "counterparty:updated",
+    id: parsed.targetId,
+    reason: "merge",
     timestamp: Date.now(),
   });
 
