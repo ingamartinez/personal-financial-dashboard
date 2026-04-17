@@ -15,13 +15,19 @@ import { useEffect, useRef, useState } from "react";
  *   suppressions below are local and scoped.
  */
 /* eslint-disable react-hooks/purity */
-export function useNewIds<T extends string | number>(ids: readonly T[], ttlMs = 2500): Set<T> {
+export function useNewIds<T extends string | number>(
+  ids: readonly T[],
+  { ttlMs = 2500, resetKey }: { ttlMs?: number; resetKey?: string | number } = {},
+): Set<T> {
   const seenRef = useRef<Set<T> | null>(null);
   const expiryRef = useRef<Map<T, number>>(new Map());
+  const resetKeyRef = useRef<string | number | undefined>(resetKey);
   const [, force] = useState(0);
 
-  if (seenRef.current === null) {
+  if (seenRef.current === null || resetKeyRef.current !== resetKey) {
     seenRef.current = new Set(ids);
+    expiryRef.current.clear();
+    resetKeyRef.current = resetKey;
   }
 
   const now = Date.now();

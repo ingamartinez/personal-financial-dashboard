@@ -80,7 +80,7 @@ export default async function DashboardPage({
       </section>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TopExpensesCard rows={top} monthLabel={monthLabel} isFuture={isFuture} />
+        <TopExpensesCard rows={top} monthLabel={monthLabel} ym={ym} isFuture={isFuture} />
         <UpcomingCard items={upcomingItems} monthLabel={monthLabel} />
       </section>
 
