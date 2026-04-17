@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
+import { aliasedTable, and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { toCop } from "@/lib/money";
@@ -96,16 +96,20 @@ export async function getCategoryBreakdown(
 ): Promise<CategorySlice[]> {
   const { start, end } = currentMonthRange(now);
 
+  const rootCategories = aliasedTable(categories, "root_categories");
+  const rootSlug = sql<string | null>`COALESCE(${categories.parentSlug}, ${categories.slug})`;
+
   const rows = await db
     .select({
-      slug: transactions.categorySlug,
+      slug: rootSlug,
       currency: transactions.currency,
-      name: categories.name,
-      color: categories.color,
+      name: rootCategories.name,
+      color: rootCategories.color,
       sumCents: sql<string>`SUM(-${transactions.amountCents})`,
     })
     .from(transactions)
     .leftJoin(categories, eq(categories.slug, transactions.categorySlug))
+    .leftJoin(rootCategories, eq(rootCategories.slug, rootSlug))
     .where(
       and(
         gte(transactions.occurredAt, start),
@@ -113,7 +117,7 @@ export async function getCategoryBreakdown(
         sql`${transactions.amountCents} < 0`,
       ),
     )
-    .groupBy(transactions.categorySlug, transactions.currency, categories.name, categories.color);
+    .groupBy(rootSlug, transactions.currency, rootCategories.name, rootCategories.color);
 
   const merged = new Map<string, CategorySlice>();
   for (const r of rows) {

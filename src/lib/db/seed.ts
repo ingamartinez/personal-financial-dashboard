@@ -121,6 +121,7 @@ const seedCategories: Array<{
     color: "#94a3b8",
     sortOrder: 140,
   },
+  { slug: "transferencia-persona", name: "A persona", parentSlug: "transferencias" },
   { slug: "ingresos", name: "Ingresos", icon: "wallet", color: "#16a34a", sortOrder: 150 },
   { slug: "salario", name: "Salario", parentSlug: "ingresos" },
   { slug: "otros", name: "Otros", icon: "ellipsis", color: "#6b7280", sortOrder: 999 },

@@ -29,6 +29,7 @@ import {
   splitCounterparty,
 } from "@/app/transactions/actions";
 import type { CategoryOption } from "./category-cell";
+import { CategoryCombobox } from "./category-combobox";
 
 export type CounterpartyAlias = {
   id: number;
@@ -282,19 +283,13 @@ export function CounterpartyDialog({
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cp-cat">Default category</Label>
-            <select
-              id="cp-cat"
-              value={defaultCategorySlug}
-              onChange={(e) => setDefaultCategorySlug(e.target.value)}
-              className="bg-background chevron-select h-9 w-full min-w-0 rounded-md border text-sm"
-            >
-              <option value="">— none —</option>
-              {categories.map((c) => (
-                <option key={c.slug} value={c.slug}>
-                  {c.parentSlug ? `↳ ${c.name}` : c.name}
-                </option>
-              ))}
-            </select>
+            <CategoryCombobox
+              triggerId="cp-cat"
+              value={defaultCategorySlug || null}
+              options={categories}
+              onChange={(next) => setDefaultCategorySlug(next ?? "")}
+              placeholder="— none —"
+            />
           </div>
 
           <div className="flex flex-col gap-1.5">
