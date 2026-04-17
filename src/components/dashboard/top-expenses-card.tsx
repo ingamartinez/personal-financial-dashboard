@@ -26,7 +26,7 @@ export function TopExpensesCard({ rows, monthLabel }: { rows: TopExpense[]; mont
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No expenses this month</div>
+          <div className="text-muted-foreground text-sm">No expenses this month</div>
         ) : (
           <ul className="flex flex-col divide-y">
             <AnimatePresence initial={false}>
@@ -44,16 +44,18 @@ export function TopExpensesCard({ rows, monthLabel }: { rows: TopExpense[]; mont
                     transition={enterTransition}
                   >
                     <div className="min-w-0">
-                      <div className="truncate font-medium">
-                        {r.merchant ?? r.description}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="truncate font-medium">{r.merchant ?? r.description}</div>
+                      <div className="text-muted-foreground text-xs">
                         {dateFmt.format(r.occurredAt)} · {r.accountName}
                         {r.categoryName ? ` · ${r.categoryName}` : ""}
                       </div>
                     </div>
-                    <div className="shrink-0 text-right tabular-nums font-medium text-rose-600">
-                      −{formatMoney(r.amountCents < BigInt(0) ? r.amountCents * BigInt(-1) : r.amountCents, r.currency)}
+                    <div className="shrink-0 text-right font-medium text-rose-600 tabular-nums">
+                      −
+                      {formatMoney(
+                        r.amountCents < BigInt(0) ? r.amountCents * BigInt(-1) : r.amountCents,
+                        r.currency,
+                      )}
                     </div>
                   </motion.li>
                 );

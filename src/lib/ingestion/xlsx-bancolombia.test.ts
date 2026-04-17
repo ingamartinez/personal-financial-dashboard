@@ -47,10 +47,7 @@ describe("parseBancolombiaXlsx", () => {
     const { rows, skipped } = parseBancolombiaXlsx(buf, 7);
     expect(rows).toHaveLength(1);
     expect(rows[0].description).toBe("OK");
-    expect(skipped.map((s) => s.reason)).toEqual([
-      "Missing description",
-      "Invalid amount: 0",
-    ]);
+    expect(skipped.map((s) => s.reason)).toEqual(["Missing description", "Invalid amount: 0"]);
   });
 
   it("rejects unexpected headers", () => {

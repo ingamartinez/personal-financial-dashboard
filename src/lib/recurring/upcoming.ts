@@ -100,7 +100,9 @@ export async function getUpcomingForMonth(
       ),
     );
 
-  const todayDate = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  const todayDate = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
+  );
 
   const items: UpcomingItem[] = [];
   for (const r of rows) {

@@ -6,13 +6,7 @@ import { useRouter } from "next/navigation";
 import { CheckCircle2Icon, CircleXIcon, UndoIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import {
@@ -106,12 +100,9 @@ export function UpcomingCard({
       </CardHeader>
       <CardContent>
         {items.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">
+          <p className="text-muted-foreground py-4 text-center text-sm">
             No recurring items.{" "}
-            <Link
-              href="/settings/recurring"
-              className="underline underline-offset-2"
-            >
+            <Link href="/settings/recurring" className="underline underline-offset-2">
               Add one
             </Link>{" "}
             to start tracking.
@@ -125,7 +116,7 @@ export function UpcomingCard({
                   key={`${item.recurringId}-${item.yearMonth}`}
                   className="flex items-center gap-3 py-2 text-sm"
                 >
-                  <div className="flex w-12 flex-col items-center text-xs text-muted-foreground">
+                  <div className="text-muted-foreground flex w-12 flex-col items-center text-xs">
                     <span className="font-medium">
                       {dateFmt.format(new Date(`${item.expectedOn}T12:00:00Z`))}
                     </span>
@@ -135,24 +126,22 @@ export function UpcomingCard({
                       <span className="truncate font-medium">{item.label}</span>
                       <span
                         className={cn(
-                          "rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                          "rounded px-1.5 py-0.5 text-[10px] tracking-wide uppercase",
                           statusStyles[item.status],
                         )}
                       >
                         {item.status}
                       </span>
                     </div>
-                    <div className="truncate text-xs text-muted-foreground">
+                    <div className="text-muted-foreground truncate text-xs">
                       {item.accountName}
                       {item.categoryName ? ` · ${item.categoryName}` : ""}
-                      {item.matchedTransactionId
-                        ? ` · tx #${item.matchedTransactionId}`
-                        : ""}
+                      {item.matchedTransactionId ? ` · tx #${item.matchedTransactionId}` : ""}
                     </div>
                   </div>
                   <div
                     className={cn(
-                      "w-28 text-right tabular-nums font-medium",
+                      "w-28 text-right font-medium tabular-nums",
                       cents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                     )}
                   >

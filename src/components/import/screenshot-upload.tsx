@@ -5,13 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -48,9 +42,7 @@ function toEditable(preview: OcrPreviewResult): EditableRow[] {
 
 export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
   const router = useRouter();
-  const [accountId, setAccountId] = useState<string>(
-    accounts[0]?.id.toString() ?? "",
-  );
+  const [accountId, setAccountId] = useState<string>(accounts[0]?.id.toString() ?? "");
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
@@ -126,9 +118,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
       const result = await previewScreenshotOcr(fd);
       setPreview(result);
       setRows(toEditable(result));
-      setExcluded(
-        new Set(result.rows.filter((r) => r.duplicate).map((r) => r.externalId)),
-      );
+      setExcluded(new Set(result.rows.filter((r) => r.duplicate).map((r) => r.externalId)));
       toast.success(
         `Extracted ${result.totals.parsed} · ${result.totals.new} new · ${result.totals.duplicates} duplicates`,
       );
@@ -177,9 +167,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
           accountId: preview.accountId,
           rows: payload,
         });
-        toast.success(
-          `Imported ${res.inserted} · ${res.duplicated} skipped as duplicate`,
-        );
+        toast.success(`Imported ${res.inserted} · ${res.duplicated} skipped as duplicate`);
         setFile(null);
         setPreview(null);
         setRows([]);
@@ -199,8 +187,8 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
         <CardHeader>
           <CardTitle>Screenshot OCR · Claude Vision</CardTitle>
           <CardDescription>
-            Paste (⌘/Ctrl+V), drop, or choose a screenshot of transactions (ARQ,
-            or any bank as fallback). Claude Vision will extract the rows.
+            Paste (⌘/Ctrl+V), drop, or choose a screenshot of transactions (ARQ, or any bank as
+            fallback). Claude Vision will extract the rows.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -210,7 +198,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
               id="ocr-account"
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
-              className="h-9 rounded-md border bg-background text-sm chevron-select"
+              className="bg-background chevron-select h-9 rounded-md border text-sm"
               required
             >
               {accounts.map((a) => (
@@ -238,17 +226,11 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
           >
             {previewUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={previewUrl}
-                alt="Screenshot preview"
-                className="max-h-64 rounded border"
-              />
+              <img src={previewUrl} alt="Screenshot preview" className="max-h-64 rounded border" />
             ) : (
               <>
                 <span className="font-medium">Drop, paste, or click to upload</span>
-                <span className="text-xs text-muted-foreground">
-                  PNG, JPEG, WebP · up to 8MB
-                </span>
+                <span className="text-muted-foreground text-xs">PNG, JPEG, WebP · up to 8MB</span>
               </>
             )}
             <Input
@@ -265,11 +247,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
               {parsing ? "Extracting…" : "Extract with Claude Vision"}
             </Button>
             {file && (
-              <Button
-                variant="outline"
-                onClick={() => pickFile(null)}
-                disabled={parsing}
-              >
+              <Button variant="outline" onClick={() => pickFile(null)} disabled={parsing}>
                 Clear
               </Button>
             )}
@@ -284,9 +262,8 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
               Preview · {includedCount} of {rows.length} selected
             </CardTitle>
             <CardDescription>
-              Model: {preview.model} · {preview.usage.inputTokens} in /{" "}
-              {preview.usage.outputTokens} out tokens. Edit any row before
-              importing.
+              Model: {preview.model} · {preview.usage.inputTokens} in / {preview.usage.outputTokens}{" "}
+              out tokens. Edit any row before importing.
               {preview.skipped.length > 0
                 ? ` ${preview.skipped.length} row(s) skipped during parsing.`
                 : ""}
@@ -295,7 +272,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
           <CardContent className="flex flex-col gap-3">
             <div className="overflow-x-auto rounded-md border">
               <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                <thead className="bg-muted/50 text-muted-foreground text-xs uppercase">
                   <tr>
                     <th className="w-10 p-2"></th>
                     <th className="p-2 text-left">Date</th>
@@ -328,18 +305,14 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
                           <Input
                             type="date"
                             value={r.occurredOn}
-                            onChange={(e) =>
-                              updateRow(idx, { occurredOn: e.target.value })
-                            }
+                            onChange={(e) => updateRow(idx, { occurredOn: e.target.value })}
                             className="h-8 w-36"
                           />
                         </td>
                         <td className="p-2">
                           <Input
                             value={r.description}
-                            onChange={(e) =>
-                              updateRow(idx, { description: e.target.value })
-                            }
+                            onChange={(e) => updateRow(idx, { description: e.target.value })}
                             className="h-8"
                           />
                         </td>
@@ -357,18 +330,14 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
                             }}
                             className={cn(
                               "h-8 w-32 text-right tabular-nums",
-                              r.amountCents < BigInt(0)
-                                ? "text-rose-600"
-                                : "text-emerald-600",
+                              r.amountCents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                             )}
                           />
-                          <div className="text-xs text-muted-foreground tabular-nums">
+                          <div className="text-muted-foreground text-xs tabular-nums">
                             {formatMoney(r.amountCents, currency)}
                           </div>
-                          <div className="text-[10px] text-muted-foreground">
-                            {dateFmt.format(
-                              new Date(`${r.occurredOn}T12:00:00Z`),
-                            )}
+                          <div className="text-muted-foreground text-[10px]">
+                            {dateFmt.format(new Date(`${r.occurredOn}T12:00:00Z`))}
                           </div>
                         </td>
                         <td className="p-2 text-xs">
@@ -398,10 +367,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
               >
                 Cancel
               </Button>
-              <Button
-                onClick={onConfirm}
-                disabled={confirming || includedCount === 0}
-              >
+              <Button onClick={onConfirm} disabled={confirming || includedCount === 0}>
                 {confirming ? "Importing…" : `Import ${includedCount} row(s)`}
               </Button>
             </div>

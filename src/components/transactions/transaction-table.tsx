@@ -41,15 +41,11 @@ const methodVariant: Record<
   unclassified: "destructive",
 };
 
-function CounterpartyTypeBadge({
-  type,
-}: {
-  type: NonNullable<TxRow["counterparty"]>["type"];
-}) {
+function CounterpartyTypeBadge({ type }: { type: NonNullable<TxRow["counterparty"]>["type"] }) {
   if (type === "person") {
     return (
       <span
-        className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-muted-foreground"
+        className="bg-muted text-muted-foreground inline-flex size-4 items-center justify-center rounded-full"
         title="Person"
       >
         <UserIcon className="size-2.5" />
@@ -59,7 +55,7 @@ function CounterpartyTypeBadge({
   if (type === "merchant") {
     return (
       <span
-        className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-muted-foreground"
+        className="bg-muted text-muted-foreground inline-flex size-4 items-center justify-center rounded-full"
         title="Merchant"
       >
         <BuildingIcon className="size-2.5" />
@@ -88,12 +84,7 @@ function formatDate(d: Date) {
 }
 
 function primaryDescription(tx: TxRow): string {
-  return (
-    tx.counterparty?.displayName ??
-    tx.merchant ??
-    tx.descriptionClean ??
-    tx.descriptionRaw
-  );
+  return tx.counterparty?.displayName ?? tx.merchant ?? tx.descriptionClean ?? tx.descriptionRaw;
 }
 
 function hasSecondaryDescription(tx: TxRow): boolean {
@@ -118,7 +109,7 @@ export function TransactionTable({
 
   if (rows.length === 0) {
     return (
-      <div className="rounded-md border bg-card">
+      <div className="bg-card rounded-md border">
         <EmptyState
           icon={<ReceiptTextIcon />}
           title="No transactions"
@@ -130,7 +121,7 @@ export function TransactionTable({
 
   return (
     <>
-      <div className="hidden rounded-md border bg-card md:block">
+      <div className="bg-card hidden rounded-md border md:block">
         <Table>
           <TableHeader>
             <TableRow>
@@ -145,29 +136,89 @@ export function TransactionTable({
           </TableHeader>
           <TableBody>
             <AnimatePresence initial={false}>
-            {rows.map((tx) => {
-              const isExpense = tx.amountCents < BigInt(0);
-              const isNew = newIds.has(tx.id);
-              return (
-                <motion.tr
-                  key={tx.id}
-                  data-slot="table-row"
-                  className={cn(ROW_CLASSES, isNew && "tx-row-new")}
-                  initial={enterInitial}
-                  animate={enterAnimate}
-                  transition={enterTransition}
-                >
-                  <TableCell
-                    className="text-muted-foreground"
-                    suppressHydrationWarning
+              {rows.map((tx) => {
+                const isExpense = tx.amountCents < BigInt(0);
+                const isNew = newIds.has(tx.id);
+                return (
+                  <motion.tr
+                    key={tx.id}
+                    data-slot="table-row"
+                    className={cn(ROW_CLASSES, isNew && "tx-row-new")}
+                    initial={enterInitial}
+                    animate={enterAnimate}
+                    transition={enterTransition}
                   >
-                    {formatDate(tx.occurredAt)}
-                  </TableCell>
-                  <TableCell>
+                    <TableCell className="text-muted-foreground" suppressHydrationWarning>
+                      {formatDate(tx.occurredAt)}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium">{primaryDescription(tx)}</span>
+                        {tx.counterparty ? (
+                          <CounterpartyTypeBadge type={tx.counterparty.type} />
+                        ) : null}
+                        {tx.counterparty ? (
+                          <CounterpartyDialog
+                            counterparty={tx.counterparty}
+                            categories={categories}
+                            allCounterparties={allCounterparties}
+                          />
+                        ) : null}
+                      </div>
+                      {hasSecondaryDescription(tx) ? (
+                        <div className="text-muted-foreground line-clamp-1 text-xs">
+                          {tx.descriptionRaw}
+                        </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {tx.accountName}
+                    </TableCell>
+                    <TableCell>
+                      <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{sourceLabel[tx.source]}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={methodVariant[tx.classificationMethod]}>
+                        {tx.classificationMethod}
+                      </Badge>
+                    </TableCell>
+                    <TableCell
+                      className={`money text-right ${isExpense ? "text-destructive" : "text-emerald-600"}`}
+                      suppressHydrationWarning
+                    >
+                      {formatAmount(tx.amountCents, tx.currency)}
+                    </TableCell>
+                  </motion.tr>
+                );
+              })}
+            </AnimatePresence>
+          </TableBody>
+        </Table>
+      </div>
+
+      <ul className="flex flex-col gap-2 md:hidden">
+        <AnimatePresence initial={false}>
+          {rows.map((tx) => {
+            const isExpense = tx.amountCents < BigInt(0);
+            const isNew = newIds.has(tx.id);
+            return (
+              <motion.li
+                key={tx.id}
+                className={cn(
+                  "bg-card flex flex-col gap-2 rounded-md border p-3",
+                  isNew && "tx-row-new",
+                )}
+                initial={enterInitial}
+                animate={enterAnimate}
+                transition={enterTransition}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="font-medium">
-                        {primaryDescription(tx)}
-                      </span>
+                      <span className="truncate font-medium">{primaryDescription(tx)}</span>
                       {tx.counterparty ? (
                         <CounterpartyTypeBadge type={tx.counterparty.type} />
                       ) : null}
@@ -180,116 +231,38 @@ export function TransactionTable({
                       ) : null}
                     </div>
                     {hasSecondaryDescription(tx) ? (
-                      <div className="text-xs text-muted-foreground line-clamp-1">
+                      <p className="text-muted-foreground line-clamp-1 text-xs">
                         {tx.descriptionRaw}
-                      </div>
+                      </p>
                     ) : null}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {tx.accountName}
-                  </TableCell>
-                  <TableCell>
-                    <CategoryCell
-                      txId={tx.id}
-                      value={tx.categorySlug}
-                      options={categories}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{sourceLabel[tx.source]}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={methodVariant[tx.classificationMethod]}>
-                      {tx.classificationMethod}
-                    </Badge>
-                  </TableCell>
-                  <TableCell
-                    className={`text-right money ${isExpense ? "text-destructive" : "text-emerald-600"}`}
+                  </div>
+                  <span
+                    className={`money shrink-0 text-right text-sm font-semibold ${
+                      isExpense ? "text-destructive" : "text-emerald-600"
+                    }`}
                     suppressHydrationWarning
                   >
                     {formatAmount(tx.amountCents, tx.currency)}
-                  </TableCell>
-                </motion.tr>
-              );
-            })}
-            </AnimatePresence>
-          </TableBody>
-        </Table>
-      </div>
-
-      <ul className="flex flex-col gap-2 md:hidden">
-        <AnimatePresence initial={false}>
-        {rows.map((tx) => {
-          const isExpense = tx.amountCents < BigInt(0);
-          const isNew = newIds.has(tx.id);
-          return (
-            <motion.li
-              key={tx.id}
-              className={cn(
-                "flex flex-col gap-2 rounded-md border bg-card p-3",
-                isNew && "tx-row-new",
-              )}
-              initial={enterInitial}
-              animate={enterAnimate}
-              transition={enterTransition}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate font-medium">
-                      {primaryDescription(tx)}
-                    </span>
-                    {tx.counterparty ? (
-                      <CounterpartyTypeBadge type={tx.counterparty.type} />
-                    ) : null}
-                    {tx.counterparty ? (
-                      <CounterpartyDialog
-                        counterparty={tx.counterparty}
-                        categories={categories}
-                        allCounterparties={allCounterparties}
-                      />
-                    ) : null}
-                  </div>
-                  {hasSecondaryDescription(tx) ? (
-                    <p className="line-clamp-1 text-xs text-muted-foreground">
-                      {tx.descriptionRaw}
-                    </p>
-                  ) : null}
+                  </span>
                 </div>
-                <span
-                  className={`money shrink-0 text-right text-sm font-semibold ${
-                    isExpense ? "text-destructive" : "text-emerald-600"
-                  }`}
-                  suppressHydrationWarning
-                >
-                  {formatAmount(tx.amountCents, tx.currency)}
-                </span>
-              </div>
 
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                <span suppressHydrationWarning>{formatDate(tx.occurredAt)}</span>
-                <span aria-hidden="true">·</span>
-                <span className="truncate">{tx.accountName}</span>
-                <span aria-hidden="true">·</span>
-                <Badge variant="outline" className="font-normal">
-                  {sourceLabel[tx.source]}
-                </Badge>
-                <Badge
-                  variant={methodVariant[tx.classificationMethod]}
-                  className="font-normal"
-                >
-                  {tx.classificationMethod}
-                </Badge>
-              </div>
+                <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                  <span suppressHydrationWarning>{formatDate(tx.occurredAt)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="truncate">{tx.accountName}</span>
+                  <span aria-hidden="true">·</span>
+                  <Badge variant="outline" className="font-normal">
+                    {sourceLabel[tx.source]}
+                  </Badge>
+                  <Badge variant={methodVariant[tx.classificationMethod]} className="font-normal">
+                    {tx.classificationMethod}
+                  </Badge>
+                </div>
 
-              <CategoryCell
-                txId={tx.id}
-                value={tx.categorySlug}
-                options={categories}
-              />
-            </motion.li>
-          );
-        })}
+                <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
+              </motion.li>
+            );
+          })}
         </AnimatePresence>
       </ul>
     </>

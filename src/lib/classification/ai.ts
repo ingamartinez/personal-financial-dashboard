@@ -39,10 +39,7 @@ const responseSchema = z.object({
   ),
 });
 
-function buildPrompt(
-  txs: AiClassifiable[],
-  cats: AiCategoryOption[],
-): string {
+function buildPrompt(txs: AiClassifiable[], cats: AiCategoryOption[]): string {
   const categoryList = cats
     .map((c) =>
       c.parentSlug
@@ -154,8 +151,7 @@ export async function classifyBatchWithAi(opts: {
   const validSlugs = new Set(opts.categories.map((c) => c.slug));
   const classifications = parsed.classifications.map((c) => ({
     ...c,
-    categorySlug:
-      c.categorySlug && validSlugs.has(c.categorySlug) ? c.categorySlug : null,
+    categorySlug: c.categorySlug && validSlugs.has(c.categorySlug) ? c.categorySlug : null,
   }));
 
   return {

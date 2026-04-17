@@ -7,20 +7,10 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import {
-  confirmBancolombiaImport,
-  previewBancolombiaXlsx,
-  type PreviewResult,
-} from "./actions";
+import { confirmBancolombiaImport, previewBancolombiaXlsx, type PreviewResult } from "./actions";
 
 type AccountOption = { id: number; name: string; currency: "COP" | "USD" };
 
@@ -38,9 +28,7 @@ const dateFmt = new Intl.DateTimeFormat("es-CO", { day: "2-digit", month: "short
 export function ImportForm({ accounts }: { accounts: AccountOption[] }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [accountId, setAccountId] = useState<string>(
-    accounts[0]?.id.toString() ?? "",
-  );
+  const [accountId, setAccountId] = useState<string>(accounts[0]?.id.toString() ?? "");
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
 
@@ -90,9 +78,7 @@ export function ImportForm({ accounts }: { accounts: AccountOption[] }) {
           accountId: preview.accountId,
           rows,
         });
-        toast.success(
-          `Imported ${res.inserted} · ${res.duplicated} skipped as duplicate`,
-        );
+        toast.success(`Imported ${res.inserted} · ${res.duplicated} skipped as duplicate`);
         setPreview(null);
         setExcluded(new Set());
         router.push("/transactions");
@@ -102,9 +88,7 @@ export function ImportForm({ accounts }: { accounts: AccountOption[] }) {
     });
   }
 
-  const includedCount = preview
-    ? preview.rows.length - excluded.size
-    : 0;
+  const includedCount = preview ? preview.rows.length - excluded.size : 0;
 
   return (
     <div className="flex flex-col gap-6">
@@ -112,8 +96,8 @@ export function ImportForm({ accounts }: { accounts: AccountOption[] }) {
         <CardHeader>
           <CardTitle>Bancolombia · XLSX upload</CardTitle>
           <CardDescription>
-            Pick the account this file belongs to, then upload the
-            “Movimientos” .xlsx exported from Sucursal Virtual.
+            Pick the account this file belongs to, then upload the “Movimientos” .xlsx exported from
+            Sucursal Virtual.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -125,7 +109,7 @@ export function ImportForm({ accounts }: { accounts: AccountOption[] }) {
                 name="accountId"
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value)}
-                className="h-9 rounded-md border bg-background px-2 text-sm"
+                className="bg-background h-9 rounded-md border px-2 text-sm"
                 required
               >
                 {accounts.map((a) => (
@@ -155,7 +139,9 @@ export function ImportForm({ accounts }: { accounts: AccountOption[] }) {
       {preview && (
         <Card>
           <CardHeader>
-            <CardTitle>Preview · {includedCount} of {preview.rows.length} selected</CardTitle>
+            <CardTitle>
+              Preview · {includedCount} of {preview.rows.length} selected
+            </CardTitle>
             <CardDescription>
               Duplicates pre-excluded. Toggle any row to include or skip it.
               {preview.skipped.length > 0
@@ -166,7 +152,7 @@ export function ImportForm({ accounts }: { accounts: AccountOption[] }) {
           <CardContent className="flex flex-col gap-3">
             <div className="overflow-x-auto rounded-md border">
               <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                <thead className="bg-muted/50 text-muted-foreground text-xs uppercase">
                   <tr>
                     <th className="w-10 p-2"></th>
                     <th className="p-2 text-left">Date</th>
@@ -199,15 +185,11 @@ export function ImportForm({ accounts }: { accounts: AccountOption[] }) {
                         <td className="p-2 tabular-nums">
                           {dateFmt.format(new Date(`${r.occurredOn}T12:00:00Z`))}
                         </td>
-                        <td className="max-w-[18rem] truncate p-2">
-                          {r.description}
-                        </td>
-                        <td className="p-2 text-xs text-muted-foreground">
-                          {r.reference ?? "—"}
-                        </td>
+                        <td className="max-w-[18rem] truncate p-2">{r.description}</td>
+                        <td className="text-muted-foreground p-2 text-xs">{r.reference ?? "—"}</td>
                         <td
                           className={cn(
-                            "p-2 text-right tabular-nums font-medium",
+                            "p-2 text-right font-medium tabular-nums",
                             r.amountCents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                           )}
                         >

@@ -17,7 +17,7 @@ export default function TransactionsLoading() {
         ))}
       </div>
 
-      <div className="hidden overflow-hidden rounded-md border bg-card md:block">
+      <div className="bg-card hidden overflow-hidden rounded-md border md:block">
         <div className="border-b px-4 py-3">
           <Skeleton className="h-4 w-full max-w-3xl" />
         </div>
@@ -43,10 +43,7 @@ export default function TransactionsLoading() {
 
       <div className="flex flex-col gap-2 md:hidden">
         {Array.from({ length: 8 }).map((_, i) => (
-          <div
-            key={i}
-            className="flex flex-col gap-2 rounded-md border bg-card p-3"
-          >
+          <div key={i} className="bg-card flex flex-col gap-2 rounded-md border p-3">
             <div className="flex items-start justify-between gap-3">
               <Skeleton className="h-4 w-40" />
               <Skeleton className="h-4 w-20" />

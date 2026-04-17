@@ -16,11 +16,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-export const accountType = pgEnum("account_type", [
-  "savings",
-  "credit_card",
-  "loan",
-]);
+export const accountType = pgEnum("account_type", ["savings", "credit_card", "loan"]);
 
 export const currency = pgEnum("currency", ["COP", "USD"]);
 
@@ -40,11 +36,7 @@ export const classificationMethod = pgEnum("classification_method", [
   "unclassified",
 ]);
 
-export const counterpartyType = pgEnum("counterparty_type", [
-  "person",
-  "merchant",
-  "unknown",
-]);
+export const counterpartyType = pgEnum("counterparty_type", ["person", "merchant", "unknown"]);
 
 export const counterpartyKeyKind = pgEnum("counterparty_key_kind", [
   "qr",
@@ -59,7 +51,9 @@ export const accounts = pgTable("accounts", {
   institution: varchar("institution", { length: 50 }).notNull(),
   type: accountType("type").notNull(),
   currency: currency("currency").notNull(),
-  balanceCents: bigint("balance_cents", { mode: "bigint" }).notNull().default(sql`0`),
+  balanceCents: bigint("balance_cents", { mode: "bigint" })
+    .notNull()
+    .default(sql`0`),
   active: boolean("active").notNull().default(true),
   metadata: jsonb("metadata").$type<AccountMetadata>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -141,14 +135,12 @@ export const transactions = pgTable(
     descriptionRaw: text("description_raw").notNull(),
     descriptionClean: text("description_clean"),
     merchant: varchar("merchant", { length: 200 }),
-    categorySlug: varchar("category_slug", { length: 60 }).references(
-      () => categories.slug,
-      { onDelete: "set null" },
-    ),
-    counterpartyId: integer("counterparty_id").references(
-      () => counterparties.id,
-      { onDelete: "set null" },
-    ),
+    categorySlug: varchar("category_slug", { length: 60 }).references(() => categories.slug, {
+      onDelete: "set null",
+    }),
+    counterpartyId: integer("counterparty_id").references(() => counterparties.id, {
+      onDelete: "set null",
+    }),
     classificationMethod: classificationMethod("classification_method")
       .notNull()
       .default("unclassified"),
@@ -209,10 +201,9 @@ export const recurringTransactions = pgTable("recurring_transactions", {
   label: varchar("label", { length: 120 }).notNull(),
   amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
   currency: currency("currency").notNull(),
-  categorySlug: varchar("category_slug", { length: 60 }).references(
-    () => categories.slug,
-    { onDelete: "set null" },
-  ),
+  categorySlug: varchar("category_slug", { length: 60 }).references(() => categories.slug, {
+    onDelete: "set null",
+  }),
   dayOfMonth: smallint("day_of_month").notNull(),
   active: boolean("active").notNull().default(true),
   lastGeneratedAt: timestamp("last_generated_at", { withTimezone: true }),
@@ -253,9 +244,7 @@ export const fxRates = pgTable(
     quote: varchar("quote", { length: 3 }).notNull(),
     rateMicros: bigint("rate_micros", { mode: "bigint" }).notNull(),
     asOf: date("as_of").notNull(),
-    fetchedAt: timestamp("fetched_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
     source: varchar("source", { length: 40 }).notNull(),
   },
   (t) => [
@@ -275,7 +264,5 @@ export const accountSnapshots = pgTable(
     balanceCents: bigint("balance_cents", { mode: "bigint" }).notNull(),
     metadata: jsonb("metadata").notNull().default({}),
   },
-  (t) => [
-    uniqueIndex("snapshots_account_date_unique").on(t.accountId, t.snapshotDate),
-  ],
+  (t) => [uniqueIndex("snapshots_account_date_unique").on(t.accountId, t.snapshotDate)],
 );

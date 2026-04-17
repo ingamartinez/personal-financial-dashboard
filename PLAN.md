@@ -4,18 +4,18 @@
 
 Developer en Colombia con finanzas desordenadas. Bancos principales: **Bancolombia** y **ARQ** (ex-DollarApp). El pain point central: no quiere ingresar datos manualmente. Necesita un dashboard con clasificación AI de gastos, gráficos, presupuestos y recomendaciones financieras.
 
-**Estrategia de consolidación**: todas las deudas se reúnen en un único préstamo de libre inversión (cuota fija mensual, tasa conocida). Todas las suscripciones recurrentes se concentran en una **e-card de Bancolombia** dedicada, lo que la convierte en el *subscription hub* del sistema.
+**Estrategia de consolidación**: todas las deudas se reúnen en un único préstamo de libre inversión (cuota fija mensual, tasa conocida). Todas las suscripciones recurrentes se concentran en una **e-card de Bancolombia** dedicada, lo que la convierte en el _subscription hub_ del sistema.
 
 ### Cuentas (6 en total)
 
-| # | Banco | Tipo | Moneda |
-|---|-------|------|--------|
-| 1 | Bancolombia | Cuenta de ahorros | COP |
-| 2 | Bancolombia | Tarjeta de crédito #1 | COP |
-| 3 | Bancolombia | Tarjeta de crédito #2 | COP |
-| 4 | Bancolombia | e-card (suscripciones) | COP |
-| 5 | Bancolombia | Préstamo libre inversión (consolidación) | COP |
-| 6 | ARQ | Cuenta de ahorros | USD |
+| #   | Banco       | Tipo                                     | Moneda |
+| --- | ----------- | ---------------------------------------- | ------ |
+| 1   | Bancolombia | Cuenta de ahorros                        | COP    |
+| 2   | Bancolombia | Tarjeta de crédito #1                    | COP    |
+| 3   | Bancolombia | Tarjeta de crédito #2                    | COP    |
+| 4   | Bancolombia | e-card (suscripciones)                   | COP    |
+| 5   | Bancolombia | Préstamo libre inversión (consolidación) | COP    |
+| 6   | ARQ         | Cuenta de ahorros                        | USD    |
 
 ---
 
@@ -60,19 +60,19 @@ Developer en Colombia con finanzas desordenadas. Bancos principales: **Bancolomb
 
 ## Tech Stack
 
-| Capa | Elección | Razón |
-|------|----------|-------|
-| Framework | Next.js 16 (App Router, Turbopack default) | SSR para dashboard, API routes para backend |
-| Lenguaje | TypeScript | Expertise existente |
-| DB | PostgreSQL 16 | Ya corre en ia-server |
-| ORM | Drizzle ORM | Type-safe, liviano |
-| Charts | Recharts | React-native, buenos componentes financieros |
-| UI | Tailwind + shadcn/ui | Ya usado en otros proyectos |
-| AI Classification | Claude API (Haiku) | Clasificación barata (~$0.001/txn) |
-| AI Insights | Claude API (Sonnet) | Reportes mensuales con análisis profundo |
-| AI OCR | Claude Vision API | Screenshot parsing para ARQ |
-| Runtime | Bun 1.3+ | Más rápido que Node, native TS |
-| Deployment | pm2 en ia-server | Puerto 3100 (evita conflicto con CC en 3000), reuso de pm2 ya instalado, logs/monit nativos |
+| Capa              | Elección                                   | Razón                                                                                       |
+| ----------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Framework         | Next.js 16 (App Router, Turbopack default) | SSR para dashboard, API routes para backend                                                 |
+| Lenguaje          | TypeScript                                 | Expertise existente                                                                         |
+| DB                | PostgreSQL 16                              | Ya corre en ia-server                                                                       |
+| ORM               | Drizzle ORM                                | Type-safe, liviano                                                                          |
+| Charts            | Recharts                                   | React-native, buenos componentes financieros                                                |
+| UI                | Tailwind + shadcn/ui                       | Ya usado en otros proyectos                                                                 |
+| AI Classification | Claude API (Haiku)                         | Clasificación barata (~$0.001/txn)                                                          |
+| AI Insights       | Claude API (Sonnet)                        | Reportes mensuales con análisis profundo                                                    |
+| AI OCR            | Claude Vision API                          | Screenshot parsing para ARQ                                                                 |
+| Runtime           | Bun 1.3+                                   | Más rápido que Node, native TS                                                              |
+| Deployment        | pm2 en ia-server                           | Puerto 3100 (evita conflicto con CC en 3000), reuso de pm2 ya instalado, logs/monit nativos |
 
 ---
 
@@ -155,14 +155,14 @@ Screenshot de la app
 
 ### Cobertura por escenario
 
-| Escenario | Canal | Esfuerzo |
-|-----------|-------|----------|
-| Compra Apple Pay (cualquier tarjeta) | 🍎 Transaction Trigger | Zero |
-| Compra tarjeta física Bancolombia | 📱 SMS Shortcut | Zero |
-| Suscripciones (e-card) | 📱 SMS Shortcut | Zero |
-| Cuota préstamo consolidado | 🔁 Recurring | Zero |
-| Cualquier movimiento ARQ | 📸 Screenshot OCR | ~1 min/semana |
-| Efectivo | ✍️ Manual | ~30 seg/gasto |
+| Escenario                            | Canal                  | Esfuerzo      |
+| ------------------------------------ | ---------------------- | ------------- |
+| Compra Apple Pay (cualquier tarjeta) | 🍎 Transaction Trigger | Zero          |
+| Compra tarjeta física Bancolombia    | 📱 SMS Shortcut        | Zero          |
+| Suscripciones (e-card)               | 📱 SMS Shortcut        | Zero          |
+| Cuota préstamo consolidado           | 🔁 Recurring           | Zero          |
+| Cualquier movimiento ARQ             | 📸 Screenshot OCR      | ~1 min/semana |
+| Efectivo                             | ✍️ Manual              | ~30 seg/gasto |
 
 **Cobertura automática estimada: ~95%**
 
@@ -192,6 +192,7 @@ Guardar resultado + confidence
 ```
 
 **30+ reglas seed para merchants colombianos:**
+
 - EXITO/CARULLA/JUMBO/D1/ARA → Mercado
 - RAPPI → Delivery
 - UBER/DIDI → Transporte
@@ -236,19 +237,20 @@ SAVINGS (Ahorros)          CREDIT CARD (TC)              LOAN (Préstamo)
 
 ## UI Pages
 
-| Ruta | Propósito |
-|------|-----------|
-| `/` | Dashboard: patrimonio neto, flujo de caja mensual, donut de categorías, tendencia, barras de presupuesto |
-| `/transactions` | Lista con filtros (fecha, categoría, cuenta, búsqueda), edición inline de categoría |
-| `/budgets` | Creación y tracking de presupuestos por categoría |
-| `/insights` | Reporte mensual AI con análisis + sugerencias colombianas (CDTs, FICs, ahorro) |
-| `/accounts` | Vista por cuenta: balance, últimas transacciones, estado de TC y préstamos |
-| `/settings/import` | Upload CSV + Screenshot OCR (drag & drop) |
-| `/settings/accounts` | Manage cuentas, saldos iniciales, recurring transactions |
-| `/settings/categories` | CRUD categorías |
-| `/settings/rules` | Gestión de reglas de clasificación |
+| Ruta                   | Propósito                                                                                                |
+| ---------------------- | -------------------------------------------------------------------------------------------------------- |
+| `/`                    | Dashboard: patrimonio neto, flujo de caja mensual, donut de categorías, tendencia, barras de presupuesto |
+| `/transactions`        | Lista con filtros (fecha, categoría, cuenta, búsqueda), edición inline de categoría                      |
+| `/budgets`             | Creación y tracking de presupuestos por categoría                                                        |
+| `/insights`            | Reporte mensual AI con análisis + sugerencias colombianas (CDTs, FICs, ahorro)                           |
+| `/accounts`            | Vista por cuenta: balance, últimas transacciones, estado de TC y préstamos                               |
+| `/settings/import`     | Upload CSV + Screenshot OCR (drag & drop)                                                                |
+| `/settings/accounts`   | Manage cuentas, saldos iniciales, recurring transactions                                                 |
+| `/settings/categories` | CRUD categorías                                                                                          |
+| `/settings/rules`      | Gestión de reglas de clasificación                                                                       |
 
 **Dashboard highlights:**
+
 - Net worth card con conversión COP/USD (TRM del Banco de la República)
 - Burn rate: "A este ritmo, tenés X meses de runway"
 - Heatmap diario de gastos (estilo GitHub contributions)
@@ -316,6 +318,7 @@ personal-financial-dashboard/
 ## Phased Roadmap
 
 ### Phase 1: Foundation + Manual Import (Semana 1-2)
+
 - Scaffold Next.js 16 + Drizzle + Docker Compose + shadcn
 - Schema + migrations + seed (categorías colombianas, 6 cuentas)
 - CSV upload para Bancolombia (bancolombia-extractor Chrome extension)
@@ -327,6 +330,7 @@ personal-financial-dashboard/
 - **Costo: $0/mes** (solo Claude Vision por screenshots)
 
 ### Phase 2: Real-time Ingestion (Semana 3-4)
+
 - iOS Shortcut: Apple Pay Transaction Trigger → webhook
 - iOS Shortcut: SMS Bancolombia → webhook
 - API endpoints para recibir webhooks (`/api/ingest/apple-pay`, `/api/ingest/sms`)
@@ -337,6 +341,7 @@ personal-financial-dashboard/
 - **Costo: ~$2/mes**
 
 ### Phase 3: Budgets + Recurring + Loan Tracking (Semana 5-6)
+
 - Tabla `recurring_transactions` + cron mensual
 - Vista de préstamo consolidado (saldo, progreso, próximo pago, amortización)
 - Presupuestos por categoría con tracking
@@ -347,6 +352,7 @@ personal-financial-dashboard/
 - **Costo: ~$3/mes**
 
 ### Phase 4: Insights + Polish (Semana 7-8)
+
 - Insights page: reporte mensual AI (Claude Sonnet)
 - Sugerencias colombianas (CDTs, FICs, ahorro)
 - Heatmap diario de gastos
@@ -362,19 +368,20 @@ personal-financial-dashboard/
 
 ## Costos Estimados (Estado Estable)
 
-| Item | Costo/mes |
-|------|-----------|
-| Claude Haiku (classification) | $0.05-1 |
-| Claude Sonnet (monthly insights) | $1-2 |
-| Claude Vision (OCR screenshots) | $0.50-1 |
-| ia-server compute | $0 (ya corriendo) |
-| **Total** | **~$2-7/mes** |
+| Item                             | Costo/mes         |
+| -------------------------------- | ----------------- |
+| Claude Haiku (classification)    | $0.05-1           |
+| Claude Sonnet (monthly insights) | $1-2              |
+| Claude Vision (OCR screenshots)  | $0.50-1           |
+| ia-server compute                | $0 (ya corriendo) |
+| **Total**                        | **~$2-7/mes**     |
 
 ---
 
 ## iOS Shortcuts Setup (instrucciones para el usuario)
 
 ### Shortcut 1: Apple Pay Transaction Trigger
+
 1. Abrir Shortcuts → Automation → + → Transaction
 2. Seleccionar todas las tarjetas (o las que querés trackear)
 3. "Run Immediately" activado
@@ -385,6 +392,7 @@ personal-financial-dashboard/
    - Body: JSON con `merchant`, `amount`, `card`, `date`
 
 ### Shortcut 2: SMS Bancolombia
+
 1. Abrir Shortcuts → Automation → + → Message
 2. "Message Contains": `Bancolombia`
 3. "Run Immediately" activado
@@ -397,14 +405,14 @@ personal-financial-dashboard/
 
 ## Risks & Mitigaciones
 
-| Riesgo | Mitigación |
-|--------|-----------|
+| Riesgo                               | Mitigación                                                   |
+| ------------------------------------ | ------------------------------------------------------------ |
 | Apple cambia Transaction Trigger API | SMS Bancolombia como fallback; CSV upload siempre disponible |
-| Bancolombia cambia formato SMS | Parser aislado y testeable; raw data guardada en JSONB |
-| ARQ cierra o cambia | Solo 1 cuenta USD, impacto bajo; manual entry como fallback |
-| Doble ingesta (Apple Pay + SMS) | Dedup por monto + fecha + ventana ±5 min |
-| Claude API cost creep | Rule engine 90%+; hard cap de presupuesto; Haiku es barato |
-| ia-server downtime | pg_dump backups; app stateless; webhooks con retry |
+| Bancolombia cambia formato SMS       | Parser aislado y testeable; raw data guardada en JSONB       |
+| ARQ cierra o cambia                  | Solo 1 cuenta USD, impacto bajo; manual entry como fallback  |
+| Doble ingesta (Apple Pay + SMS)      | Dedup por monto + fecha + ventana ±5 min                     |
+| Claude API cost creep                | Rule engine 90%+; hard cap de presupuesto; Haiku es barato   |
+| ia-server downtime                   | pg_dump backups; app stateless; webhooks con retry           |
 
 ---
 

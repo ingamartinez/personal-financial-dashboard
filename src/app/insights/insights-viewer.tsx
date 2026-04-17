@@ -92,9 +92,7 @@ export function InsightsViewer({
           <Button variant="outline" size="sm" onClick={() => goMonth(-1)} aria-label="Previous">
             <ChevronLeftIcon className="size-4" />
           </Button>
-          <div className="px-2 text-sm font-medium capitalize">
-            {formatMonth(ym)}
-          </div>
+          <div className="px-2 text-sm font-medium capitalize">{formatMonth(ym)}</div>
           <Button variant="outline" size="sm" onClick={() => goMonth(1)} aria-label="Next">
             <ChevronRightIcon className="size-4" />
           </Button>
@@ -105,11 +103,7 @@ export function InsightsViewer({
           ) : (
             <SparklesIcon className="size-4" />
           )}
-          {pending
-            ? "Generando…"
-            : effectiveReport
-              ? "Regenerar"
-              : "Generar reporte"}
+          {pending ? "Generando…" : effectiveReport ? "Regenerar" : "Generar reporte"}
         </Button>
       </div>
 
@@ -136,10 +130,9 @@ export function InsightsViewer({
       {effectiveReport ? (
         <Card>
           <CardContent className="flex flex-col gap-3 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2 text-xs text-muted-foreground">
+            <div className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-b pb-2 text-xs">
               <div>
-                Generado {formatRelative(effectiveReport.generatedAt)} ·{" "}
-                {effectiveReport.model} ·{" "}
+                Generado {formatRelative(effectiveReport.generatedAt)} · {effectiveReport.model} ·{" "}
                 {effectiveReport.inputTokens + effectiveReport.outputTokens} tokens
               </div>
               {effectiveReport.stale && (
@@ -148,7 +141,7 @@ export function InsightsViewer({
                 </span>
               )}
             </div>
-            <article className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-h2:text-lg prose-h2:mt-4 prose-h2:mb-2 prose-p:leading-relaxed prose-ul:my-2 prose-li:my-0.5">
+            <article className="prose prose-sm dark:prose-invert prose-headings:font-semibold prose-h2:text-lg prose-h2:mt-4 prose-h2:mb-2 prose-p:leading-relaxed prose-ul:my-2 prose-li:my-0.5 max-w-none">
               <ReactMarkdown>{effectiveReport.markdown}</ReactMarkdown>
             </article>
           </CardContent>
@@ -186,11 +179,9 @@ function StatCard({
   return (
     <Card>
       <CardContent className="flex flex-col gap-0.5 py-3">
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div className={cn("text-lg font-semibold tabular-nums", valueClass)}>
-          {value}
-        </div>
-        {sub && <div className="text-[10px] text-muted-foreground">{sub}</div>}
+        <div className="text-muted-foreground text-xs">{label}</div>
+        <div className={cn("text-lg font-semibold tabular-nums", valueClass)}>{value}</div>
+        {sub && <div className="text-muted-foreground text-[10px]">{sub}</div>}
       </CardContent>
     </Card>
   );

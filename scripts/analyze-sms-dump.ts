@@ -2,10 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { db } from "../src/lib/db";
-import {
-  parseSmsBancolombia,
-  type ParseResult,
-} from "../src/lib/ingestion/sms-bancolombia";
+import { parseSmsBancolombia, type ParseResult } from "../src/lib/ingestion/sms-bancolombia";
 
 type Source =
   | { kind: "db" }
@@ -212,8 +209,7 @@ async function main() {
   const out: string[] = [];
   out.push(`# SMS Bancolombia — Analysis Report`);
   out.push(``);
-  const sourceLabel =
-    src.kind === "db" ? "db" : `${src.kind} (${src.path})`;
+  const sourceLabel = src.kind === "db" ? "db" : `${src.kind} (${src.path})`;
   out.push(`Source: \`${sourceLabel}\`  `);
   out.push(`Total bodies: **${bodies.length}**`);
   out.push(``);
@@ -231,9 +227,7 @@ async function main() {
 
   out.push(`## QR payments`);
   out.push(``);
-  const sortedKeys = [...qrKeys.entries()].sort(
-    (a, b) => b[1].count - a[1].count,
-  );
+  const sortedKeys = [...qrKeys.entries()].sort((a, b) => b[1].count - a[1].count);
   out.push(`Unique keys: **${sortedKeys.length}**`);
   out.push(``);
   if (sortedKeys.length > 0) {
@@ -250,9 +244,7 @@ async function main() {
 
   out.push(`## Unknown patterns (need new regex or skip rule)`);
   out.push(``);
-  const sortedUnknown = [...unknownPatterns.entries()].sort(
-    (a, b) => b[1].count - a[1].count,
-  );
+  const sortedUnknown = [...unknownPatterns.entries()].sort((a, b) => b[1].count - a[1].count);
   if (sortedUnknown.length === 0) {
     out.push(`_No unknown bodies — everything parsed or was skipped by rule._`);
   } else {

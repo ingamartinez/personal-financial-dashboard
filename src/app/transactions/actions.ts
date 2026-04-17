@@ -4,12 +4,7 @@ import { revalidatePath } from "next/cache";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import {
-  accounts,
-  categories,
-  counterparties,
-  transactions,
-} from "@/lib/db/schema";
+import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { emit } from "@/lib/events/bus";
 
@@ -243,8 +238,7 @@ export async function mergeCounterparty(
     if (!target) throw new Error("Target counterparty not found");
     if (!source) throw new Error("Source counterparty not found");
 
-    const inheritCategory =
-      !target.defaultCategorySlug && !!source.defaultCategorySlug;
+    const inheritCategory = !target.defaultCategorySlug && !!source.defaultCategorySlug;
     if (inheritCategory) {
       await trx
         .update(counterparties)
@@ -287,9 +281,7 @@ export async function mergeCounterparty(
 
     // Source counterparty (and any residual aliases / refs with SET NULL on
     // tx FK — already moved above) removed. CASCADE cleans aliases.
-    await trx
-      .delete(counterparties)
-      .where(eq(counterparties.id, source.id));
+    await trx.delete(counterparties).where(eq(counterparties.id, source.id));
 
     return {
       movedTxCount: txMove.length,

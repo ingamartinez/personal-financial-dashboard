@@ -41,7 +41,7 @@ async function seedCounterparty(args: {
     INSERT INTO counterparty_aliases (counterparty_id, kind, value)
     VALUES (
       ${rows[0].id},
-      ${(args.kind ?? "qr")}::counterparty_key_kind,
+      ${args.kind ?? "qr"}::counterparty_key_kind,
       ${args.key}
     )
   `);
@@ -302,19 +302,17 @@ describe("mergeCounterparty", () => {
 
   it("rejects merging a counterparty into itself", async () => {
     const cpId = await seedCounterparty({ key: "test-cp-self" });
-    await expect(
-      mergeCounterparty({ sourceId: cpId, targetId: cpId }),
-    ).rejects.toThrow();
+    await expect(mergeCounterparty({ sourceId: cpId, targetId: cpId })).rejects.toThrow();
   });
 
   it("throws when source or target does not exist", async () => {
     const cpId = await seedCounterparty({ key: "test-cp-exists" });
-    await expect(
-      mergeCounterparty({ sourceId: 999999, targetId: cpId }),
-    ).rejects.toThrow(/Source counterparty not found/);
-    await expect(
-      mergeCounterparty({ sourceId: cpId, targetId: 999999 }),
-    ).rejects.toThrow(/Target counterparty not found/);
+    await expect(mergeCounterparty({ sourceId: 999999, targetId: cpId })).rejects.toThrow(
+      /Source counterparty not found/,
+    );
+    await expect(mergeCounterparty({ sourceId: cpId, targetId: 999999 })).rejects.toThrow(
+      /Target counterparty not found/,
+    );
   });
 
   it("accumulates hit_count from source into target", async () => {

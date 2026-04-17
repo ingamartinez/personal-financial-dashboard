@@ -4,13 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { MenuIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Nav } from "./nav";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -18,10 +12,10 @@ export function Header() {
   const [open, setOpen] = useState(false);
 
   return (
-    <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <header className="bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-40 border-b backdrop-blur">
       <div className="mx-auto flex h-14 w-full max-w-7xl items-center gap-4 px-4 sm:px-6">
         <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
-          <span className="inline-block size-6 rounded-md bg-primary" aria-hidden />
+          <span className="bg-primary inline-block size-6 rounded-md" aria-hidden />
           <span>Findash</span>
         </Link>
 

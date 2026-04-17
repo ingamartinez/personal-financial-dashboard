@@ -4,12 +4,7 @@ import { useState, useTransition } from "react";
 import { PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -21,11 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import {
-  deleteRecurring,
-  toggleRecurringActive,
-  upsertRecurring,
-} from "./actions";
+import { deleteRecurring, toggleRecurringActive, upsertRecurring } from "./actions";
 
 type AccountOption = { id: number; name: string; currency: "COP" | "USD" };
 type CategoryOption = {
@@ -88,8 +79,7 @@ export function RecurringManager({
   }
 
   function onDelete(row: RecurringRow) {
-    if (!confirm(`Delete recurring "${row.label}"? This cannot be undone.`))
-      return;
+    if (!confirm(`Delete recurring "${row.label}"? This cannot be undone.`)) return;
     startTransition(async () => {
       try {
         await deleteRecurring(row.id);
@@ -111,7 +101,7 @@ export function RecurringManager({
 
       {items.length === 0 ? (
         <Card>
-          <CardContent className="flex flex-col items-center gap-2 py-12 text-center text-sm text-muted-foreground">
+          <CardContent className="text-muted-foreground flex flex-col items-center gap-2 py-12 text-center text-sm">
             <p>No recurring items yet.</p>
             <p>Add your rent, loan payment, and monthly subscriptions.</p>
           </CardContent>
@@ -127,7 +117,7 @@ export function RecurringManager({
           <CardContent>
             <div className="overflow-x-auto rounded-md border">
               <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                <thead className="bg-muted/50 text-muted-foreground text-xs uppercase">
                   <tr>
                     <th className="p-2 text-left">Day</th>
                     <th className="p-2 text-left">Label</th>
@@ -142,31 +132,22 @@ export function RecurringManager({
                   {items.map((r) => {
                     const cents = BigInt(r.amountCents);
                     return (
-                      <tr
-                        key={r.id}
-                        className={cn("border-t", !r.active && "opacity-50")}
-                      >
+                      <tr key={r.id} className={cn("border-t", !r.active && "opacity-50")}>
                         <td className="p-2 tabular-nums">{r.dayOfMonth}</td>
                         <td className="p-2">
                           <div className="font-medium">{r.label}</div>
                           {r.notes ? (
-                            <div className="text-xs text-muted-foreground">
-                              {r.notes}
-                            </div>
+                            <div className="text-muted-foreground text-xs">{r.notes}</div>
                           ) : null}
                         </td>
-                        <td className="p-2 text-xs text-muted-foreground">
-                          {r.accountName}
-                        </td>
-                        <td className="p-2 text-xs text-muted-foreground">
+                        <td className="text-muted-foreground p-2 text-xs">{r.accountName}</td>
+                        <td className="text-muted-foreground p-2 text-xs">
                           {r.categorySlug ?? "—"}
                         </td>
                         <td
                           className={cn(
-                            "p-2 text-right tabular-nums font-medium",
-                            cents < BigInt(0)
-                              ? "text-rose-600"
-                              : "text-emerald-600",
+                            "p-2 text-right font-medium tabular-nums",
+                            cents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                           )}
                         >
                           {formatMoney(cents, r.currency)}
@@ -255,16 +236,10 @@ function RecurringEditor({
     initialCents !== null && initialCents >= BigInt(0) ? "income" : "expense",
   );
   const [amount, setAmount] = useState(
-    initialCents !== null
-      ? (
-          Math.abs(Number(initialCents)) / 100
-        ).toString()
-      : "",
+    initialCents !== null ? (Math.abs(Number(initialCents)) / 100).toString() : "",
   );
   const [categorySlug, setCategorySlug] = useState(initial?.categorySlug ?? "");
-  const [dayOfMonth, setDayOfMonth] = useState(
-    initial?.dayOfMonth.toString() ?? "1",
-  );
+  const [dayOfMonth, setDayOfMonth] = useState(initial?.dayOfMonth.toString() ?? "1");
   const [notes, setNotes] = useState(initial?.notes ?? "");
 
   const selectedAccount = accounts.find((a) => a.id.toString() === accountId);
@@ -312,9 +287,7 @@ function RecurringEditor({
     >
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>
-            {initial ? `Edit: ${initial.label}` : "New recurring"}
-          </DialogTitle>
+          <DialogTitle>{initial ? `Edit: ${initial.label}` : "New recurring"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
@@ -366,10 +339,8 @@ function RecurringEditor({
               <select
                 id="rec-dir"
                 value={direction}
-                onChange={(e) =>
-                  setDirection(e.target.value as "expense" | "income")
-                }
-                className="h-9 rounded-md border bg-background px-2 text-sm"
+                onChange={(e) => setDirection(e.target.value as "expense" | "income")}
+                className="bg-background h-9 rounded-md border px-2 text-sm"
               >
                 <option value="expense">Expense (−)</option>
                 <option value="income">Income (+)</option>
@@ -381,7 +352,7 @@ function RecurringEditor({
                 id="rec-account"
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value)}
-                className="h-9 rounded-md border bg-background px-2 text-sm"
+                className="bg-background h-9 rounded-md border px-2 text-sm"
                 required
               >
                 {accounts.map((a) => (
@@ -399,7 +370,7 @@ function RecurringEditor({
               id="rec-cat"
               value={categorySlug}
               onChange={(e) => setCategorySlug(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="bg-background h-9 rounded-md border px-2 text-sm"
             >
               <option value="">— unclassified —</option>
               {categories.map((c) => (
@@ -422,12 +393,7 @@ function RecurringEditor({
           </div>
 
           <DialogFooter className="mt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={onClose}
-              disabled={pending}
-            >
+            <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

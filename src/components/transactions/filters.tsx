@@ -28,13 +28,10 @@ export function Filters({ accounts, categories, values }: FiltersProps) {
   const hasAny = activeCount > 0;
 
   return (
-    <details
-      open={hasAny}
-      className="group rounded-md border bg-card"
-    >
+    <details open={hasAny} className="group bg-card rounded-md border">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 [&::-webkit-details-marker]:hidden">
         <div className="flex items-center gap-2">
-          <SlidersHorizontalIcon className="size-4 text-muted-foreground" />
+          <SlidersHorizontalIcon className="text-muted-foreground size-4" />
           <span className="font-medium">Filters</span>
           {hasAny ? (
             <Badge variant="secondary" className="font-normal">
@@ -42,7 +39,7 @@ export function Filters({ accounts, categories, values }: FiltersProps) {
             </Badge>
           ) : null}
         </div>
-        <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+        <ChevronDownIcon className="text-muted-foreground size-4 transition-transform group-open:rotate-180" />
       </summary>
 
       <form
@@ -77,7 +74,7 @@ export function Filters({ accounts, categories, values }: FiltersProps) {
             id="accountId"
             name="accountId"
             defaultValue={values.accountId ?? ""}
-            className="h-9 rounded-md border bg-background text-sm chevron-select"
+            className="bg-background chevron-select h-9 rounded-md border text-sm"
           >
             <option value="">All</option>
             {accounts.map((a) => (
@@ -94,7 +91,7 @@ export function Filters({ accounts, categories, values }: FiltersProps) {
             id="categorySlug"
             name="categorySlug"
             defaultValue={values.categorySlug ?? ""}
-            className="h-9 rounded-md border bg-background text-sm chevron-select"
+            className="bg-background chevron-select h-9 rounded-md border text-sm"
           >
             <option value="">All</option>
             {categories.map((c) => (

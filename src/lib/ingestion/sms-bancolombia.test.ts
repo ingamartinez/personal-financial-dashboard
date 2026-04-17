@@ -197,8 +197,7 @@ describe("parseSmsBancolombia — purchase (variant C: reversed 'el TIME a las D
   it("parses additional reversed-order samples from the historical dump", () => {
     const samples = [
       {
-        body:
-          "Bancolombia: Compraste COP65.000,00 en FC* FREEPIK PREMIUM, el 20:15 a las 07/12/2025. Esta compra esta asociada a T.Cred *2575. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
+        body: "Bancolombia: Compraste COP65.000,00 en FC* FREEPIK PREMIUM, el 20:15 a las 07/12/2025. Esta compra esta asociada a T.Cred *2575. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
         cents: BigInt(6500000),
         currency: "COP",
         merchant: "FC* FREEPIK PREMIUM",
@@ -207,8 +206,7 @@ describe("parseSmsBancolombia — purchase (variant C: reversed 'el TIME a las D
         time: "20:15",
       },
       {
-        body:
-          "Bancolombia: Compraste USD149,00 en WWW.SPLASHTOP.COM, el 10:46 a las 17/02/2026. Esta compra esta asociada a T.Cred *7291. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
+        body: "Bancolombia: Compraste USD149,00 en WWW.SPLASHTOP.COM, el 10:46 a las 17/02/2026. Esta compra esta asociada a T.Cred *7291. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
         cents: BigInt(14900),
         currency: "USD",
         merchant: "WWW.SPLASHTOP.COM",
@@ -217,8 +215,7 @@ describe("parseSmsBancolombia — purchase (variant C: reversed 'el TIME a las D
         time: "10:46",
       },
       {
-        body:
-          "Bancolombia: Compraste COP91.550,00 en RAPPI COLOMBIA*DL, el 13:44 a las 28/12/2025. Esta compra esta asociada a T.Cred *2575. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
+        body: "Bancolombia: Compraste COP91.550,00 en RAPPI COLOMBIA*DL, el 13:44 a las 28/12/2025. Esta compra esta asociada a T.Cred *2575. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.",
         cents: BigInt(9155000),
         currency: "COP",
         merchant: "RAPPI COLOMBIA*DL",
@@ -434,32 +431,28 @@ describe("parseSmsBancolombia — provider_payment_sent (PSE / bill-pay)", () =>
   it("parses additional PSE samples from the historical dump", () => {
     const samples = [
       {
-        body:
-          "Bancolombia: Pagaste $1,839,400.00 a Arrendamientos Santa Fe EU desde tu producto *6126 el 02/01/2026 19:54:20. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
+        body: "Bancolombia: Pagaste $1,839,400.00 a Arrendamientos Santa Fe EU desde tu producto *6126 el 02/01/2026 19:54:20. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
         cents: BigInt(183940000),
         provider: "Arrendamientos Santa Fe EU",
         date: "2026-01-02",
         time: "19:54",
       },
       {
-        body:
-          "Bancolombia: Pagaste $413,300.00 a APORTES EN LINEA desde tu producto *6126 el 02/01/2026 19:59:18. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
+        body: "Bancolombia: Pagaste $413,300.00 a APORTES EN LINEA desde tu producto *6126 el 02/01/2026 19:59:18. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
         cents: BigInt(41330000),
         provider: "APORTES EN LINEA",
         date: "2026-01-02",
         time: "19:59",
       },
       {
-        body:
-          "Bancolombia: Pagaste $71,090.00 a BANCO FALABELLA S A desde tu producto *6126 el 02/01/2026 20:06:46. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
+        body: "Bancolombia: Pagaste $71,090.00 a BANCO FALABELLA S A desde tu producto *6126 el 02/01/2026 20:06:46. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
         cents: BigInt(7109000),
         provider: "BANCO FALABELLA S A",
         date: "2026-01-02",
         time: "20:06",
       },
       {
-        body:
-          "Bancolombia: Pagaste $1,350,000.00 a FIDEICOMISO P.A. PLAN ROMBO desde tu producto *6126 el 14/01/2026 19:54:39. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
+        body: "Bancolombia: Pagaste $1,350,000.00 a FIDEICOMISO P.A. PLAN ROMBO desde tu producto *6126 el 14/01/2026 19:54:39. ¿Dudas? Llamanos al 6045109095. Estamos cerca",
         cents: BigInt(135000000),
         provider: "FIDEICOMISO P.A. PLAN ROMBO",
         date: "2026-01-14",

@@ -5,8 +5,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { formatCop } from "@/lib/money";
 
 const PALETTE = [
-  "var(--chart-1)", "var(--chart-2)", "var(--chart-3)",
-  "var(--chart-4)", "var(--chart-5)",
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
 ];
 
 export type DonutSlice = {
@@ -35,7 +38,7 @@ export function CategoryDonut({
       </CardHeader>
       <CardContent>
         {slices.length === 0 ? (
-          <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
+          <div className="text-muted-foreground flex h-64 items-center justify-center text-sm">
             No expenses this month
           </div>
         ) : (
@@ -59,31 +62,24 @@ export function CategoryDonut({
                     />
                   ))}
                 </Pie>
-                <Tooltip
-                  formatter={(value) =>
-                    formatCop(BigInt(Math.round(Number(value) || 0)))
-                  }
-                />
+                <Tooltip formatter={(value) => formatCop(BigInt(Math.round(Number(value) || 0)))} />
               </PieChart>
             </div>
             <ul className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-3 gap-y-1.5 text-sm">
               {slices.slice(0, 8).map((s, i) => {
                 const pct = total > 0 ? (s.value / total) * 100 : 0;
                 return (
-                  <li
-                    key={s.slug}
-                    className="col-span-4 grid grid-cols-subgrid items-center"
-                  >
+                  <li key={s.slug} className="col-span-4 grid grid-cols-subgrid items-center">
                     <span
                       className="size-3 shrink-0 rounded-sm"
                       style={{ background: s.color ?? PALETTE[i % PALETTE.length] }}
                       aria-hidden
                     />
                     <span className="truncate">{s.name}</span>
-                    <span className="text-right tabular-nums text-muted-foreground">
+                    <span className="text-muted-foreground text-right tabular-nums">
                       {pct.toFixed(1)}%
                     </span>
-                    <span className="text-right tabular-nums font-medium">
+                    <span className="text-right font-medium tabular-nums">
                       {formatCop(BigInt(Math.round(s.value)))}
                     </span>
                   </li>

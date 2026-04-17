@@ -28,10 +28,7 @@ for (const mode of modes) {
         await page.waitForTimeout(1_800);
       }
       await page.screenshot({
-        path: path.join(
-          "e2e/screenshots",
-          `${projectName}-${mode}-${p.name}.png`,
-        ),
+        path: path.join("e2e/screenshots", `${projectName}-${mode}-${p.name}.png`),
         fullPage: true,
       });
     });

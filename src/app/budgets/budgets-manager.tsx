@@ -2,7 +2,14 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, PiggyBankIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  PencilIcon,
+  PiggyBankIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -99,15 +106,8 @@ export function BudgetsManager({
           >
             <ChevronLeftIcon className="size-4" />
           </Button>
-          <div className="px-2 text-sm font-medium capitalize">
-            {formatMonth(ym)}
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => goMonth(1)}
-            aria-label="Next month"
-          >
+          <div className="px-2 text-sm font-medium capitalize">{formatMonth(ym)}</div>
+          <Button variant="outline" size="sm" onClick={() => goMonth(1)} aria-label="Next month">
             <ChevronRightIcon className="size-4" />
           </Button>
         </div>
@@ -122,7 +122,7 @@ export function BudgetsManager({
           <CardContent className="flex items-center justify-between py-3 text-sm">
             <span className="text-muted-foreground">Total</span>
             <span className="tabular-nums">
-              <span className={cn(totalSpent > totalBudget && "text-rose-600 font-medium")}>
+              <span className={cn(totalSpent > totalBudget && "font-medium text-rose-600")}>
                 {formatMoney(totalSpent, "COP")}
               </span>
               <span className="text-muted-foreground"> / {formatMoney(totalBudget, "COP")}</span>
@@ -216,7 +216,7 @@ function BudgetCard({
             </Button>
           </div>
         </div>
-        <div className="h-2 overflow-hidden rounded-full bg-muted">
+        <div className="bg-muted h-2 overflow-hidden rounded-full">
           <div
             className={cn(
               "h-full transition-all",
@@ -226,10 +226,10 @@ function BudgetCard({
           />
         </div>
         <div className="flex items-center justify-between text-xs tabular-nums">
-          <span className={cn(over ? "text-rose-600 font-medium" : "text-muted-foreground")}>
+          <span className={cn(over ? "font-medium text-rose-600" : "text-muted-foreground")}>
             {formatMoney(spent, row.currency)} / {formatMoney(amount, row.currency)}
           </span>
-          <span className={cn("text-muted-foreground", over && "text-rose-600 font-medium")}>
+          <span className={cn("text-muted-foreground", over && "font-medium text-rose-600")}>
             {over
               ? `${formatMoney(spent - amount, row.currency)} over`
               : `${formatMoney(remaining, row.currency)} left · ${pct.toFixed(0)}%`}
@@ -305,9 +305,7 @@ function BudgetEditor({
     >
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>
-            {editing ? `Edit: ${editing.categoryName}` : "New budget"}
-          </DialogTitle>
+          <DialogTitle>{editing ? `Edit: ${editing.categoryName}` : "New budget"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
@@ -316,7 +314,7 @@ function BudgetEditor({
               id="b-cat"
               value={categorySlug}
               onChange={(e) => setCategorySlug(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="bg-background h-9 rounded-md border px-2 text-sm"
               required
               disabled={!!editing}
             >
@@ -350,7 +348,7 @@ function BudgetEditor({
                 id="b-ccy"
                 value={currency}
                 onChange={(e) => setCurrency(e.target.value as "COP" | "USD")}
-                className="h-9 rounded-md border bg-background px-2 text-sm"
+                className="bg-background h-9 rounded-md border px-2 text-sm"
               >
                 <option value="COP">COP</option>
                 <option value="USD">USD</option>
@@ -358,9 +356,7 @@ function BudgetEditor({
             </div>
           </div>
 
-          <div className="text-xs text-muted-foreground">
-            Period: {ym}
-          </div>
+          <div className="text-muted-foreground text-xs">Period: {ym}</div>
 
           <DialogFooter className="mt-2">
             <Button type="button" variant="outline" onClick={onClose} disabled={pending}>

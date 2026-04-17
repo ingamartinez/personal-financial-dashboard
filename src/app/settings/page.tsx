@@ -1,11 +1,5 @@
 import Link from "next/link";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 const LINKS = [
   {
@@ -30,14 +24,12 @@ export default function SettingsPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {LINKS.map((l) => (
           <Link key={l.href} href={l.href}>
-            <Card className="transition hover:border-foreground/30">
+            <Card className="hover:border-foreground/30 transition">
               <CardHeader>
                 <CardTitle>{l.title}</CardTitle>
                 <CardDescription>{l.description}</CardDescription>
               </CardHeader>
-              <CardContent className="text-xs text-muted-foreground">
-                {l.href} →
-              </CardContent>
+              <CardContent className="text-muted-foreground text-xs">{l.href} →</CardContent>
             </Card>
           </Link>
         ))}

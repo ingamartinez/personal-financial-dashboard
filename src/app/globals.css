@@ -69,7 +69,7 @@
   --input: oklch(0.922 0 0);
   --ring: oklch(0.63 0.18 45);
   --chart-1: oklch(0.65 0.17 50);
-  --chart-2: oklch(0.70 0.12 200);
+  --chart-2: oklch(0.7 0.12 200);
   --chart-3: oklch(0.62 0.17 290);
   --chart-4: oklch(0.65 0.14 160);
   --chart-5: oklch(0.65 0.18 15);
@@ -92,13 +92,13 @@
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.75 0.15 50);
-  --primary-foreground: oklch(0.20 0.05 45);
+  --primary-foreground: oklch(0.2 0.05 45);
   --secondary: oklch(0.269 0.02 50);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
   --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.30 0.05 50);
-  --accent-foreground: oklch(0.90 0.08 50);
+  --accent: oklch(0.3 0.05 50);
+  --accent-foreground: oklch(0.9 0.08 50);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -111,9 +111,9 @@
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.75 0.15 50);
-  --sidebar-primary-foreground: oklch(0.20 0.05 45);
-  --sidebar-accent: oklch(0.30 0.05 50);
-  --sidebar-accent-foreground: oklch(0.90 0.08 50);
+  --sidebar-primary-foreground: oklch(0.2 0.05 45);
+  --sidebar-accent: oklch(0.3 0.05 50);
+  --sidebar-accent-foreground: oklch(0.9 0.08 50);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.75 0.15 50);
 }
@@ -131,30 +131,30 @@
 }
 
 @utility text-display {
-  @apply text-3xl font-semibold tracking-tight leading-tight;
+  @apply text-3xl leading-tight font-semibold tracking-tight;
 }
 @utility text-h1 {
-  @apply text-2xl font-semibold tracking-tight leading-tight;
+  @apply text-2xl leading-tight font-semibold tracking-tight;
 }
 @utility text-h2 {
-  @apply text-lg font-semibold leading-snug;
+  @apply text-lg leading-snug font-semibold;
 }
 @utility text-h3 {
-  @apply text-base font-semibold leading-snug;
+  @apply text-base leading-snug font-semibold;
 }
 @utility text-body {
   @apply text-sm leading-normal;
 }
 @utility text-caption {
-  @apply text-xs text-muted-foreground leading-normal;
+  @apply text-muted-foreground text-xs leading-normal;
 }
 @utility money {
   font-family: var(--font-numeric);
-  @apply tabular-nums font-medium;
+  @apply font-medium tabular-nums;
 }
 @utility money-lg {
   font-family: var(--font-numeric);
-  @apply text-3xl font-semibold tabular-nums tracking-tight;
+  @apply text-3xl font-semibold tracking-tight tabular-nums;
 }
 @utility chevron-select {
   appearance: none;

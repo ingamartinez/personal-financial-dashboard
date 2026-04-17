@@ -57,10 +57,7 @@ export type MonthlyFlow = {
   netCopCents: bigint;
 };
 
-export async function getMonthlyFlow(
-  copPerUsd: number,
-  now = new Date(),
-): Promise<MonthlyFlow> {
+export async function getMonthlyFlow(copPerUsd: number, now = new Date()): Promise<MonthlyFlow> {
   const { start, end } = currentMonthRange(now);
 
   const rows = await db
@@ -130,9 +127,7 @@ export async function getCategoryBreakdown(
       merged.set(slug, { slug, name, color: r.color, amountCopCents: cents });
     }
   }
-  return Array.from(merged.values()).sort((a, b) =>
-    a.amountCopCents < b.amountCopCents ? 1 : -1,
-  );
+  return Array.from(merged.values()).sort((a, b) => (a.amountCopCents < b.amountCopCents ? 1 : -1));
 }
 
 export type TopExpense = {

@@ -17,7 +17,7 @@ export function Nav({ orientation = "horizontal", onNavigate }: NavProps) {
     <nav
       className={cn(
         "flex gap-1",
-        orientation === "horizontal" ? "flex-row items-center" : "flex-col"
+        orientation === "horizontal" ? "flex-row items-center" : "flex-col",
       )}
     >
       {NAV_ITEMS.map((item) => {
@@ -31,9 +31,7 @@ export function Nav({ orientation = "horizontal", onNavigate }: NavProps) {
             className={cn(
               "rounded-md px-3 py-2 text-sm font-medium transition-colors",
               "hover:bg-accent hover:text-accent-foreground",
-              active
-                ? "bg-accent text-accent-foreground"
-                : "text-muted-foreground"
+              active ? "bg-accent text-accent-foreground" : "text-muted-foreground",
             )}
           >
             {item.label}

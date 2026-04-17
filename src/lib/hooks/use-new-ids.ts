@@ -15,10 +15,7 @@ import { useEffect, useRef, useState } from "react";
  *   suppressions below are local and scoped.
  */
 /* eslint-disable react-hooks/purity */
-export function useNewIds<T extends string | number>(
-  ids: readonly T[],
-  ttlMs = 2500,
-): Set<T> {
+export function useNewIds<T extends string | number>(ids: readonly T[], ttlMs = 2500): Set<T> {
   const seenRef = useRef<Set<T> | null>(null);
   const expiryRef = useRef<Map<T, number>>(new Map());
   const [, force] = useState(0);
