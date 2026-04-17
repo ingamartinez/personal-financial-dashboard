@@ -46,7 +46,7 @@ export async function updateTransactionCategory(input: {
 // Amount arrives as a decimal STRING so we can parse to bigint cents via
 // integer arithmetic (see `decimalStringToCents`). Never accept a number
 // here — `number * 100` loses precision for values like 9.995.
-export const expenseSchema = z.object({
+const expenseSchema = z.object({
   accountId: z.coerce.number().int().positive(),
   amount: z
     .string()
