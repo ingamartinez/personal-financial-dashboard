@@ -77,7 +77,7 @@ export function Filters({ accounts, categories, values }: FiltersProps) {
             id="accountId"
             name="accountId"
             defaultValue={values.accountId ?? ""}
-            className="h-9 rounded-md border bg-background px-2 text-sm"
+            className="h-9 rounded-md border bg-background text-sm chevron-select"
           >
             <option value="">All</option>
             {accounts.map((a) => (
@@ -94,7 +94,7 @@ export function Filters({ accounts, categories, values }: FiltersProps) {
             id="categorySlug"
             name="categorySlug"
             defaultValue={values.categorySlug ?? ""}
-            className="h-9 rounded-md border bg-background px-2 text-sm"
+            className="h-9 rounded-md border bg-background text-sm chevron-select"
           >
             <option value="">All</option>
             {categories.map((c) => (

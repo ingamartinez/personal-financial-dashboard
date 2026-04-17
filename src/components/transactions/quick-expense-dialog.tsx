@@ -164,7 +164,7 @@ export function QuickExpenseDialog({
               id="qe-account"
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="h-9 rounded-md border bg-background text-sm chevron-select"
               required
             >
               {accounts.map((a) => (
@@ -181,7 +181,7 @@ export function QuickExpenseDialog({
               id="qe-cat"
               value={categorySlug}
               onChange={(e) => setCategorySlug(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="h-9 rounded-md border bg-background text-sm chevron-select"
             >
               <option value="">— unclassified —</option>
               {categories.map((c) => (
