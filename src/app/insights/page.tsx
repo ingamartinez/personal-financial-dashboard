@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { insightsReports } from "@/lib/db/schema";
 import { buildInsightsSummary, hashSummary, isStale } from "@/lib/ai/insights";
+import { getCurrentFxRate } from "@/lib/fx/repo";
 import { InsightsViewer } from "./insights-viewer";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +22,8 @@ export default async function InsightsPage({
     ? params.ym
     : currentYearMonth();
 
-  const summary = await buildInsightsSummary(ym);
+  const fx = await getCurrentFxRate();
+  const summary = await buildInsightsSummary(ym, fx.rate);
   const currentHash = hashSummary(summary);
 
   const [existing] = await db

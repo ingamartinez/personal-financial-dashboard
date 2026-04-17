@@ -36,6 +36,13 @@
       "when": 1776370482638,
       "tag": "0004_nifty_trish_tilby",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776389894514,
+      "tag": "0005_kind_arachne",
+      "breakpoints": true
     }
   ]
 }
