@@ -8,6 +8,7 @@ const pages = [
   { name: "budgets", path: "/budgets", hasDonut: false },
   { name: "insights", path: "/insights", hasDonut: false },
   { name: "settings", path: "/settings", hasDonut: false },
+  { name: "settings-ingestion", path: "/settings/ingestion", hasDonut: false },
 ];
 
 const modes = ["light", "dark"] as const;
@@ -20,6 +21,8 @@ for (const mode of modes) {
         window.localStorage.setItem("theme", m);
       }, mode);
       await page.goto(p.path, { waitUntil: "load" });
+      // Wait for streamed server-component content to replace any loading.tsx skeleton.
+      await page.waitForTimeout(600);
       if (p.hasDonut) {
         await page
           .locator(".recharts-pie-sector path")

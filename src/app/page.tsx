@@ -13,9 +13,11 @@ import { AccountsGrid } from "@/components/dashboard/accounts-grid";
 import { UpcomingCard } from "@/components/dashboard/upcoming-card";
 import { MonthSwitcher } from "@/components/dashboard/month-switcher";
 import { RecurringInboxCard } from "@/components/dashboard/recurring-inbox-card";
+import { SmsHealthCard } from "@/components/dashboard/sms-health-card";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
 import { getOpenGaps } from "@/lib/recurring/gap-queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
+import { getSmsHealthSnapshot } from "@/lib/ingestion/sms-health";
 import {
   formatYearMonth,
   isFutureYearMonth,
@@ -39,7 +41,7 @@ export default async function DashboardPage({
   const [refYear, refMonth] = ym.split("-").map(Number);
 
   const fx = await getCurrentFxRate();
-  const [netWorth, flow, slices, top, accounts, upcoming, openGaps] = await Promise.all([
+  const [netWorth, flow, slices, top, accounts, upcoming, openGaps, smsHealth] = await Promise.all([
     getNetWorth(fx.rate),
     getMonthlyFlow(fx.rate, refDate),
     getCategoryBreakdown(fx.rate, refDate),
@@ -52,6 +54,7 @@ export default async function DashboardPage({
       today: now,
     }),
     getOpenGaps(),
+    getSmsHealthSnapshot(now),
   ]);
 
   const upcomingItems = upcoming.map((u) => ({
@@ -92,6 +95,7 @@ export default async function DashboardPage({
         <NetWorthCard data={netWorth} fx={fx} />
         <MonthlyFlowCard data={flow} monthLabel={monthLabel} isFuture={isFuture} />
         <CategoryDonut slices={donutSlices} monthLabel={monthLabel} isFuture={isFuture} />
+        <SmsHealthCard snapshot={smsHealth} />
       </section>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
