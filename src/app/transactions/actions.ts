@@ -11,6 +11,7 @@ import {
   counterpartyType,
   transactions,
 } from "@/lib/db/schema";
+import { classifySingleWithAi as classifySingleWithAiLib } from "@/lib/classification/ai";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
@@ -150,6 +151,92 @@ export async function runAiClassifier() {
   revalidatePath("/");
   revalidatePath("/transactions");
   return result;
+}
+
+const classifySingleSchema = z.object({
+  txId: z.coerce.number().int().positive(),
+});
+
+export type ClassifySingleInput = z.input<typeof classifySingleSchema>;
+export type ClassifySingleResult = {
+  categorySlug: string;
+  categoryName: string;
+  confidence: number;
+};
+
+export async function classifySingleWithAi(
+  input: ClassifySingleInput,
+): Promise<ClassifySingleResult> {
+  const { txId } = classifySingleSchema.parse(input);
+
+  const [tx] = await db
+    .select({
+      id: transactions.id,
+      descriptionRaw: transactions.descriptionRaw,
+      descriptionClean: transactions.descriptionClean,
+      merchant: transactions.merchant,
+      amountCents: transactions.amountCents,
+      currency: transactions.currency,
+      classificationMethod: transactions.classificationMethod,
+      categorySlug: transactions.categorySlug,
+    })
+    .from(transactions)
+    .where(eq(transactions.id, txId))
+    .limit(1);
+
+  if (!tx) throw new Error("Transaction not found");
+  if (tx.classificationMethod !== "unclassified" || tx.categorySlug !== null) {
+    throw new Error("Transaction is already classified");
+  }
+
+  const cats = await db
+    .select({
+      slug: categories.slug,
+      name: categories.name,
+      parentSlug: categories.parentSlug,
+    })
+    .from(categories);
+
+  const result = await classifySingleWithAiLib({
+    transaction: {
+      id: tx.id,
+      description: tx.descriptionClean ?? tx.merchant ?? tx.descriptionRaw,
+      amountCents: tx.amountCents,
+      currency: tx.currency,
+    },
+    categories: cats,
+  });
+
+  const hit = result.classification;
+  if (!hit || !hit.categorySlug) {
+    throw new Error("AI could not classify this transaction");
+  }
+
+  const pickedCat = cats.find((c) => c.slug === hit.categorySlug);
+  if (!pickedCat) {
+    // classifyBatchWithAi already filters invalid slugs to null, so this is
+    // defense-in-depth — the row stays unclassified if we somehow get here.
+    throw new Error("AI returned an unknown category");
+  }
+
+  await db
+    .update(transactions)
+    .set({
+      categorySlug: hit.categorySlug,
+      classificationMethod: "ai",
+      classificationConfidence: hit.confidence,
+      updatedAt: new Date(),
+    })
+    .where(eq(transactions.id, txId));
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+
+  return {
+    categorySlug: hit.categorySlug,
+    categoryName: pickedCat.name,
+    confidence: hit.confidence,
+  };
 }
 
 const counterpartyTypeSchema = z.enum(counterpartyType.enumValues);

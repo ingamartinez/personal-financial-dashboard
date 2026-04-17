@@ -9,8 +9,26 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-const { updateCounterparty, mergeCounterparty, splitCounterparty, createManualExpense } =
-  await import("./actions");
+// Stub the AI classifier lib so tests never hit the Anthropic API; individual
+// tests drive the mock with mockResolvedValueOnce for each scenario.
+vi.mock("@/lib/classification/ai", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/classification/ai")>("@/lib/classification/ai");
+  return {
+    ...actual,
+    classifySingleWithAi: vi.fn(),
+  };
+});
+
+const {
+  updateCounterparty,
+  mergeCounterparty,
+  splitCounterparty,
+  createManualExpense,
+  classifySingleWithAi,
+} = await import("./actions");
+const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
+const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
 
 // Scoped so parallel test files don't wipe each other's counterparty rows.
 // Matches by alias.value prefix OR display_name prefix so tests that mutate
@@ -705,5 +723,162 @@ describe("createManualExpense", () => {
       WHERE description_raw = 'test-manual-expense large'
     `);
     expect(rows[0].amount_cents).toBe("-999999999");
+  });
+});
+
+describe("classifySingleWithAi", () => {
+  async function seedUnclassifiedTx(externalId: string): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        account_id, occurred_at, amount_cents, currency, description_raw,
+        classification_method, source, external_id
+      ) VALUES (
+        ${acc.id}, now(), -42000, 'COP', 'NETFLIX',
+        'unclassified'::classification_method, 'sms', ${externalId}
+      )
+      RETURNING id
+    `);
+    return rows[0].id;
+  }
+
+  async function seedClassifiedTx(externalId: string): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        account_id, occurred_at, amount_cents, currency, description_raw,
+        category_slug, classification_method, source, external_id
+      ) VALUES (
+        ${acc.id}, now(), -5000, 'COP', 'manual already',
+        'alimentacion', 'manual'::classification_method, 'sms', ${externalId}
+      )
+      RETURNING id
+    `);
+    return rows[0].id;
+  }
+
+  async function cleanupAiTxs() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE 'test-ai-single:%'
+    `);
+  }
+
+  beforeEach(async () => {
+    await cleanupAiTxs();
+    mockAiClassifySingle.mockReset();
+  });
+  afterEach(cleanupAiTxs);
+
+  it("updates tx with category, method='ai', and confidence on success", async () => {
+    const txId = await seedUnclassifiedTx("test-ai-single:ok");
+    mockAiClassifySingle.mockResolvedValueOnce({
+      classification: {
+        id: txId,
+        categorySlug: "suscripciones",
+        confidence: 92,
+        reason: "NETFLIX",
+      },
+      model: "claude-haiku-4-5-20251001",
+      usage: { inputTokens: 100, outputTokens: 20 },
+    });
+
+    const result = await classifySingleWithAi({ txId });
+
+    expect(result.categorySlug).toBe("suscripciones");
+    expect(result.confidence).toBe(92);
+    expect(result.categoryName.length).toBeGreaterThan(0);
+
+    const [row] = await db.execute<{
+      category_slug: string;
+      classification_method: string;
+      classification_confidence: number;
+    }>(sql`
+      SELECT category_slug, classification_method, classification_confidence
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.category_slug).toBe("suscripciones");
+    expect(row.classification_method).toBe("ai");
+    expect(row.classification_confidence).toBe(92);
+  });
+
+  it("rejects when tx is already classified and does not call the AI", async () => {
+    const txId = await seedClassifiedTx("test-ai-single:classified");
+
+    await expect(classifySingleWithAi({ txId })).rejects.toThrow(/already classified/);
+    expect(mockAiClassifySingle).not.toHaveBeenCalled();
+
+    const [row] = await db.execute<{
+      category_slug: string;
+      classification_method: string;
+    }>(sql`
+      SELECT category_slug, classification_method
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.category_slug).toBe("alimentacion");
+    expect(row.classification_method).toBe("manual");
+  });
+
+  it("rejects when tx does not exist", async () => {
+    await expect(classifySingleWithAi({ txId: 9_999_999 })).rejects.toThrow(/not found/);
+    expect(mockAiClassifySingle).not.toHaveBeenCalled();
+  });
+
+  it("rejects and leaves tx unclassified when AI returns null category", async () => {
+    const txId = await seedUnclassifiedTx("test-ai-single:null");
+    mockAiClassifySingle.mockResolvedValueOnce({
+      classification: {
+        id: txId,
+        categorySlug: null,
+        confidence: 10,
+      },
+      model: "claude-haiku-4-5-20251001",
+      usage: { inputTokens: 50, outputTokens: 10 },
+    });
+
+    await expect(classifySingleWithAi({ txId })).rejects.toThrow(/could not classify/);
+
+    const [row] = await db.execute<{
+      category_slug: string | null;
+      classification_method: string;
+    }>(sql`
+      SELECT category_slug, classification_method
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.category_slug).toBeNull();
+    expect(row.classification_method).toBe("unclassified");
+  });
+
+  it("rejects when the AI returns a slug that isn't in the category taxonomy", async () => {
+    const txId = await seedUnclassifiedTx("test-ai-single:bogus");
+    mockAiClassifySingle.mockResolvedValueOnce({
+      classification: {
+        id: txId,
+        categorySlug: "not-a-real-slug",
+        confidence: 80,
+      },
+      model: "claude-haiku-4-5-20251001",
+      usage: { inputTokens: 50, outputTokens: 10 },
+    });
+
+    await expect(classifySingleWithAi({ txId })).rejects.toThrow();
+
+    const [row] = await db.execute<{
+      category_slug: string | null;
+      classification_method: string;
+    }>(sql`
+      SELECT category_slug, classification_method
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.category_slug).toBeNull();
+    expect(row.classification_method).toBe("unclassified");
+  });
+
+  it("rejects an invalid txId via zod", async () => {
+    await expect(classifySingleWithAi({ txId: 0 })).rejects.toThrow();
+    await expect(classifySingleWithAi({ txId: -1 })).rejects.toThrow();
   });
 });
