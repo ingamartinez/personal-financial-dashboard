@@ -94,6 +94,30 @@ function extractJson(text: string): unknown {
   return JSON.parse(candidate);
 }
 
+export type AiSingleClassifyResult = {
+  classification: AiClassification | null;
+  model: string;
+  usage: { inputTokens: number; outputTokens: number };
+};
+
+export async function classifySingleWithAi(opts: {
+  transaction: AiClassifiable;
+  categories: AiCategoryOption[];
+  model?: string;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<AiSingleClassifyResult> {
+  const batch = await classifyBatchWithAi({
+    transactions: [opts.transaction],
+    categories: opts.categories,
+    model: opts.model,
+    apiKey: opts.apiKey,
+    fetchImpl: opts.fetchImpl,
+  });
+  const hit = batch.classifications.find((c) => c.id === opts.transaction.id) ?? null;
+  return { classification: hit, model: batch.model, usage: batch.usage };
+}
+
 export async function classifyBatchWithAi(opts: {
   transactions: AiClassifiable[];
   categories: AiCategoryOption[];
