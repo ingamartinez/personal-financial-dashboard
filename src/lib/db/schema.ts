@@ -28,6 +28,7 @@ export const txSource = pgEnum("tx_source", [
   "csv",
   "recurring",
   "manual",
+  "telegram",
 ]);
 
 export const classificationMethod = pgEnum("classification_method", [
@@ -295,3 +296,46 @@ export const accountSnapshots = pgTable(
   },
   (t) => [uniqueIndex("snapshots_account_date_unique").on(t.accountId, t.snapshotDate)],
 );
+
+export type TelegramSessionStep =
+  | "idle"
+  | "awaiting_account"
+  | "awaiting_amount"
+  | "awaiting_category"
+  | "awaiting_confirm";
+
+export type TelegramDraft = {
+  amountCents?: string;
+  currency?: "COP" | "USD";
+  direction?: "expense" | "income";
+  merchant?: string;
+  description?: string;
+  occurredOn?: string;
+  accountId?: number;
+  categorySlug?: string;
+  notes?: string;
+};
+
+export type TelegramSessionState = {
+  step: TelegramSessionStep;
+  draft: TelegramDraft;
+  sourceChatId: number;
+  sourceMessageId?: number;
+  promptMessageId?: number;
+};
+
+export const telegramSessions = pgTable("telegram_sessions", {
+  chatId: bigint("chat_id", { mode: "bigint" }).primaryKey(),
+  userId: bigint("user_id", { mode: "bigint" }).notNull(),
+  state: jsonb("state").$type<TelegramSessionState>().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
+
+export const telegramPollState = pgTable("telegram_poll_state", {
+  id: integer("id").primaryKey(),
+  lastUpdateId: bigint("last_update_id", { mode: "bigint" })
+    .notNull()
+    .default(sql`0`),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

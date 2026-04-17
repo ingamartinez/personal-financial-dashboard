@@ -30,6 +30,7 @@ const sourceLabel: Record<TxRow["source"], string> = {
   csv: "CSV",
   recurring: "Recurring",
   manual: "Manual",
+  telegram: "Telegram",
 };
 
 const methodVariant: Record<
