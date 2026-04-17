@@ -133,10 +133,10 @@ export function TransactionTable({
         <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[100px]">Date</TableHead>
-              <TableHead>Description</TableHead>
-              <TableHead className="w-[240px]">Category</TableHead>
-              <TableHead className="w-[140px] text-right">Amount</TableHead>
+              <TableHead className="w-[116px] px-4">Date</TableHead>
+              <TableHead className="px-4">Description</TableHead>
+              <TableHead className="w-[256px] px-4">Category</TableHead>
+              <TableHead className="w-[156px] px-4 text-right">Amount</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -157,12 +157,12 @@ export function TransactionTable({
                     transition={enterTransition}
                   >
                     <TableCell
-                      className="text-muted-foreground align-top text-sm"
+                      className="text-muted-foreground px-4 text-sm"
                       suppressHydrationWarning
                     >
                       {formatDate(tx.occurredAt)}
                     </TableCell>
-                    <TableCell className="align-top">
+                    <TableCell className="px-4">
                       <div className="flex min-w-0 items-center gap-1.5">
                         <span className="truncate font-medium">{primaryDescription(tx)}</span>
                         {tx.counterparty ? (
@@ -197,12 +197,12 @@ export function TransactionTable({
                         ) : null}
                       </div>
                     </TableCell>
-                    <TableCell className="align-top">
+                    <TableCell className="px-4">
                       <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
                     </TableCell>
                     <TableCell
                       className={cn(
-                        "money text-right align-top font-medium",
+                        "money px-4 text-right font-medium",
                         isExpense ? "text-destructive" : "text-emerald-600",
                       )}
                       suppressHydrationWarning
