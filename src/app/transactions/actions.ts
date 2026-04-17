@@ -7,6 +7,8 @@ import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { emit } from "@/lib/events/bus";
+import { keyForParsed } from "@/lib/counterparties/alias-key";
+import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 
 const updateSchema = z.object({
   txId: z.coerce.number().int().positive(),
@@ -308,6 +310,179 @@ export async function mergeCounterparty(
     type: "counterparty:updated",
     id: parsed.targetId,
     reason: "merge",
+    timestamp: Date.now(),
+  });
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+
+  return result;
+}
+
+const splitCounterpartySchema = z.object({
+  sourceId: z.coerce.number().int().positive(),
+  aliasIds: z.array(z.coerce.number().int().positive()).min(1),
+  newDisplayName: z.string().trim().min(1).max(120).optional(),
+});
+
+export type SplitCounterpartyInput = z.input<typeof splitCounterpartySchema>;
+export type SplitCounterpartyResult = {
+  newCounterpartyId: number;
+  movedTxCount: number;
+  movedAliasCount: number;
+};
+
+/**
+ * Extracts a subset of a counterparty's aliases into a new counterparty and
+ * reassigns the historical transactions that matched those aliases at ingest.
+ *
+ * Transaction reassignment re-parses each source tx's raw SMS via the ingest
+ * parser and derives its original (kind, value) match. This gives 1:1 fidelity
+ * with the ingest-time counterparty match and avoids brittle text heuristics.
+ *
+ * Guards: at least one alias must stay on the source so the source never ends
+ * up orphaned. The new counterparty inherits displayName/type/defaultCategory
+ * from source; the caller can override the name via `newDisplayName`.
+ */
+export async function splitCounterparty(
+  input: SplitCounterpartyInput,
+): Promise<SplitCounterpartyResult> {
+  const parsed = splitCounterpartySchema.parse(input);
+  const aliasIdSet = new Set(parsed.aliasIds);
+  if (aliasIdSet.size !== parsed.aliasIds.length) {
+    throw new Error("aliasIds must be unique");
+  }
+
+  const [source] = await db.execute<{
+    id: number;
+    display_name: string;
+    type: "person" | "merchant" | "unknown";
+    default_category_slug: string | null;
+  }>(sql`
+    SELECT id, display_name, type, default_category_slug
+    FROM counterparties
+    WHERE id = ${parsed.sourceId}
+    LIMIT 1
+  `);
+  if (!source) throw new Error("Source counterparty not found");
+
+  const allAliases = await db.execute<{
+    id: number;
+    kind: "qr" | "breb" | "account" | "name";
+    value: string;
+  }>(sql`
+    SELECT id, kind, value
+    FROM counterparty_aliases
+    WHERE counterparty_id = ${parsed.sourceId}
+  `);
+  if (allAliases.length < 2) {
+    throw new Error("Counterparty needs at least 2 aliases to split");
+  }
+
+  const extractedAliases = allAliases.filter((a) => aliasIdSet.has(a.id));
+  if (extractedAliases.length !== aliasIdSet.size) {
+    throw new Error("Some aliasIds do not belong to this counterparty");
+  }
+  if (extractedAliases.length >= allAliases.length) {
+    throw new Error("Cannot extract every alias — at least one must stay");
+  }
+
+  const extractedKeys = new Set(extractedAliases.map((a) => `${a.kind}:${a.value}`));
+
+  // Re-parse every source tx to determine which ones belong to the extracted
+  // alias set. Parsing is pure/side-effect-free so we do it outside the DB
+  // transaction to keep the tx short.
+  const sourceTxs = await db.execute<{ id: number; raw_data: unknown }>(sql`
+    SELECT id, raw_data
+    FROM transactions
+    WHERE counterparty_id = ${parsed.sourceId}
+  `);
+
+  const movedTxIds: number[] = [];
+  for (const tx of sourceTxs) {
+    const raw = tx.raw_data as { sms?: unknown } | null;
+    const smsBody = raw && typeof raw.sms === "string" ? raw.sms : null;
+    if (!smsBody) continue;
+
+    const parseResult = parseSmsBancolombia(smsBody);
+    if (parseResult.kind === "skip") continue;
+
+    const key = keyForParsed(parseResult);
+    if (!key) continue;
+
+    if (extractedKeys.has(`${key.kind}:${key.value}`)) {
+      movedTxIds.push(tx.id);
+    }
+  }
+
+  const result = await db.transaction(async (trx) => {
+    const [inserted] = await trx.execute<{ id: number }>(sql`
+      INSERT INTO counterparties (display_name, type, default_category_slug, hit_count, last_hit_at)
+      VALUES (
+        ${parsed.newDisplayName ?? source.display_name},
+        ${source.type}::counterparty_type,
+        ${source.default_category_slug},
+        0,
+        NULL
+      )
+      RETURNING id
+    `);
+    const newId = inserted.id;
+
+    await trx.execute(sql`
+      UPDATE counterparty_aliases
+      SET counterparty_id = ${newId}
+      WHERE id = ANY(${sql`ARRAY[${sql.join(
+        parsed.aliasIds.map((id) => sql`${id}`),
+        sql`, `,
+      )}]::int[]`})
+    `);
+
+    let movedTxCount = 0;
+    if (movedTxIds.length > 0) {
+      const updated = await trx.execute<{ id: number }>(sql`
+        UPDATE transactions
+        SET counterparty_id = ${newId}, updated_at = now()
+        WHERE id = ANY(${sql`ARRAY[${sql.join(
+          movedTxIds.map((id) => sql`${id}`),
+          sql`, `,
+        )}]::int[]`})
+        RETURNING id
+      `);
+      movedTxCount = updated.length;
+    }
+
+    await trx
+      .update(counterparties)
+      .set({ updatedAt: new Date() })
+      .where(eq(counterparties.id, parsed.sourceId));
+
+    return {
+      newCounterpartyId: newId,
+      movedTxCount,
+      movedAliasCount: extractedAliases.length,
+    };
+  });
+
+  if (result.movedTxCount > 0) {
+    emit({
+      type: "transaction:bulk-updated",
+      count: result.movedTxCount,
+      reason: "counterparty-updated",
+      timestamp: Date.now(),
+    });
+  }
+
+  emit({
+    type: "counterparty:updated",
+    id: parsed.sourceId,
+    reason: "split",
+    timestamp: Date.now(),
+  });
+  emit({
+    type: "counterparty:updated",
+    id: result.newCounterpartyId,
+    reason: "split",
     timestamp: Date.now(),
   });
 

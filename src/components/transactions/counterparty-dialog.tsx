@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { PencilIcon, UserIcon, BuildingIcon, CircleHelpIcon, MergeIcon } from "lucide-react";
+import {
+  PencilIcon,
+  UserIcon,
+  BuildingIcon,
+  CircleHelpIcon,
+  MergeIcon,
+  SplitIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,10 +23,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { updateCounterparty, mergeCounterparty } from "@/app/transactions/actions";
+import {
+  updateCounterparty,
+  mergeCounterparty,
+  splitCounterparty,
+} from "@/app/transactions/actions";
 import type { CategoryOption } from "./category-cell";
 
 export type CounterpartyAlias = {
+  id: number;
   kind: "qr" | "breb" | "account" | "name";
   value: string;
 };
@@ -74,9 +86,13 @@ export function CounterpartyDialog({
   );
   const [notes, setNotes] = useState(counterparty.notes ?? "");
   const [mergeTargetId, setMergeTargetId] = useState<string>("");
+  const [splitAliasIds, setSplitAliasIds] = useState<Set<number>>(() => new Set());
 
   const placeholderName = isPlaceholderName(counterparty);
   const mergeCandidates = allCounterparties.filter((c) => c.id !== counterparty.id);
+  const canSplit = counterparty.aliases.length >= 2;
+  const splitSelectedCount = splitAliasIds.size;
+  const splitValid = splitSelectedCount > 0 && splitSelectedCount < counterparty.aliases.length;
 
   function reset() {
     setDisplayName(counterparty.displayName);
@@ -84,6 +100,16 @@ export function CounterpartyDialog({
     setDefaultCategorySlug(counterparty.defaultCategorySlug ?? "");
     setNotes(counterparty.notes ?? "");
     setMergeTargetId("");
+    setSplitAliasIds(new Set());
+  }
+
+  function toggleSplitAlias(id: number) {
+    setSplitAliasIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -105,6 +131,33 @@ export function CounterpartyDialog({
         setOpen(false);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to update");
+      }
+    });
+  }
+
+  function onSplit() {
+    if (!splitValid) return;
+    const extracted = counterparty.aliases.filter((a) => splitAliasIds.has(a.id));
+    const confirmed = window.confirm(
+      `Split ${extracted.length} alias${extracted.length === 1 ? "" : "es"} out of ` +
+        `"${counterparty.displayName}" into a new counterparty?\n\n` +
+        `Historical transactions matching the extracted aliases will be reassigned ` +
+        `to the new counterparty. You can rename it afterwards.`,
+    );
+    if (!confirmed) return;
+    startTransition(async () => {
+      try {
+        const result = await splitCounterparty({
+          sourceId: counterparty.id,
+          aliasIds: Array.from(splitAliasIds),
+        });
+        toast.success(
+          `Split · ${result.movedAliasCount} alias${result.movedAliasCount === 1 ? "" : "es"} + ` +
+            `${result.movedTxCount} tx moved to new counterparty`,
+        );
+        setOpen(false);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Split failed");
       }
     });
   }
@@ -302,6 +355,57 @@ export function CounterpartyDialog({
               >
                 <MergeIcon className="size-3.5" />
                 Merge
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {canSplit ? (
+          <div className="mt-2 flex min-w-0 flex-col gap-1.5 border-t pt-3">
+            <Label>Split out aliases</Label>
+            <p className="text-muted-foreground text-xs">
+              Select aliases to extract into a new counterparty. Transactions matching those aliases
+              will move with them.
+            </p>
+            <div className="flex flex-col gap-1">
+              {counterparty.aliases.map((a) => {
+                const checked = splitAliasIds.has(a.id);
+                return (
+                  <label
+                    key={a.id}
+                    className="hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded border px-2 py-1.5 text-xs"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleSplitAlias(a.id)}
+                      disabled={pending}
+                      className="size-3.5"
+                    />
+                    <span className="text-muted-foreground font-sans uppercase">
+                      {ALIAS_KIND_LABELS[a.kind]}
+                    </span>
+                    <span className="font-mono">{a.value}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground text-xs">
+                {splitSelectedCount === 0
+                  ? "Pick at least one alias"
+                  : splitSelectedCount >= counterparty.aliases.length
+                    ? "At least one alias must stay"
+                    : `${splitSelectedCount} selected`}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onSplit}
+                disabled={pending || !splitValid}
+              >
+                <SplitIcon className="size-3.5" />
+                Split
               </Button>
             </div>
           </div>

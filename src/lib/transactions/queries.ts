@@ -9,6 +9,7 @@ import {
 } from "@/lib/db/schema";
 
 export type CounterpartyAlias = {
+  id: number;
   kind: "qr" | "breb" | "account" | "name";
   value: string;
 };
@@ -123,7 +124,7 @@ export async function listTransactions(filters: TxFilters): Promise<TxListResult
       cpNotes: counterparties.notes,
       cpAliases: sql<CounterpartyAlias[] | null>`(
         SELECT COALESCE(
-          json_agg(json_build_object('kind', a.kind, 'value', a.value) ORDER BY a.id),
+          json_agg(json_build_object('id', a.id, 'kind', a.kind, 'value', a.value) ORDER BY a.id),
           '[]'::json
         )
         FROM ${counterpartyAliases} a
