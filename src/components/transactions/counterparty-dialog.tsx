@@ -163,8 +163,8 @@ export function CounterpartyDialog({
           )}
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-md">
+        <DialogHeader className="min-w-0">
           <DialogTitle>
             {placeholderName ? "Identify counterparty" : "Edit counterparty"}
           </DialogTitle>
@@ -173,7 +173,7 @@ export function CounterpartyDialog({
             counterparty.
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={onSubmit} className="flex flex-col gap-3">
+        <form onSubmit={onSubmit} className="flex min-w-0 flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <Label>Aliases</Label>
             <div className="flex flex-wrap gap-1.5">
@@ -232,7 +232,7 @@ export function CounterpartyDialog({
               id="cp-cat"
               value={defaultCategorySlug}
               onChange={(e) => setDefaultCategorySlug(e.target.value)}
-              className="bg-background chevron-select h-9 rounded-md border text-sm"
+              className="bg-background chevron-select h-9 w-full min-w-0 rounded-md border text-sm"
             >
               <option value="">— none —</option>
               {categories.map((c) => (
@@ -270,18 +270,18 @@ export function CounterpartyDialog({
         </form>
 
         {mergeCandidates.length > 0 ? (
-          <div className="mt-2 flex flex-col gap-1.5 border-t pt-3">
+          <div className="mt-2 flex min-w-0 flex-col gap-1.5 border-t pt-3">
             <Label htmlFor="cp-merge">Merge into</Label>
             <p className="text-muted-foreground text-xs">
               Use this if another counterparty is the same person or merchant. All aliases and
               transactions move to the target.
             </p>
-            <div className="flex gap-2">
+            <div className="flex min-w-0 gap-2">
               <select
                 id="cp-merge"
                 value={mergeTargetId}
                 onChange={(e) => setMergeTargetId(e.target.value)}
-                className="bg-background chevron-select h-9 flex-1 rounded-md border text-sm"
+                className="bg-background chevron-select h-9 w-full min-w-0 flex-1 rounded-md border text-sm"
                 disabled={pending}
               >
                 <option value="">— pick target —</option>
