@@ -1,6 +1,6 @@
 import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, categories, transactions } from "@/lib/db/schema";
+import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { toCop } from "@/lib/money";
 
 export function currentMonthRange(now = new Date()): { start: Date; end: Date } {
@@ -133,8 +133,14 @@ export async function getCategoryBreakdown(
 export type TopExpense = {
   id: number;
   occurredAt: Date;
-  description: string;
+  descriptionRaw: string;
+  descriptionClean: string | null;
   merchant: string | null;
+  counterparty: {
+    id: number;
+    displayName: string;
+    type: "person" | "merchant" | "unknown";
+  } | null;
   categoryName: string | null;
   amountCents: bigint;
   currency: "COP" | "USD";
@@ -160,10 +166,14 @@ export async function getTopExpenses(
       amountCents: transactions.amountCents,
       currency: transactions.currency,
       accountName: accounts.name,
+      cpId: counterparties.id,
+      cpDisplayName: counterparties.displayName,
+      cpType: counterparties.type,
     })
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
     .leftJoin(categories, eq(categories.slug, transactions.categorySlug))
+    .leftJoin(counterparties, eq(counterparties.id, transactions.counterpartyId))
     .where(
       and(
         gte(transactions.occurredAt, start),
@@ -179,8 +189,10 @@ export async function getTopExpenses(
   return rows.map((r) => ({
     id: r.id,
     occurredAt: r.occurredAt,
-    description: r.descriptionClean ?? r.descriptionRaw,
+    descriptionRaw: r.descriptionRaw,
+    descriptionClean: r.descriptionClean,
     merchant: r.merchant,
+    counterparty: r.cpId ? { id: r.cpId, displayName: r.cpDisplayName!, type: r.cpType! } : null,
     categoryName: r.categoryName,
     amountCents: r.amountCents,
     currency: r.currency,

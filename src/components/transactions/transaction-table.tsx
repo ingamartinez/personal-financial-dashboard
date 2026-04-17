@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ReceiptTextIcon, UserIcon, BuildingIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { useNewIds } from "@/lib/hooks/use-new-ids";
+import { hasSecondaryDescription, primaryDescription } from "@/lib/transactions/description";
 import type { CounterpartyBrief, TxRow } from "@/lib/transactions/queries";
 import { CategoryCell, type CategoryOption } from "./category-cell";
 import { CounterpartyDialog } from "./counterparty-dialog";
@@ -83,22 +84,16 @@ function formatDate(d: Date) {
   });
 }
 
-function primaryDescription(tx: TxRow): string {
-  return tx.counterparty?.displayName ?? tx.merchant ?? tx.descriptionClean ?? tx.descriptionRaw;
-}
-
-function hasSecondaryDescription(tx: TxRow): boolean {
-  return Boolean(tx.counterparty || tx.merchant || tx.descriptionClean);
-}
-
 export function TransactionTable({
   rows,
   categories,
   allCounterparties,
+  highlightId,
 }: {
   rows: TxRow[];
   categories: CategoryOption[];
   allCounterparties: CounterpartyBrief[];
+  highlightId?: number;
 }) {
   const shouldReduceMotion = useReducedMotion();
   const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);
@@ -106,6 +101,17 @@ export function TransactionTable({
   const enterInitial = shouldReduceMotion ? false : { opacity: 0, y: -8 };
   const enterAnimate = { opacity: 1, y: 0 };
   const enterTransition = { duration: 0.25, ease: "easeOut" as const };
+
+  useEffect(() => {
+    if (highlightId === undefined) return;
+    const els = document.querySelectorAll<HTMLElement>(`[data-highlight-row="${highlightId}"]`);
+    for (const el of els) {
+      if (el.offsetParent !== null) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        break;
+      }
+    }
+  }, [highlightId]);
 
   if (rows.length === 0) {
     return (
@@ -139,11 +145,13 @@ export function TransactionTable({
               {rows.map((tx) => {
                 const isExpense = tx.amountCents < BigInt(0);
                 const isNew = newIds.has(tx.id);
+                const isHighlighted = tx.id === highlightId;
                 return (
                   <motion.tr
                     key={tx.id}
                     data-slot="table-row"
-                    className={cn(ROW_CLASSES, isNew && "tx-row-new")}
+                    data-highlight-row={isHighlighted ? tx.id : undefined}
+                    className={cn(ROW_CLASSES, (isNew || isHighlighted) && "tx-row-new")}
                     initial={enterInitial}
                     animate={enterAnimate}
                     transition={enterTransition}
@@ -204,12 +212,14 @@ export function TransactionTable({
           {rows.map((tx) => {
             const isExpense = tx.amountCents < BigInt(0);
             const isNew = newIds.has(tx.id);
+            const isHighlighted = tx.id === highlightId;
             return (
               <motion.li
                 key={tx.id}
+                data-highlight-row={isHighlighted ? tx.id : undefined}
                 className={cn(
                   "bg-card flex flex-col gap-2 rounded-md border p-3",
-                  isNew && "tx-row-new",
+                  (isNew || isHighlighted) && "tx-row-new",
                 )}
                 initial={enterInitial}
                 animate={enterAnimate}
