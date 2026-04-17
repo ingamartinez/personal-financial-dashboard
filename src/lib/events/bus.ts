@@ -21,6 +21,12 @@ export type AppEvent =
       reason: "counterparty-updated" | "counterparty-created";
       timestamp: number;
     }
+  | {
+      type: "counterparty:updated";
+      id: number;
+      reason: "edit" | "merge";
+      timestamp: number;
+    }
   | { type: "budget:updated"; timestamp: number };
 
 // globalThis singleton survives Turbopack HMR, which otherwise re-evaluates
