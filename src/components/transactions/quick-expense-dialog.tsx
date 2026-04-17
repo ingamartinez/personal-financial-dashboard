@@ -99,11 +99,11 @@ export function QuickExpenseDialog({
       <DialogTrigger asChild>
         <Button
           size="lg"
-          className="fixed bottom-6 right-6 z-30 h-14 rounded-full shadow-lg"
+          className="fixed bottom-6 right-6 z-30 h-14 w-14 rounded-full p-0 shadow-lg sm:w-auto sm:px-6"
           aria-label="Add expense"
         >
           <PlusIcon className="size-5" />
-          <span className="ml-1">Expense</span>
+          <span className="ml-1 hidden sm:inline">Expense</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">

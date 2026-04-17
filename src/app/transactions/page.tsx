@@ -82,8 +82,8 @@ export default async function TransactionsPage({
   };
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-6">
-      <header className="flex items-end justify-between gap-3">
+    <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 sm:p-6">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-h1">Transactions</h1>
           <p className="text-body text-muted-foreground">
