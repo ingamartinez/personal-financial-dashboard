@@ -75,6 +75,7 @@ NEVER add `Co-Authored-By` or AI attribution lines.
 | `bug` | Something broken |
 | `docs` | Documentation only |
 | `good-first-task` | Small, well-scoped, easy entry point |
+| `blocked` | Cannot proceed until an external condition is met (missing data, pending decision, dependency on another issue). Orthogonal to `phase-N` and to the Project board `Status` column — use it as a flag, not a status. When applying, leave a comment on the issue explaining WHAT it's blocked on. Filter it out with `-label:blocked` when looking for work you can actually start. |
 
 ## Tech baseline (do not deviate without an issue)
 
