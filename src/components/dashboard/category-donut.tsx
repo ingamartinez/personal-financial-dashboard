@@ -66,21 +66,24 @@ export function CategoryDonut({
                 />
               </PieChart>
             </div>
-            <ul className="flex flex-col gap-1.5 text-sm">
+            <ul className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-3 gap-y-1.5 text-sm">
               {slices.slice(0, 8).map((s, i) => {
                 const pct = total > 0 ? (s.value / total) * 100 : 0;
                 return (
-                  <li key={s.slug} className="flex items-center gap-2">
+                  <li
+                    key={s.slug}
+                    className="col-span-4 grid grid-cols-subgrid items-center"
+                  >
                     <span
                       className="size-3 shrink-0 rounded-sm"
                       style={{ background: s.color ?? PALETTE[i % PALETTE.length] }}
                       aria-hidden
                     />
-                    <span className="flex-1 truncate">{s.name}</span>
-                    <span className="tabular-nums text-muted-foreground">
+                    <span className="truncate">{s.name}</span>
+                    <span className="text-right tabular-nums text-muted-foreground">
                       {pct.toFixed(1)}%
                     </span>
-                    <span className="tabular-nums font-medium">
+                    <span className="text-right tabular-nums font-medium">
                       {formatCop(BigInt(Math.round(s.value)))}
                     </span>
                   </li>
