@@ -169,6 +169,11 @@ const seedRules: Array<{ pattern: string; categorySlug: string; priority?: numbe
   { pattern: "%FARMATODO%", categorySlug: "medicamentos", priority: 10 },
   { pattern: "%CRUZ VERDE%", categorySlug: "medicamentos", priority: 10 },
   { pattern: "%LA REBAJA%", categorySlug: "medicamentos", priority: 10 },
+  // QR payments carry no merchant signal — the SMS only has an opaque "llave"
+  // (phone/account identifier). Route them to `transferencias` so they stop
+  // polluting `otros`. A user-mapped counterparty default_category still wins
+  // because counterparty inheritance happens before this rule in ingestParsed.
+  { pattern: "%Pago QR a llave%", categorySlug: "transferencias", priority: 50 },
 ];
 
 export async function runSeed() {
