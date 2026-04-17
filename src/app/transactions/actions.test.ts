@@ -8,7 +8,8 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-const { updateCounterparty, mergeCounterparty, splitCounterparty } = await import("./actions");
+const { updateCounterparty, mergeCounterparty, splitCounterparty, createManualExpense } =
+  await import("./actions");
 
 // Scoped so parallel test files don't wipe each other's counterparty rows.
 // Matches by alias.value prefix OR display_name prefix so tests that mutate
@@ -571,5 +572,137 @@ describe("splitCounterparty", () => {
     await expect(splitCounterparty({ sourceId: 9_999_999, aliasIds: [1] })).rejects.toThrow(
       /Source counterparty not found/,
     );
+  });
+});
+
+describe("createManualExpense", () => {
+  async function testAccountId(): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    return acc.id;
+  }
+
+  async function cleanupManualExpenses() {
+    await db.execute(sql`
+      DELETE FROM transactions
+      WHERE source = 'manual' AND description_raw LIKE 'test-manual-expense%'
+    `);
+  }
+
+  afterEach(cleanupManualExpenses);
+  beforeEach(cleanupManualExpenses);
+
+  it("stores amount_cents as an exact bigint with no float rounding drift", async () => {
+    const accountId = await testAccountId();
+
+    // 1000.99 * 100 === 100099.00000000001 under IEEE-754; the old code
+    // could have stored 100098 for certain similar values. Confirm the
+    // cents value lands exactly.
+    await createManualExpense({
+      accountId,
+      amount: "1000.99",
+      categorySlug: null,
+      occurredOn: "2026-04-10",
+      notes: "test-manual-expense exact cents",
+    });
+
+    const rows = await db.execute<{ amount_cents: string }>(sql`
+      SELECT amount_cents::text AS amount_cents
+      FROM transactions
+      WHERE description_raw = 'test-manual-expense exact cents'
+    `);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amount_cents).toBe("-100099");
+  });
+
+  it("rejects amounts with more than two decimal places", async () => {
+    const accountId = await testAccountId();
+    await expect(
+      createManualExpense({
+        accountId,
+        amount: "9.995",
+        categorySlug: null,
+        occurredOn: "2026-04-10",
+        notes: "test-manual-expense bad-decimals",
+      }),
+    ).rejects.toThrow(/positive decimal/);
+  });
+
+  it("rejects negative amounts and non-numeric input", async () => {
+    const accountId = await testAccountId();
+    for (const bad of ["-5", "abc", ""]) {
+      await expect(
+        createManualExpense({
+          accountId,
+          amount: bad,
+          categorySlug: null,
+          occurredOn: "2026-04-10",
+          notes: "test-manual-expense bad-amount",
+        }),
+      ).rejects.toThrow(/positive decimal/);
+    }
+  });
+
+  it("rejects zero amount", async () => {
+    const accountId = await testAccountId();
+    await expect(
+      createManualExpense({
+        accountId,
+        amount: "0",
+        categorySlug: null,
+        occurredOn: "2026-04-10",
+        notes: "test-manual-expense zero",
+      }),
+    ).rejects.toThrow(/greater than zero/);
+  });
+
+  it("rejects future dates", async () => {
+    const accountId = await testAccountId();
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    await expect(
+      createManualExpense({
+        accountId,
+        amount: "100",
+        categorySlug: null,
+        occurredOn: future,
+        notes: "test-manual-expense future",
+      }),
+    ).rejects.toThrow(/future/);
+  });
+
+  it("accepts today and past dates", async () => {
+    const accountId = await testAccountId();
+    const today = new Date().toISOString().slice(0, 10);
+    await createManualExpense({
+      accountId,
+      amount: "50",
+      categorySlug: null,
+      occurredOn: today,
+      notes: "test-manual-expense today",
+    });
+    const rows = await db.execute<{ amount_cents: string }>(sql`
+      SELECT amount_cents::text AS amount_cents
+      FROM transactions
+      WHERE description_raw = 'test-manual-expense today'
+    `);
+    expect(rows[0].amount_cents).toBe("-5000");
+  });
+
+  it("handles the max-cents boundary used in the form ceiling", async () => {
+    const accountId = await testAccountId();
+    await createManualExpense({
+      accountId,
+      amount: "9999999.99",
+      categorySlug: null,
+      occurredOn: "2026-04-10",
+      notes: "test-manual-expense large",
+    });
+    const rows = await db.execute<{ amount_cents: string }>(sql`
+      SELECT amount_cents::text AS amount_cents
+      FROM transactions
+      WHERE description_raw = 'test-manual-expense large'
+    `);
+    expect(rows[0].amount_cents).toBe("-999999999");
   });
 });

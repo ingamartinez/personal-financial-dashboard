@@ -10,6 +10,7 @@ import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
+import { decimalStringToCents } from "@/lib/money";
 
 const updateSchema = z.object({
   txId: z.coerce.number().int().positive(),
@@ -35,22 +36,57 @@ export async function updateTransactionCategory(input: {
   revalidatePath("/transactions");
 }
 
-const expenseSchema = z.object({
+// Amount arrives as a decimal STRING so we can parse to bigint cents via
+// integer arithmetic (see `decimalStringToCents`). Never accept a number
+// here — `number * 100` loses precision for values like 9.995.
+export const expenseSchema = z.object({
   accountId: z.coerce.number().int().positive(),
-  amount: z.coerce.number().positive().finite(),
+  amount: z
+    .string()
+    .trim()
+    .transform((value, ctx) => {
+      try {
+        const cents = decimalStringToCents(value);
+        if (cents <= BigInt(0)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Amount must be greater than zero",
+          });
+          return z.NEVER;
+        }
+        return cents;
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Amount must be a positive decimal with up to 2 digits",
+        });
+        return z.NEVER;
+      }
+    }),
   categorySlug: z.string().min(1).max(60).nullable(),
-  occurredOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  occurredOn: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")
+    .refine((d) => d <= new Date().toISOString().slice(0, 10), {
+      message: "Date cannot be in the future",
+    }),
   notes: z.string().max(500).nullable(),
 });
 
 export async function createManualExpense(input: {
   accountId: number;
-  amount: number;
+  amount: string;
   categorySlug: string | null;
   occurredOn: string;
   notes: string | null;
 }) {
-  const parsed = expenseSchema.parse(input);
+  // Server actions serialize errors to the client — ZodError.message is a
+  // JSON blob. Flatten to the first issue so the form can toast it cleanly.
+  const result = expenseSchema.safeParse(input);
+  if (!result.success) {
+    throw new Error(result.error.issues[0]?.message ?? "Invalid input");
+  }
+  const parsed = result.data;
 
   const [account] = await db
     .select({ id: accounts.id, currency: accounts.currency })
@@ -69,7 +105,6 @@ export async function createManualExpense(input: {
     if (!cat) throw new Error("Category not found");
   }
 
-  const cents = Math.round(parsed.amount * 100);
   const occurredAt = new Date(`${parsed.occurredOn}T12:00:00Z`);
 
   const [inserted] = await db
@@ -77,7 +112,7 @@ export async function createManualExpense(input: {
     .values({
       accountId: account.id,
       occurredAt,
-      amountCents: BigInt(-cents),
+      amountCents: -parsed.amount,
       currency: account.currency,
       descriptionRaw: parsed.notes ?? "Manual expense",
       descriptionClean: null,
