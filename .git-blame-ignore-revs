@@ -1,0 +1,10 @@
+# Revisions listed here are skipped by `git blame` so bulk-formatting
+# commits don't pollute authorship history.
+#
+# Configure locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub honors this file automatically in its blame view.
+
+# chore(format): apply prettier baseline (#117)
+db78c2b7e56404c64fae6828b2cb227346b13824

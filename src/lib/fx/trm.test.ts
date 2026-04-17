@@ -29,9 +29,7 @@ describe("fetchTrm", () => {
   });
 
   it("throws when valor is not a positive number", async () => {
-    const fake = mockFetch([
-      { valor: "abc", vigenciadesde: "2026-04-17T00:00:00.000" },
-    ]);
+    const fake = mockFetch([{ valor: "abc", vigenciadesde: "2026-04-17T00:00:00.000" }]);
     await expect(fetchTrm(fake)).rejects.toThrow(/invalid valor/i);
   });
 

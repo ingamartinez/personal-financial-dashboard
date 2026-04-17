@@ -46,9 +46,7 @@ export function QuickExpenseDialog({
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const defaultAccount = accounts.find((a) => a.currency === "COP") ?? accounts[0];
-  const [accountId, setAccountId] = useState<string>(
-    defaultAccount?.id.toString() ?? "",
-  );
+  const [accountId, setAccountId] = useState<string>(defaultAccount?.id.toString() ?? "");
   const selectedAccount = accounts.find((a) => a.id.toString() === accountId);
   const currency = selectedAccount?.currency ?? "COP";
   const [amount, setAmount] = useState("");
@@ -99,7 +97,7 @@ export function QuickExpenseDialog({
       <DialogTrigger asChild>
         <Button
           size="lg"
-          className="fixed bottom-6 right-6 z-30 h-14 w-14 rounded-full p-0 shadow-lg sm:w-auto sm:px-6"
+          className="fixed right-6 bottom-6 z-30 h-14 w-14 rounded-full p-0 shadow-lg sm:w-auto sm:px-6"
           aria-label="Add expense"
         >
           <PlusIcon className="size-5" />
@@ -109,16 +107,14 @@ export function QuickExpenseDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Quick expense</DialogTitle>
-          <DialogDescription>
-            Add a cash expense or anything not auto-imported.
-          </DialogDescription>
+          <DialogDescription>Add a cash expense or anything not auto-imported.</DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="qe-amount">Amount</Label>
               <div className="relative">
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                <span className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm">
                   $
                 </span>
                 <Input
@@ -132,11 +128,11 @@ export function QuickExpenseDialog({
                   onChange={(e) => setAmount(e.target.value)}
                   required
                   autoFocus
-                  className="pl-6 pr-14 tabular-nums"
+                  className="pr-14 pl-6 tabular-nums"
                 />
                 <span
                   className={cn(
-                    "pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded px-1.5 py-0.5 text-xs font-medium",
+                    "pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 rounded px-1.5 py-0.5 text-xs font-medium",
                     currency === "USD"
                       ? "bg-amber-500/15 text-amber-700"
                       : "bg-muted text-muted-foreground",
@@ -164,7 +160,7 @@ export function QuickExpenseDialog({
               id="qe-account"
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
-              className="h-9 rounded-md border bg-background text-sm chevron-select"
+              className="bg-background chevron-select h-9 rounded-md border text-sm"
               required
             >
               {accounts.map((a) => (
@@ -181,7 +177,7 @@ export function QuickExpenseDialog({
               id="qe-cat"
               value={categorySlug}
               onChange={(e) => setCategorySlug(e.target.value)}
-              className="h-9 rounded-md border bg-background text-sm chevron-select"
+              className="bg-background chevron-select h-9 rounded-md border text-sm"
             >
               <option value="">— unclassified —</option>
               {categories.map((c) => (

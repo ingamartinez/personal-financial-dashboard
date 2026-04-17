@@ -8,10 +8,7 @@ const TEST_TOKEN = "test-token-vitest-sms-ingest";
 // because the externalId is deterministic per (kind, amount, date, ...).
 const TEST_EXTERNAL_ID_PREFIX = "bcol-sms:";
 
-function makeRequest(init: {
-  body?: string;
-  headers?: Record<string, string>;
-}) {
+function makeRequest(init: { body?: string; headers?: Record<string, string> }) {
   return new Request("http://localhost:3100/api/ingest/sms", {
     method: "POST",
     body: init.body,
@@ -80,7 +77,9 @@ async function createCounterpartyWithAlias(args: {
   `);
   return rows[0].id;
 }
-void QR_KEY_VALUES; void BREB_KEY_VALUES; void NAME_KEY_VALUES;
+void QR_KEY_VALUES;
+void BREB_KEY_VALUES;
+void NAME_KEY_VALUES;
 
 function jsonBody(payload: Record<string, unknown>): string {
   return JSON.stringify(payload);
@@ -138,9 +137,7 @@ describe("POST /api/ingest/sms", () => {
   // ---------------------------------------------------------------------------
 
   it("returns 400 on invalid JSON", async () => {
-    const res = await POST(
-      makeRequest({ body: "not-json", headers: authedHeaders() }),
-    );
+    const res = await POST(makeRequest({ body: "not-json", headers: authedHeaders() }));
     expect(res.status).toBe(400);
   });
 
@@ -339,9 +336,7 @@ describe("POST /api/ingest/sms", () => {
     expect(rows[0].merchant).toBe("MARIA PAZ TORRES CARRILLO");
     expect(rows[0].category_slug).toBeNull();
     expect(rows[0].classification_method).toBe("unclassified");
-    expect(rows[0].description_raw).toBe(
-      "Transferencia Bre-b a MARIA PAZ TORRES CARRILLO",
-    );
+    expect(rows[0].description_raw).toBe("Transferencia Bre-b a MARIA PAZ TORRES CARRILLO");
 
     const accs = await db.execute<{ name: string; currency: string }>(sql`
       SELECT name, currency FROM accounts WHERE id = ${rows[0].account_id}
@@ -536,15 +531,11 @@ describe("POST /api/ingest/sms", () => {
     const body =
       "Bancolombia: Compraste COP71.950,00 en RAPPI COLOMBIA*DL, el 15/04/2026 a las 12:50. Esta compra esta asociada a T.Cred *2575. Si tienes dudas, encuentranos aqui: 01800931987. Siempre contigo.";
 
-    const first = await POST(
-      makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }),
-    );
+    const first = await POST(makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }));
     const firstJson = (await first.json()) as { status: string };
     expect(firstJson.status).toBe("inserted");
 
-    const second = await POST(
-      makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }),
-    );
+    const second = await POST(makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }));
     const secondJson = (await second.json()) as { status: string };
     expect(secondJson.status).toBe("duplicated");
 
@@ -754,9 +745,7 @@ describe("POST /api/ingest/sms", () => {
   it("transfer_sent auto-creates counterparty by account number", async () => {
     const body =
       "Bancolombia: Transferiste $30,000.00 desde tu cuenta 6126 a la cuenta 91218413213, el 16/04/2026 12:00. ¿Dudas? Llamanos al 018000931987. Estamos cerca.";
-    const res = await POST(
-      makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }),
-    );
+    const res = await POST(makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }));
     const json = (await res.json()) as { status: string; txId?: number };
     expect(json.status).toBe("inserted");
 
@@ -773,16 +762,11 @@ describe("POST /api/ingest/sms", () => {
   it("transfer_received normalizes sender name and auto-creates by name kind", async () => {
     const body =
       "Bancolombia: ALEJANDRO, recibiste una transferencia de ESTEBAN LEONARDO SARMIENTO GOMEZ por $100,000.00 en tu cuenta *6126 conectada a la llave 3012998429 el 14/04/26 a las 15:28. Con llaves es de una y gratis. Dudas al 018000912345";
-    const res = await POST(
-      makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }),
-    );
+    const res = await POST(makeRequest({ body: jsonBody({ body }), headers: authedHeaders() }));
     const json = (await res.json()) as { status: string; txId?: number };
     expect(json.status).toBe("inserted");
 
-    const cp = await findCounterpartyByAlias(
-      "name",
-      "ESTEBAN LEONARDO SARMIENTO GOMEZ",
-    );
+    const cp = await findCounterpartyByAlias("name", "ESTEBAN LEONARDO SARMIENTO GOMEZ");
     expect(cp).not.toBeNull();
     expect(cp!.display_name).toBe("ESTEBAN LEONARDO SARMIENTO GOMEZ");
 

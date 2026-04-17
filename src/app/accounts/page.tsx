@@ -1,16 +1,5 @@
-import {
-  CreditCardIcon,
-  LandmarkIcon,
-  PiggyBankIcon,
-  WalletIcon,
-} from "lucide-react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { CreditCardIcon, LandmarkIcon, PiggyBankIcon, WalletIcon } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getNetWorth } from "@/lib/dashboard/queries";
 import { listAccountsDetailed, type AccountDetail } from "@/lib/accounts/queries";
@@ -45,10 +34,7 @@ function sumBalanceCopCents(list: AccountDetail[], copPerUsd: number): bigint {
 
 export default async function AccountsPage() {
   const fx = await getCurrentFxRate();
-  const [netWorth, all] = await Promise.all([
-    getNetWorth(fx.rate),
-    listAccountsDetailed(),
-  ]);
+  const [netWorth, all] = await Promise.all([getNetWorth(fx.rate), listAccountsDetailed()]);
 
   const active = all.filter((a) => a.active);
   const inactive = all.filter((a) => !a.active);
@@ -63,8 +49,8 @@ export default async function AccountsPage() {
       <header>
         <h1 className="text-h1">Accounts</h1>
         <p className="text-body text-muted-foreground">
-          Saldos por cuenta agrupados por tipo. El patrimonio neto convierte USD
-          a COP a {RATE_FMT.format(fx.rate)} COP/USD
+          Saldos por cuenta agrupados por tipo. El patrimonio neto convierte USD a COP a{" "}
+          {RATE_FMT.format(fx.rate)} COP/USD
           {fx.source === "fallback" ? " (fallback)" : ` (TRM ${fx.asOf})`}.
         </p>
       </header>
@@ -117,13 +103,8 @@ function SummaryCard({
   return (
     <Card>
       <CardContent className="flex flex-col gap-1 py-4">
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div
-          className={cn(
-            "tabular-nums font-semibold",
-            emphasis ? "text-2xl" : "text-lg",
-          )}
-        >
+        <div className="text-muted-foreground text-xs">{label}</div>
+        <div className={cn("font-semibold tabular-nums", emphasis ? "text-2xl" : "text-lg")}>
           {valueCop !== undefined ? formatCop(valueCop) : value}
         </div>
       </CardContent>
@@ -140,23 +121,18 @@ function AccountTypeSection({
   items: AccountDetail[];
   copPerUsd: number;
 }) {
-  const Icon = type === "credit_card"
-    ? CreditCardIcon
-    : type === "loan"
-      ? LandmarkIcon
-      : PiggyBankIcon;
+  const Icon =
+    type === "credit_card" ? CreditCardIcon : type === "loan" ? LandmarkIcon : PiggyBankIcon;
   const subtotal = sumBalanceCopCents(items, copPerUsd);
 
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-h2 flex items-center gap-2">
-          <Icon className="size-5 text-muted-foreground" />
+          <Icon className="text-muted-foreground size-5" />
           {TYPE_LABEL[type]}
         </h2>
-        <div className="text-sm tabular-nums text-muted-foreground">
-          {formatCop(subtotal)}
-        </div>
+        <div className="text-muted-foreground text-sm tabular-nums">{formatCop(subtotal)}</div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((a) => (
@@ -167,13 +143,7 @@ function AccountTypeSection({
   );
 }
 
-function AccountCard({
-  account,
-  muted,
-}: {
-  account: AccountDetail;
-  muted?: boolean;
-}) {
+function AccountCard({ account, muted }: { account: AccountDetail; muted?: boolean }) {
   const negative = account.balanceCents < BigInt(0);
   const { metadata } = account;
   const last4 = metadata.last4s?.join(" · ");
@@ -191,19 +161,17 @@ function AccountCard({
       <CardHeader>
         <CardDescription className="flex items-center justify-between gap-2">
           <span className="truncate">{account.institution}</span>
-          <span className="shrink-0 text-[10px] uppercase tracking-wide">
-            {account.currency}
-          </span>
+          <span className="shrink-0 text-[10px] tracking-wide uppercase">{account.currency}</span>
         </CardDescription>
         <CardTitle className="truncate text-base">{account.name}</CardTitle>
         {meta.length > 0 ? (
-          <div className="text-xs text-muted-foreground">{meta.join(" · ")}</div>
+          <div className="text-muted-foreground text-xs">{meta.join(" · ")}</div>
         ) : null}
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
         <div
           className={cn(
-            "text-xl tabular-nums font-semibold",
+            "text-xl font-semibold tabular-nums",
             negative ? "text-rose-600" : "text-foreground",
           )}
         >
@@ -213,14 +181,12 @@ function AccountCard({
           <CreditMeter
             currency={account.currency}
             limitCents={BigInt(creditLimit)}
-            availableCents={
-              availableCredit !== undefined ? BigInt(availableCredit) : null
-            }
+            availableCents={availableCredit !== undefined ? BigInt(availableCredit) : null}
             balanceCents={account.balanceCents}
           />
         ) : null}
         {account.type === "loan" && loanRemaining ? (
-          <div className="text-xs text-muted-foreground">
+          <div className="text-muted-foreground text-xs">
             Remaining: {formatMoney(BigInt(loanRemaining), account.currency)}
             {nextPayment ? ` · next ${nextPayment}` : ""}
           </div>
@@ -248,23 +214,18 @@ function CreditMeter({
         ? -balanceCents
         : BigInt(0);
   const pct =
-    limitCents > BigInt(0)
-      ? Math.min(100, Number((used * BigInt(10000)) / limitCents) / 100)
-      : 0;
+    limitCents > BigInt(0) ? Math.min(100, Number((used * BigInt(10000)) / limitCents) / 100) : 0;
   const high = pct >= 80;
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+      <div className="bg-muted h-1.5 overflow-hidden rounded-full">
         <div
-          className={cn(
-            "h-full transition-all",
-            high ? "bg-rose-600" : "bg-emerald-600",
-          )}
+          className={cn("h-full transition-all", high ? "bg-rose-600" : "bg-emerald-600")}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <div className="flex items-center justify-between text-xs text-muted-foreground tabular-nums">
+      <div className="text-muted-foreground flex items-center justify-between text-xs tabular-nums">
         <span>{formatMoney(used, currency)} used</span>
         <span>{formatMoney(limitCents, currency)} limit</span>
       </div>

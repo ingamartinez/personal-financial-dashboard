@@ -3,6 +3,7 @@
 iOS automations that feed transactions into Findash via authenticated webhooks.
 
 > **Prerequisites**
+>
 > - iPhone on iOS 17 or later (Transaction trigger requires iOS 17+).
 > - Findash reachable over Tailscale (e.g. `https://ia-server.tailcabcc8.ts.net:3100`).
 > - `INGEST_WEBHOOK_TOKEN` set in the server's `.env.local` (see `.env.example`).
@@ -18,7 +19,7 @@ The endpoint `/api/ingest/debug` stores the full request (headers + body) in the
 ### Setup
 
 1. Open **Shortcuts → Automation → New Automation → Transaction**.
-2. *When I tap*: select **every card** you want to observe. *Any Merchant*, *Any Category*. Enable **Run Immediately**.
+2. _When I tap_: select **every card** you want to observe. _Any Merchant_, _Any Category_. Enable **Run Immediately**.
 3. Add action: **Get Contents of URL**.
    - **URL**: `https://ia-server.tailcabcc8.ts.net:3100/api/ingest/debug`
    - **Method**: `POST`
@@ -30,10 +31,10 @@ The endpoint `/api/ingest/debug` stores the full request (headers + body) in the
      ```json
      {
        "cardOrPass": "<Shortcut Input → Card or Pass>",
-       "merchant":   "<Shortcut Input → Merchant>",
-       "amount":     "<Shortcut Input → Amount>",
+       "merchant": "<Shortcut Input → Merchant>",
+       "amount": "<Shortcut Input → Amount>",
        "capturedAt": "<Current Date>",
-       "source":     "apple-pay-discovery"
+       "source": "apple-pay-discovery"
      }
      ```
 
@@ -41,18 +42,19 @@ The endpoint `/api/ingest/debug` stores the full request (headers + body) in the
 
      ```json
      {
-       "cardName":       "<Shortcut Input → Card or Pass → Name>",
-       "cardType":       "<Shortcut Input → Card or Pass → Type>",
-       "cardLast4":      "<Shortcut Input → Card or Pass → Last Four>",
-       "merchant":       "<Shortcut Input → Merchant>",
-       "amountNumber":   "<Shortcut Input → Amount → Number>",
+       "cardName": "<Shortcut Input → Card or Pass → Name>",
+       "cardType": "<Shortcut Input → Card or Pass → Type>",
+       "cardLast4": "<Shortcut Input → Card or Pass → Last Four>",
+       "merchant": "<Shortcut Input → Merchant>",
+       "amountNumber": "<Shortcut Input → Amount → Number>",
        "amountCurrency": "<Shortcut Input → Amount → Currency>",
-       "capturedAt":     "<Current Date>",
-       "source":         "apple-pay-discovery"
+       "capturedAt": "<Current Date>",
+       "source": "apple-pay-discovery"
      }
      ```
 
      Fields that do not exist will simply be empty — that is useful negative evidence.
+
 4. Save the automation.
 
 ### Verify it works

@@ -15,9 +15,7 @@ export type PipelineResult = {
   usage: { inputTokens: number; outputTokens: number };
 };
 
-export async function classifyUnclassifiedBatch(
-  database: DB = defaultDb,
-): Promise<PipelineResult> {
+export async function classifyUnclassifiedBatch(database: DB = defaultDb): Promise<PipelineResult> {
   const startedAt = new Date();
 
   const pending = await database
@@ -31,10 +29,7 @@ export async function classifyUnclassifiedBatch(
     })
     .from(transactions)
     .where(
-      and(
-        eq(transactions.classificationMethod, "unclassified"),
-        isNull(transactions.categorySlug),
-      ),
+      and(eq(transactions.classificationMethod, "unclassified"), isNull(transactions.categorySlug)),
     )
     .orderBy(asc(transactions.id))
     .limit(AI_BATCH_SIZE);
@@ -126,12 +121,7 @@ export async function classifyUnclassifiedBatch(
         classificationConfidence: hit.confidence,
         updatedAt: new Date(),
       })
-      .where(
-        and(
-          eq(transactions.id, tx.id),
-          inArray(transactions.id, ids),
-        ),
-      );
+      .where(and(eq(transactions.id, tx.id), inArray(transactions.id, ids)));
     aiClassified++;
   }
 

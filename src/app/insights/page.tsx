@@ -18,9 +18,7 @@ export default async function InsightsPage({
   searchParams: Promise<{ ym?: string }>;
 }) {
   const params = await searchParams;
-  const ym = params.ym && /^\d{4}-\d{2}$/.test(params.ym)
-    ? params.ym
-    : currentYearMonth();
+  const ym = params.ym && /^\d{4}-\d{2}$/.test(params.ym) ? params.ym : currentYearMonth();
 
   const fx = await getCurrentFxRate();
   const summary = await buildInsightsSummary(ym, fx.rate);
@@ -32,17 +30,15 @@ export default async function InsightsPage({
     .where(eq(insightsReports.yearMonth, ym))
     .limit(1);
 
-  const stale = existing
-    ? isStale(existing.generatedAt, existing.inputHash, currentHash)
-    : true;
+  const stale = existing ? isStale(existing.generatedAt, existing.inputHash, currentHash) : true;
 
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-4 sm:p-6">
       <header>
         <h1 className="text-h1">Insights</h1>
         <p className="text-body text-muted-foreground">
-          Reporte mensual generado con Claude Sonnet. Se regenera si pasaron 24h
-          o aparecieron nuevas transacciones en el mes.
+          Reporte mensual generado con Claude Sonnet. Se regenera si pasaron 24h o aparecieron
+          nuevas transacciones en el mes.
         </p>
       </header>
       <InsightsViewer

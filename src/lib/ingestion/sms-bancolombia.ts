@@ -169,10 +169,7 @@ export function parseSmsDate(raw: string): string {
 
 function hashId(parts: (string | bigint | number)[]): string {
   const payload = parts.map((p) => String(p)).join("|");
-  return (
-    "bcol-sms:" +
-    createHash("sha256").update(payload).digest("hex").slice(0, 24)
-  );
+  return "bcol-sms:" + createHash("sha256").update(payload).digest("hex").slice(0, 24);
 }
 
 // -----------------------------------------------------------------------------
@@ -467,14 +464,7 @@ export function parseSmsBancolombia(body: string): ParseResult {
         recipientName,
         occurredOn,
         occurredTime,
-        externalId: hashId([
-          "bre-b-transfer",
-          fromLast4,
-          toKey,
-          occurredOn,
-          occurredTime,
-          cents,
-        ]),
+        externalId: hashId(["bre-b-transfer", fromLast4, toKey, occurredOn, occurredTime, cents]),
         raw,
       };
     }
@@ -497,14 +487,7 @@ export function parseSmsBancolombia(body: string): ParseResult {
         toKey,
         occurredOn,
         occurredTime,
-        externalId: hashId([
-          "qr-payment",
-          fromLast4,
-          toKey,
-          occurredOn,
-          occurredTime,
-          cents,
-        ]),
+        externalId: hashId(["qr-payment", fromLast4, toKey, occurredOn, occurredTime, cents]),
         raw,
       };
     }
@@ -527,14 +510,7 @@ export function parseSmsBancolombia(body: string): ParseResult {
         toCardLast4,
         occurredOn,
         occurredTime,
-        externalId: hashId([
-          "tc-payment",
-          fromLast4,
-          toCardLast4,
-          occurredOn,
-          occurredTime,
-          cents,
-        ]),
+        externalId: hashId(["tc-payment", fromLast4, toCardLast4, occurredOn, occurredTime, cents]),
         raw,
       };
     }
@@ -615,13 +591,7 @@ export function parseSmsBancolombia(body: string): ParseResult {
         senderName,
         occurredOn,
         occurredTime,
-        externalId: hashId([
-          "provider-payment",
-          senderName,
-          occurredOn,
-          occurredTime,
-          cents,
-        ]),
+        externalId: hashId(["provider-payment", senderName, occurredOn, occurredTime, cents]),
         raw,
       };
     }
@@ -674,14 +644,7 @@ export function parseSmsBancolombia(body: string): ParseResult {
         fromLast4,
         occurredOn,
         occurredTime,
-        externalId: hashId([
-          "atm-withdrawal",
-          fromLast4,
-          atmCode,
-          occurredOn,
-          occurredTime,
-          cents,
-        ]),
+        externalId: hashId(["atm-withdrawal", fromLast4, atmCode, occurredOn, occurredTime, cents]),
         raw,
       };
     }
@@ -750,4 +713,3 @@ export function resolveAccountFromLast4(
   }
   return null;
 }
-

@@ -13,9 +13,7 @@ export function AccountsGrid({ accounts }: { accounts: AccountStatus[] }) {
   if (accounts.length === 0) {
     return (
       <Card>
-        <CardContent className="py-6 text-sm text-muted-foreground">
-          No active accounts
-        </CardContent>
+        <CardContent className="text-muted-foreground py-6 text-sm">No active accounts</CardContent>
       </Card>
     );
   }
@@ -27,13 +25,15 @@ export function AccountsGrid({ accounts }: { accounts: AccountStatus[] }) {
         return (
           <Card key={a.id} size="sm">
             <CardHeader>
-              <CardDescription>{a.institution} · {TYPE_LABEL[a.type]}</CardDescription>
+              <CardDescription>
+                {a.institution} · {TYPE_LABEL[a.type]}
+              </CardDescription>
               <CardTitle className="truncate text-base">{a.name}</CardTitle>
             </CardHeader>
             <CardContent>
               <div
                 className={cn(
-                  "text-xl tabular-nums font-semibold",
+                  "text-xl font-semibold tabular-nums",
                   negative ? "text-rose-600" : "text-foreground",
                 )}
               >

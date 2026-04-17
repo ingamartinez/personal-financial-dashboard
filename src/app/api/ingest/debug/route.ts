@@ -12,10 +12,7 @@ export async function POST(req: Request) {
 
   const expectedToken = process.env.INGEST_WEBHOOK_TOKEN;
   if (!expectedToken) {
-    return NextResponse.json(
-      { error: "INGEST_WEBHOOK_TOKEN not configured" },
-      { status: 503 },
-    );
+    return NextResponse.json({ error: "INGEST_WEBHOOK_TOKEN not configured" }, { status: 503 });
   }
 
   const authHeader = req.headers.get("authorization") ?? "";
@@ -30,8 +27,7 @@ export async function POST(req: Request) {
 
   const headersRecord: Record<string, string> = {};
   req.headers.forEach((value, key) => {
-    headersRecord[key] =
-      key.toLowerCase() === "authorization" ? "Bearer ***redacted***" : value;
+    headersRecord[key] = key.toLowerCase() === "authorization" ? "Bearer ***redacted***" : value;
   });
 
   const rawBody = await req.text();
@@ -50,9 +46,7 @@ export async function POST(req: Request) {
       if (contentType.includes("application/json")) {
         bodyParsed = JSON.parse(rawBody);
       } else if (contentType.includes("application/x-www-form-urlencoded")) {
-        bodyParsed = Object.fromEntries(
-          new URLSearchParams(rawBody).entries(),
-        );
+        bodyParsed = Object.fromEntries(new URLSearchParams(rawBody).entries());
       } else {
         try {
           bodyParsed = JSON.parse(rawBody);

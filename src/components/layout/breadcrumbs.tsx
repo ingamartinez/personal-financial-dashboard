@@ -6,7 +6,7 @@ import { Fragment } from "react";
 import { NAV_ITEMS } from "./nav-items";
 
 const STATIC_LABELS: Record<string, string> = Object.fromEntries(
-  NAV_ITEMS.filter((i) => i.href !== "/").map((i) => [i.href.slice(1), i.label])
+  NAV_ITEMS.filter((i) => i.href !== "/").map((i) => [i.href.slice(1), i.label]),
 );
 
 function humanize(segment: string): string {
@@ -26,11 +26,8 @@ export function Breadcrumbs() {
   });
 
   return (
-    <nav
-      aria-label="Breadcrumb"
-      className="mx-auto w-full max-w-7xl px-4 pt-4 sm:px-6"
-    >
-      <ol className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+    <nav aria-label="Breadcrumb" className="mx-auto w-full max-w-7xl px-4 pt-4 sm:px-6">
+      <ol className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-sm">
         <li>
           <Link href="/" className="hover:text-foreground">
             Dashboard
@@ -43,7 +40,7 @@ export function Breadcrumbs() {
             </li>
             <li>
               {c.isLast ? (
-                <span className="font-medium text-foreground" aria-current="page">
+                <span className="text-foreground font-medium" aria-current="page">
                   {c.label}
                 </span>
               ) : (

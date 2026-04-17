@@ -195,9 +195,7 @@ export async function listCounterparties(): Promise<CounterpartyBrief[]> {
  * Same as `listCounterparties` but excludes one id (used when building the
  * merge target select — a counterparty cannot merge into itself).
  */
-export async function listCounterpartiesExcept(
-  excludeId: number,
-): Promise<CounterpartyBrief[]> {
+export async function listCounterpartiesExcept(excludeId: number): Promise<CounterpartyBrief[]> {
   return db
     .select({
       id: counterparties.id,

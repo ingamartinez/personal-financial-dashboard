@@ -1,7 +1,9 @@
 <!-- BEGIN:nextjs-agent-rules -->
+
 # This is NOT the Next.js you know
 
 Next.js 16 has breaking changes vs older versions — APIs, conventions, and file structure may differ from training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+
 <!-- END:nextjs-agent-rules -->
 
 # Findash — Agent Workflow
@@ -35,6 +37,7 @@ Why: prevents two agents from working on the same thing.
 ```
 
 Examples:
+
 - `claude/phase-1/12-rule-engine`
 - `codex/phase-2/27-sms-parser`
 
@@ -47,6 +50,7 @@ Examples:
 Types: `feat`, `fix`, `chore`, `refactor`, `test`, `docs`, `perf`, `style`.
 
 Examples:
+
 - `feat(classification): add ILIKE rule engine (#12)`
 - `fix(db): correct FK ordering on categories slug (#5)`
 - `chore(ci): add typecheck workflow (#8)`
@@ -63,19 +67,19 @@ NEVER add `Co-Authored-By` or AI attribution lines.
 
 ## Labels (canonical list)
 
-| Label | Meaning |
-|-------|---------|
-| `phase-1`, `phase-2`, `phase-3`, `phase-4` | Roadmap phase from PLAN.md |
-| `infra` | Setup, tooling, deployment |
-| `db` | Schema, migrations, seed |
-| `ingestion` | Data ingestion (Apple Pay, SMS, OCR, CSV, recurring) |
-| `classification` | Rule engine + AI classifier |
-| `ui` | Pages, components, layout |
-| `ai` | Claude API integration (Haiku, Sonnet, Vision) |
-| `bug` | Something broken |
-| `docs` | Documentation only |
-| `good-first-task` | Small, well-scoped, easy entry point |
-| `blocked` | Cannot proceed until an external condition is met (missing data, pending decision, dependency on another issue). Orthogonal to `phase-N` and to the Project board `Status` column — use it as a flag, not a status. When applying, leave a comment on the issue explaining WHAT it's blocked on. Filter it out with `-label:blocked` when looking for work you can actually start. |
+| Label                                      | Meaning                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `phase-1`, `phase-2`, `phase-3`, `phase-4` | Roadmap phase from PLAN.md                                                                                                                                                                                                                                                                                                                                                         |
+| `infra`                                    | Setup, tooling, deployment                                                                                                                                                                                                                                                                                                                                                         |
+| `db`                                       | Schema, migrations, seed                                                                                                                                                                                                                                                                                                                                                           |
+| `ingestion`                                | Data ingestion (Apple Pay, SMS, OCR, CSV, recurring)                                                                                                                                                                                                                                                                                                                               |
+| `classification`                           | Rule engine + AI classifier                                                                                                                                                                                                                                                                                                                                                        |
+| `ui`                                       | Pages, components, layout                                                                                                                                                                                                                                                                                                                                                          |
+| `ai`                                       | Claude API integration (Haiku, Sonnet, Vision)                                                                                                                                                                                                                                                                                                                                     |
+| `bug`                                      | Something broken                                                                                                                                                                                                                                                                                                                                                                   |
+| `docs`                                     | Documentation only                                                                                                                                                                                                                                                                                                                                                                 |
+| `good-first-task`                          | Small, well-scoped, easy entry point                                                                                                                                                                                                                                                                                                                                               |
+| `blocked`                                  | Cannot proceed until an external condition is met (missing data, pending decision, dependency on another issue). Orthogonal to `phase-N` and to the Project board `Status` column — use it as a flag, not a status. When applying, leave a comment on the issue explaining WHAT it's blocked on. Filter it out with `-label:blocked` when looking for work you can actually start. |
 
 ## Tech baseline (do not deviate without an issue)
 
@@ -83,7 +87,7 @@ NEVER add `Co-Authored-By` or AI attribution lines.
 - **Framework**: Next.js 16 (App Router, Turbopack default, no `--turbopack` flag)
 - **Async APIs**: `cookies()`, `headers()`, `params`, `searchParams` MUST be `await`ed
 - **DB**: PostgreSQL 17 native, peer auth via `/var/run/postgresql` socket. Connection via options object (NOT URL with `host=` param — postgres.js ignores it). See `src/lib/db/index.ts`.
-- **ORM**: Drizzle 0.45+. Use `sql\`...\`` template (not strings) in `.where()`, `.default()`, etc. Use `sql\`0\`` instead of `0n` for BigInt defaults — drizzle-kit chokes on BigInt JSON.
+- **ORM**: Drizzle 0.45+. Use `sql\`...\``template (not strings) in`.where()`, `.default()`, etc. Use `sql\`0\``instead of`0n` for BigInt defaults — drizzle-kit chokes on BigInt JSON.
 - **FK to non-PK columns**: must use inline `.unique()` on the column (creates CONSTRAINT during table creation), NOT `uniqueIndex(...)` (creates AFTER, breaks FK ordering).
 - **Money**: store as `bigint amount_cents`. Never floats.
 - **Styling**: Tailwind 4 + shadcn/ui (when added). No CSS-in-JS, no inline styles for layout.

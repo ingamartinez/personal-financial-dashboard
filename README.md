@@ -26,21 +26,21 @@ bun run dev            # arranca en http://localhost:3100
 
 `.env.example` tiene la plantilla. `.env.local` nunca se commitea.
 
-| Variable | Qué es | Cómo obtenerla |
-|---|---|---|
-| `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPORT`, `PGPASSWORD` | Conexión a PostgreSQL | Dejar en blanco usa defaults: `/var/run/postgresql` + `findash` + `$USER` (peer auth en Linux). |
-| `ANTHROPIC_API_KEY` | Clasificación AI, insights y OCR con Claude | https://console.anthropic.com/ |
-| `INGEST_WEBHOOK_TOKEN` | Bearer token para `/api/ingest/*` (iOS Shortcut Apple Pay, SMS, etc.) | Secreto compartido fijo entre server e iOS Shortcut. Generar una vez: `openssl rand -hex 32`. |
+| Variable                                                 | Qué es                                                                | Cómo obtenerla                                                                                  |
+| -------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPORT`, `PGPASSWORD` | Conexión a PostgreSQL                                                 | Dejar en blanco usa defaults: `/var/run/postgresql` + `findash` + `$USER` (peer auth en Linux). |
+| `ANTHROPIC_API_KEY`                                      | Clasificación AI, insights y OCR con Claude                           | https://console.anthropic.com/                                                                  |
+| `INGEST_WEBHOOK_TOKEN`                                   | Bearer token para `/api/ingest/*` (iOS Shortcut Apple Pay, SMS, etc.) | Secreto compartido fijo entre server e iOS Shortcut. Generar una vez: `openssl rand -hex 32`.   |
 
 ## Comandos DB
 
-| Comando | Qué hace |
-|---------|----------|
+| Comando               | Qué hace                              |
+| --------------------- | ------------------------------------- |
 | `bun run db:generate` | Genera migrations a partir del schema |
-| `bun run db:migrate` | Aplica migrations pendientes |
-| `bun run db:push` | Sincroniza schema sin migration (dev) |
-| `bun run db:studio` | Abre Drizzle Studio (UI para la DB) |
-| `bun run db:seed` | Carga seed inicial |
+| `bun run db:migrate`  | Aplica migrations pendientes          |
+| `bun run db:push`     | Sincroniza schema sin migration (dev) |
+| `bun run db:studio`   | Abre Drizzle Studio (UI para la DB)   |
+| `bun run db:seed`     | Carga seed inicial                    |
 
 ## Deploy (ia-server)
 

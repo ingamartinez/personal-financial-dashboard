@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { FALLBACK_COP_PER_USD } from "@/lib/money";
-import {
-  getCurrentFxRate,
-  microsToRate,
-  rateToMicros,
-  upsertFxRate,
-} from "./repo";
+import { getCurrentFxRate, microsToRate, rateToMicros, upsertFxRate } from "./repo";
 
 async function cleanup() {
   await db.execute(sql`DELETE FROM fx_rates WHERE base = 'USD' AND quote = 'COP'`);

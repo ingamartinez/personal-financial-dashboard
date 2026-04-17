@@ -49,10 +49,7 @@ export async function previewBancolombiaXlsx(formData: FormData): Promise<Previe
         .select({ externalId: transactions.externalId })
         .from(transactions)
         .where(
-          and(
-            eq(transactions.accountId, accountId),
-            inArray(transactions.externalId, externalIds),
-          ),
+          and(eq(transactions.accountId, accountId), inArray(transactions.externalId, externalIds)),
         )
     : [];
   const existingSet = new Set(existing.map((e) => e.externalId));
@@ -162,12 +159,7 @@ const ocrPreviewSchema = z.object({
   accountId: z.coerce.number().int().positive(),
 });
 
-const ALLOWED_MEDIA: OcrMediaType[] = [
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-];
+const ALLOWED_MEDIA: OcrMediaType[] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
 export type OcrPreviewRow = OcrParsedRow & { duplicate: boolean };
 
@@ -180,9 +172,7 @@ export type OcrPreviewResult = {
   totals: { parsed: number; duplicates: number; new: number };
 };
 
-export async function previewScreenshotOcr(
-  formData: FormData,
-): Promise<OcrPreviewResult> {
+export async function previewScreenshotOcr(formData: FormData): Promise<OcrPreviewResult> {
   const { accountId } = ocrPreviewSchema.parse({
     accountId: formData.get("accountId"),
   });
@@ -216,10 +206,7 @@ export async function previewScreenshotOcr(
         .select({ externalId: transactions.externalId })
         .from(transactions)
         .where(
-          and(
-            eq(transactions.accountId, accountId),
-            inArray(transactions.externalId, externalIds),
-          ),
+          and(eq(transactions.accountId, accountId), inArray(transactions.externalId, externalIds)),
         )
     : [];
   const existingSet = new Set(existing.map((e) => e.externalId));
@@ -257,9 +244,7 @@ const confirmOcrSchema = z.object({
 
 export type ConfirmOcrInput = z.infer<typeof confirmOcrSchema>;
 
-export async function confirmOcrImport(
-  input: ConfirmOcrInput,
-): Promise<ConfirmResult> {
+export async function confirmOcrImport(input: ConfirmOcrInput): Promise<ConfirmResult> {
   const parsed = confirmOcrSchema.parse(input);
   const startedAt = new Date();
 

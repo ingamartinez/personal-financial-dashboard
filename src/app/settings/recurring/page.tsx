@@ -52,9 +52,9 @@ export default async function RecurringPage() {
       <header>
         <h1 className="text-h1">Recurring forecast</h1>
         <p className="text-body text-muted-foreground">
-          Declare expected monthly items (rent, loan, subscriptions). These are
-          FORECASTS — not real transactions. They appear as &ldquo;upcoming&rdquo;
-          on the dashboard and auto-match when the real tx lands.
+          Declare expected monthly items (rent, loan, subscriptions). These are FORECASTS — not real
+          transactions. They appear as &ldquo;upcoming&rdquo; on the dashboard and auto-match when
+          the real tx lands.
         </p>
       </header>
       <RecurringManager accounts={accs} categories={cats} items={rows} />

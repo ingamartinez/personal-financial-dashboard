@@ -58,12 +58,7 @@ export async function upsertBudget(input: BudgetInput) {
     const [dup] = await db
       .select({ id: budgets.id })
       .from(budgets)
-      .where(
-        and(
-          eq(budgets.categorySlug, parsed.categorySlug),
-          eq(budgets.periodStart, start),
-        ),
-      )
+      .where(and(eq(budgets.categorySlug, parsed.categorySlug), eq(budgets.periodStart, start)))
       .limit(1);
     if (dup) throw new Error("Budget for this category and month already exists");
 

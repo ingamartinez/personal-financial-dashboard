@@ -1,11 +1,6 @@
 import { inArray } from "drizzle-orm";
 import { db } from "./index";
-import {
-  accounts,
-  categories,
-  classificationRules,
-  type AccountMetadata,
-} from "./schema";
+import { accounts, categories, classificationRules, type AccountMetadata } from "./schema";
 
 const seedAccounts: Array<{
   name: string;
@@ -64,7 +59,12 @@ const seedCategories: Array<{
   { slug: "vivienda", name: "Vivienda", icon: "home", color: "#0ea5e9", sortOrder: 10 },
   { slug: "alimentacion", name: "Alimentación", icon: "utensils", color: "#f97316", sortOrder: 20 },
   { slug: "mercado", name: "Mercado", parentSlug: "alimentacion", icon: "shopping-cart" },
-  { slug: "restaurantes", name: "Restaurantes", parentSlug: "alimentacion", icon: "utensils-crossed" },
+  {
+    slug: "restaurantes",
+    name: "Restaurantes",
+    parentSlug: "alimentacion",
+    icon: "utensils-crossed",
+  },
   { slug: "delivery", name: "Delivery", parentSlug: "alimentacion", icon: "bike" },
   { slug: "transporte", name: "Transporte", icon: "car", color: "#22c55e", sortOrder: 30 },
   { slug: "uber-didi", name: "Uber/Didi", parentSlug: "transporte", icon: "car-taxi-front" },
@@ -74,14 +74,32 @@ const seedCategories: Array<{
   { slug: "eps", name: "EPS", parentSlug: "salud", icon: "stethoscope" },
   { slug: "medicamentos", name: "Medicamentos", parentSlug: "salud", icon: "pill" },
   { slug: "educacion", name: "Educación", icon: "graduation-cap", color: "#a855f7", sortOrder: 50 },
-  { slug: "entretenimiento", name: "Entretenimiento", icon: "popcorn", color: "#ec4899", sortOrder: 60 },
-  { slug: "servicios-publicos", name: "Servicios Públicos", icon: "zap", color: "#eab308", sortOrder: 70 },
+  {
+    slug: "entretenimiento",
+    name: "Entretenimiento",
+    icon: "popcorn",
+    color: "#ec4899",
+    sortOrder: 60,
+  },
+  {
+    slug: "servicios-publicos",
+    name: "Servicios Públicos",
+    icon: "zap",
+    color: "#eab308",
+    sortOrder: 70,
+  },
   { slug: "energia", name: "Energía", parentSlug: "servicios-publicos" },
   { slug: "agua", name: "Agua", parentSlug: "servicios-publicos" },
   { slug: "gas", name: "Gas", parentSlug: "servicios-publicos" },
   { slug: "internet-telecom", name: "Internet/Telecom", parentSlug: "servicios-publicos" },
   { slug: "seguros", name: "Seguros", icon: "shield", color: "#64748b", sortOrder: 80 },
-  { slug: "inversiones", name: "Inversiones", icon: "trending-up", color: "#10b981", sortOrder: 90 },
+  {
+    slug: "inversiones",
+    name: "Inversiones",
+    icon: "trending-up",
+    color: "#10b981",
+    sortOrder: 90,
+  },
   { slug: "cdts", name: "CDTs", parentSlug: "inversiones" },
   { slug: "fics", name: "FICs", parentSlug: "inversiones" },
   { slug: "deudas", name: "Deudas", icon: "credit-card", color: "#dc2626", sortOrder: 100 },
@@ -89,8 +107,20 @@ const seedCategories: Array<{
   { slug: "pago-prestamo", name: "Pago Préstamo", parentSlug: "deudas" },
   { slug: "ropa", name: "Ropa", icon: "shirt", color: "#8b5cf6", sortOrder: 110 },
   { slug: "tecnologia", name: "Tecnología", icon: "laptop", color: "#06b6d4", sortOrder: 120 },
-  { slug: "suscripciones", name: "Suscripciones", icon: "repeat", color: "#f59e0b", sortOrder: 130 },
-  { slug: "transferencias", name: "Transferencias", icon: "arrow-right-left", color: "#94a3b8", sortOrder: 140 },
+  {
+    slug: "suscripciones",
+    name: "Suscripciones",
+    icon: "repeat",
+    color: "#f59e0b",
+    sortOrder: 130,
+  },
+  {
+    slug: "transferencias",
+    name: "Transferencias",
+    icon: "arrow-right-left",
+    color: "#94a3b8",
+    sortOrder: 140,
+  },
   { slug: "ingresos", name: "Ingresos", icon: "wallet", color: "#16a34a", sortOrder: 150 },
   { slug: "salario", name: "Salario", parentSlug: "ingresos" },
   { slug: "otros", name: "Otros", icon: "ellipsis", color: "#6b7280", sortOrder: 999 },
@@ -147,7 +177,12 @@ export async function runSeed() {
   const existing = await db
     .select({ name: accounts.name })
     .from(accounts)
-    .where(inArray(accounts.name, seedAccounts.map((a) => a.name)));
+    .where(
+      inArray(
+        accounts.name,
+        seedAccounts.map((a) => a.name),
+      ),
+    );
   const existingNames = new Set(existing.map((e) => e.name));
   const toInsert = seedAccounts.filter((a) => !existingNames.has(a.name));
   if (toInsert.length > 0) {

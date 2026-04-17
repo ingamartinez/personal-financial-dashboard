@@ -34,11 +34,7 @@ function buildHref(base: Record<string, string | undefined>, cursor: string | nu
   return qs ? `/transactions?${qs}` : "/transactions";
 }
 
-export default async function TransactionsPage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}) {
+export default async function TransactionsPage({ searchParams }: { searchParams: SearchParams }) {
   const sp = await searchParams;
 
   const accountId = sp.accountId ? Number(sp.accountId) : undefined;
@@ -51,27 +47,21 @@ export default async function TransactionsPage({
     cursor: sp.cursor,
   };
 
-  const [
-    { rows, nextCursor },
-    accounts,
-    categories,
-    total,
-    unclassified,
-    allCounterparties,
-  ] = await Promise.all([
-    listTransactions(filters),
-    listAccounts(),
-    listCategories(),
-    countTotal({
-      from: filters.from,
-      to: filters.to,
-      accountId: filters.accountId,
-      categorySlug: filters.categorySlug,
-      q: filters.q,
-    }),
-    countUnclassified(),
-    listCounterparties(),
-  ]);
+  const [{ rows, nextCursor }, accounts, categories, total, unclassified, allCounterparties] =
+    await Promise.all([
+      listTransactions(filters),
+      listAccounts(),
+      listCategories(),
+      countTotal({
+        from: filters.from,
+        to: filters.to,
+        accountId: filters.accountId,
+        categorySlug: filters.categorySlug,
+        q: filters.q,
+      }),
+      countUnclassified(),
+      listCounterparties(),
+    ]);
 
   const baseQuery = {
     from: sp.from,
@@ -87,7 +77,8 @@ export default async function TransactionsPage({
         <div>
           <h1 className="text-h1">Transactions</h1>
           <p className="text-body text-muted-foreground">
-            {total.toLocaleString()} total · {unclassified.toLocaleString()} unclassified · showing up to {PAGE_SIZE} per page
+            {total.toLocaleString()} total · {unclassified.toLocaleString()} unclassified · showing
+            up to {PAGE_SIZE} per page
           </p>
         </div>
         <AiClassifyButton unclassified={unclassified} />
@@ -105,14 +96,10 @@ export default async function TransactionsPage({
         }}
       />
 
-      <TransactionTable
-        rows={rows}
-        categories={categories}
-        allCounterparties={allCounterparties}
-      />
+      <TransactionTable rows={rows} categories={categories} allCounterparties={allCounterparties} />
 
       <div className="flex items-center justify-between">
-        <div className="text-xs text-muted-foreground">
+        <div className="text-muted-foreground text-xs">
           {sp.cursor ? (
             <Link href={buildHref(baseQuery, null)} className="underline">
               ← First page
@@ -125,7 +112,6 @@ export default async function TransactionsPage({
           </Button>
         ) : null}
       </div>
-
     </main>
   );
 }

@@ -1,6 +1,6 @@
-import * as React from "react"
+import * as React from "react";
 
-import { cn } from "@/lib/utils"
+import { cn } from "@/lib/utils";
 
 function EmptyState({
   icon,
@@ -10,10 +10,10 @@ function EmptyState({
   className,
   ...props
 }: React.ComponentProps<"div"> & {
-  icon?: React.ReactNode
-  title: React.ReactNode
-  description?: React.ReactNode
-  action?: React.ReactNode
+  icon?: React.ReactNode;
+  title: React.ReactNode;
+  description?: React.ReactNode;
+  action?: React.ReactNode;
 }) {
   return (
     <div
@@ -27,24 +27,20 @@ function EmptyState({
       {icon ? (
         <div
           data-slot="empty-state-icon"
-          className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground [&_svg]:size-5"
+          className="bg-muted text-muted-foreground flex size-12 items-center justify-center rounded-full [&_svg]:size-5"
         >
           {icon}
         </div>
       ) : null}
       <div className="flex flex-col gap-1">
-        <div className="font-heading text-base font-medium text-foreground">
-          {title}
-        </div>
+        <div className="font-heading text-foreground text-base font-medium">{title}</div>
         {description ? (
-          <p className="max-w-sm text-sm text-muted-foreground">
-            {description}
-          </p>
+          <p className="text-muted-foreground max-w-sm text-sm">{description}</p>
         ) : null}
       </div>
       {action ? <div className="mt-1">{action}</div> : null}
     </div>
-  )
+  );
 }
 
-export { EmptyState }
+export { EmptyState };

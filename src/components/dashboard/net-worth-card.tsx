@@ -21,9 +21,10 @@ function formatFxAsOf(asOf: string): string {
 }
 
 export function NetWorthCard({ data, fx }: { data: NetWorth; fx: FxRate }) {
-  const label = fx.source === "fallback"
-    ? `@ ${RATE_FMT.format(fx.rate)} COP/USD · fallback`
-    : `@ ${RATE_FMT.format(fx.rate)} COP/USD · TRM ${formatFxAsOf(fx.asOf)}`;
+  const label =
+    fx.source === "fallback"
+      ? `@ ${RATE_FMT.format(fx.rate)} COP/USD · fallback`
+      : `@ ${RATE_FMT.format(fx.rate)} COP/USD · TRM ${formatFxAsOf(fx.asOf)}`;
 
   return (
     <Card>
@@ -33,7 +34,7 @@ export function NetWorthCard({ data, fx }: { data: NetWorth; fx: FxRate }) {
           <AnimatedMoney cents={data.totalCopCents} currency="COP" />
         </CardTitle>
       </CardHeader>
-      <CardContent className="text-xs text-muted-foreground">
+      <CardContent className="text-muted-foreground text-xs">
         <div className="flex flex-wrap gap-x-4 gap-y-1">
           <span className="inline-flex items-center gap-1">
             COP <AnimatedMoney cents={data.copCents} currency="COP" />

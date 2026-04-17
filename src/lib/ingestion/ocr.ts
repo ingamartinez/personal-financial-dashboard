@@ -167,13 +167,7 @@ export async function extractTransactionsFromImage(opts: {
       occurredOn: t.date,
       description,
       amountCents,
-      externalId: buildExternalId(
-        opts.accountId,
-        t.date,
-        amountCents,
-        description,
-        positionInDay,
-      ),
+      externalId: buildExternalId(opts.accountId, t.date, amountCents, description, positionInDay),
     });
   });
 

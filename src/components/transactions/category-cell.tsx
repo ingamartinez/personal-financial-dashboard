@@ -36,7 +36,7 @@ export function CategoryCell({
           }
         });
       }}
-      className="h-8 w-full rounded-md border bg-background text-sm disabled:opacity-50 chevron-select"
+      className="bg-background chevron-select h-8 w-full rounded-md border text-sm disabled:opacity-50"
     >
       <option value="">— unclassified —</option>
       {options.map((c) => (

@@ -4,12 +4,7 @@ import { revalidatePath } from "next/cache";
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import {
-  accounts,
-  categories,
-  recurringTransactions,
-  transactions,
-} from "@/lib/db/schema";
+import { accounts, categories, recurringTransactions, transactions } from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
 import { yearMonth } from "@/lib/recurring/upcoming";
 
@@ -53,8 +48,7 @@ export async function upsertRecurring(input: RecurringInput) {
   }
 
   const signedCents =
-    Math.round(Math.abs(parsed.amount) * 100) *
-    (parsed.direction === "income" ? 1 : -1);
+    Math.round(Math.abs(parsed.amount) * 100) * (parsed.direction === "income" ? 1 : -1);
 
   const values = {
     accountId: parsed.accountId,
@@ -80,17 +74,12 @@ export async function upsertRecurring(input: RecurringInput) {
 }
 
 export async function deleteRecurring(id: number) {
-  await db
-    .delete(recurringTransactions)
-    .where(eq(recurringTransactions.id, id));
+  await db.delete(recurringTransactions).where(eq(recurringTransactions.id, id));
   revalidate();
 }
 
 export async function toggleRecurringActive(id: number, active: boolean) {
-  await db
-    .update(recurringTransactions)
-    .set({ active })
-    .where(eq(recurringTransactions.id, id));
+  await db.update(recurringTransactions).set({ active }).where(eq(recurringTransactions.id, id));
   revalidate();
 }
 
@@ -155,9 +144,7 @@ export async function promoteUpcoming(input: z.input<typeof promoteSchema>) {
   if (!r) throw new Error("Recurring not found");
 
   const occurredAt = new Date(`${occurredOn}T12:00:00Z`);
-  const monthStart = new Date(
-    Date.UTC(occurredAt.getUTCFullYear(), occurredAt.getUTCMonth(), 1),
-  );
+  const monthStart = new Date(Date.UTC(occurredAt.getUTCFullYear(), occurredAt.getUTCMonth(), 1));
   const monthEnd = new Date(
     Date.UTC(occurredAt.getUTCFullYear(), occurredAt.getUTCMonth() + 1, 0, 23, 59, 59),
   );
@@ -176,9 +163,7 @@ export async function promoteUpcoming(input: z.input<typeof promoteSchema>) {
     .limit(1);
   if (dup) throw new Error(`Already exists this month as tx #${dup.id}`);
 
-  const cls = r.categorySlug
-    ? null
-    : await classifyByRule({ descriptionRaw: r.label });
+  const cls = r.categorySlug ? null : await classifyByRule({ descriptionRaw: r.label });
 
   await db.insert(transactions).values({
     accountId: r.accountId,
@@ -189,11 +174,7 @@ export async function promoteUpcoming(input: z.input<typeof promoteSchema>) {
     descriptionClean: null,
     merchant: null,
     categorySlug: r.categorySlug ?? cls?.categorySlug ?? null,
-    classificationMethod: r.categorySlug
-      ? "manual"
-      : cls
-        ? "rule"
-        : "unclassified",
+    classificationMethod: r.categorySlug ? "manual" : cls ? "rule" : "unclassified",
     classificationConfidence: r.categorySlug ? 100 : (cls?.confidence ?? null),
     source: "recurring",
     notes: r.notes,

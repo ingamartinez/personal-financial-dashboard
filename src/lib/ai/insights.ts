@@ -106,7 +106,9 @@ export async function buildInsightsSummary(
           expense: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
         })
         .from(transactions)
-        .where(and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)))
+        .where(
+          and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)),
+        )
         .groupBy(transactions.currency),
       db
         .select({
@@ -127,7 +129,9 @@ export async function buildInsightsSummary(
           spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
         })
         .from(transactions)
-        .where(and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)))
+        .where(
+          and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)),
+        )
         .groupBy(transactions.categorySlug, transactions.currency),
       db
         .select({
@@ -146,7 +150,11 @@ export async function buildInsightsSummary(
           ),
         )
         .groupBy(transactions.merchant, transactions.currency)
-        .orderBy(desc(sql`SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END)`))
+        .orderBy(
+          desc(
+            sql`SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END)`,
+          ),
+        )
         .limit(10),
       db
         .select({
@@ -179,7 +187,10 @@ export async function buildInsightsSummary(
     totals.previousExpenseCop += toCopNumber(BigInt(r.expense), r.currency, copPerUsd);
   }
 
-  const catMap = new Map<string, { slug: string; name: string; spentCop: number; txCount: number }>();
+  const catMap = new Map<
+    string,
+    { slug: string; name: string; spentCop: number; txCount: number }
+  >();
   for (const r of curCats) {
     if (!r.slug) continue;
     const key = r.slug;
@@ -197,9 +208,15 @@ export async function buildInsightsSummary(
   const prevCatMap = new Map<string, number>();
   for (const r of prevCats) {
     if (!r.slug) continue;
-    prevCatMap.set(r.slug, (prevCatMap.get(r.slug) ?? 0) + toCopNumber(BigInt(r.spent), r.currency, copPerUsd));
+    prevCatMap.set(
+      r.slug,
+      (prevCatMap.get(r.slug) ?? 0) + toCopNumber(BigInt(r.spent), r.currency, copPerUsd),
+    );
   }
-  const categoriesPrevious = [...prevCatMap.entries()].map(([slug, spentCop]) => ({ slug, spentCop }));
+  const categoriesPrevious = [...prevCatMap.entries()].map(([slug, spentCop]) => ({
+    slug,
+    spentCop,
+  }));
 
   const merMap = new Map<string, { merchant: string; spentCop: number; txCount: number }>();
   for (const r of topMer) {
@@ -322,7 +339,11 @@ export async function generateInsightsReport(opts: {
   model?: string;
   apiKey?: string;
   fetchImpl?: typeof fetch;
-}): Promise<{ markdown: string; model: string; usage: { inputTokens: number; outputTokens: number } }> {
+}): Promise<{
+  markdown: string;
+  model: string;
+  usage: { inputTokens: number; outputTokens: number };
+}> {
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
 

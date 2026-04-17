@@ -31,10 +31,7 @@ export async function POST(req: Request) {
 
   const expectedToken = process.env.INGEST_WEBHOOK_TOKEN;
   if (!expectedToken) {
-    return NextResponse.json(
-      { error: "INGEST_WEBHOOK_TOKEN not configured" },
-      { status: 503 },
-    );
+    return NextResponse.json({ error: "INGEST_WEBHOOK_TOKEN not configured" }, { status: 503 });
   }
 
   const authHeader = req.headers.get("authorization") ?? "";
@@ -60,14 +57,10 @@ export async function POST(req: Request) {
 
   const sender = typeof payload.sender === "string" ? payload.sender : null;
   const body = typeof payload.body === "string" ? payload.body.trim() : "";
-  const receivedAt =
-    typeof payload.receivedAt === "string" ? payload.receivedAt : null;
+  const receivedAt = typeof payload.receivedAt === "string" ? payload.receivedAt : null;
 
   if (!body) {
-    return NextResponse.json(
-      { error: "Missing required field: body" },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "Missing required field: body" }, { status: 400 });
   }
 
   const parsed = parseSmsBancolombia(body);
@@ -80,9 +73,7 @@ export async function POST(req: Request) {
     itemsInserted: outcome.status === "inserted" ? 1 : 0,
     itemsDuplicated: outcome.status === "duplicated" ? 1 : 0,
     errorMessage:
-      outcome.status === "error" || outcome.status === "skipped"
-        ? outcome.reason
-        : null,
+      outcome.status === "error" || outcome.status === "skipped" ? outcome.reason : null,
     payload: {
       sender,
       receivedAt,
@@ -121,9 +112,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
       institution: accounts.institution,
       type: accounts.type,
     })
-    .from(accounts)) as Array<
-    RoutableAccount & { institution: string; type: string }
-  >;
+    .from(accounts)) as Array<RoutableAccount & { institution: string; type: string }>;
 
   const account = resolveAccountForParsed(parsed, allAccounts);
   if (!account) {
@@ -136,8 +125,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
   const occurredAt = new Date(
     `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
   );
-  const { amountCents, descriptionRaw, merchant, categorySlug, method } =
-    buildTxFields(parsed);
+  const { amountCents, descriptionRaw, merchant, categorySlug, method } = buildTxFields(parsed);
 
   // Counterparty lookup (and auto-create for bre_b). For kinds with toKey,
   // this is the preferred classification path over text-pattern rules.
@@ -147,8 +135,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
   // Other kinds have hardcoded categories (pago-tc, transferencias, ingresos)
   // or inherit from counterparty (qr_payment, bre_b_transfer).
   let finalCategory = cp.inheritedCategory ?? categorySlug;
-  let finalMethod: "rule" | "manual" | "unclassified" =
-    cp.inheritedCategory ? "rule" : method;
+  let finalMethod: "rule" | "manual" | "unclassified" = cp.inheritedCategory ? "rule" : method;
   let confidence: number | null = null;
   if (parsed.kind === "purchase" || parsed.kind === "provider_payment_sent") {
     const cls = await classifyByRule({
@@ -320,34 +307,18 @@ function resolveAccountForParsed(
 ): RoutableAccount | null {
   switch (parsed.kind) {
     case "purchase":
-      return resolveAccountFromLast4(
-        parsed.cardLast4,
-        parsed.currency,
-        allAccounts,
-      );
+      return resolveAccountFromLast4(parsed.cardLast4, parsed.currency, allAccounts);
     case "transfer_sent":
     case "qr_payment":
     case "tc_payment":
     case "provider_payment_sent":
     case "atm_withdrawal":
     case "bre_b_transfer":
-      return resolveAccountFromLast4(
-        parsed.fromLast4,
-        parsed.currency,
-        allAccounts,
-      );
+      return resolveAccountFromLast4(parsed.fromLast4, parsed.currency, allAccounts);
     case "transfer_received":
-      return resolveAccountFromLast4(
-        parsed.toLast4,
-        parsed.currency,
-        allAccounts,
-      );
+      return resolveAccountFromLast4(parsed.toLast4, parsed.currency, allAccounts);
     case "tc_credit_received":
-      return resolveAccountFromLast4(
-        parsed.toCardLast4,
-        parsed.currency,
-        allAccounts,
-      );
+      return resolveAccountFromLast4(parsed.toCardLast4, parsed.currency, allAccounts);
     case "provider_payment": {
       // SMS says "en tu cuenta de Ahorros" — no last4. Default to the single
       // Bancolombia savings account in the matching currency.

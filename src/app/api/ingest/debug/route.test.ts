@@ -6,10 +6,7 @@ import { POST } from "./route";
 const TEST_TOKEN = "test-token-vitest-debug-capture";
 const MARKER = "VITEST_DEBUG_CAPTURE_MARKER";
 
-function makeRequest(init: {
-  body?: string;
-  headers?: Record<string, string>;
-}) {
+function makeRequest(init: { body?: string; headers?: Record<string, string> }) {
   return new Request("http://localhost:3100/api/ingest/debug", {
     method: "POST",
     body: init.body,

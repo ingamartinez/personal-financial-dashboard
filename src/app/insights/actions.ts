@@ -5,11 +5,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { insightsReports } from "@/lib/db/schema";
-import {
-  buildInsightsSummary,
-  generateInsightsReport,
-  hashSummary,
-} from "@/lib/ai/insights";
+import { buildInsightsSummary, generateInsightsReport, hashSummary } from "@/lib/ai/insights";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 
 const ymSchema = z.string().regex(/^\d{4}-\d{2}$/);
