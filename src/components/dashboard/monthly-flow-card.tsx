@@ -3,8 +3,31 @@ import { AnimatedMoney } from "@/components/ui/animated-money";
 import { cn } from "@/lib/utils";
 import type { MonthlyFlow } from "@/lib/dashboard/queries";
 
-export function MonthlyFlowCard({ data, monthLabel }: { data: MonthlyFlow; monthLabel: string }) {
+export function MonthlyFlowCard({
+  data,
+  monthLabel,
+  isFuture = false,
+}: {
+  data: MonthlyFlow;
+  monthLabel: string;
+  isFuture?: boolean;
+}) {
   const positive = data.netCopCents >= BigInt(0);
+  if (isFuture) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardDescription>Cash flow · {monthLabel}</CardDescription>
+          <CardTitle className="text-muted-foreground text-base font-normal">
+            Sin datos todavía
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="text-muted-foreground text-xs">
+          Este mes aún no ocurrió.
+        </CardContent>
+      </Card>
+    );
+  }
   return (
     <Card>
       <CardHeader>

@@ -27,7 +27,15 @@ function buildDeepLink(tx: TopExpense): string {
   return `/transactions?${params.toString()}`;
 }
 
-export function TopExpensesCard({ rows, monthLabel }: { rows: TopExpense[]; monthLabel: string }) {
+export function TopExpensesCard({
+  rows,
+  monthLabel,
+  isFuture = false,
+}: {
+  rows: TopExpense[];
+  monthLabel: string;
+  isFuture?: boolean;
+}) {
   const shouldReduceMotion = useReducedMotion();
   const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);
   const newIds = useNewIds(rowIds);
@@ -43,7 +51,9 @@ export function TopExpensesCard({ rows, monthLabel }: { rows: TopExpense[]; mont
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
-          <div className="text-muted-foreground text-sm">No expenses this month</div>
+          <div className="text-muted-foreground text-sm">
+            {isFuture ? "Sin datos todavía — este mes aún no ocurrió" : "No expenses this month"}
+          </div>
         ) : (
           <ul className="flex flex-col divide-y">
             <AnimatePresence initial={false}>
