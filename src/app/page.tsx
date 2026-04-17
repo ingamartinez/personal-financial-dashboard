@@ -11,27 +11,41 @@ import { CategoryDonut } from "@/components/dashboard/category-donut";
 import { TopExpensesCard } from "@/components/dashboard/top-expenses-card";
 import { AccountsGrid } from "@/components/dashboard/accounts-grid";
 import { UpcomingCard } from "@/components/dashboard/upcoming-card";
+import { MonthSwitcher } from "@/components/dashboard/month-switcher";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
 import { getCurrentFxRate } from "@/lib/fx/repo";
+import {
+  formatYearMonth,
+  isFutureYearMonth,
+  parseYearMonthOrCurrent,
+  refDateFromYearMonth,
+} from "@/lib/date/year-month";
 
 export const dynamic = "force-dynamic";
 
-const monthFmt = new Intl.DateTimeFormat("es-CO", { month: "long", year: "numeric" });
-
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ ym?: string }>;
+}) {
+  const params = await searchParams;
   const now = new Date();
-  const monthLabel = monthFmt.format(now);
+  const ym = parseYearMonthOrCurrent(params.ym, now);
+  const refDate = refDateFromYearMonth(ym);
+  const isFuture = isFutureYearMonth(ym, now);
+  const monthLabel = formatYearMonth(ym);
+  const [refYear, refMonth] = ym.split("-").map(Number);
 
   const fx = await getCurrentFxRate();
   const [netWorth, flow, slices, top, accounts, upcoming] = await Promise.all([
     getNetWorth(fx.rate),
-    getMonthlyFlow(fx.rate, now),
-    getCategoryBreakdown(fx.rate, now),
-    getTopExpenses(fx.rate, now, 5),
+    getMonthlyFlow(fx.rate, refDate),
+    getCategoryBreakdown(fx.rate, refDate),
+    getTopExpenses(fx.rate, refDate, 5),
     getAccountStatuses(),
     getUpcomingForMonth({
-      year: now.getFullYear(),
-      month: now.getMonth() + 1,
+      year: refYear,
+      month: refMonth,
       includeDismissed: true,
       today: now,
     }),
@@ -51,19 +65,22 @@ export default async function DashboardPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 sm:p-6">
-      <header>
-        <h1 className="text-h1">Dashboard</h1>
-        <p className="text-body text-muted-foreground capitalize">{monthLabel}</p>
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-h1">Dashboard</h1>
+          <p className="text-body text-muted-foreground capitalize">{monthLabel}</p>
+        </div>
+        <MonthSwitcher ym={ym} />
       </header>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-4">
         <NetWorthCard data={netWorth} fx={fx} />
-        <MonthlyFlowCard data={flow} monthLabel={monthLabel} />
-        <CategoryDonut slices={donutSlices} monthLabel={monthLabel} />
+        <MonthlyFlowCard data={flow} monthLabel={monthLabel} isFuture={isFuture} />
+        <CategoryDonut slices={donutSlices} monthLabel={monthLabel} isFuture={isFuture} />
       </section>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TopExpensesCard rows={top} monthLabel={monthLabel} />
+        <TopExpensesCard rows={top} monthLabel={monthLabel} ym={ym} isFuture={isFuture} />
         <UpcomingCard items={upcomingItems} monthLabel={monthLabel} />
       </section>
 

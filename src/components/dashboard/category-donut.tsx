@@ -22,9 +22,11 @@ export type DonutSlice = {
 export function CategoryDonut({
   slices,
   monthLabel,
+  isFuture = false,
 }: {
   slices: DonutSlice[];
   monthLabel: string;
+  isFuture?: boolean;
 }) {
   const total = slices.reduce((acc, s) => acc + s.value, 0);
 
@@ -39,7 +41,7 @@ export function CategoryDonut({
       <CardContent>
         {slices.length === 0 ? (
           <div className="text-muted-foreground flex h-64 items-center justify-center text-sm">
-            No expenses this month
+            {isFuture ? "Sin datos todavía — este mes aún no ocurrió" : "No expenses this month"}
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
