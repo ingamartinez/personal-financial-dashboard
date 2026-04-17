@@ -43,6 +43,13 @@
       "when": 1776389894514,
       "tag": "0005_kind_arachne",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776436997192,
+      "tag": "0006_glamorous_bullseye",
+      "breakpoints": true
     }
   ]
 }

@@ -3,6 +3,7 @@
 import { useTransition } from "react";
 import { toast } from "sonner";
 import { updateTransactionCategory } from "@/app/transactions/actions";
+import { CategoryCombobox } from "./category-combobox";
 
 export type CategoryOption = {
   slug: string;
@@ -22,11 +23,11 @@ export function CategoryCell({
   const [pending, startTransition] = useTransition();
 
   return (
-    <select
+    <CategoryCombobox
+      value={value}
+      options={options}
       disabled={pending}
-      value={value ?? ""}
-      onChange={(e) => {
-        const next = e.target.value || null;
+      onChange={(next) => {
         startTransition(async () => {
           try {
             await updateTransactionCategory({ txId, categorySlug: next });
@@ -36,14 +37,7 @@ export function CategoryCell({
           }
         });
       }}
-      className="bg-background chevron-select h-8 w-full rounded-md border text-sm disabled:opacity-50"
-    >
-      <option value="">— unclassified —</option>
-      {options.map((c) => (
-        <option key={c.slug} value={c.slug}>
-          {c.parentSlug ? `↳ ${c.name}` : c.name}
-        </option>
-      ))}
-    </select>
+      triggerClassName="h-8"
+    />
   );
 }

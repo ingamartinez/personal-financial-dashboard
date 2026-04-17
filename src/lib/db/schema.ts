@@ -14,6 +14,7 @@ import {
   timestamp,
   uniqueIndex,
   varchar,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 export const accountType = pgEnum("account_type", ["savings", "credit_card", "loan"]);
@@ -83,7 +84,12 @@ export const categories = pgTable("categories", {
   id: serial("id").primaryKey(),
   slug: varchar("slug", { length: 60 }).notNull().unique(),
   name: varchar("name", { length: 80 }).notNull(),
-  parentSlug: varchar("parent_slug", { length: 60 }),
+  parentSlug: varchar("parent_slug", { length: 60 }).references(
+    (): AnyPgColumn => categories.slug,
+    {
+      onDelete: "restrict",
+    },
+  ),
   icon: varchar("icon", { length: 40 }),
   color: varchar("color", { length: 20 }),
   sortOrder: integer("sort_order").notNull().default(0),
