@@ -77,11 +77,13 @@ function formatAmount(cents: bigint, currency: TxRow["currency"]) {
 }
 
 function formatDate(d: Date) {
-  return d.toLocaleDateString("es-CO", {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-  });
+  return d
+    .toLocaleDateString("es-CO", {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+    })
+    .replace(/\sde\s/g, " ");
 }
 
 export function TransactionTable({
@@ -128,15 +130,12 @@ export function TransactionTable({
   return (
     <>
       <div className="bg-card hidden rounded-md border md:block">
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[110px]">Date</TableHead>
+              <TableHead className="w-[100px]">Date</TableHead>
               <TableHead>Description</TableHead>
-              <TableHead className="w-[150px]">Account</TableHead>
-              <TableHead className="w-[200px]">Category</TableHead>
-              <TableHead className="w-[110px]">Source</TableHead>
-              <TableHead className="w-[110px]">Method</TableHead>
+              <TableHead className="w-[240px]">Category</TableHead>
               <TableHead className="w-[140px] text-right">Amount</TableHead>
             </TableRow>
           </TableHeader>
@@ -146,6 +145,7 @@ export function TransactionTable({
                 const isExpense = tx.amountCents < BigInt(0);
                 const isNew = newIds.has(tx.id);
                 const isHighlighted = tx.id === highlightId;
+                const isUnclassified = tx.classificationMethod === "unclassified";
                 return (
                   <motion.tr
                     key={tx.id}
@@ -156,12 +156,15 @@ export function TransactionTable({
                     animate={enterAnimate}
                     transition={enterTransition}
                   >
-                    <TableCell className="text-muted-foreground" suppressHydrationWarning>
+                    <TableCell
+                      className="text-muted-foreground align-top text-sm"
+                      suppressHydrationWarning
+                    >
                       {formatDate(tx.occurredAt)}
                     </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-medium">{primaryDescription(tx)}</span>
+                    <TableCell className="align-top">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate font-medium">{primaryDescription(tx)}</span>
                         {tx.counterparty ? (
                           <CounterpartyTypeBadge type={tx.counterparty.type} />
                         ) : null}
@@ -173,28 +176,35 @@ export function TransactionTable({
                           />
                         ) : null}
                       </div>
-                      {hasSecondaryDescription(tx) ? (
-                        <div className="text-muted-foreground line-clamp-1 text-xs">
-                          {tx.descriptionRaw}
-                        </div>
-                      ) : null}
+                      <div className="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
+                        <span className="truncate">{tx.accountName}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="shrink-0">{sourceLabel[tx.source]}</span>
+                        <span aria-hidden="true">·</span>
+                        <span
+                          className={cn(
+                            "shrink-0",
+                            isUnclassified && "text-destructive font-medium",
+                          )}
+                        >
+                          {tx.classificationMethod}
+                        </span>
+                        {hasSecondaryDescription(tx) ? (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="truncate">{tx.descriptionRaw}</span>
+                          </>
+                        ) : null}
+                      </div>
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
-                      {tx.accountName}
-                    </TableCell>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
                     </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{sourceLabel[tx.source]}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={methodVariant[tx.classificationMethod]}>
-                        {tx.classificationMethod}
-                      </Badge>
-                    </TableCell>
                     <TableCell
-                      className={`money text-right ${isExpense ? "text-destructive" : "text-emerald-600"}`}
+                      className={cn(
+                        "money text-right align-top font-medium",
+                        isExpense ? "text-destructive" : "text-emerald-600",
+                      )}
                       suppressHydrationWarning
                     >
                       {formatAmount(tx.amountCents, tx.currency)}
