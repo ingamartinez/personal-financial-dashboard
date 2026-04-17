@@ -9,6 +9,7 @@ const DEFAULT_REFRESH_ON: AppEvent["type"][] = [
   "transaction:updated",
   "transaction:bulk-updated",
   "counterparty:updated",
+  "recurring-gap:resolved",
   "budget:updated",
 ];
 

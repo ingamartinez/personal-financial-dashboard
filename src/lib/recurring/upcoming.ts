@@ -1,6 +1,10 @@
-import { and, asc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { accounts, categories, recurringTransactions, transactions } from "@/lib/db/schema";
+import {
+  DEFAULT_WINDOW_AFTER_DAYS,
+  DEFAULT_WINDOW_BEFORE_DAYS,
+} from "@/lib/recurring/gap-detector";
 
 export type UpcomingStatus = "matched" | "upcoming" | "overdue" | "dismissed";
 
@@ -40,7 +44,8 @@ export type UpcomingOptions = {
   month: number;
   includeDismissed?: boolean;
   includeMatched?: boolean;
-  matchWindowDays?: number;
+  matchWindowBeforeDays?: number;
+  matchWindowAfterDays?: number;
   today?: Date;
 };
 
@@ -53,7 +58,8 @@ export async function getUpcomingForMonth(
     month,
     includeDismissed = false,
     includeMatched = true,
-    matchWindowDays = 3,
+    matchWindowBeforeDays = DEFAULT_WINDOW_BEFORE_DAYS,
+    matchWindowAfterDays = DEFAULT_WINDOW_AFTER_DAYS,
     today = new Date(),
   } = opts;
 
@@ -85,6 +91,27 @@ export async function getUpcomingForMonth(
 
   if (rows.length === 0) return [];
 
+  // Explicit links trump the heuristic: a tx whose recurringId + recurringYearMonth
+  // point to (r.id, ym) is the authoritative match, even if it landed outside
+  // the heuristic window or with a different amount (variable recurrings).
+  const recurringIds = rows.map((r) => r.id);
+  const explicitLinks = await database
+    .select({
+      id: transactions.id,
+      recurringId: transactions.recurringId,
+    })
+    .from(transactions)
+    .where(
+      and(inArray(transactions.recurringId, recurringIds), eq(transactions.recurringYearMonth, ym)),
+    );
+  const explicitMap = new Map<number, number>();
+  for (const e of explicitLinks) {
+    if (e.recurringId !== null) explicitMap.set(e.recurringId, e.id);
+  }
+
+  // Heuristic fallback for txs that ingestion hasn't auto-linked yet (e.g.
+  // current-month brand-new SMS before the cron runs). Only considers txs
+  // with no recurringId — anything linked is already authoritative above.
   const monthTxs = await database
     .select({
       id: transactions.id,
@@ -95,8 +122,15 @@ export async function getUpcomingForMonth(
     .from(transactions)
     .where(
       and(
-        gte(transactions.occurredAt, new Date(rangeStart.getTime() - matchWindowDays * 86400000)),
-        lte(transactions.occurredAt, new Date(rangeEnd.getTime() + matchWindowDays * 86400000)),
+        gte(
+          transactions.occurredAt,
+          new Date(rangeStart.getTime() - matchWindowBeforeDays * 86400000),
+        ),
+        lte(
+          transactions.occurredAt,
+          new Date(rangeEnd.getTime() + matchWindowAfterDays * 86400000),
+        ),
+        isNull(transactions.recurringId),
       ),
     );
 
@@ -109,18 +143,21 @@ export async function getUpcomingForMonth(
     const day = Math.min(r.dayOfMonth, monthDays);
     const expectedOn = toIso(year, month, day);
     const expectedDate = new Date(`${expectedOn}T00:00:00Z`);
-    const windowStart = new Date(expectedDate.getTime() - matchWindowDays * 86400000);
-    const windowEnd = new Date(expectedDate.getTime() + matchWindowDays * 86400000);
+    const windowStart = new Date(expectedDate.getTime() - matchWindowBeforeDays * 86400000);
+    const windowEnd = new Date(expectedDate.getTime() + matchWindowAfterDays * 86400000);
 
     const isDismissed = (r.skippedMonths ?? []).includes(ym);
 
-    const match = monthTxs.find(
-      (tx) =>
-        tx.accountId === r.accountId &&
-        tx.amountCents === r.amountCents &&
-        tx.occurredAt >= windowStart &&
-        tx.occurredAt <= windowEnd,
-    );
+    const explicitMatchTxId = explicitMap.get(r.id);
+    const match = explicitMatchTxId
+      ? { id: explicitMatchTxId }
+      : monthTxs.find(
+          (tx) =>
+            tx.accountId === r.accountId &&
+            tx.amountCents === r.amountCents &&
+            tx.occurredAt >= windowStart &&
+            tx.occurredAt <= windowEnd,
+        );
 
     let status: UpcomingStatus;
     let matchedTransactionId: number | null = null;

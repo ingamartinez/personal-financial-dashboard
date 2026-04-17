@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 
-export type TransactionSource = "sms" | "manual";
+export type TransactionSource = "sms" | "manual" | "recurring" | "ocr";
 
 export type AppEvent =
   | {
@@ -25,6 +25,12 @@ export type AppEvent =
       type: "counterparty:updated";
       id: number;
       reason: "edit" | "merge" | "split";
+      timestamp: number;
+    }
+  | {
+      type: "recurring-gap:resolved";
+      gapId: number | null;
+      reason: "linked" | "synthetic" | "skipped" | "auto-linked";
       timestamp: number;
     }
   | { type: "budget:updated"; timestamp: number };

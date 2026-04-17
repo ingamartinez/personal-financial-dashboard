@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { emit } from "@/lib/events/bus";
+import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 
@@ -88,6 +89,8 @@ export async function createManualExpense(input: {
       notes: parsed.notes,
     })
     .returning({ id: transactions.id });
+
+  await autoLinkTransaction(inserted.id);
 
   revalidatePath("/");
   revalidatePath("/transactions");
