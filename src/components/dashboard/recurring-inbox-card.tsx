@@ -250,7 +250,7 @@ export function RecurringInboxCard({ gaps }: { gaps: RecurringGapItem[] }) {
       </Card>
       {linking ? (
         <RecurringGapLinkDialog
-          open={linking !== null}
+          open
           onOpenChange={(o) => {
             if (!o) closeLinking();
           }}
