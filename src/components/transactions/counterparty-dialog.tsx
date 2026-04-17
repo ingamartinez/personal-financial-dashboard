@@ -14,6 +14,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { updateCounterparty, mergeCounterparty } from "@/app/transactions/actions";
 import type { CategoryOption } from "./category-cell";
@@ -245,12 +246,14 @@ export function CounterpartyDialog({
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cp-notes">Notes</Label>
-            <Input
+            <Textarea
               id="cp-notes"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder="Optional"
               maxLength={500}
+              rows={2}
+              className="field-sizing-fixed min-h-0 resize-none"
             />
           </div>
 
