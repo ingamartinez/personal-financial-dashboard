@@ -8,6 +8,7 @@ import {
   recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
+import type { Currency } from "@/lib/types";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 export const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -20,7 +21,7 @@ export type InsightsSummary = {
     name: string;
     institution: string;
     type: string;
-    currency: "COP" | "USD";
+    currency: Currency;
     balanceCop: number;
   }>;
   totals: {
@@ -63,7 +64,7 @@ function monthBounds(ym: string) {
   };
 }
 
-function toCopNumber(cents: bigint, currency: "COP" | "USD", copPerUsd: number): number {
+function toCopNumber(cents: bigint, currency: Currency, copPerUsd: number): number {
   const pesos = Number(cents) / 100;
   return currency === "USD" ? pesos * copPerUsd : pesos;
 }

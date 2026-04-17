@@ -2,6 +2,7 @@ import { aliasedTable, and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { toCop } from "@/lib/money";
+import type { AccountType, CounterpartyType, Currency } from "@/lib/types";
 
 export function currentMonthRange(now = new Date()): { start: Date; end: Date } {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -13,8 +14,8 @@ export type AccountStatus = {
   id: number;
   name: string;
   institution: string;
-  type: "savings" | "credit_card" | "loan";
-  currency: "COP" | "USD";
+  type: AccountType;
+  currency: Currency;
   balanceCents: bigint;
 };
 
@@ -143,11 +144,11 @@ export type TopExpense = {
   counterparty: {
     id: number;
     displayName: string;
-    type: "person" | "merchant" | "unknown";
+    type: CounterpartyType;
   } | null;
   categoryName: string | null;
   amountCents: bigint;
-  currency: "COP" | "USD";
+  currency: Currency;
   amountCopCents: bigint;
   accountName: string;
 };

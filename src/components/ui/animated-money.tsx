@@ -1,8 +1,7 @@
 "use client";
 
 import NumberFlow from "@number-flow/react";
-
-type Currency = "COP" | "USD";
+import type { Currency } from "@/lib/types";
 
 export function AnimatedMoney({
   cents,

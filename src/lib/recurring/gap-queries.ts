@@ -11,6 +11,7 @@ import {
   DEFAULT_WINDOW_AFTER_DAYS,
   DEFAULT_WINDOW_BEFORE_DAYS,
 } from "@/lib/recurring/gap-detector";
+import type { Currency } from "@/lib/types";
 
 export type OpenGap = {
   gapId: number;
@@ -20,7 +21,7 @@ export type OpenGap = {
   accountId: number;
   accountName: string;
   amountCents: bigint;
-  currency: "COP" | "USD";
+  currency: Currency;
   categorySlug: string | null;
   categoryName: string | null;
   dayOfMonth: number;

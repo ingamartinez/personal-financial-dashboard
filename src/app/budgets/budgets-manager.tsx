@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CategoryCombobox } from "@/components/transactions/category-combobox";
 import { formatMoney } from "@/lib/money";
+import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { deleteBudget, upsertBudget } from "./actions";
 
@@ -40,7 +41,7 @@ type BudgetRow = {
   categoryName: string;
   amountCents: string;
   spentCents: string;
-  currency: "COP" | "USD";
+  currency: Currency;
 };
 
 type EditorState = { open: boolean; editing: BudgetRow | null };
@@ -268,7 +269,7 @@ function BudgetEditor({
   const [amount, setAmount] = useState(
     editing ? (Number(BigInt(editing.amountCents)) / 100).toString() : "",
   );
-  const [currency, setCurrency] = useState<"COP" | "USD">(editing?.currency ?? "COP");
+  const [currency, setCurrency] = useState<Currency>(editing?.currency ?? "COP");
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -348,7 +349,7 @@ function BudgetEditor({
               <select
                 id="b-ccy"
                 value={currency}
-                onChange={(e) => setCurrency(e.target.value as "COP" | "USD")}
+                onChange={(e) => setCurrency(e.target.value as Currency)}
                 className="bg-background h-9 rounded-md border px-2 text-sm"
               >
                 <option value="COP">COP</option>

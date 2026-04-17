@@ -14,8 +14,9 @@ import {
   previewScreenshotOcr,
   type OcrPreviewResult,
 } from "@/app/settings/import/actions";
+import type { Currency } from "@/lib/types";
 
-type AccountOption = { id: number; name: string; currency: "COP" | "USD" };
+type AccountOption = { id: number; name: string; currency: Currency };
 
 type EditableRow = {
   occurredOn: string;

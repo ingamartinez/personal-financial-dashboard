@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AccountMetadata } from "@/lib/db/schema";
-
-export type Currency = "COP" | "USD";
+import type { Currency } from "@/lib/types";
 
 export type ParsedSmsBase = {
   occurredOn: string; // ISO date YYYY-MM-DD

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import type { CounterpartyKind } from "@/lib/types";
 
 // `revalidatePath` requires a Next.js request context that vitest's node
 // environment does not provide. No-op it so we can unit-test actions directly.
@@ -29,7 +30,7 @@ async function cleanup() {
 
 async function seedCounterparty(args: {
   key: string;
-  kind?: "qr" | "breb" | "account" | "name";
+  kind?: CounterpartyKind;
   displayName?: string;
   defaultCategory?: string | null;
 }): Promise<number> {
@@ -84,7 +85,7 @@ async function seedTx(args: {
 
 async function seedAlias(args: {
   counterpartyId: number;
-  kind: "qr" | "breb" | "account" | "name";
+  kind: CounterpartyKind;
   value: string;
 }): Promise<number> {
   const rows = await db.execute<{ id: number }>(sql`

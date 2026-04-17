@@ -1,3 +1,5 @@
+import type { Currency } from "@/lib/types";
+
 export const FALLBACK_COP_PER_USD = 4000;
 
 const DECIMAL_AMOUNT_RE = /^\d+(?:\.\d{1,2})?$/;
@@ -20,7 +22,7 @@ export function decimalStringToCents(input: string): bigint {
   return BigInt(whole) * BigInt(100) + BigInt(paddedFraction);
 }
 
-export function toCop(amountCents: bigint, currency: "COP" | "USD", copPerUsd: number): bigint {
+export function toCop(amountCents: bigint, currency: Currency, copPerUsd: number): bigint {
   if (currency === "COP") return amountCents;
   const micros = BigInt(Math.round(copPerUsd * 1_000_000));
   return (amountCents * micros) / BigInt(1_000_000);
@@ -35,7 +37,7 @@ export function formatCop(amountCents: bigint): string {
   }).format(pesos);
 }
 
-export function formatMoney(amountCents: bigint, currency: "COP" | "USD"): string {
+export function formatMoney(amountCents: bigint, currency: Currency): string {
   const value = Number(amountCents) / 100;
   return new Intl.NumberFormat(currency === "USD" ? "en-US" : "es-CO", {
     style: "currency",

@@ -5,6 +5,7 @@ import { getNetWorth } from "@/lib/dashboard/queries";
 import { listAccountsDetailed, type AccountDetail } from "@/lib/accounts/queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { toCop, formatCop, formatMoney } from "@/lib/money";
+import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const RATE_FMT = new Intl.NumberFormat("es-CO", {
@@ -202,7 +203,7 @@ function CreditMeter({
   availableCents,
   balanceCents,
 }: {
-  currency: "COP" | "USD";
+  currency: Currency;
   limitCents: bigint;
   availableCents: bigint | null;
   balanceCents: bigint;

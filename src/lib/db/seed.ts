@@ -1,12 +1,13 @@
 import { inArray } from "drizzle-orm";
 import { db } from "./index";
 import { accounts, categories, classificationRules, type AccountMetadata } from "./schema";
+import type { AccountType, Currency } from "@/lib/types";
 
 const seedAccounts: Array<{
   name: string;
   institution: string;
-  type: "savings" | "credit_card" | "loan";
-  currency: "COP" | "USD";
+  type: AccountType;
+  currency: Currency;
   metadata?: AccountMetadata;
 }> = [
   {

@@ -1,13 +1,14 @@
 import { db } from "./index";
 import { accounts, transactions } from "./schema";
+import type { ClassificationMethod, TransactionSource } from "@/lib/types";
 
 type Sample = {
   description: string;
   merchant?: string;
   cents: number;
-  source: "apple_pay" | "sms" | "csv" | "recurring" | "manual";
+  source: TransactionSource;
   category?: string;
-  method?: "rule" | "ai" | "manual" | "unclassified";
+  method?: ClassificationMethod;
 };
 
 const samples: Sample[] = [
