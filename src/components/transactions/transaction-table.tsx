@@ -118,7 +118,10 @@ export function TransactionTable({
             const isExpense = tx.amountCents < BigInt(0);
             return (
               <TableRow key={tx.id}>
-                <TableCell className="text-muted-foreground">
+                <TableCell
+                  className="text-muted-foreground"
+                  suppressHydrationWarning
+                >
                   {formatDate(tx.occurredAt)}
                 </TableCell>
                 <TableCell>
@@ -168,6 +171,7 @@ export function TransactionTable({
                 </TableCell>
                 <TableCell
                   className={`text-right money ${isExpense ? "text-destructive" : "text-emerald-600"}`}
+                  suppressHydrationWarning
                 >
                   {formatAmount(tx.amountCents, tx.currency)}
                 </TableCell>
