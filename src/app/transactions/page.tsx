@@ -22,6 +22,7 @@ type SearchParams = Promise<{
   categorySlug?: string;
   q?: string;
   cursor?: string;
+  highlight?: string;
 }>;
 
 function buildHref(base: Record<string, string | undefined>, cursor: string | null) {
@@ -38,6 +39,8 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const sp = await searchParams;
 
   const accountId = sp.accountId ? Number(sp.accountId) : undefined;
+  const highlightRaw = sp.highlight ? Number(sp.highlight) : undefined;
+  const highlightId = Number.isFinite(highlightRaw) ? highlightRaw : undefined;
   const filters = {
     from: sp.from,
     to: sp.to,
@@ -96,7 +99,12 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         }}
       />
 
-      <TransactionTable rows={rows} categories={categories} allCounterparties={allCounterparties} />
+      <TransactionTable
+        rows={rows}
+        categories={categories}
+        allCounterparties={allCounterparties}
+        highlightId={highlightId}
+      />
 
       <div className="flex items-center justify-between">
         <div className="text-muted-foreground text-xs">
