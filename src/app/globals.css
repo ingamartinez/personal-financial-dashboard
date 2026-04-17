@@ -170,3 +170,16 @@
 .tabular-nums {
   font-family: var(--font-numeric);
 }
+
+@keyframes tx-row-highlight {
+  from {
+    background-color: color-mix(in oklab, var(--color-emerald-500) 15%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@utility tx-row-new {
+  animation: tx-row-highlight 2.5s ease-out forwards;
+}

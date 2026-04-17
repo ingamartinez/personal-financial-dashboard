@@ -1,3 +1,7 @@
+"use client";
+
+import { useMemo } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ReceiptTextIcon, UserIcon, BuildingIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -9,9 +13,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
+import { useNewIds } from "@/lib/hooks/use-new-ids";
 import type { CounterpartyBrief, TxRow } from "@/lib/transactions/queries";
 import { CategoryCell, type CategoryOption } from "./category-cell";
 import { CounterpartyDialog } from "./counterparty-dialog";
+
+const ROW_CLASSES =
+  "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted";
 
 const sourceLabel: Record<TxRow["source"], string> = {
   apple_pay: "Apple Pay",
@@ -100,6 +109,13 @@ export function TransactionTable({
   categories: CategoryOption[];
   allCounterparties: CounterpartyBrief[];
 }) {
+  const shouldReduceMotion = useReducedMotion();
+  const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);
+  const newIds = useNewIds(rowIds);
+  const enterInitial = shouldReduceMotion ? false : { opacity: 0, y: -8 };
+  const enterAnimate = { opacity: 1, y: 0 };
+  const enterTransition = { duration: 0.25, ease: "easeOut" as const };
+
   if (rows.length === 0) {
     return (
       <div className="rounded-md border bg-card">
@@ -128,10 +144,19 @@ export function TransactionTable({
             </TableRow>
           </TableHeader>
           <TableBody>
+            <AnimatePresence initial={false}>
             {rows.map((tx) => {
               const isExpense = tx.amountCents < BigInt(0);
+              const isNew = newIds.has(tx.id);
               return (
-                <TableRow key={tx.id}>
+                <motion.tr
+                  key={tx.id}
+                  data-slot="table-row"
+                  className={cn(ROW_CLASSES, isNew && "tx-row-new")}
+                  initial={enterInitial}
+                  animate={enterAnimate}
+                  transition={enterTransition}
+                >
                   <TableCell
                     className="text-muted-foreground"
                     suppressHydrationWarning
@@ -184,20 +209,29 @@ export function TransactionTable({
                   >
                     {formatAmount(tx.amountCents, tx.currency)}
                   </TableCell>
-                </TableRow>
+                </motion.tr>
               );
             })}
+            </AnimatePresence>
           </TableBody>
         </Table>
       </div>
 
       <ul className="flex flex-col gap-2 md:hidden">
+        <AnimatePresence initial={false}>
         {rows.map((tx) => {
           const isExpense = tx.amountCents < BigInt(0);
+          const isNew = newIds.has(tx.id);
           return (
-            <li
+            <motion.li
               key={tx.id}
-              className="flex flex-col gap-2 rounded-md border bg-card p-3"
+              className={cn(
+                "flex flex-col gap-2 rounded-md border bg-card p-3",
+                isNew && "tx-row-new",
+              )}
+              initial={enterInitial}
+              animate={enterAnimate}
+              transition={enterTransition}
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
@@ -253,9 +287,10 @@ export function TransactionTable({
                 value={tx.categorySlug}
                 options={categories}
               />
-            </li>
+            </motion.li>
           );
         })}
+        </AnimatePresence>
       </ul>
     </>
   );
