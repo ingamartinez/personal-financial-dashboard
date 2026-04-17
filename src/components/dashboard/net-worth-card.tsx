@@ -1,5 +1,5 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatCop, formatMoney } from "@/lib/money";
+import { AnimatedMoney } from "@/components/ui/animated-money";
 import type { NetWorth } from "@/lib/dashboard/queries";
 import type { FxRate } from "@/lib/fx/repo";
 
@@ -30,16 +30,16 @@ export function NetWorthCard({ data, fx }: { data: NetWorth; fx: FxRate }) {
       <CardHeader>
         <CardDescription>Net worth</CardDescription>
         <CardTitle className="text-3xl tabular-nums">
-          {formatCop(data.totalCopCents)}
+          <AnimatedMoney cents={data.totalCopCents} currency="COP" />
         </CardTitle>
       </CardHeader>
       <CardContent className="text-xs text-muted-foreground">
         <div className="flex flex-wrap gap-x-4 gap-y-1">
-          <span>
-            COP {formatMoney(data.copCents, "COP")}
+          <span className="inline-flex items-center gap-1">
+            COP <AnimatedMoney cents={data.copCents} currency="COP" />
           </span>
-          <span>
-            USD {formatMoney(data.usdCents, "USD")}
+          <span className="inline-flex items-center gap-1">
+            USD <AnimatedMoney cents={data.usdCents} currency="USD" />
           </span>
           <span className="opacity-60">{label}</span>
         </div>
