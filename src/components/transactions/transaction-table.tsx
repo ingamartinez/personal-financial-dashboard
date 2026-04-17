@@ -128,16 +128,16 @@ export function TransactionTable({
   return (
     <>
       <div className="bg-card hidden rounded-md border md:block">
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[110px]">Date</TableHead>
+              <TableHead className="w-[140px]">Date</TableHead>
               <TableHead>Description</TableHead>
-              <TableHead className="w-[150px]">Account</TableHead>
-              <TableHead className="w-[200px]">Category</TableHead>
-              <TableHead className="w-[110px]">Source</TableHead>
-              <TableHead className="w-[110px]">Method</TableHead>
-              <TableHead className="w-[140px] text-right">Amount</TableHead>
+              <TableHead className="w-[170px]">Account</TableHead>
+              <TableHead className="w-[190px]">Category</TableHead>
+              <TableHead className="w-[80px]">Source</TableHead>
+              <TableHead className="w-[100px]">Method</TableHead>
+              <TableHead className="w-[120px] text-right">Amount</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -160,8 +160,8 @@ export function TransactionTable({
                       {formatDate(tx.occurredAt)}
                     </TableCell>
                     <TableCell>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-medium">{primaryDescription(tx)}</span>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate font-medium">{primaryDescription(tx)}</span>
                         {tx.counterparty ? (
                           <CounterpartyTypeBadge type={tx.counterparty.type} />
                         ) : null}
@@ -179,7 +179,7 @@ export function TransactionTable({
                         </div>
                       ) : null}
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
+                    <TableCell className="text-muted-foreground truncate text-sm">
                       {tx.accountName}
                     </TableCell>
                     <TableCell>
