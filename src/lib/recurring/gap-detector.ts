@@ -55,6 +55,7 @@ export function previousYearMonth(today: Date): string {
  * and the unique link index on transactions.
  */
 export async function detectGapsForMonth(
+  userId: number,
   yearMonth: string,
   database: DB = defaultDb,
   opts: DetectOptions = {},
@@ -74,7 +75,7 @@ export async function detectGapsForMonth(
       skippedMonths: recurringTransactions.skippedMonths,
     })
     .from(recurringTransactions)
-    .where(eq(recurringTransactions.active, true));
+    .where(and(eq(recurringTransactions.userId, userId), eq(recurringTransactions.active, true)));
 
   const result: DetectResult = {
     yearMonth,
@@ -95,6 +96,7 @@ export async function detectGapsForMonth(
     .from(transactions)
     .where(
       and(
+        eq(transactions.userId, userId),
         inArray(transactions.recurringId, recurringIds),
         eq(transactions.recurringYearMonth, yearMonth),
       ),
@@ -122,6 +124,7 @@ export async function detectGapsForMonth(
       .from(transactions)
       .where(
         and(
+          eq(transactions.userId, userId),
           eq(transactions.accountId, r.accountId),
           eq(transactions.amountCents, r.amountCents),
           isNull(transactions.recurringId),
@@ -139,7 +142,7 @@ export async function detectGapsForMonth(
           recurringYearMonth: yearMonth,
           updatedAt: new Date(),
         })
-        .where(eq(transactions.id, candidates[0].id));
+        .where(and(eq(transactions.userId, userId), eq(transactions.id, candidates[0].id)));
       result.autoLinked += 1;
       continue;
     }
@@ -147,6 +150,7 @@ export async function detectGapsForMonth(
     const inserted = await database
       .insert(recurringGaps)
       .values({
+        userId,
         recurringId: r.id,
         yearMonth,
       })
@@ -171,10 +175,11 @@ export async function detectGapsForMonth(
  * finalize gaps.
  */
 export async function closePreviousMonth(
+  userId: number,
   today: Date = new Date(),
   database: DB = defaultDb,
 ): Promise<DetectResult> {
-  return detectGapsForMonth(previousYearMonth(today), database);
+  return detectGapsForMonth(userId, previousYearMonth(today), database);
 }
 
 export { DEFAULT_WINDOW_BEFORE_DAYS, DEFAULT_WINDOW_AFTER_DAYS };

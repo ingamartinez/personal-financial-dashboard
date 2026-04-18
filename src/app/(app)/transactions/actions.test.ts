@@ -57,6 +57,8 @@ async function cleanup() {
   `);
 }
 
+const TEST_USER_ID = 1;
+
 async function seedCounterparty(args: {
   key: string;
   kind?: CounterpartyKind;
@@ -64,8 +66,9 @@ async function seedCounterparty(args: {
   defaultCategory?: string | null;
 }): Promise<number> {
   const rows = await db.execute<{ id: number }>(sql`
-    INSERT INTO counterparties (display_name, type, default_category_slug)
+    INSERT INTO counterparties (user_id, display_name, type, default_category_slug)
     VALUES (
+      ${TEST_USER_ID},
       ${args.displayName ?? args.key},
       'unknown',
       ${args.defaultCategory ?? null}
@@ -73,8 +76,9 @@ async function seedCounterparty(args: {
     RETURNING id
   `);
   await db.execute(sql`
-    INSERT INTO counterparty_aliases (counterparty_id, kind, value)
+    INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
     VALUES (
+      ${TEST_USER_ID},
       ${rows[0].id},
       ${args.kind ?? "qr"}::counterparty_key_kind,
       ${args.key}
@@ -96,10 +100,10 @@ async function seedTx(args: {
   const rawData = args.smsBody ? JSON.stringify({ kind: "sms", sms: args.smsBody }) : "{}";
   const rows = await db.execute<{ id: number }>(sql`
     INSERT INTO transactions (
-      account_id, occurred_at, amount_cents, currency, description_raw,
+      user_id, account_id, occurred_at, amount_cents, currency, description_raw,
       counterparty_id, category_slug, classification_method, source, external_id, raw_data
     ) VALUES (
-      ${acc.id}, now(), -5000, 'COP', 'test',
+      ${TEST_USER_ID}, ${acc.id}, now(), -5000, 'COP', 'test',
       ${args.counterpartyId},
       ${args.categorySlug ?? null},
       ${args.method ?? "unclassified"}::classification_method,
@@ -118,8 +122,9 @@ async function seedAlias(args: {
   value: string;
 }): Promise<number> {
   const rows = await db.execute<{ id: number }>(sql`
-    INSERT INTO counterparty_aliases (counterparty_id, kind, value)
+    INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
     VALUES (
+      ${TEST_USER_ID},
       ${args.counterpartyId},
       ${args.kind}::counterparty_key_kind,
       ${args.value}
@@ -136,8 +141,9 @@ async function seedBareCounterparty(args: {
   defaultCategory?: string | null;
 }): Promise<number> {
   const rows = await db.execute<{ id: number }>(sql`
-    INSERT INTO counterparties (display_name, type, default_category_slug)
+    INSERT INTO counterparties (user_id, display_name, type, default_category_slug)
     VALUES (
+      ${TEST_USER_ID},
       ${args.displayName},
       'unknown',
       ${args.defaultCategory ?? null}
@@ -744,10 +750,10 @@ describe("classifySingleWithAi", () => {
     `);
     const rows = await db.execute<{ id: number }>(sql`
       INSERT INTO transactions (
-        account_id, occurred_at, amount_cents, currency, description_raw,
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
         classification_method, source, external_id
       ) VALUES (
-        ${acc.id}, now(), -42000, 'COP', 'NETFLIX',
+        ${TEST_USER_ID}, ${acc.id}, now(), -42000, 'COP', 'NETFLIX',
         'unclassified'::classification_method, 'sms', ${externalId}
       )
       RETURNING id
@@ -761,10 +767,10 @@ describe("classifySingleWithAi", () => {
     `);
     const rows = await db.execute<{ id: number }>(sql`
       INSERT INTO transactions (
-        account_id, occurred_at, amount_cents, currency, description_raw,
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
         category_slug, classification_method, source, external_id
       ) VALUES (
-        ${acc.id}, now(), -5000, 'COP', 'manual already',
+        ${TEST_USER_ID}, ${acc.id}, now(), -5000, 'COP', 'manual already',
         'alimentacion', 'manual'::classification_method, 'sms', ${externalId}
       )
       RETURNING id

@@ -252,6 +252,7 @@ async function main() {
     const daysAgo = Math.floor(Math.random() * 60);
     const occurredAt = new Date(now - daysAgo * dayMs - Math.floor(Math.random() * dayMs));
     return {
+      userId: acc.userId,
       accountId: acc.id,
       occurredAt,
       amountCents: BigInt(s.cents),

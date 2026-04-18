@@ -1,4 +1,4 @@
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "./index";
 import {
   accounts,
@@ -183,26 +183,33 @@ const seedRules: Array<{ pattern: string; categorySlug: string; priority?: numbe
   { pattern: "%Pago QR a llave%", categorySlug: "transferencias", priority: 50 },
 ];
 
-async function seedBootstrapUser() {
+async function seedBootstrapUser(): Promise<number | null> {
   const email = process.env.BOOTSTRAP_USER_EMAIL?.trim();
   const name = process.env.BOOTSTRAP_USER_NAME?.trim() || email;
   if (!email) {
     console.log("  BOOTSTRAP_USER_EMAIL not set — skipping bootstrap user");
-    return;
+    return null;
   }
   await db
     .insert(users)
     .values({ email, name: name ?? email })
     .onConflictDoNothing({ target: users.email });
-  console.log(`  bootstrap user ensured for ${email}`);
+  const [row] = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
+  console.log(`  bootstrap user ensured for ${email} (id=${row?.id ?? "?"})`);
+  return row?.id ?? null;
 }
 
 export async function runSeed() {
   console.log("seeding bootstrap user...");
-  await seedBootstrapUser();
+  const bootstrapUserId = await seedBootstrapUser();
 
   console.log("seeding categories...");
   await db.insert(categories).values(seedCategories).onConflictDoNothing();
+
+  if (bootstrapUserId === null) {
+    console.log("  skipping accounts + rules seed — no bootstrap user to attribute them to");
+    return;
+  }
 
   console.log("seeding accounts...");
   const existing = await db
@@ -217,7 +224,7 @@ export async function runSeed() {
   const existingNames = new Set(existing.map((e) => e.name));
   const toInsert = seedAccounts.filter((a) => !existingNames.has(a.name));
   if (toInsert.length > 0) {
-    await db.insert(accounts).values(toInsert);
+    await db.insert(accounts).values(toInsert.map((a) => ({ ...a, userId: bootstrapUserId })));
     console.log(`  inserted ${toInsert.length} new accounts`);
   } else {
     console.log("  all accounts already exist");
@@ -226,7 +233,9 @@ export async function runSeed() {
   console.log("seeding classification rules...");
   const existingRuleCount = await db.$count(classificationRules);
   if (existingRuleCount === 0) {
-    await db.insert(classificationRules).values(seedRules);
+    await db
+      .insert(classificationRules)
+      .values(seedRules.map((r) => ({ ...r, userId: bootstrapUserId })));
     console.log(`  inserted ${seedRules.length} classification rules`);
   } else {
     console.log(`  ${existingRuleCount} classification rules already present — skipping`);
