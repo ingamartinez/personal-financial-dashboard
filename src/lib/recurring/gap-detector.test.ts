@@ -15,10 +15,13 @@ async function cleanup() {
   await db.execute(sql`DELETE FROM accounts WHERE name = ${TEST_ACCOUNT}`);
 }
 
+const TEST_USER_ID = 1;
+
 async function seedAccount() {
   const [a] = await db
     .insert(accounts)
     .values({
+      userId: TEST_USER_ID,
       name: TEST_ACCOUNT,
       institution: "Test",
       type: "savings",
@@ -40,6 +43,7 @@ async function seedRecurring(
   const [r] = await db
     .insert(recurringTransactions)
     .values({
+      userId: TEST_USER_ID,
       accountId,
       label: opts.label,
       amountCents: opts.amountCents,
@@ -65,6 +69,7 @@ async function seedTx(
   const [t] = await db
     .insert(transactions)
     .values({
+      userId: TEST_USER_ID,
       accountId,
       occurredAt: new Date(`${opts.occurredOn}T12:00:00-05:00`),
       amountCents: opts.amountCents,
@@ -90,7 +95,7 @@ describe("detectGapsForMonth (integration)", () => {
   afterEach(cleanup);
 
   it("returns empty result when no active recurrings exist", async () => {
-    const result = await detectGapsForMonth("2026-04");
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(result.checkedRecurrings).toBe(0);
     expect(result.gapsCreated).toBe(0);
   });
@@ -103,7 +108,7 @@ describe("detectGapsForMonth (integration)", () => {
       dayOfMonth: 1,
     });
 
-    const result = await detectGapsForMonth("2026-04");
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(result.gapsCreated).toBe(1);
     expect(result.autoLinked).toBe(0);
     expect(result.existingLinks).toBe(0);
@@ -126,7 +131,7 @@ describe("detectGapsForMonth (integration)", () => {
       amountCents: BigInt(-2500000),
     });
 
-    const result = await detectGapsForMonth("2026-04");
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(result.autoLinked).toBe(1);
     expect(result.gapsCreated).toBe(0);
 
@@ -155,7 +160,7 @@ describe("detectGapsForMonth (integration)", () => {
       recurringYearMonth: "2026-04",
     });
 
-    await detectGapsForMonth("2026-04");
+    await detectGapsForMonth(TEST_USER_ID, "2026-04");
 
     // No gap should exist for this specific recurring
     const gaps = await db
@@ -174,7 +179,7 @@ describe("detectGapsForMonth (integration)", () => {
       skippedMonths: ["2026-04"],
     });
 
-    await detectGapsForMonth("2026-04");
+    await detectGapsForMonth(TEST_USER_ID, "2026-04");
 
     const gaps = await db
       .select({ id: recurringGaps.id })
@@ -203,7 +208,7 @@ describe("detectGapsForMonth (integration)", () => {
       recurringYearMonth: "2026-04",
     });
 
-    const result = await detectGapsForMonth("2026-04");
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(result.existingLinks).toBe(1);
     expect(result.gapsCreated).toBe(1); // recB has no match → gap
   });
@@ -221,7 +226,7 @@ describe("detectGapsForMonth (integration)", () => {
       amountCents: BigInt(-100000),
     });
 
-    const result = await detectGapsForMonth("2026-04");
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(result.autoLinked).toBe(1);
   });
 
@@ -238,7 +243,7 @@ describe("detectGapsForMonth (integration)", () => {
       amountCents: BigInt(-100000),
     });
 
-    const result = await detectGapsForMonth("2026-04");
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(result.autoLinked).toBe(0);
     expect(result.gapsCreated).toBe(1);
   });
@@ -251,10 +256,10 @@ describe("detectGapsForMonth (integration)", () => {
       dayOfMonth: 1,
     });
 
-    const first = await detectGapsForMonth("2026-04");
+    const first = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(first.gapsCreated).toBe(1);
 
-    const second = await detectGapsForMonth("2026-04");
+    const second = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(second.gapsCreated).toBe(0);
     expect(second.gapsAlreadyOpen).toBe(1);
 
@@ -278,7 +283,7 @@ describe("detectGapsForMonth (integration)", () => {
       amountCents: BigInt(-100000),
     });
 
-    const result = await detectGapsForMonth("2026-02");
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-02");
     expect(result.autoLinked).toBe(1);
   });
 
@@ -294,7 +299,7 @@ describe("detectGapsForMonth (integration)", () => {
       amountCents: BigInt(-347000), // variable — different amount
     });
 
-    const result = await detectGapsForMonth("2026-04");
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(result.autoLinked).toBe(0);
     expect(result.gapsCreated).toBe(1);
   });

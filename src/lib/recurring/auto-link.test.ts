@@ -15,10 +15,13 @@ async function cleanup() {
   await db.execute(sql`DELETE FROM accounts WHERE name = ${TEST_ACCOUNT}`);
 }
 
+const TEST_USER_ID = 1;
+
 async function seedAccount() {
   const [a] = await db
     .insert(accounts)
     .values({
+      userId: TEST_USER_ID,
       name: TEST_ACCOUNT,
       institution: "Test",
       type: "savings",
@@ -35,6 +38,7 @@ async function seedRecurringWithGap(
   const [r] = await db
     .insert(recurringTransactions)
     .values({
+      userId: TEST_USER_ID,
       accountId,
       label: opts.label,
       amountCents: opts.amountCents,
@@ -46,7 +50,7 @@ async function seedRecurringWithGap(
 
   const [g] = await db
     .insert(recurringGaps)
-    .values({ recurringId: r.id, yearMonth: opts.yearMonth })
+    .values({ userId: TEST_USER_ID, recurringId: r.id, yearMonth: opts.yearMonth })
     .returning({ id: recurringGaps.id });
 
   return { recurringId: r.id, gapId: g.id };
@@ -65,6 +69,7 @@ async function seedTx(
   const [t] = await db
     .insert(transactions)
     .values({
+      userId: TEST_USER_ID,
       accountId,
       occurredAt: new Date(`${opts.occurredOn}T12:00:00-05:00`),
       amountCents: opts.amountCents,

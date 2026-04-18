@@ -54,7 +54,9 @@ async function main() {
   let totalGapsCreated = 0;
   let totalAutoLinked = 0;
   for (const ym of months) {
-    const result = await detectGapsForMonth(ym);
+    // Backfill script runs against the single-user dev DB pre-multi-tenancy
+    // data, so user_id=1 is the right scope.
+    const result = await detectGapsForMonth(1, ym);
     totalGapsCreated += result.gapsCreated;
     totalAutoLinked += result.autoLinked;
     console.log(`  ${ym}: ${JSON.stringify(result)}`);

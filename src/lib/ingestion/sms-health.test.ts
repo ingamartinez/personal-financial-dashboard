@@ -92,6 +92,7 @@ describe("getSmsHealthHistory (integration)", () => {
 
     await db.insert(ingestionLogs).values([
       {
+        userId: TEST_USER_ID,
         source: "sms",
         status: "inserted",
         itemsReceived: 1,
@@ -100,6 +101,7 @@ describe("getSmsHealthHistory (integration)", () => {
         finishedAt: base,
       },
       {
+        userId: TEST_USER_ID,
         source: "sms",
         status: "inserted",
         itemsReceived: 1,
@@ -108,6 +110,7 @@ describe("getSmsHealthHistory (integration)", () => {
         finishedAt: later,
       },
       {
+        userId: TEST_USER_ID,
         source: "sms",
         status: "skipped",
         itemsReceived: 1,
@@ -133,6 +136,7 @@ describe("getSmsHealthHistory (integration)", () => {
 
   it("ignores logs from non-sms sources", async () => {
     await db.insert(ingestionLogs).values({
+      userId: TEST_USER_ID,
       source: "manual",
       status: "inserted",
       itemsReceived: 1,
@@ -165,6 +169,7 @@ describe("getSmsHealthSnapshot (integration)", () => {
     for (let d = 10; d <= 16; d += 1) {
       const ts = new Date(Date.UTC(2026, 3, d, 18, 0, 0)); // 13:00 COP that day
       values.push({
+        userId: TEST_USER_ID,
         source: "sms",
         status: "inserted",
         itemsReceived: 1,

@@ -68,8 +68,9 @@ async function createCounterpartyWithAlias(args: {
   defaultCategorySlug?: string | null;
 }) {
   const rows = await db.execute<{ id: number }>(sql`
-    INSERT INTO counterparties (display_name, type, default_category_slug)
+    INSERT INTO counterparties (user_id, display_name, type, default_category_slug)
     VALUES (
+      ${TEST_USER_ID},
       ${args.displayName},
       ${args.type ?? "unknown"}::counterparty_type,
       ${args.defaultCategorySlug ?? null}
@@ -77,8 +78,8 @@ async function createCounterpartyWithAlias(args: {
     RETURNING id
   `);
   await db.execute(sql`
-    INSERT INTO counterparty_aliases (counterparty_id, kind, value)
-    VALUES (${rows[0].id}, ${args.kind}::counterparty_key_kind, ${args.value})
+    INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
+    VALUES (${TEST_USER_ID}, ${rows[0].id}, ${args.kind}::counterparty_key_kind, ${args.value})
   `);
   return rows[0].id;
 }

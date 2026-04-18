@@ -24,11 +24,14 @@ export async function register() {
 
   // Day 5 of each month at 06:00 America/Bogota — gives a 4-day grace window
   // for late-posting SMS/Apple Pay events before we finalize gaps.
+  // NOTE: scopes to user 1 pending #185 (multi-user bot + webhook migration).
+  // Once that lands, iterate over every active user and run the detector per
+  // user id.
   cron.schedule(
     "0 6 5 * *",
     async () => {
       try {
-        const result = await closePreviousMonth();
+        const result = await closePreviousMonth(1);
         console.log(
           `[findash] recurring-gap detector closed ${result.yearMonth}:`,
           JSON.stringify(result),
