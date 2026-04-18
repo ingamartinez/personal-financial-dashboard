@@ -22,22 +22,30 @@ export async function register() {
   globalThis.__findashBgRegistered = true;
 
   const cron = (await import("node-cron")).default;
-  const { closePreviousMonth } = await import("@/lib/recurring/gap-detector");
+  const { closePreviousMonthForAllUsers } = await import("@/lib/recurring/gap-detector");
 
   // Day 5 of each month at 06:00 America/Bogota — gives a 4-day grace window
   // for late-posting SMS/Apple Pay events before we finalize gaps.
-  // NOTE: scopes to user 1. Iterating all active users is tracked in #225.
   cron.schedule(
     "0 6 5 * *",
     async () => {
       try {
-        const result = await closePreviousMonth(1);
-        console.log(
-          `[findash] recurring-gap detector closed ${result.yearMonth}:`,
-          JSON.stringify(result),
-        );
+        const results = await closePreviousMonthForAllUsers();
+        for (const entry of results) {
+          if (entry.ok) {
+            console.log(
+              `[findash] recurring-gap detector closed ${entry.result.yearMonth} for user ${entry.userId}:`,
+              JSON.stringify(entry.result),
+            );
+          } else {
+            console.error(
+              `[findash] recurring-gap detector failed for user ${entry.userId}:`,
+              entry.error,
+            );
+          }
+        }
       } catch (err) {
-        console.error("[findash] recurring-gap detector failed:", err);
+        console.error("[findash] recurring-gap detector fan-out failed:", err);
       }
     },
     { timezone: "America/Bogota" },

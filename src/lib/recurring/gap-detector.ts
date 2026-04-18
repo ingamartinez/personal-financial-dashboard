@@ -1,6 +1,6 @@
-import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
-import { recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
+import { recurringGaps, recurringTransactions, transactions, users } from "@/lib/db/schema";
 
 const DEFAULT_WINDOW_BEFORE_DAYS = 10;
 const DEFAULT_WINDOW_AFTER_DAYS = 5;
@@ -180,6 +180,32 @@ export async function closePreviousMonth(
   database: DB = defaultDb,
 ): Promise<DetectResult> {
   return detectGapsForMonth(userId, previousYearMonth(today), database);
+}
+
+export type UserCloseResult =
+  | { userId: number; ok: true; result: DetectResult }
+  | { userId: number; ok: false; error: unknown };
+
+/**
+ * Fan-out wrapper for the monthly cron. Runs closePreviousMonth for every
+ * user sequentially; a failure on one user is captured and does not stop the
+ * rest. Callers are responsible for logging / alerting on the returned list.
+ */
+export async function closePreviousMonthForAllUsers(
+  today: Date = new Date(),
+  database: DB = defaultDb,
+): Promise<UserCloseResult[]> {
+  const rows = await database.select({ id: users.id }).from(users).orderBy(asc(users.id));
+  const out: UserCloseResult[] = [];
+  for (const { id } of rows) {
+    try {
+      const result = await closePreviousMonth(id, today, database);
+      out.push({ userId: id, ok: true, result });
+    } catch (error) {
+      out.push({ userId: id, ok: false, error });
+    }
+  }
+  return out;
 }
 
 export { DEFAULT_WINDOW_BEFORE_DAYS, DEFAULT_WINDOW_AFTER_DAYS };

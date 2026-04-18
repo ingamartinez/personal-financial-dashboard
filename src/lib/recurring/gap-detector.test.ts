@@ -1,8 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
-import { detectGapsForMonth, previousYearMonth } from "./gap-detector";
+import {
+  accounts,
+  recurringGaps,
+  recurringTransactions,
+  transactions,
+  users,
+} from "@/lib/db/schema";
+import {
+  closePreviousMonthForAllUsers,
+  detectGapsForMonth,
+  previousYearMonth,
+} from "./gap-detector";
 
 const TEST_ACCOUNT = "__gap_test_account__";
 
@@ -302,6 +312,85 @@ describe("detectGapsForMonth (integration)", () => {
     const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
     expect(result.autoLinked).toBe(0);
     expect(result.gapsCreated).toBe(1);
+  });
+});
+
+describe("closePreviousMonthForAllUsers (integration)", () => {
+  const SECOND_USER_EMAIL = "__gap_test_user2@example.com";
+  const SECOND_ACCOUNT = "__gap_test_account_u2";
+
+  async function cleanupFanout() {
+    await cleanup();
+    await db.execute(sql`DELETE FROM accounts WHERE name = ${SECOND_ACCOUNT}`);
+    await db.execute(sql`DELETE FROM users WHERE email = ${SECOND_USER_EMAIL}`);
+  }
+
+  beforeEach(cleanupFanout);
+  afterEach(cleanupFanout);
+
+  it("runs closePreviousMonth for every user and returns per-user results", async () => {
+    const acct1 = await seedAccount();
+    await seedRecurring(acct1, {
+      label: "__gap_test user1 rent",
+      amountCents: BigInt(-250000),
+      dayOfMonth: 5,
+    });
+
+    const [u2] = await db
+      .insert(users)
+      .values({ email: SECOND_USER_EMAIL, name: "Gap Fan-out Test" })
+      .returning({ id: users.id });
+
+    const [acct2] = await db
+      .insert(accounts)
+      .values({
+        userId: u2.id,
+        name: SECOND_ACCOUNT,
+        institution: "Test",
+        type: "savings",
+        currency: "COP",
+      })
+      .returning({ id: accounts.id });
+
+    await db.insert(recurringTransactions).values({
+      userId: u2.id,
+      accountId: acct2.id,
+      label: "__gap_test user2 netflix",
+      amountCents: BigInt(-49000),
+      currency: "COP",
+      dayOfMonth: 10,
+      active: true,
+      skippedMonths: [],
+    });
+
+    // today = 2026-05-05 → closes 2026-04
+    const results = await closePreviousMonthForAllUsers(new Date("2026-05-05T12:00:00Z"));
+
+    const u1Entry = results.find((r) => r.userId === TEST_USER_ID);
+    const u2Entry = results.find((r) => r.userId === u2.id);
+
+    expect(u1Entry?.ok).toBe(true);
+    expect(u2Entry?.ok).toBe(true);
+
+    if (u1Entry?.ok) {
+      expect(u1Entry.result.yearMonth).toBe("2026-04");
+      // seeded 1 recurring for user 1 in this test — real seed may add more,
+      // so assert "at least our one" rather than an exact count.
+      expect(u1Entry.result.checkedRecurrings).toBeGreaterThanOrEqual(1);
+    }
+    if (u2Entry?.ok) {
+      expect(u2Entry.result.yearMonth).toBe("2026-04");
+      expect(u2Entry.result.checkedRecurrings).toBe(1);
+      expect(u2Entry.result.gapsCreated).toBe(1);
+    }
+
+    // Gap for user 2 is scoped to user 2's recurring
+    const u2Gaps = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .innerJoin(recurringTransactions, eq(recurringGaps.recurringId, recurringTransactions.id))
+      .where(and(eq(recurringTransactions.userId, u2.id), eq(recurringGaps.yearMonth, "2026-04")));
+    expect(u2Gaps.length).toBe(1);
   });
 });
 
