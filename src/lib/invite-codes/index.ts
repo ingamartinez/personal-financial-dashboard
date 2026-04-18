@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomInt } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { inviteCodes } from "@/lib/db/schema";
@@ -23,10 +23,12 @@ const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CODE_LENGTH = 24;
 
 export function generateInviteCode(): string {
-  const bytes = randomBytes(CODE_LENGTH);
+  // randomInt uses rejection sampling under the hood, so it is unbiased over
+  // any range — unlike `randomBytes[i] % ALPHABET.length`, which CodeQL flags
+  // as biased even when ALPHABET.length divides 256.
   let out = "";
   for (let i = 0; i < CODE_LENGTH; i++) {
-    out += ALPHABET[bytes[i] % ALPHABET.length];
+    out += ALPHABET[randomInt(ALPHABET.length)];
   }
   return out;
 }
