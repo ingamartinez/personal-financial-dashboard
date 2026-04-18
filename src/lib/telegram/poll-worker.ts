@@ -1,5 +1,14 @@
+import { setDefaultResultOrder } from "node:dns";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
+
+// Force IPv4-first DNS resolution for the Node.js process. Some hosting
+// networks (including ia-server's ISP) have broken IPv6 egress. Node's
+// undici fetch does Happy Eyeballs, but long-polling (~30s) waits long
+// enough that the IPv6 connection attempt can dominate and time out before
+// the IPv4 fallback kicks in. This flag affects all outbound fetch from
+// this process (Telegram, Anthropic, TRM, etc.) — which is what we want.
+setDefaultResultOrder("ipv4first");
 import { telegramPollState } from "@/lib/db/schema";
 import { createTelegramClient, type TelegramClient } from "@/lib/telegram/client";
 import { handleUpdate, type RouterDeps } from "@/lib/telegram/router";
