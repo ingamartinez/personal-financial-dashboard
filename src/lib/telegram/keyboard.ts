@@ -29,10 +29,13 @@ export function confirmKeyboard(): InlineKeyboardMarkup {
 export function accountsKeyboard(accounts: NluAccountOption[]): InlineKeyboardMarkup {
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
   for (const a of accounts) {
-    const last4 = a.last4s?.[0] ? ` *${a.last4s[0]}` : "";
+    // Only append the last4 if the account name doesn't already carry it
+    // (most accounts embed "*1234" in the name; avoid showing "Visa *1234 *1234").
+    const l4 = a.last4s?.[0];
+    const last4Part = l4 && !a.name.includes(`*${l4}`) ? ` *${l4}` : "";
     rows.push([
       {
-        text: `${a.name}${last4} (${a.currency})`,
+        text: `${a.name}${last4Part} (${a.currency})`,
         callback_data: `${CALLBACK.ACCOUNT_PREFIX}${a.id}`,
       },
     ]);
