@@ -322,6 +322,7 @@ export type TelegramSessionState = {
   sourceChatId: number;
   sourceMessageId?: number;
   promptMessageId?: number;
+  externalIdOverride?: string;
 };
 
 export const telegramSessions = pgTable("telegram_sessions", {

@@ -23,6 +23,8 @@ import {
   renderUnauthorized,
 } from "@/lib/telegram/formatter";
 import { insertFromDraft, isDraftComplete } from "@/lib/telegram/confirm";
+import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
+import { buildDraftFromParsedSms } from "@/lib/telegram/sms-draft";
 
 export type RouterDeps = {
   allowlist: Set<number>;
@@ -163,8 +165,39 @@ async function handleText(
     }
   }
 
-  // Otherwise: re-parse the whole message with NLU (starts a fresh draft).
   const accountsFull = await deps.listAccounts();
+
+  // Forwarded Bancolombia SMS branch: deterministic parser first, NLU fallback.
+  // Calling the parser unconditionally is safe — its regexes are tight enough
+  // that normal freeform text returns skip:"unknown" and falls through.
+  const smsParsed = parseSmsBancolombia(text);
+  if (smsParsed.kind !== "skip") {
+    const { draft, externalId } = buildDraftFromParsedSms(smsParsed, accountsFull);
+    const categories = await deps.listCategories();
+    const state: TelegramSessionState = {
+      step: "idle",
+      draft,
+      sourceChatId: chatId,
+      sourceMessageId: message.message_id,
+      externalIdOverride: externalId,
+    };
+    const accounts = accountsToNluOptions(accountsFull);
+    await advanceFlow({ chatId, userId, state, accounts, categories, client });
+    return;
+  }
+  if (smsParsed.reason === "failed" || smsParsed.reason === "non_transactional") {
+    await client.sendMessage({
+      chat_id: chatId,
+      text: renderError(
+        smsParsed.reason === "failed"
+          ? "Ese SMS indica una transacción fallida — no lo ingreso."
+          : "Ese SMS no es una transacción — no lo ingreso.",
+      ),
+    });
+    return;
+  }
+
+  // Otherwise: re-parse the whole message with NLU (starts a fresh draft).
   const accounts = accountsToNluOptions(accountsFull);
   const categories = await deps.listCategories();
   const now = (deps.now ?? (() => new Date()))();
@@ -248,6 +281,7 @@ async function handleCallback(
       draft: session.draft,
       chatId,
       sourceMessageId: session.sourceMessageId,
+      externalIdOverride: session.externalIdOverride,
     });
     await client.answerCallbackQuery({ callback_query_id: cb.id });
     if (result.status === "inserted") {
