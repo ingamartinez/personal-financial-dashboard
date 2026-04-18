@@ -1,6 +1,6 @@
 {
-  "id": "7eb49b72-90a7-4e58-97d1-989707242204",
-  "prevId": "e055cec0-f26c-442c-a396-91653f89a51b",
+  "id": "02c4b9a4-b818-4d53-8e98-9d6da2a417b3",
+  "prevId": "7eb49b72-90a7-4e58-97d1-989707242204",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -13,6 +13,13 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "account_id": {
           "name": "account_id",
@@ -64,6 +71,19 @@
         }
       },
       "foreignKeys": {
+        "account_snapshots_user_id_users_id_fk": {
+          "name": "account_snapshots_user_id_users_id_fk",
+          "tableFrom": "account_snapshots",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "account_snapshots_account_id_accounts_id_fk": {
           "name": "account_snapshots_account_id_accounts_id_fk",
           "tableFrom": "account_snapshots",
@@ -93,6 +113,13 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "name": {
           "name": "name",
@@ -157,7 +184,21 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "accounts_user_id_users_id_fk": {
+          "name": "accounts_user_id_users_id_fk",
+          "tableFrom": "accounts",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -173,6 +214,13 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "category_slug": {
           "name": "category_slug",
@@ -223,6 +271,19 @@
       },
       "indexes": {},
       "foreignKeys": {
+        "budgets_user_id_users_id_fk": {
+          "name": "budgets_user_id_users_id_fk",
+          "tableFrom": "budgets",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "budgets_category_slug_categories_slug_fk": {
           "name": "budgets_category_slug_categories_slug_fk",
           "tableFrom": "budgets",
@@ -397,6 +458,13 @@
           "primaryKey": true,
           "notNull": true
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
         "pattern": {
           "name": "pattern",
           "type": "text",
@@ -462,6 +530,19 @@
         }
       },
       "foreignKeys": {
+        "classification_rules_user_id_users_id_fk": {
+          "name": "classification_rules_user_id_users_id_fk",
+          "tableFrom": "classification_rules",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "classification_rules_category_slug_categories_slug_fk": {
           "name": "classification_rules_category_slug_categories_slug_fk",
           "tableFrom": "classification_rules",
@@ -491,6 +572,13 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "display_name": {
           "name": "display_name",
@@ -548,6 +636,19 @@
       },
       "indexes": {},
       "foreignKeys": {
+        "counterparties_user_id_users_id_fk": {
+          "name": "counterparties_user_id_users_id_fk",
+          "tableFrom": "counterparties",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "counterparties_default_category_slug_categories_slug_fk": {
           "name": "counterparties_default_category_slug_categories_slug_fk",
           "tableFrom": "counterparties",
@@ -577,6 +678,13 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "counterparty_id": {
           "name": "counterparty_id",
@@ -644,6 +752,19 @@
         }
       },
       "foreignKeys": {
+        "counterparty_aliases_user_id_users_id_fk": {
+          "name": "counterparty_aliases_user_id_users_id_fk",
+          "tableFrom": "counterparty_aliases",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "counterparty_aliases_counterparty_id_counterparties_id_fk": {
           "name": "counterparty_aliases_counterparty_id_counterparties_id_fk",
           "tableFrom": "counterparty_aliases",
@@ -785,6 +906,13 @@
           "primaryKey": true,
           "notNull": true
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
         "source": {
           "name": "source",
           "type": "tx_source",
@@ -846,7 +974,21 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "ingestion_logs_user_id_users_id_fk": {
+          "name": "ingestion_logs_user_id_users_id_fk",
+          "tableFrom": "ingestion_logs",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -862,6 +1004,13 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "year_month": {
           "name": "year_month",
@@ -910,7 +1059,21 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "insights_reports_user_id_users_id_fk": {
+          "name": "insights_reports_user_id_users_id_fk",
+          "tableFrom": "insights_reports",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "insights_reports_year_month_unique": {
@@ -1006,6 +1169,13 @@
           "primaryKey": true,
           "notNull": true
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
         "recurring_id": {
           "name": "recurring_id",
           "type": "integer",
@@ -1065,6 +1235,19 @@
         }
       },
       "foreignKeys": {
+        "recurring_gaps_user_id_users_id_fk": {
+          "name": "recurring_gaps_user_id_users_id_fk",
+          "tableFrom": "recurring_gaps",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "recurring_gaps_recurring_id_recurring_transactions_id_fk": {
           "name": "recurring_gaps_recurring_id_recurring_transactions_id_fk",
           "tableFrom": "recurring_gaps",
@@ -1094,6 +1277,13 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "account_id": {
           "name": "account_id",
@@ -1168,6 +1358,19 @@
       },
       "indexes": {},
       "foreignKeys": {
+        "recurring_transactions_user_id_users_id_fk": {
+          "name": "recurring_transactions_user_id_users_id_fk",
+          "tableFrom": "recurring_transactions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "recurring_transactions_account_id_accounts_id_fk": {
           "name": "recurring_transactions_account_id_accounts_id_fk",
           "tableFrom": "recurring_transactions",
@@ -1246,6 +1449,13 @@
         },
         "user_id": {
           "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "telegram_user_id": {
+          "name": "telegram_user_id",
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
@@ -1271,7 +1481,21 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "telegram_sessions_user_id_users_id_fk": {
+          "name": "telegram_sessions_user_id_users_id_fk",
+          "tableFrom": "telegram_sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -1287,6 +1511,13 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "account_id": {
           "name": "account_id",
@@ -1523,6 +1754,19 @@
         }
       },
       "foreignKeys": {
+        "transactions_user_id_users_id_fk": {
+          "name": "transactions_user_id_users_id_fk",
+          "tableFrom": "transactions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "transactions_account_id_accounts_id_fk": {
           "name": "transactions_account_id_accounts_id_fk",
           "tableFrom": "transactions",
