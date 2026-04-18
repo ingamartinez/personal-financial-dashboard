@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
-import { ClipboardCopyIcon } from "lucide-react";
+import { useActionState, useTransition } from "react";
+import { ClipboardCopyIcon, PowerIcon, PowerOffIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,13 +10,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { InviteStatus } from "@/lib/invite-codes";
-import { mintInviteCodeAction, type MintActionState } from "./actions";
+import { mintInviteCodeAction, setInviteDisabledAction, type MintActionState } from "./actions";
 
 type InviteRow = {
   code: string;
   maxUses: number;
   usesCount: number;
   expiresAt: string | null;
+  disabledAt: string | null;
   createdAt: string;
   status: InviteStatus;
   signupUrl: string;
@@ -32,10 +33,12 @@ const STATUS_LABELS: Record<
   "partially-used": { label: "Partially used", variant: "outline" },
   exhausted: { label: "Exhausted", variant: "destructive" },
   expired: { label: "Expired", variant: "destructive" },
+  disabled: { label: "Desactivada", variant: "outline" },
 };
 
 export function InvitesManager({ invites }: { invites: InviteRow[] }) {
   const [state, formAction, pending] = useActionState(mintInviteCodeAction, INITIAL_STATE);
+  const [toggling, startToggle] = useTransition();
 
   async function copy(text: string, label: string) {
     try {
@@ -44,6 +47,16 @@ export function InvitesManager({ invites }: { invites: InviteRow[] }) {
     } catch {
       toast.error("Copy failed — seleccioná y copiá a mano");
     }
+  }
+
+  function toggleDisabled(code: string, disabled: boolean) {
+    const fd = new FormData();
+    fd.set("code", code);
+    fd.set("disabled", disabled ? "true" : "false");
+    startToggle(async () => {
+      await setInviteDisabledAction(fd);
+      toast.success(disabled ? "Invitación desactivada" : "Invitación reactivada");
+    });
   }
 
   return (
@@ -133,7 +146,10 @@ export function InvitesManager({ invites }: { invites: InviteRow[] }) {
             <ul className="divide-y">
               {invites.map((inv) => {
                 const status = STATUS_LABELS[inv.status];
-                const dim = inv.status === "exhausted" || inv.status === "expired";
+                const isTerminal = inv.status === "exhausted" || inv.status === "expired";
+                const isDisabled = inv.status === "disabled";
+                const dim = isTerminal || isDisabled;
+                const canToggle = !isTerminal;
                 return (
                   <li
                     key={inv.code}
@@ -153,17 +169,40 @@ export function InvitesManager({ invites }: { invites: InviteRow[] }) {
                         {inv.expiresAt && ` · Vence ${new Date(inv.expiresAt).toLocaleString()}`}
                       </p>
                     </div>
-                    {!dim && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => copy(inv.signupUrl, "Link")}
-                      >
-                        <ClipboardCopyIcon className="size-4" />
-                        Copy link
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {!isTerminal && !isDisabled && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => copy(inv.signupUrl, "Link")}
+                        >
+                          <ClipboardCopyIcon className="size-4" />
+                          Copy link
+                        </Button>
+                      )}
+                      {canToggle && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={toggling}
+                          onClick={() => toggleDisabled(inv.code, !isDisabled)}
+                        >
+                          {isDisabled ? (
+                            <>
+                              <PowerIcon className="size-4" />
+                              Reactivar
+                            </>
+                          ) : (
+                            <>
+                              <PowerOffIcon className="size-4" />
+                              Desactivar
+                            </>
+                          )}
+                        </Button>
+                      )}
+                    </div>
                   </li>
                 );
               })}

@@ -38,6 +38,7 @@ export const inviteCodes = pgTable(
     maxUses: integer("max_uses").notNull().default(1),
     usesCount: integer("uses_count").notNull().default(0),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("invite_codes_uses_count_check", sql`${t.usesCount} <= ${t.maxUses}`)],
