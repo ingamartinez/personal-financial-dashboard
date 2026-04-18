@@ -1,5 +1,10 @@
 import { request, type RequestOptions } from "node:https";
-import type { EditMessageOptions, SendMessageOptions, TelegramUpdate } from "@/lib/telegram/types";
+import type {
+  EditMessageOptions,
+  SendMessageOptions,
+  TelegramFile,
+  TelegramUpdate,
+} from "@/lib/telegram/types";
 
 const TELEGRAM_HOST = "api.telegram.org";
 
@@ -14,6 +19,8 @@ export type TelegramClient = {
   sendMessage: (opts: SendMessageOptions) => Promise<{ message_id: number }>;
   editMessage: (opts: EditMessageOptions) => Promise<void>;
   answerCallbackQuery: (opts: { callback_query_id: string; text?: string }) => Promise<void>;
+  getFile: (fileId: string) => Promise<TelegramFile>;
+  downloadFile: (filePath: string) => Promise<Buffer>;
 };
 
 // Built on node:https (not fetch) because undici's default fetch in Node 20+
@@ -23,6 +30,34 @@ export type TelegramClient = {
 // falling back to IPv4. node:https.request respects `dns.setDefaultResultOrder`
 // and lets us pin `family: 4`, which bypasses the issue entirely.
 type RawResponse = { status: number; body: string };
+
+function httpsBinary(opts: { path: string; timeoutMs: number }): Promise<Buffer> {
+  const reqOpts: RequestOptions = {
+    host: TELEGRAM_HOST,
+    port: 443,
+    path: opts.path,
+    method: "GET",
+    family: 4,
+  };
+  return new Promise((resolve, reject) => {
+    const req = request(reqOpts, (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`Telegram file download failed: status ${res.statusCode}`));
+        res.resume();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+      res.on("error", reject);
+    });
+    req.setTimeout(opts.timeoutMs, () => {
+      req.destroy(new Error(`Telegram download timed out after ${opts.timeoutMs}ms`));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 function httpsJson(opts: {
   method: string;
@@ -109,6 +144,15 @@ export function createTelegramClient(opts: { token: string }): TelegramClient {
         { callback_query_id: opts.callback_query_id, text: opts.text },
         10_000,
       );
+    },
+    async getFile(fileId) {
+      return call<TelegramFile>("getFile", { file_id: fileId }, 10_000);
+    },
+    async downloadFile(filePath) {
+      return httpsBinary({
+        path: `/file/bot${opts.token}/${filePath}`,
+        timeoutMs: 30_000,
+      });
     },
   };
 }

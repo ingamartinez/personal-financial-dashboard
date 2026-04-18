@@ -1,4 +1,4 @@
-import type { TelegramDraft } from "@/lib/db/schema";
+import type { TelegramBatchItem, TelegramDraft } from "@/lib/db/schema";
 import type { NluAccountOption, NluCategoryOption } from "@/lib/ai/transaction-nlu";
 
 function formatAmount(amountCentsStr: string, currency: "COP" | "USD"): string {
@@ -87,6 +87,10 @@ export function renderStart(): string {
     "• `ayer gasté 123.450 en el mercado con la visa`",
     "• `ingresé 2 millones del sueldo`",
     "",
+    "También podés:",
+    "• Reenviarme un SMS de Bancolombia (lo parseo automático).",
+    "• Mandarme una foto de un comprobante o lista de transacciones (OCR).",
+    "",
     "Comandos:",
     "/help — ayuda",
     "/cancel — descartar el draft actual",
@@ -120,4 +124,47 @@ export function renderInserted(txId: number): string {
 
 export function renderError(msg: string): string {
   return `⚠️ ${msg}`;
+}
+
+export function renderAskPhotoAccount(): string {
+  return "📸 Recibí la foto. ¿A qué cuenta pertenece?";
+}
+
+export function renderOcrProcessing(): string {
+  return "⏳ Procesando foto con OCR…";
+}
+
+export function renderOcrEmpty(): string {
+  return "🤔 No pude extraer ninguna transacción de la foto. Probá con otra imagen más clara.";
+}
+
+export function renderBatchSummary(items: TelegramBatchItem[]): string {
+  const lines: string[] = [`📋 Encontré ${items.length} transacciones:\n`];
+  for (const item of items) {
+    const { draft } = item;
+    const emoji = draft.direction === "income" ? "💰" : "💸";
+    const amount =
+      draft.amountCents && draft.currency
+        ? formatAmount(draft.amountCents, draft.currency)
+        : "(sin monto)";
+    const desc = draft.merchant ?? draft.description ?? "(sin descripción)";
+    const date = draft.occurredOn ?? "hoy";
+    lines.push(`${emoji} ${amount} · ${desc} · ${date}`);
+  }
+  lines.push("\n¿Confirmar todas?");
+  return lines.join("\n");
+}
+
+export function renderBatchInserted(opts: {
+  inserted: number[];
+  duplicated: number;
+  errors: number;
+}): string {
+  const parts: string[] = [];
+  if (opts.inserted.length > 0) {
+    parts.push(`✅ Guardadas ${opts.inserted.length}`);
+  }
+  if (opts.duplicated > 0) parts.push(`🔁 ${opts.duplicated} duplicadas`);
+  if (opts.errors > 0) parts.push(`⚠️ ${opts.errors} con error`);
+  return parts.join(" · ") || "Sin cambios.";
 }
