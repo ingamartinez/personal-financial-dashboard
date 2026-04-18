@@ -32,6 +32,10 @@ const ERRORS: Record<string, ErrorState> = {
     title: "Código ya usado",
     body: "Este código de invitación fue consumido en su totalidad. Pedí uno nuevo.",
   },
+  disabled: {
+    title: "Código desactivado",
+    body: "Este código fue desactivado por quien lo creó. Pedí uno nuevo.",
+  },
   "code-exhausted": {
     title: "Código agotado",
     body: "Alguien más acaba de usar este código antes que vos. Pedí uno nuevo para registrarte.",

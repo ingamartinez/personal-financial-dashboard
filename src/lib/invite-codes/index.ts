@@ -9,14 +9,15 @@ export type InviteCodeRow = {
   maxUses: number;
   usesCount: number;
   expiresAt: Date | null;
+  disabledAt: Date | null;
   createdAt: Date;
 };
 
-export type InviteStatus = "unused" | "partially-used" | "exhausted" | "expired";
+export type InviteStatus = "unused" | "partially-used" | "exhausted" | "expired" | "disabled";
 
 export type InviteValidation =
   | { ok: true; row: InviteCodeRow }
-  | { ok: false; reason: "unknown" | "expired" | "exhausted" };
+  | { ok: false; reason: "unknown" | "expired" | "exhausted" | "disabled" };
 
 // 20 bytes → 32 Crockford-base32 chars. Human-copyable, no ambiguous O/0/I/1.
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -38,6 +39,7 @@ export function generateInviteCode(): string {
  * `consumeInviteCode` — this is purely a display helper.
  */
 export function getInviteStatus(row: InviteCodeRow, now: Date = new Date()): InviteStatus {
+  if (row.disabledAt) return "disabled";
   if (row.expiresAt && row.expiresAt.getTime() <= now.getTime()) return "expired";
   if (row.usesCount >= row.maxUses) return "exhausted";
   if (row.usesCount > 0) return "partially-used";
@@ -59,6 +61,7 @@ export async function validateInviteCode(
     .where(eq(inviteCodes.code, code))
     .limit(1);
   if (!row) return { ok: false, reason: "unknown" };
+  if (row.disabledAt) return { ok: false, reason: "disabled" };
   const now = new Date();
   if (row.expiresAt && row.expiresAt.getTime() <= now.getTime()) {
     return { ok: false, reason: "expired" };
@@ -85,8 +88,26 @@ export async function consumeInviteCode(
         eq(inviteCodes.code, code),
         sql`${inviteCodes.usesCount} < ${inviteCodes.maxUses}`,
         sql`(${inviteCodes.expiresAt} IS NULL OR ${inviteCodes.expiresAt} > now())`,
+        sql`${inviteCodes.disabledAt} IS NULL`,
       ),
     )
+    .returning();
+  return result[0] ?? null;
+}
+
+/**
+ * Flip `disabled_at` for a code owned by `ownerUserId`. Idempotent — if the
+ * code is already in the requested state, returns the current row. Returns
+ * null if the code doesn't exist or isn't owned by the caller.
+ */
+export async function setInviteDisabled(
+  opts: { code: string; ownerUserId: number; disabled: boolean },
+  database: DB = defaultDb,
+): Promise<InviteCodeRow | null> {
+  const result = await database
+    .update(inviteCodes)
+    .set({ disabledAt: opts.disabled ? new Date() : null })
+    .where(and(eq(inviteCodes.code, opts.code), eq(inviteCodes.createdByUserId, opts.ownerUserId)))
     .returning();
   return result[0] ?? null;
 }

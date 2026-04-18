@@ -8,6 +8,7 @@ import {
   getInviteStatus,
   listInviteCodesFor,
   mintInviteCode,
+  setInviteDisabled,
   validateInviteCode,
 } from "./index";
 
@@ -33,6 +34,7 @@ async function seedCode(opts: {
   maxUses?: number;
   usesCount?: number;
   expiresAt?: Date | null;
+  disabledAt?: Date | null;
 }) {
   const [row] = await db
     .insert(inviteCodes)
@@ -42,6 +44,7 @@ async function seedCode(opts: {
       maxUses: opts.maxUses ?? 1,
       usesCount: opts.usesCount ?? 0,
       expiresAt: opts.expiresAt ?? null,
+      disabledAt: opts.disabledAt ?? null,
     })
     .returning();
   return row;
@@ -68,6 +71,7 @@ describe("getInviteStatus", () => {
     code: "X",
     createdByUserId: 1,
     createdAt: new Date("2026-01-01"),
+    disabledAt: null,
   };
   const now = new Date("2026-05-01T12:00:00Z");
 
@@ -99,6 +103,27 @@ describe("getInviteStatus", () => {
     expect(getInviteStatus({ ...base, maxUses: 5, usesCount: 0, expiresAt: null }, now)).toBe(
       "unused",
     );
+  });
+
+  it("returns disabled when disabled_at is set, overriding all other states", () => {
+    const disabledAt = new Date("2026-04-15");
+    // overrides expired
+    expect(
+      getInviteStatus(
+        {
+          ...base,
+          maxUses: 5,
+          usesCount: 0,
+          expiresAt: new Date("2026-04-01"),
+          disabledAt,
+        },
+        now,
+      ),
+    ).toBe("disabled");
+    // overrides exhausted
+    expect(
+      getInviteStatus({ ...base, maxUses: 1, usesCount: 1, expiresAt: null, disabledAt }, now),
+    ).toBe("disabled");
   });
 });
 
@@ -134,6 +159,16 @@ describe("validateInviteCode (integration)", () => {
     });
     const r = await validateInviteCode(`${TEST_CODE_PREFIX}EXH`);
     expect(r).toEqual({ ok: false, reason: "exhausted" });
+  });
+
+  it("returns disabled when disabled_at is set", async () => {
+    await seedCode({
+      code: `${TEST_CODE_PREFIX}DIS`,
+      createdByUserId: userId,
+      disabledAt: new Date(),
+    });
+    const r = await validateInviteCode(`${TEST_CODE_PREFIX}DIS`);
+    expect(r).toEqual({ ok: false, reason: "disabled" });
   });
 
   it("returns ok with the row for a valid code", async () => {
@@ -191,6 +226,23 @@ describe("consumeInviteCode (integration)", () => {
       .from(inviteCodes)
       .where(eq(inviteCodes.code, `${TEST_CODE_PREFIX}EXH`));
     expect(after.usesCount).toBe(1);
+  });
+
+  it("returns null when the code is disabled, and does not increment uses", async () => {
+    await seedCode({
+      code: `${TEST_CODE_PREFIX}DIS`,
+      createdByUserId: userId,
+      maxUses: 3,
+      usesCount: 0,
+      disabledAt: new Date(),
+    });
+    const r = await consumeInviteCode(`${TEST_CODE_PREFIX}DIS`);
+    expect(r).toBeNull();
+    const [after] = await db
+      .select()
+      .from(inviteCodes)
+      .where(eq(inviteCodes.code, `${TEST_CODE_PREFIX}DIS`));
+    expect(after.usesCount).toBe(0);
   });
 
   it("returns null when the code is expired", async () => {
@@ -266,6 +318,49 @@ describe("mintInviteCode (integration)", () => {
 
   it("rejects maxUses < 1", async () => {
     await expect(mintInviteCode({ createdByUserId: userId, maxUses: 0 })).rejects.toThrow();
+  });
+});
+
+describe("setInviteDisabled (integration)", () => {
+  let userId: number;
+  beforeEach(async () => {
+    await cleanup();
+    userId = await seedUser();
+  });
+  afterEach(cleanup);
+
+  it("sets disabled_at when disabled=true and clears it when disabled=false", async () => {
+    await seedCode({ code: `${TEST_CODE_PREFIX}T1`, createdByUserId: userId });
+
+    const off = await setInviteDisabled({
+      code: `${TEST_CODE_PREFIX}T1`,
+      ownerUserId: userId,
+      disabled: true,
+    });
+    expect(off?.disabledAt).toBeInstanceOf(Date);
+
+    const on = await setInviteDisabled({
+      code: `${TEST_CODE_PREFIX}T1`,
+      ownerUserId: userId,
+      disabled: false,
+    });
+    expect(on?.disabledAt).toBeNull();
+  });
+
+  it("refuses to toggle codes owned by a different user", async () => {
+    await seedCode({ code: `${TEST_CODE_PREFIX}T2`, createdByUserId: userId });
+    const otherUserId = userId + 9999;
+    const r = await setInviteDisabled({
+      code: `${TEST_CODE_PREFIX}T2`,
+      ownerUserId: otherUserId,
+      disabled: true,
+    });
+    expect(r).toBeNull();
+    const [untouched] = await db
+      .select()
+      .from(inviteCodes)
+      .where(eq(inviteCodes.code, `${TEST_CODE_PREFIX}T2`));
+    expect(untouched.disabledAt).toBeNull();
   });
 });
 
