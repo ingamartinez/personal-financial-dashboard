@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  check,
   date,
   index,
   integer,
@@ -26,6 +27,21 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const inviteCodes = pgTable(
+  "invite_codes",
+  {
+    code: varchar("code", { length: 32 }).primaryKey(),
+    createdByUserId: integer("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    maxUses: integer("max_uses").notNull().default(1),
+    usesCount: integer("uses_count").notNull().default(0),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("invite_codes_uses_count_check", sql`${t.usesCount} <= ${t.maxUses}`)],
+);
 
 export const accountType = pgEnum("account_type", ["savings", "credit_card", "loan"]);
 
@@ -203,6 +219,16 @@ export const classificationRules = pgTable(
   },
   (t) => [index("rules_priority_idx").on(t.priority)],
 );
+
+export const classificationRuleSeeds = pgTable("classification_rule_seeds", {
+  id: serial("id").primaryKey(),
+  pattern: text("pattern").notNull(),
+  categorySlug: varchar("category_slug", { length: 60 })
+    .notNull()
+    .references(() => categories.slug, { onDelete: "cascade" }),
+  priority: integer("priority").notNull().default(100),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const budgets = pgTable("budgets", {
   id: serial("id").primaryKey(),

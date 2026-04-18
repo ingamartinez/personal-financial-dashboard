@@ -1,6 +1,13 @@
 import { inArray } from "drizzle-orm";
 import { db } from "./index";
-import { accounts, categories, classificationRules, users, type AccountMetadata } from "./schema";
+import {
+  accounts,
+  categories,
+  classificationRuleSeeds,
+  classificationRules,
+  users,
+  type AccountMetadata,
+} from "./schema";
 import type { AccountType, Currency } from "@/lib/types";
 
 const seedAccounts: Array<{
@@ -218,6 +225,15 @@ export async function runSeed() {
 
   console.log("seeding classification rules...");
   await db.insert(classificationRules).values(seedRules).onConflictDoNothing();
+
+  console.log("seeding classification rule seeds (signup template)...");
+  const existingSeedCount = await db.$count(classificationRuleSeeds);
+  if (existingSeedCount === 0) {
+    await db.insert(classificationRuleSeeds).values(seedRules);
+    console.log(`  inserted ${seedRules.length} rule seeds`);
+  } else {
+    console.log(`  ${existingSeedCount} rule seeds already present — skipping`);
+  }
 
   console.log("done");
 }
