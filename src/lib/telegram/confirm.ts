@@ -20,12 +20,13 @@ export function isDraftComplete(draft: TelegramDraft): boolean {
 }
 
 export async function insertFromDraft(opts: {
+  userId: number;
   draft: TelegramDraft;
   chatId: number;
   sourceMessageId?: number;
   externalIdOverride?: string;
 }): Promise<ConfirmResult> {
-  const { draft, chatId, sourceMessageId, externalIdOverride } = opts;
+  const { userId, draft, chatId, sourceMessageId, externalIdOverride } = opts;
 
   if (!isDraftComplete(draft)) {
     return { status: "error", reason: "draft is incomplete" };
@@ -44,7 +45,7 @@ export async function insertFromDraft(opts: {
   let confidence: number | null = categorySlug ? 100 : null;
 
   if (!categorySlug) {
-    const match = await classifyByRule({
+    const match = await classifyByRule(userId, {
       descriptionRaw,
       merchant: draft.merchant ?? null,
     });
@@ -62,6 +63,7 @@ export async function insertFromDraft(opts: {
     const result = await db
       .insert(transactions)
       .values({
+        userId,
         accountId: draft.accountId as number,
         occurredAt,
         amountCents: signed,
@@ -109,14 +111,16 @@ export type BatchResult = {
 };
 
 export async function insertBatch(opts: {
+  userId: number;
   items: TelegramBatchItem[];
   chatId: number;
 }): Promise<BatchResult> {
-  const { items, chatId } = opts;
+  const { userId, items, chatId } = opts;
   const result: BatchResult = { inserted: [], duplicated: 0, errors: [] };
 
   for (const item of items) {
     const outcome = await insertFromDraft({
+      userId,
       draft: item.draft,
       chatId,
       externalIdOverride: item.externalId,

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { AiClassifyButton } from "@/components/transactions/ai-classify-button";
 import { Filters } from "@/components/transactions/filters";
 import { TransactionTable } from "@/components/transactions/transaction-table";
+import { getSessionUser } from "@/lib/auth/session";
 import {
   countTotal,
   countUnclassified,
@@ -37,6 +38,7 @@ function buildHref(base: Record<string, string | undefined>, cursor: string | nu
 
 export default async function TransactionsPage({ searchParams }: { searchParams: SearchParams }) {
   const sp = await searchParams;
+  const session = await getSessionUser();
 
   const accountId = sp.accountId ? Number(sp.accountId) : undefined;
   const highlightRaw = sp.highlight ? Number(sp.highlight) : undefined;
@@ -52,18 +54,18 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
 
   const [{ rows, nextCursor }, accounts, categories, total, unclassified, allCounterparties] =
     await Promise.all([
-      listTransactions(filters),
-      listAccounts(),
+      listTransactions(session.id, filters),
+      listAccounts(session.id),
       listCategories(),
-      countTotal({
+      countTotal(session.id, {
         from: filters.from,
         to: filters.to,
         accountId: filters.accountId,
         categorySlug: filters.categorySlug,
         q: filters.q,
       }),
-      countUnclassified(),
-      listCounterparties(),
+      countUnclassified(session.id),
+      listCounterparties(session.id),
     ]);
 
   const baseQuery = {

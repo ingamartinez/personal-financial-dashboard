@@ -9,6 +9,17 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
+// Stub the session helper so we don't drag in NextAuth's Next.js runtime deps
+// under vitest. Every action under test scopes to user 1 (bootstrap).
+vi.mock("@/lib/auth/session", () => ({
+  getSessionUser: vi.fn().mockResolvedValue({ id: 1, email: "test@test.local", name: "Test" }),
+  getSessionUserOrNull: vi.fn().mockResolvedValue({
+    id: 1,
+    email: "test@test.local",
+    name: "Test",
+  }),
+}));
+
 // Stub the AI classifier lib so tests never hit the Anthropic API; individual
 // tests drive the mock with mockResolvedValueOnce for each scenario.
 vi.mock("@/lib/classification/ai", async () => {

@@ -1,4 +1,4 @@
-import { asc } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, type AccountMetadata } from "@/lib/db/schema";
 import type { AccountType, Currency } from "@/lib/types";
@@ -14,7 +14,7 @@ export type AccountDetail = {
   metadata: AccountMetadata;
 };
 
-export async function listAccountsDetailed(): Promise<AccountDetail[]> {
+export async function listAccountsDetailed(userId: number): Promise<AccountDetail[]> {
   return db
     .select({
       id: accounts.id,
@@ -27,5 +27,6 @@ export async function listAccountsDetailed(): Promise<AccountDetail[]> {
       metadata: accounts.metadata,
     })
     .from(accounts)
+    .where(eq(accounts.userId, userId))
     .orderBy(asc(accounts.type), asc(accounts.institution), asc(accounts.name));
 }

@@ -60,6 +60,7 @@ export async function POST(req: Request) {
   const [log] = await db
     .insert(ingestionLogs)
     .values({
+      userId: auth.userId,
       source: "apple_pay",
       status: "debug",
       itemsReceived: 0,

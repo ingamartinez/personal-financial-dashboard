@@ -52,7 +52,8 @@ async function main() {
     const kind = parsed.kind === "skip" ? `skip:${parsed.reason}` : parsed.kind;
     byKind[kind] = (byKind[kind] ?? 0) + 1;
 
-    const outcome = await ingestParsed(parsed);
+    // Replay script scopes to user 1 (bootstrap).
+    const outcome = await ingestParsed(1, parsed);
     counts[outcome.status] += 1;
     if (outcome.status === "error") {
       errors.push({ reason: outcome.reason, body: body.slice(0, 80) });

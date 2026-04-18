@@ -19,7 +19,7 @@ export type AccountStatus = {
   balanceCents: bigint;
 };
 
-export async function getAccountStatuses(): Promise<AccountStatus[]> {
+export async function getAccountStatuses(userId: number): Promise<AccountStatus[]> {
   return db
     .select({
       id: accounts.id,
@@ -30,7 +30,7 @@ export async function getAccountStatuses(): Promise<AccountStatus[]> {
       balanceCents: accounts.balanceCents,
     })
     .from(accounts)
-    .where(eq(accounts.active, true))
+    .where(and(eq(accounts.userId, userId), eq(accounts.active, true)))
     .orderBy(asc(accounts.name));
 }
 
@@ -40,8 +40,8 @@ export type NetWorth = {
   usdCents: bigint;
 };
 
-export async function getNetWorth(copPerUsd: number): Promise<NetWorth> {
-  const list = await getAccountStatuses();
+export async function getNetWorth(userId: number, copPerUsd: number): Promise<NetWorth> {
+  const list = await getAccountStatuses(userId);
   let copCents = BigInt(0);
   let usdCents = BigInt(0);
   for (const a of list) {
@@ -58,7 +58,11 @@ export type MonthlyFlow = {
   netCopCents: bigint;
 };
 
-export async function getMonthlyFlow(copPerUsd: number, now = new Date()): Promise<MonthlyFlow> {
+export async function getMonthlyFlow(
+  userId: number,
+  copPerUsd: number,
+  now = new Date(),
+): Promise<MonthlyFlow> {
   const { start, end } = currentMonthRange(now);
 
   const rows = await db
@@ -68,7 +72,13 @@ export async function getMonthlyFlow(copPerUsd: number, now = new Date()): Promi
       expenseCents: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
     })
     .from(transactions)
-    .where(and(gte(transactions.occurredAt, start), lt(transactions.occurredAt, end)))
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        gte(transactions.occurredAt, start),
+        lt(transactions.occurredAt, end),
+      ),
+    )
     .groupBy(transactions.currency);
 
   let incomeCopCents = BigInt(0);
@@ -92,6 +102,7 @@ export type CategorySlice = {
 };
 
 export async function getCategoryBreakdown(
+  userId: number,
   copPerUsd: number,
   now = new Date(),
 ): Promise<CategorySlice[]> {
@@ -113,6 +124,7 @@ export async function getCategoryBreakdown(
     .leftJoin(rootCategories, eq(rootCategories.slug, rootSlug))
     .where(
       and(
+        eq(transactions.userId, userId),
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
@@ -154,6 +166,7 @@ export type TopExpense = {
 };
 
 export async function getTopExpenses(
+  userId: number,
   copPerUsd: number,
   now = new Date(),
   limit = 5,
@@ -181,6 +194,7 @@ export async function getTopExpenses(
     .leftJoin(counterparties, eq(counterparties.id, transactions.counterpartyId))
     .where(
       and(
+        eq(transactions.userId, userId),
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,

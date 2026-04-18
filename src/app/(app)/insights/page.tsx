@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { insightsReports } from "@/lib/db/schema";
+import { getSessionUser } from "@/lib/auth/session";
 import { buildInsightsSummary, hashSummary, isStale } from "@/lib/ai/insights";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { InsightsViewer } from "./insights-viewer";
@@ -20,14 +21,15 @@ export default async function InsightsPage({
   const params = await searchParams;
   const ym = params.ym && /^\d{4}-\d{2}$/.test(params.ym) ? params.ym : currentYearMonth();
 
+  const session = await getSessionUser();
   const fx = await getCurrentFxRate();
-  const summary = await buildInsightsSummary(ym, fx.rate);
+  const summary = await buildInsightsSummary(session.id, ym, fx.rate);
   const currentHash = hashSummary(summary);
 
   const [existing] = await db
     .select()
     .from(insightsReports)
-    .where(eq(insightsReports.yearMonth, ym))
+    .where(and(eq(insightsReports.userId, session.id), eq(insightsReports.yearMonth, ym)))
     .limit(1);
 
   const stale = existing ? isStale(existing.generatedAt, existing.inputHash, currentHash) : true;

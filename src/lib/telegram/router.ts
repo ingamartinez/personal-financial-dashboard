@@ -473,7 +473,8 @@ async function handleCallback(
       return;
     }
     await client.answerCallbackQuery({ callback_query_id: cb.id });
-    const result = await insertBatch({ items: session.batch, chatId });
+    // Single-bot poll worker scopes to user 1 until #185 wires per-user bots.
+    const result = await insertBatch({ userId: 1, items: session.batch, chatId });
     await client.sendMessage({
       chat_id: chatId,
       text: renderBatchInserted({
@@ -496,6 +497,8 @@ async function handleCallback(
       return;
     }
     const result = await insertFromDraft({
+      // Single-bot poll worker scopes to user 1 until #185 wires per-user bots.
+      userId: 1,
       draft: session.draft,
       chatId,
       sourceMessageId: session.sourceMessageId,

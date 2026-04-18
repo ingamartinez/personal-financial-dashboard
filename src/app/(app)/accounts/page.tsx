@@ -1,6 +1,7 @@
 import { CreditCardIcon, LandmarkIcon, PiggyBankIcon, WalletIcon } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { getSessionUser } from "@/lib/auth/session";
 import { getNetWorth } from "@/lib/dashboard/queries";
 import { listAccountsDetailed, type AccountDetail } from "@/lib/accounts/queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
@@ -34,8 +35,12 @@ function sumBalanceCopCents(list: AccountDetail[], copPerUsd: number): bigint {
 }
 
 export default async function AccountsPage() {
+  const session = await getSessionUser();
   const fx = await getCurrentFxRate();
-  const [netWorth, all] = await Promise.all([getNetWorth(fx.rate), listAccountsDetailed()]);
+  const [netWorth, all] = await Promise.all([
+    getNetWorth(session.id, fx.rate),
+    listAccountsDetailed(session.id),
+  ]);
 
   const active = all.filter((a) => a.active);
   const inactive = all.filter((a) => !a.active);

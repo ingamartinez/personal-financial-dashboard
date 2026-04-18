@@ -18,6 +18,7 @@ import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
 import { getOpenGaps } from "@/lib/recurring/gap-queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { getSmsHealthSnapshot } from "@/lib/ingestion/sms-health";
+import { getSessionUser } from "@/lib/auth/session";
 import {
   formatYearMonth,
   isFutureYearMonth,
@@ -40,21 +41,23 @@ export default async function DashboardPage({
   const monthLabel = formatYearMonth(ym);
   const [refYear, refMonth] = ym.split("-").map(Number);
 
+  const session = await getSessionUser();
   const fx = await getCurrentFxRate();
   const [netWorth, flow, slices, top, accounts, upcoming, openGaps, smsHealth] = await Promise.all([
-    getNetWorth(fx.rate),
-    getMonthlyFlow(fx.rate, refDate),
-    getCategoryBreakdown(fx.rate, refDate),
-    getTopExpenses(fx.rate, refDate, 5),
-    getAccountStatuses(),
+    getNetWorth(session.id, fx.rate),
+    getMonthlyFlow(session.id, fx.rate, refDate),
+    getCategoryBreakdown(session.id, fx.rate, refDate),
+    getTopExpenses(session.id, fx.rate, refDate, 5),
+    getAccountStatuses(session.id),
     getUpcomingForMonth({
+      userId: session.id,
       year: refYear,
       month: refMonth,
       includeDismissed: true,
       today: now,
     }),
-    getOpenGaps(),
-    getSmsHealthSnapshot(now),
+    getOpenGaps(session.id),
+    getSmsHealthSnapshot(session.id, now),
   ]);
 
   const upcomingItems = upcoming.map((u) => ({

@@ -11,6 +11,8 @@ import {
   todayInCop,
 } from "./sms-health";
 
+const TEST_USER_ID = 1;
+
 async function cleanup() {
   await db.execute(sql`DELETE FROM ingestion_logs WHERE source = 'sms'`);
 }
@@ -75,7 +77,7 @@ describe("getSmsHealthHistory (integration)", () => {
   afterEach(cleanup);
 
   it("returns an empty array when no SMS logs exist", async () => {
-    const history = await getSmsHealthHistory(7);
+    const history = await getSmsHealthHistory(TEST_USER_ID, 7);
     expect(history).toEqual([]);
   });
 
@@ -116,7 +118,7 @@ describe("getSmsHealthHistory (integration)", () => {
     ]);
 
     const now = new Date(Date.UTC(2026, 3, 18, 5, 0, 0)); // 00:00 COP Apr 18
-    const history = await getSmsHealthHistory(7, now);
+    const history = await getSmsHealthHistory(TEST_USER_ID, 7, now);
 
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({
@@ -138,7 +140,7 @@ describe("getSmsHealthHistory (integration)", () => {
       startedAt: new Date(Date.UTC(2026, 3, 17, 13, 0, 0)),
       finishedAt: new Date(Date.UTC(2026, 3, 17, 13, 0, 0)),
     });
-    const history = await getSmsHealthHistory(7);
+    const history = await getSmsHealthHistory(TEST_USER_ID, 7);
     expect(history).toEqual([]);
   });
 });
@@ -149,7 +151,7 @@ describe("getSmsHealthSnapshot (integration)", () => {
 
   it("returns zeros when there are no logs", async () => {
     const now = new Date(Date.UTC(2026, 3, 17, 18, 0, 0));
-    const snap = await getSmsHealthSnapshot(now);
+    const snap = await getSmsHealthSnapshot(TEST_USER_ID, now);
     expect(snap.todayInserted).toBe(0);
     expect(snap.sevenDayAvgInserted).toBe(0);
     expect(snap.lastSmsAt).toBeNull();
@@ -174,7 +176,7 @@ describe("getSmsHealthSnapshot (integration)", () => {
     await db.insert(ingestionLogs).values(values);
 
     const now = new Date(Date.UTC(2026, 3, 17, 23, 0, 0)); // 18:00 COP Apr 17
-    const snap = await getSmsHealthSnapshot(now);
+    const snap = await getSmsHealthSnapshot(TEST_USER_ID, now);
 
     expect(snap.todayCopDate).toBe("2026-04-17");
     expect(snap.todayInserted).toBe(0);

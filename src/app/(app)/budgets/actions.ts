@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { budgets, categories, currency as currencyEnum } from "@/lib/db/schema";
+import { getSessionUser } from "@/lib/auth/session";
 
 const ymSchema = z.string().regex(/^\d{4}-\d{2}$/);
 
@@ -31,6 +32,7 @@ function revalidate() {
 }
 
 export async function upsertBudget(input: BudgetInput) {
+  const session = await getSessionUser();
   const parsed = upsertSchema.parse(input);
   const { start, end } = monthRange(parsed.ym);
 
@@ -56,16 +58,23 @@ export async function upsertBudget(input: BudgetInput) {
         periodStart: start,
         periodEnd: end,
       })
-      .where(eq(budgets.id, parsed.id));
+      .where(and(eq(budgets.userId, session.id), eq(budgets.id, parsed.id)));
   } else {
     const [dup] = await db
       .select({ id: budgets.id })
       .from(budgets)
-      .where(and(eq(budgets.categorySlug, parsed.categorySlug), eq(budgets.periodStart, start)))
+      .where(
+        and(
+          eq(budgets.userId, session.id),
+          eq(budgets.categorySlug, parsed.categorySlug),
+          eq(budgets.periodStart, start),
+        ),
+      )
       .limit(1);
     if (dup) throw new Error("Budget for this category and month already exists");
 
     await db.insert(budgets).values({
+      userId: session.id,
       categorySlug: parsed.categorySlug,
       amountCents,
       currency: parsed.currency,
@@ -79,6 +88,7 @@ export async function upsertBudget(input: BudgetInput) {
 }
 
 export async function deleteBudget(id: number) {
-  await db.delete(budgets).where(eq(budgets.id, id));
+  const session = await getSessionUser();
+  await db.delete(budgets).where(and(eq(budgets.userId, session.id), eq(budgets.id, id)));
   revalidate();
 }

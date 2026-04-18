@@ -14,6 +14,7 @@ export type ClassifiableTx = {
 };
 
 export async function classifyByRule(
+  userId: number,
   tx: ClassifiableTx,
   database: DB = defaultDb,
 ): Promise<RuleMatch | null> {
@@ -27,7 +28,7 @@ export async function classifyByRule(
     const matched = await trx.execute<{ id: number; category_slug: string }>(sql`
       SELECT id, category_slug
       FROM classification_rules
-      WHERE active = true AND ${haystack} ILIKE pattern
+      WHERE user_id = ${userId} AND active = true AND ${haystack} ILIKE pattern
       ORDER BY priority ASC, id ASC
       LIMIT 1
     `);
@@ -38,7 +39,7 @@ export async function classifyByRule(
     await trx.execute(sql`
       UPDATE classification_rules
       SET hit_count = hit_count + 1, last_hit_at = now()
-      WHERE id = ${row.id}
+      WHERE id = ${row.id} AND user_id = ${userId}
     `);
 
     return {
