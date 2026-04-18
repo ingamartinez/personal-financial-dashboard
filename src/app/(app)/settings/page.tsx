@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { getSessionUser } from "@/lib/auth/session";
 
 const LINKS = [
   {
@@ -31,22 +32,33 @@ const LINKS = [
     description:
       "Register your BotFather bot. Findash encrypts the token at rest and serves the webhook at /api/telegram/webhook/<botId>.",
   },
+];
+
+const ADMIN_LINKS = [
   {
     href: "/settings/invites",
     title: "Invitaciones",
     description:
       "Generá códigos para que más gente pueda crear cuenta. El registro en Findash es cerrado — solo quien tiene un link válido se puede firmar.",
   },
+  {
+    href: "/settings/users",
+    title: "Usuarios",
+    description:
+      "Listado de usuarios con toggle activo/inactivo y cambio de rol. Solo visible para admins.",
+  },
 ];
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const session = await getSessionUser();
+  const links = session.role === "admin" ? [...LINKS, ...ADMIN_LINKS] : LINKS;
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header>
         <h1 className="text-h1">Settings</h1>
       </header>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {LINKS.map((l) => (
+        {links.map((l) => (
           <Link key={l.href} href={l.href}>
             <Card className="hover:border-foreground/30 transition">
               <CardHeader>

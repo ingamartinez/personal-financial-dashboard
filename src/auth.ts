@@ -12,6 +12,8 @@ declare module "next-auth" {
   interface Session {
     user: {
       id: number;
+      role: "admin" | "user";
+      active: boolean;
     } & Omit<NonNullable<DefaultSession["user"]>, "id">;
   }
 }
@@ -19,6 +21,8 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
   interface JWT {
     userId?: number;
+    role?: "admin" | "user";
+    active?: boolean;
   }
 }
 
@@ -84,22 +88,33 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       return true;
     },
-    async jwt({ token, trigger }) {
-      if ((trigger === "signIn" || !token.userId) && token.email) {
-        const row = await db
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.email, token.email))
-          .limit(1);
-        if (row[0]) {
-          token.userId = row[0].id;
-        }
+    async jwt({ token }) {
+      // Refresh identity + role + active flag on every request. At 5-user
+      // scale one SELECT per request is negligible and keeps deactivation /
+      // role changes effective without waiting for a new sign-in.
+      if (!token.email) return token;
+      const row = await db
+        .select({ id: users.id, role: users.role, active: users.active })
+        .from(users)
+        .where(eq(users.email, token.email))
+        .limit(1);
+      if (row[0]) {
+        token.userId = row[0].id;
+        token.role = row[0].role === "admin" ? "admin" : "user";
+        token.active = row[0].active;
       }
       return token;
     },
     async session({ session, token }) {
       if (typeof token.userId === "number" && session.user) {
-        (session.user as { id: number }).id = token.userId;
+        const u = session.user as {
+          id: number;
+          role: "admin" | "user";
+          active: boolean;
+        };
+        u.id = token.userId;
+        u.role = token.role ?? "user";
+        u.active = token.active ?? true;
       }
       return session;
     },

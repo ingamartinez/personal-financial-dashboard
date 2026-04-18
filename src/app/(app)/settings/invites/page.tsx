@@ -1,3 +1,4 @@
+import { notFound } from "next/navigation";
 import { getSessionUser } from "@/lib/auth/session";
 import { getInviteStatus, listInviteCodesFor } from "@/lib/invite-codes";
 import { InvitesManager } from "./invites-manager";
@@ -7,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 export default async function InvitesPage() {
   const session = await getSessionUser();
+  if (session.role !== "admin") notFound();
   const codes = await listInviteCodesFor(session.id);
   const now = new Date();
   const invites = await Promise.all(

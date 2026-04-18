@@ -44,7 +44,9 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
               role="alert"
               className="border-destructive/30 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
             >
-              No pudimos iniciar sesión. Intentá de nuevo.
+              {params.error === "account-disabled"
+                ? "Tu cuenta fue desactivada. Contactá a un admin para reactivarla."
+                : "No pudimos iniciar sesión. Intentá de nuevo."}
             </p>
           ) : null}
 
