@@ -29,7 +29,12 @@ export function UserMenu({ user }: UserMenuProps) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="User menu" className="size-9 rounded-full">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="User menu"
+          className="size-9 cursor-pointer rounded-full"
+        >
           {user.pictureUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -71,7 +76,7 @@ export function UserMenu({ user }: UserMenuProps) {
           <Button
             type="submit"
             variant="ghost"
-            className="h-10 w-full justify-start gap-2 rounded-none"
+            className="h-10 w-full cursor-pointer justify-start gap-2 rounded-none"
           >
             <LogOutIcon className="size-4" />
             Cerrar sesión
