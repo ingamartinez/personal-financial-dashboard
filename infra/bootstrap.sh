@@ -17,6 +17,7 @@
 #   8. fail2ban on sshd + unattended security upgrades + 2 GB swap
 #   9. Install the systemd unit and Caddyfile from the repo (does NOT enable;
 #      the first real deploy will flip `app/current` and start the service)
+#  10. Install backup cron + awscli; create /srv/findash/backups/daily/
 #
 # Cloudflare origin cert is NOT fetched here — paste the PEM + key at
 # /etc/caddy/origin.pem and /etc/caddy/origin.key after the T2 ops step.
@@ -47,7 +48,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   curl ca-certificates gnupg lsb-release \
   ufw fail2ban unattended-upgrades \
   build-essential rsync unzip \
-  debian-keyring debian-archive-keyring apt-transport-https
+  debian-keyring debian-archive-keyring apt-transport-https \
+  awscli
 
 log "users: ensure $FINDASH_USER and $DEPLOY_USER exist"
 for u in "$FINDASH_USER" "$DEPLOY_USER"; do
@@ -152,6 +154,15 @@ if ! swapon --show | grep -q '^/swapfile'; then
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
 fi
 
+log "backup: create daily backup dir"
+install -d -m 0750 -o "$FINDASH_USER" -g "$FINDASH_USER" "$APP_ROOT/backups/daily"
+
+log "backup: install backup script to /usr/local/bin"
+install -m 0755 -o root -g root "$REPO_ROOT/infra/cron/findash-backup.sh" /usr/local/bin/findash-backup.sh
+
+log "backup: install cron file to /etc/cron.d"
+install -m 0644 -o root -g root "$REPO_ROOT/infra/cron/findash-backup.cron" /etc/cron.d/findash-backup
+
 cat >&2 <<EOF
 
 [bootstrap] done.
@@ -162,8 +173,10 @@ Next steps (manual, in order):
        /etc/caddy/origin.key   (0600 root:caddy)
   2. Populate $APP_ROOT/env/findash.env with prod values
      (start from .env.example — fill every variable).
-  3. Run the first CD deploy (or manually rsync .next/standalone/ to
+  3. (Optional) Create $APP_ROOT/env/r2.env for off-site backups
+     (see docs/deploy.md §10 for exact steps and credentials).
+  4. Run the first CD deploy (or manually rsync .next/standalone/ to
      $APP_ROOT/app/releases/<sha> and flip the app/current symlink).
-  4. systemctl enable --now findash.service caddy
-  5. curl https://<your-subdomain>/api/health → expect {ok:true,db:"ok"}.
+  5. systemctl enable --now findash.service caddy
+  6. curl https://<your-subdomain>/api/health → expect {ok:true,db:"ok"}.
 EOF
