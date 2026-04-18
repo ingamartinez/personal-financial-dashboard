@@ -435,10 +435,12 @@ chmod 600 /srv/findash/env/r2.env
 
 ### Step 4 — Ensure awscli is installed
 
-`bootstrap.sh` handles this automatically. If running on an existing droplet without re-running bootstrap:
+`bootstrap.sh` handles this automatically via pipx (Ubuntu 24.04 dropped the `awscli` apt package). If running on an existing droplet without re-running bootstrap:
 
 ```bash
-apt-get install -y awscli
+apt-get install -y pipx
+PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install awscli
+aws --version   # sanity check
 ```
 
 ### Step 5 — Verify connectivity

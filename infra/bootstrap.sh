@@ -17,7 +17,9 @@
 #   8. fail2ban on sshd + unattended security upgrades + 2 GB swap
 #   9. Install the systemd unit and Caddyfile from the repo (does NOT enable;
 #      the first real deploy will flip `app/current` and start the service)
-#  10. Install backup cron + awscli; create /srv/findash/backups/daily/
+#  10. Install backup cron; create /srv/findash/backups/daily/
+#  11. Install awscli via pipx (apt dropped it on 24.04) — system-wide so the
+#      findash user can invoke it from the cron for weekly R2 sync.
 #
 # Cloudflare origin cert is NOT fetched here — paste the PEM + key at
 # /etc/caddy/origin.pem and /etc/caddy/origin.key after the T2 ops step.
@@ -44,12 +46,14 @@ apt-get update -y
 DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
 
 log "apt: install base packages"
+# `awscli` was dropped from the Ubuntu 24.04 (noble) archive; we install it
+# via pipx further down. `pipx` itself comes from apt.
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   curl ca-certificates gnupg lsb-release \
   ufw fail2ban unattended-upgrades \
   build-essential rsync unzip \
   debian-keyring debian-archive-keyring apt-transport-https \
-  awscli
+  pipx
 
 log "users: ensure $FINDASH_USER and $DEPLOY_USER exist"
 for u in "$FINDASH_USER" "$DEPLOY_USER"; do
@@ -162,6 +166,22 @@ install -m 0755 -o root -g root "$REPO_ROOT/infra/cron/findash-backup.sh" /usr/l
 
 log "backup: install cron file to /etc/cron.d"
 install -m 0644 -o root -g root "$REPO_ROOT/infra/cron/findash-backup.cron" /etc/cron.d/findash-backup
+
+log "awscli: install via pipx (system-wide shim in /usr/local/bin)"
+# Ubuntu 24.04 dropped the awscli .deb. pipx isolates the venv; PIPX_BIN_DIR
+# override puts the `aws` shim in /usr/local/bin so it's on PATH for every
+# user (root for deploys, findash for the weekly R2 sync in backup.sh).
+# awscli is only needed for R2 off-site sync — local daily dumps work without it.
+export PIPX_HOME=/opt/pipx
+export PIPX_BIN_DIR=/usr/local/bin
+install -d -m 0755 -o root -g root "$PIPX_HOME"
+if ! command -v aws >/dev/null 2>&1; then
+  pipx install awscli
+else
+  log "  aws already on PATH — running pipx upgrade (idempotent)"
+  pipx upgrade awscli || true
+fi
+aws --version >&2
 
 cat >&2 <<EOF
 
