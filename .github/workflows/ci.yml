@@ -40,6 +40,9 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE: findash_test
+      # NextAuth requires AUTH_SECRET at build/runtime. CI uses a dummy value;
+      # real secrets live in production env files.
+      AUTH_SECRET: ci-dummy-secret-not-used-in-production
 
     steps:
       - uses: actions/checkout@v6

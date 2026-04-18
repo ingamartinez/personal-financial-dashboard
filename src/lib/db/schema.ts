@@ -17,6 +17,16 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  googleSub: varchar("google_sub", { length: 255 }).unique(),
+  email: varchar("email", { length: 320 }).notNull().unique(),
+  name: varchar("name", { length: 200 }).notNull(),
+  pictureUrl: text("picture_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const accountType = pgEnum("account_type", ["savings", "credit_card", "loan"]);
 
 export const currency = pgEnum("currency", ["COP", "USD"]);

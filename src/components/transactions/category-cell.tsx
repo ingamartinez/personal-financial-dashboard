@@ -3,7 +3,7 @@
 import { useTransition } from "react";
 import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
-import { classifySingleWithAi, updateTransactionCategory } from "@/app/transactions/actions";
+import { classifySingleWithAi, updateTransactionCategory } from "@/app/(app)/transactions/actions";
 import { Button } from "@/components/ui/button";
 import { CategoryCombobox } from "./category-combobox";
 

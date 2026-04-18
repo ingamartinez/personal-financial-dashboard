@@ -13,7 +13,7 @@ import {
   dismissUpcoming,
   promoteUpcoming,
   undismissUpcoming,
-} from "@/app/settings/recurring/actions";
+} from "@/app/(app)/settings/recurring/actions";
 import type { UpcomingItem } from "@/lib/recurring/upcoming";
 
 export type UpcomingCardItem = Omit<UpcomingItem, "amountCents"> & {

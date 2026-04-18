@@ -1,6 +1,6 @@
 import { inArray } from "drizzle-orm";
 import { db } from "./index";
-import { accounts, categories, classificationRules, type AccountMetadata } from "./schema";
+import { accounts, categories, classificationRules, users, type AccountMetadata } from "./schema";
 import type { AccountType, Currency } from "@/lib/types";
 
 const seedAccounts: Array<{
@@ -176,7 +176,24 @@ const seedRules: Array<{ pattern: string; categorySlug: string; priority?: numbe
   { pattern: "%Pago QR a llave%", categorySlug: "transferencias", priority: 50 },
 ];
 
+async function seedBootstrapUser() {
+  const email = process.env.BOOTSTRAP_USER_EMAIL?.trim();
+  const name = process.env.BOOTSTRAP_USER_NAME?.trim() || email;
+  if (!email) {
+    console.log("  BOOTSTRAP_USER_EMAIL not set — skipping bootstrap user");
+    return;
+  }
+  await db
+    .insert(users)
+    .values({ email, name: name ?? email })
+    .onConflictDoNothing({ target: users.email });
+  console.log(`  bootstrap user ensured for ${email}`);
+}
+
 export async function runSeed() {
+  console.log("seeding bootstrap user...");
+  await seedBootstrapUser();
+
   console.log("seeding categories...");
   await db.insert(categories).values(seedCategories).onConflictDoNothing();
 

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { runAiClassifier } from "@/app/transactions/actions";
+import { runAiClassifier } from "@/app/(app)/transactions/actions";
 
 export function AiClassifyButton({ unclassified }: { unclassified: number }) {
   const router = useRouter();
