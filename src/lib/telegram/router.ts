@@ -173,10 +173,11 @@ async function handleText(
   try {
     nlu = await deps.parseNlu({ text, context: { now, accounts, categories } });
   } catch (err) {
+    console.error("[telegram] NLU parse failed:", err);
     await client.sendMessage({
       chat_id: chatId,
       text: renderError(
-        `No pude procesar el mensaje (${err instanceof Error ? err.message : "error"}).`,
+        "No pude entender el mensaje. Probá reformularlo con monto y descripción más claras (ej: 'pagué 45k en el restaurante').",
       ),
     });
     return;
