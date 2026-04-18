@@ -8,12 +8,12 @@ declare global {
  * Next.js 16 instrumentation hook — runs once per worker on boot. Registers:
  * - recurring-gap detector cron (monthly)
  *
- * Telegram used to run a long-poll worker here; #185 moved that to per-user
+ * Telegram used to run a long-poll worker here; #185 moved it to per-user
  * webhooks (`src/app/api/telegram/webhook/[botId]/route.ts`) so there is no
  * background worker to wire up anymore.
  *
- * Runs only in the Node.js runtime (skipped on Edge). Disable all background
- * work with `FINDASH_DISABLE_CRON=1`.
+ * Runs only in the Node.js runtime (skipped on Edge). Disable the cron with
+ * `FINDASH_DISABLE_CRON=1`.
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
@@ -26,8 +26,7 @@ export async function register() {
 
   // Day 5 of each month at 06:00 America/Bogota — gives a 4-day grace window
   // for late-posting SMS/Apple Pay events before we finalize gaps.
-  // NOTE: scopes to user 1. Iterating all active users is tracked separately
-  // from #185 — the hardcode survives this PR on purpose.
+  // NOTE: scopes to user 1. Iterating all active users is tracked in #225.
   cron.schedule(
     "0 6 5 * *",
     async () => {

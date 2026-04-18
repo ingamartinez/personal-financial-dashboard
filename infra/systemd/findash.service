@@ -1,5 +1,5 @@
 [Unit]
-Description=Findash — personal finance dashboard (Next.js + Telegram worker)
+Description=Findash — personal finance dashboard (Next.js)
 After=network.target postgresql.service
 Requires=postgresql.service
 
@@ -19,9 +19,9 @@ Environment=HOSTNAME=127.0.0.1
 ExecStart=/usr/local/bin/bun server.js
 Restart=always
 RestartSec=3
-# Give the Telegram long-poll worker (src/instrumentation.ts) up to 30s to
-# drain on SIGTERM. Once #185 flips it to a webhook, this can drop to 10s.
-TimeoutStopSec=30
+# Telegram is webhook-based since #185, so there is no long-poll worker
+# to drain. 10s is plenty for Next.js to finish in-flight requests.
+TimeoutStopSec=10
 KillSignal=SIGTERM
 StandardOutput=journal
 StandardError=journal
