@@ -25,8 +25,10 @@ findash.alejoframes.com {
 		header_up X-Forwarded-Proto https
 	}
 
+	# Log to Caddy's native /var/log/caddy/ (owned by the caddy user).
+	# /srv/findash/logs is owned by `findash`, which caddy can't write to.
 	log {
-		output file /srv/findash/logs/caddy-access.log {
+		output file /var/log/caddy/findash-access.log {
 			roll_size 50mb
 			roll_keep 7
 		}
