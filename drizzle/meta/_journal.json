@@ -78,6 +78,13 @@
       "when": 1776483693497,
       "tag": "0010_parched_rafael_vega",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1776567600000,
+      "tag": "0011_aldous_clean_slate",
+      "breakpoints": true
     }
   ]
 }
