@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomInt } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { inviteCodes, users } from "@/lib/db/schema";
@@ -7,10 +7,9 @@ const ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // no 0/O/I/1 ambiguity
 const CODE_LENGTH = 12;
 
 function mintCode(): string {
-  const bytes = randomBytes(CODE_LENGTH);
   let code = "";
   for (let i = 0; i < CODE_LENGTH; i += 1) {
-    code += ALPHABET[bytes[i]! % ALPHABET.length];
+    code += ALPHABET[randomInt(0, ALPHABET.length)];
   }
   return code;
 }
