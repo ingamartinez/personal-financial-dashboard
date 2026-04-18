@@ -249,6 +249,34 @@ describe("parseTransactionMessage", () => {
     expect(result.draft.accountId).toBeNull();
   });
 
+  it("accepts null for optional fields (model routinely returns null instead of omitting)", async () => {
+    const fetchImpl = mockFetch(
+      anthropicResponse({
+        amountCents: null,
+        currency: null,
+        direction: null,
+        merchant: null,
+        description: null,
+        occurredOn: null,
+        accountId: null,
+        categorySlug: null,
+        confidence: 10,
+        notes: null,
+      }),
+    );
+
+    const result = await parseTransactionMessage({
+      text: "algo sin sentido",
+      context: { now: FIXED_NOW, accounts: ACCOUNTS, categories: CATEGORIES },
+      apiKey: "test-key",
+      fetchImpl,
+    });
+
+    expect(result.draft.amountCents).toBeNull();
+    expect(result.draft.notes).toBeUndefined();
+    expect(result.draft.confidence).toBe(10);
+  });
+
   it("throws on invalid JSON from model", async () => {
     const fetchImpl: typeof fetch = async () =>
       new Response(

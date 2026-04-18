@@ -41,20 +41,24 @@ export type NluResult = {
 
 const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 
+// All optional fields use `.nullish()` (accepts null OR undefined) because
+// Claude routinely returns explicit `"field": null` for absent values instead
+// of omitting the key. Being strict here would crash the parser on perfectly
+// valid model output.
 const nluResponseSchema = z.object({
-  amountCents: z.string().regex(/^\d+$/).nullable(),
-  currency: z.enum(["COP", "USD"]).nullable(),
-  direction: z.enum(["expense", "income"]).nullable(),
-  merchant: z.string().max(200).nullable(),
-  description: z.string().max(500).nullable(),
+  amountCents: z.string().regex(/^\d+$/).nullish(),
+  currency: z.enum(["COP", "USD"]).nullish(),
+  direction: z.enum(["expense", "income"]).nullish(),
+  merchant: z.string().max(200).nullish(),
+  description: z.string().max(500).nullish(),
   occurredOn: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .nullable(),
-  accountId: z.number().int().nullable(),
-  categorySlug: z.string().max(60).nullable(),
+    .nullish(),
+  accountId: z.number().int().nullish(),
+  categorySlug: z.string().max(60).nullish(),
   confidence: z.number().int().min(0).max(100),
-  notes: z.string().max(200).optional(),
+  notes: z.string().max(200).nullish(),
 });
 
 function formatBogotaDate(now: Date): string {
@@ -180,13 +184,22 @@ export async function parseTransactionMessage(opts: {
 
   const validAccountIds = new Set(opts.context.accounts.map((a) => a.id));
   const validCategorySlugs = new Set(opts.context.categories.map((c) => c.slug));
+  // Normalize `undefined` to `null` so downstream consumers only handle one
+  // "absent" shape. The schema accepts both because models return either.
   const draft: NluDraft = {
-    ...parsed,
+    amountCents: parsed.amountCents ?? null,
+    currency: parsed.currency ?? null,
+    direction: parsed.direction ?? null,
+    merchant: parsed.merchant ?? null,
+    description: parsed.description ?? null,
+    occurredOn: parsed.occurredOn ?? null,
     accountId: parsed.accountId && validAccountIds.has(parsed.accountId) ? parsed.accountId : null,
     categorySlug:
       parsed.categorySlug && validCategorySlugs.has(parsed.categorySlug)
         ? parsed.categorySlug
         : null,
+    confidence: parsed.confidence,
+    notes: parsed.notes ?? undefined,
   };
 
   return {
