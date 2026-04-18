@@ -3,10 +3,10 @@
 #
 # Usage:
 #   ./scripts/test-sms-ingest.sh
-#   (auto-loads INGEST_WEBHOOK_TOKEN from .env.local)
+#   (auto-loads FINDASH_WEBHOOK_TOKEN from .env.local)
 #
 # Or pass the token explicitly:
-#   INGEST_WEBHOOK_TOKEN=xxx ./scripts/test-sms-ingest.sh
+#   FINDASH_WEBHOOK_TOKEN=xxx ./scripts/test-sms-ingest.sh
 #
 # Requires the dev server running (`bun run dev`).
 
@@ -14,14 +14,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if [[ -z "${INGEST_WEBHOOK_TOKEN:-}" && -f .env.local ]]; then
+if [[ -z "${FINDASH_WEBHOOK_TOKEN:-}" && -f .env.local ]]; then
   set -a
   # shellcheck disable=SC1091
   source .env.local
   set +a
 fi
 
-: "${INGEST_WEBHOOK_TOKEN:?Set INGEST_WEBHOOK_TOKEN (in .env.local or exported)}"
+: "${FINDASH_WEBHOOK_TOKEN:?Set FINDASH_WEBHOOK_TOKEN (in .env.local or exported)}"
 HOST="${HOST:-http://localhost:3100}"
 
 post() {
@@ -33,7 +33,7 @@ post() {
   payload=$(jq -n --arg sender "$sender" --arg body "$body" \
     '{sender: $sender, body: $body}')
   curl -sS -X POST "$HOST/api/ingest/sms" \
-    -H "Authorization: Bearer $INGEST_WEBHOOK_TOKEN" \
+    -H "Authorization: Bearer $FINDASH_WEBHOOK_TOKEN" \
     -H "Content-Type: application/json" \
     -d "$payload" | jq .
   printf '\n'

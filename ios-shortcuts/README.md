@@ -6,7 +6,7 @@ iOS automations that feed transactions into Findash via authenticated webhooks.
 >
 > - iPhone on iOS 17 or later (Transaction trigger requires iOS 17+).
 > - Findash reachable over Tailscale (e.g. `https://ia-server.tailcabcc8.ts.net:3100`).
-> - `INGEST_WEBHOOK_TOKEN` set in the server's `.env.local` (see `.env.example`).
+> - A per-user webhook token minted via `/settings/webhooks` (one per purpose: `debug` for the discovery shortcut, `sms` for the SMS ingest shortcut). The plaintext is shown only once — paste it into the Shortcut immediately.
 
 ---
 
@@ -24,7 +24,7 @@ The endpoint `/api/ingest/debug` stores the full request (headers + body) in the
    - **URL**: `https://ia-server.tailcabcc8.ts.net:3100/api/ingest/debug`
    - **Method**: `POST`
    - **Headers**:
-     - `Authorization` → `Bearer <token>` (paste your `INGEST_WEBHOOK_TOKEN`)
+     - `Authorization` → `Bearer <token>` (paste a token minted for `purpose=debug` at `/settings/webhooks`)
      - `Content-Type` → `application/json`
    - **Request Body**: `JSON` — build an object with every variable available from the Shortcut Input. At minimum:
 

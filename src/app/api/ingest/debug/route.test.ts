@@ -1,9 +1,13 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { webhookTokens } from "@/lib/db/schema";
+import { mintWebhookToken } from "@/lib/webhook-tokens";
 import { POST } from "./route";
 
-const TEST_TOKEN = "test-token-vitest-debug-capture";
+const TEST_USER_ID = 1;
+const TEST_TOKEN_LABEL = "vitest-debug-route";
+let TEST_TOKEN = "";
 const MARKER = "VITEST_DEBUG_CAPTURE_MARKER";
 
 function makeRequest(init: { body?: string; headers?: Record<string, string> }) {
@@ -23,23 +27,22 @@ async function cleanup() {
 }
 
 describe("POST /api/ingest/debug", () => {
-  beforeEach(() => {
-    process.env.INGEST_WEBHOOK_TOKEN = TEST_TOKEN;
+  beforeAll(async () => {
+    const { plaintext } = await mintWebhookToken({
+      userId: TEST_USER_ID,
+      purpose: "debug",
+      label: TEST_TOKEN_LABEL,
+    });
+    TEST_TOKEN = plaintext;
   });
   afterEach(cleanup);
   afterAll(async () => {
-    delete process.env.INGEST_WEBHOOK_TOKEN;
+    await db
+      .delete(webhookTokens)
+      .where(
+        and(eq(webhookTokens.userId, TEST_USER_ID), eq(webhookTokens.label, TEST_TOKEN_LABEL)),
+      );
     await db.$client.end({ timeout: 1 });
-  });
-
-  it("returns 401 when no auth path matches (no env var, no per-user token)", async () => {
-    delete process.env.INGEST_WEBHOOK_TOKEN;
-    const res = await POST(
-      makeRequest({
-        headers: { authorization: `Bearer ${TEST_TOKEN}` },
-      }),
-    );
-    expect(res.status).toBe(401);
   });
 
   it("returns 401 when Authorization header is missing", async () => {
@@ -47,7 +50,7 @@ describe("POST /api/ingest/debug", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 when bearer token does not match", async () => {
+  it("returns 401 when bearer token does not match any webhook_token row", async () => {
     const res = await POST(
       makeRequest({
         headers: { authorization: "Bearer wrong-token" },
