@@ -14,11 +14,11 @@ export default auth((req) => {
   return NextResponse.next();
 });
 
-// Routes under api/ingest and api/fx/refresh authenticate via bearer token
-// in their own handlers; they must bypass the session-based proxy or they
-// get 307-redirected to /login before the handler ever runs.
+// Public endpoints (health check, bearer-token APIs, OAuth callbacks, static
+// assets) must bypass the session-based proxy — otherwise they get 307'd to
+// /login before their own handler (or Next.js's static handler) ever runs.
 export const config = {
   matcher: [
-    "/((?!api/auth|api/telegram/webhook|api/ingest|api/fx/refresh|login|signup|_next/static|_next/image|favicon.ico|.*\\.(?:png|svg|ico|webmanifest)$).*)",
+    "/((?!api/auth|api/telegram/webhook|api/ingest|api/fx/refresh|api/health|login|signup|_next/static|_next/image|favicon.ico|.*\\.(?:png|svg|ico|webmanifest)$).*)",
   ],
 };

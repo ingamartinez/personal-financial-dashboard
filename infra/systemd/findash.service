@@ -1,0 +1,40 @@
+[Unit]
+Description=Findash — personal finance dashboard (Next.js + Telegram worker)
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=findash
+Group=findash
+WorkingDirectory=/srv/findash/app/current
+EnvironmentFile=/srv/findash/env/findash.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/local/bin/bun server.js
+Restart=always
+RestartSec=3
+# Give the Telegram long-poll worker (src/instrumentation.ts) up to 30s to
+# drain on SIGTERM. Once #185 flips it to a webhook, this can drop to 10s.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=findash
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/findash/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -33,6 +33,10 @@ describe("proxy matcher", () => {
     }
   });
 
+  it("exempts /api/health so CD + Cloudflare probes don't hit /login", () => {
+    expect(matches("/api/health"), "/api/health must be publicly probeable").toBe(false);
+  });
+
   it("exempts auth, telegram, login/signup, and static assets", () => {
     for (const path of [
       "/api/auth/callback/google",

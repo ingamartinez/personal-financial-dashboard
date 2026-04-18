@@ -1,0 +1,35 @@
+# Findash origin — fronted by Cloudflare (Full strict).
+#
+# Cloudflare terminates TLS for the user, then re-encrypts to this origin
+# using the CF-issued origin cert served below. DO NOT enable Caddy's
+# automatic Let's Encrypt — the hostname is not publicly resolvable to
+# this origin (CF proxies it), so the ACME challenge would fail.
+#
+# Expected on-disk:
+#   /etc/caddy/origin.pem   (0644 root:root)  — CF origin cert (15yr)
+#   /etc/caddy/origin.key   (0600 root:caddy) — matching private key
+#
+# Update the hostname below once the final subdomain is confirmed
+# (design recommends findash.<user-domain>).
+
+findash.alejoframes.com {
+	tls /etc/caddy/origin.pem /etc/caddy/origin.key
+
+	encode zstd gzip
+
+	# Forward real client IP from Cloudflare. Cloudflare sets
+	# `CF-Connecting-IP`; we surface it as `X-Forwarded-For` for Next.js.
+	reverse_proxy 127.0.0.1:3000 {
+		header_up Host {host}
+		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		header_up X-Forwarded-Proto https
+	}
+
+	log {
+		output file /srv/findash/logs/caddy-access.log {
+			roll_size 50mb
+			roll_keep 7
+		}
+		format json
+	}
+}
