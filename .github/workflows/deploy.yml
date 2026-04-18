@@ -115,7 +115,10 @@ jobs:
           set -eu
           RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
           TARBALL="/tmp/release-$GIT_SHA.tar.gz"
-          ENV_FILE="$APP_ROOT/env/release.env"
+          # release.env lives INSIDE the release dir so it moves with the
+          # symlink (systemd EnvironmentFile follows /srv/findash/app/current).
+          # Findash owns the release dir — no cross-group perm juggling.
+          ENV_FILE="$RELEASE_DIR/release.env"
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
             set -eu
             sudo -n -u findash install -d -m 0755 '$RELEASE_DIR'

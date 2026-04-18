@@ -9,9 +9,10 @@ User=findash
 Group=findash
 WorkingDirectory=/srv/findash/app/current
 EnvironmentFile=/srv/findash/env/findash.env
-# Per-release env injected by the CD workflow (GIT_SHA etc.). Optional — if
-# the droplet hasn't had a CD deploy yet, systemd still starts fine.
-EnvironmentFile=-/srv/findash/env/release.env
+# Per-release env (GIT_SHA etc.) lives inside the release dir so it moves
+# with the symlink on deploy / rollback. Optional — systemd starts fine if
+# the droplet hasn't had a CD deploy yet.
+EnvironmentFile=-/srv/findash/app/current/release.env
 Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=HOSTNAME=127.0.0.1
