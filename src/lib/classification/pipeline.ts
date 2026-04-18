@@ -15,7 +15,10 @@ export type PipelineResult = {
   usage: { inputTokens: number; outputTokens: number };
 };
 
-export async function classifyUnclassifiedBatch(database: DB = defaultDb): Promise<PipelineResult> {
+export async function classifyUnclassifiedBatch(
+  userId: number,
+  database: DB = defaultDb,
+): Promise<PipelineResult> {
   const startedAt = new Date();
 
   const pending = await database
@@ -29,7 +32,11 @@ export async function classifyUnclassifiedBatch(database: DB = defaultDb): Promi
     })
     .from(transactions)
     .where(
-      and(eq(transactions.classificationMethod, "unclassified"), isNull(transactions.categorySlug)),
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.classificationMethod, "unclassified"),
+        isNull(transactions.categorySlug),
+      ),
     )
     .orderBy(asc(transactions.id))
     .limit(AI_BATCH_SIZE);
@@ -58,6 +65,7 @@ export async function classifyUnclassifiedBatch(database: DB = defaultDb): Promi
   const stillPending: typeof pending = [];
   for (const tx of pending) {
     const ruleHit = await classifyByRule(
+      userId,
       {
         descriptionRaw: tx.description,
         descriptionClean: tx.descriptionClean,
@@ -74,7 +82,7 @@ export async function classifyUnclassifiedBatch(database: DB = defaultDb): Promi
           classificationConfidence: ruleHit.confidence,
           updatedAt: new Date(),
         })
-        .where(eq(transactions.id, tx.id));
+        .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
       ruleClassified++;
     } else {
       stillPending.push(tx);
@@ -121,11 +129,18 @@ export async function classifyUnclassifiedBatch(database: DB = defaultDb): Promi
         classificationConfidence: hit.confidence,
         updatedAt: new Date(),
       })
-      .where(and(eq(transactions.id, tx.id), inArray(transactions.id, ids)));
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          eq(transactions.id, tx.id),
+          inArray(transactions.id, ids),
+        ),
+      );
     aiClassified++;
   }
 
   await database.insert(ingestionLogs).values({
+    userId,
     source: "manual",
     status: skipped === 0 ? "ok" : "partial",
     itemsReceived: pending.length,

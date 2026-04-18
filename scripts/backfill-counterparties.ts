@@ -36,7 +36,9 @@ async function main() {
       console.warn(`tx ${row.id}: parser returned skip:${parsed.reason} — skipped`);
       continue;
     }
-    const cp = await resolveCounterparty(parsed, db);
+    // Backfill script runs against the single-user dev DB pre-multi-tenancy
+    // data, so user_id=1 is always the right scope.
+    const cp = await resolveCounterparty(1, parsed, db);
     if (cp.counterpartyId === null) {
       console.warn(`tx ${row.id}: kind=${parsed.kind} has no counterparty — skipped`);
       continue;

@@ -66,7 +66,9 @@ export async function runPollWorker(opts: PollWorkerOptions): Promise<void> {
 
   const routerDeps: RouterDeps = {
     allowlist,
-    listAccounts: opts.deps?.listAccounts ?? listAccountsDetailed,
+    // NOTE: the single-bot poll worker scopes to user 1 (bootstrap) until #185
+    // migrates to webhooks + per-user bots (see docs/multi-user-plan.md §2.7).
+    listAccounts: opts.deps?.listAccounts ?? (() => listAccountsDetailed(1)),
     listCategories: opts.deps?.listCategories ?? listCategories,
     parseNlu:
       opts.deps?.parseNlu ?? ((p) => parseTransactionMessage({ text: p.text, context: p.context })),

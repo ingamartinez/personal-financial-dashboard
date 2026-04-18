@@ -41,6 +41,7 @@ export function yearMonth(year: number, month: number): string {
 }
 
 export type UpcomingOptions = {
+  userId: number;
   year: number;
   month: number;
   includeDismissed?: boolean;
@@ -55,6 +56,7 @@ export async function getUpcomingForMonth(
   database: DB = defaultDb,
 ): Promise<UpcomingItem[]> {
   const {
+    userId,
     year,
     month,
     includeDismissed = false,
@@ -87,7 +89,7 @@ export async function getUpcomingForMonth(
     .from(recurringTransactions)
     .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
     .leftJoin(categories, eq(categories.slug, recurringTransactions.categorySlug))
-    .where(eq(recurringTransactions.active, true))
+    .where(and(eq(recurringTransactions.userId, userId), eq(recurringTransactions.active, true)))
     .orderBy(asc(recurringTransactions.dayOfMonth), asc(recurringTransactions.id));
 
   if (rows.length === 0) return [];
@@ -103,7 +105,11 @@ export async function getUpcomingForMonth(
     })
     .from(transactions)
     .where(
-      and(inArray(transactions.recurringId, recurringIds), eq(transactions.recurringYearMonth, ym)),
+      and(
+        eq(transactions.userId, userId),
+        inArray(transactions.recurringId, recurringIds),
+        eq(transactions.recurringYearMonth, ym),
+      ),
     );
   const explicitMap = new Map<number, number>();
   for (const e of explicitLinks) {
@@ -123,6 +129,7 @@ export async function getUpcomingForMonth(
     .from(transactions)
     .where(
       and(
+        eq(transactions.userId, userId),
         gte(
           transactions.occurredAt,
           new Date(rangeStart.getTime() - matchWindowBeforeDays * 86400000),

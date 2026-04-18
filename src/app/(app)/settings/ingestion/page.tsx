@@ -8,6 +8,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { getSessionUser } from "@/lib/auth/session";
 import {
   DRIFT_CONFIG,
   getSmsHealthHistory,
@@ -36,10 +37,11 @@ function formatCopDate(copDate: string): string {
 }
 
 export default async function IngestionSettingsPage() {
+  const session = await getSessionUser();
   const now = new Date();
   const [snapshot, history] = await Promise.all([
-    getSmsHealthSnapshot(now),
-    getSmsHealthHistory(30, now),
+    getSmsHealthSnapshot(session.id, now),
+    getSmsHealthHistory(session.id, 30, now),
   ]);
 
   return (

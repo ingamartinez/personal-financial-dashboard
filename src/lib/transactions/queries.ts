@@ -44,8 +44,8 @@ export function decodeCursor(cursor: string): { occurredAt: Date; id: number } |
   }
 }
 
-export async function listTransactions(filters: TxFilters): Promise<TxListResult> {
-  const conditions = [];
+export async function listTransactions(userId: number, filters: TxFilters): Promise<TxListResult> {
+  const conditions = [eq(transactions.userId, userId)];
 
   if (filters.from) conditions.push(gte(transactions.occurredAt, new Date(filters.from)));
   if (filters.to) {
@@ -108,7 +108,7 @@ export async function listTransactions(filters: TxFilters): Promise<TxListResult
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
     .leftJoin(counterparties, eq(counterparties.id, transactions.counterpartyId))
-    .where(conditions.length ? and(...conditions) : undefined)
+    .where(and(...conditions))
     .orderBy(desc(transactions.occurredAt), desc(transactions.id))
     .limit(PAGE_SIZE + 1);
 
@@ -149,7 +149,7 @@ export async function listTransactions(filters: TxFilters): Promise<TxListResult
  * Compact counterparty list for the merge selector in CounterpartyDialog.
  * Ordered by hit_count DESC so the most-used show first.
  */
-export async function listCounterparties(): Promise<CounterpartyBrief[]> {
+export async function listCounterparties(userId: number): Promise<CounterpartyBrief[]> {
   return db
     .select({
       id: counterparties.id,
@@ -157,6 +157,7 @@ export async function listCounterparties(): Promise<CounterpartyBrief[]> {
       type: counterparties.type,
     })
     .from(counterparties)
+    .where(eq(counterparties.userId, userId))
     .orderBy(desc(counterparties.hitCount), asc(counterparties.displayName));
 }
 
@@ -164,7 +165,10 @@ export async function listCounterparties(): Promise<CounterpartyBrief[]> {
  * Same as `listCounterparties` but excludes one id (used when building the
  * merge target select — a counterparty cannot merge into itself).
  */
-export async function listCounterpartiesExcept(excludeId: number): Promise<CounterpartyBrief[]> {
+export async function listCounterpartiesExcept(
+  userId: number,
+  excludeId: number,
+): Promise<CounterpartyBrief[]> {
   return db
     .select({
       id: counterparties.id,
@@ -172,15 +176,15 @@ export async function listCounterpartiesExcept(excludeId: number): Promise<Count
       type: counterparties.type,
     })
     .from(counterparties)
-    .where(ne(counterparties.id, excludeId))
+    .where(and(eq(counterparties.userId, userId), ne(counterparties.id, excludeId)))
     .orderBy(desc(counterparties.hitCount), asc(counterparties.displayName));
 }
 
-export async function listAccounts() {
+export async function listAccounts(userId: number) {
   return db
     .select({ id: accounts.id, name: accounts.name })
     .from(accounts)
-    .where(eq(accounts.active, true))
+    .where(and(eq(accounts.userId, userId), eq(accounts.active, true)))
     .orderBy(asc(accounts.name));
 }
 
@@ -191,16 +195,21 @@ export async function listCategories() {
     .orderBy(asc(categories.sortOrder), asc(categories.name));
 }
 
-export async function countUnclassified(): Promise<number> {
+export async function countUnclassified(userId: number): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(transactions)
-    .where(eq(transactions.classificationMethod, "unclassified"));
+    .where(
+      and(eq(transactions.userId, userId), eq(transactions.classificationMethod, "unclassified")),
+    );
   return row?.n ?? 0;
 }
 
-export async function countTotal(filters: Omit<TxFilters, "cursor">): Promise<number> {
-  const conditions = [];
+export async function countTotal(
+  userId: number,
+  filters: Omit<TxFilters, "cursor">,
+): Promise<number> {
+  const conditions = [eq(transactions.userId, userId)];
   if (filters.from) conditions.push(gte(transactions.occurredAt, new Date(filters.from)));
   if (filters.to) {
     const to = new Date(filters.to);
@@ -222,6 +231,6 @@ export async function countTotal(filters: Omit<TxFilters, "cursor">): Promise<nu
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(transactions)
-    .where(conditions.length ? and(...conditions) : undefined);
+    .where(and(...conditions));
   return row?.n ?? 0;
 }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, type DB } from "@/lib/db";
 import { accounts, ingestionLogs, transactions } from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
@@ -65,9 +65,10 @@ export async function POST(req: Request) {
   }
 
   const parsed = parseSmsBancolombia(body);
-  const outcome = await ingestParsed(parsed);
+  const outcome = await ingestParsed(auth.userId, parsed);
 
   await db.insert(ingestionLogs).values({
+    userId: auth.userId,
     source: "sms",
     status: outcome.status,
     itemsReceived: 1,
@@ -100,7 +101,7 @@ export async function GET() {
 // Ingestion logic — separated so it's testable in isolation
 // -----------------------------------------------------------------------------
 
-export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> {
+export async function ingestParsed(userId: number, parsed: ParseResult): Promise<IngestOutcome> {
   if (parsed.kind === "skip") {
     return { status: "skipped", reason: `parser: ${parsed.reason}` };
   }
@@ -113,7 +114,10 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
       institution: accounts.institution,
       type: accounts.type,
     })
-    .from(accounts)) as Array<RoutableAccount & { institution: string; type: string }>;
+    .from(accounts)
+    .where(eq(accounts.userId, userId))) as Array<
+    RoutableAccount & { institution: string; type: string }
+  >;
 
   const account = resolveAccountForParsed(parsed, allAccounts);
   if (!account) {
@@ -130,7 +134,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
 
   // Counterparty lookup (and auto-create for bre_b). For kinds with toKey,
   // this is the preferred classification path over text-pattern rules.
-  const cp = await resolveCounterparty(parsed, db);
+  const cp = await resolveCounterparty(userId, parsed, db);
 
   // Purchases and PSE outgoing payments get rule-based classification attempted.
   // Other kinds have hardcoded categories (pago-tc, transferencias, ingresos)
@@ -144,7 +148,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
       parsed.kind === "provider_payment_sent" ||
       parsed.kind === "qr_payment");
   if (shouldAttemptRule) {
-    const cls = await classifyByRule({
+    const cls = await classifyByRule(userId, {
       descriptionRaw,
       merchant,
     });
@@ -161,6 +165,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
     const result = await db
       .insert(transactions)
       .values({
+        userId,
         accountId: account.id,
         occurredAt,
         amountCents,
@@ -186,7 +191,7 @@ export async function ingestParsed(parsed: ParseResult): Promise<IngestOutcome> 
       .returning({ id: transactions.id });
 
     if (result.length === 0) return { status: "duplicated" };
-    await autoLinkTransaction(result[0].id);
+    await autoLinkTransaction(userId, result[0].id);
     emit({
       type: "transaction:created",
       id: result[0].id,
@@ -218,6 +223,7 @@ type CounterpartyResolution = {
  * Hit counter bumped on every match/insert.
  */
 export async function resolveCounterparty(
+  userId: number,
   parsed: ParsedSms,
   database: DB,
 ): Promise<CounterpartyResolution> {
@@ -232,7 +238,9 @@ export async function resolveCounterparty(
       SELECT c.id, c.default_category_slug
       FROM counterparty_aliases a
       JOIN counterparties c ON c.id = a.counterparty_id
-      WHERE a.kind = ${key.kind}::counterparty_key_kind AND a.value = ${key.value}
+      WHERE a.user_id = ${userId}
+        AND a.kind = ${key.kind}::counterparty_key_kind
+        AND a.value = ${key.value}
       LIMIT 1
     `);
 
@@ -240,7 +248,7 @@ export async function resolveCounterparty(
       await trx.execute(sql`
         UPDATE counterparties
         SET hit_count = hit_count + 1, last_hit_at = now()
-        WHERE id = ${existing[0].id}
+        WHERE user_id = ${userId} AND id = ${existing[0].id}
       `);
       return {
         counterpartyId: existing[0].id,
@@ -249,13 +257,13 @@ export async function resolveCounterparty(
     }
 
     const inserted = await trx.execute<{ id: number }>(sql`
-      INSERT INTO counterparties (display_name, type, hit_count, last_hit_at)
-      VALUES (${key.initialDisplayName}, 'unknown', 1, now())
+      INSERT INTO counterparties (user_id, display_name, type, hit_count, last_hit_at)
+      VALUES (${userId}, ${key.initialDisplayName}, 'unknown', 1, now())
       RETURNING id
     `);
     await trx.execute(sql`
-      INSERT INTO counterparty_aliases (counterparty_id, kind, value)
-      VALUES (${inserted[0].id}, ${key.kind}::counterparty_key_kind, ${key.value})
+      INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
+      VALUES (${userId}, ${inserted[0].id}, ${key.kind}::counterparty_key_kind, ${key.value})
     `);
     return { counterpartyId: inserted[0].id, inheritedCategory: null };
   });

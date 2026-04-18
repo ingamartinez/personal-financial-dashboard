@@ -70,6 +70,7 @@ function toCopNumber(cents: bigint, currency: Currency, copPerUsd: number): numb
 }
 
 export async function buildInsightsSummary(
+  userId: number,
   ym: string,
   copPerUsd: number,
   db: DB = defaultDb,
@@ -89,7 +90,7 @@ export async function buildInsightsSummary(
           balanceCents: accounts.balanceCents,
         })
         .from(accounts)
-        .where(eq(accounts.active, true))
+        .where(and(eq(accounts.userId, userId), eq(accounts.active, true)))
         .orderBy(asc(accounts.name)),
       db
         .select({
@@ -98,7 +99,13 @@ export async function buildInsightsSummary(
           expense: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
         })
         .from(transactions)
-        .where(and(gte(transactions.occurredAt, cur.start), lte(transactions.occurredAt, cur.end)))
+        .where(
+          and(
+            eq(transactions.userId, userId),
+            gte(transactions.occurredAt, cur.start),
+            lte(transactions.occurredAt, cur.end),
+          ),
+        )
         .groupBy(transactions.currency),
       db
         .select({
@@ -108,7 +115,11 @@ export async function buildInsightsSummary(
         })
         .from(transactions)
         .where(
-          and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)),
+          and(
+            eq(transactions.userId, userId),
+            gte(transactions.occurredAt, prev.start),
+            lte(transactions.occurredAt, prev.end),
+          ),
         )
         .groupBy(transactions.currency),
       (() => {
@@ -127,7 +138,11 @@ export async function buildInsightsSummary(
           .leftJoin(leaf, eq(leaf.slug, transactions.categorySlug))
           .leftJoin(root, eq(root.slug, rootSlug))
           .where(
-            and(gte(transactions.occurredAt, cur.start), lte(transactions.occurredAt, cur.end)),
+            and(
+              eq(transactions.userId, userId),
+              gte(transactions.occurredAt, cur.start),
+              lte(transactions.occurredAt, cur.end),
+            ),
           )
           .groupBy(rootSlug, root.name, transactions.currency);
       })(),
@@ -143,7 +158,11 @@ export async function buildInsightsSummary(
           .from(transactions)
           .leftJoin(leaf, eq(leaf.slug, transactions.categorySlug))
           .where(
-            and(gte(transactions.occurredAt, prev.start), lte(transactions.occurredAt, prev.end)),
+            and(
+              eq(transactions.userId, userId),
+              gte(transactions.occurredAt, prev.start),
+              lte(transactions.occurredAt, prev.end),
+            ),
           )
           .groupBy(rootSlug, transactions.currency);
       })(),
@@ -157,6 +176,7 @@ export async function buildInsightsSummary(
         .from(transactions)
         .where(
           and(
+            eq(transactions.userId, userId),
             gte(transactions.occurredAt, cur.start),
             lte(transactions.occurredAt, cur.end),
             sql`${transactions.merchant} IS NOT NULL`,
@@ -177,7 +197,7 @@ export async function buildInsightsSummary(
           currency: budgets.currency,
         })
         .from(budgets)
-        .where(eq(budgets.periodStart, cur.startIso)),
+        .where(and(eq(budgets.userId, userId), eq(budgets.periodStart, cur.startIso))),
       db
         .select({
           label: recurringTransactions.label,
@@ -187,7 +207,9 @@ export async function buildInsightsSummary(
           categorySlug: recurringTransactions.categorySlug,
         })
         .from(recurringTransactions)
-        .where(eq(recurringTransactions.active, true))
+        .where(
+          and(eq(recurringTransactions.userId, userId), eq(recurringTransactions.active, true)),
+        )
         .orderBy(asc(recurringTransactions.dayOfMonth)),
     ]);
 

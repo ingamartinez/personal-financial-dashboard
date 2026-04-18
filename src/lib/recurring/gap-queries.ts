@@ -49,6 +49,7 @@ function daysInMonth(year: number, month: number): number {
  * the most recent candidate shows first.
  */
 export async function getLinkCandidates(
+  userId: number,
   gapId: number,
   database: DB = defaultDb,
 ): Promise<LinkCandidate[]> {
@@ -60,7 +61,7 @@ export async function getLinkCandidates(
     })
     .from(recurringGaps)
     .innerJoin(recurringTransactions, eq(recurringTransactions.id, recurringGaps.recurringId))
-    .where(eq(recurringGaps.id, gapId))
+    .where(and(eq(recurringGaps.userId, userId), eq(recurringGaps.id, gapId)))
     .limit(1);
   if (!gap) return [];
 
@@ -81,6 +82,7 @@ export async function getLinkCandidates(
     .from(transactions)
     .where(
       and(
+        eq(transactions.userId, userId),
         eq(transactions.accountId, gap.accountId),
         isNull(transactions.recurringId),
         gte(transactions.occurredAt, windowStart),
@@ -90,7 +92,7 @@ export async function getLinkCandidates(
     .orderBy(desc(transactions.occurredAt));
 }
 
-export async function getOpenGaps(database: DB = defaultDb): Promise<OpenGap[]> {
+export async function getOpenGaps(userId: number, database: DB = defaultDb): Promise<OpenGap[]> {
   const rows = await database
     .select({
       gapId: recurringGaps.id,
@@ -111,6 +113,7 @@ export async function getOpenGaps(database: DB = defaultDb): Promise<OpenGap[]> 
     .innerJoin(recurringTransactions, eq(recurringTransactions.id, recurringGaps.recurringId))
     .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
     .leftJoin(categories, eq(categories.slug, recurringTransactions.categorySlug))
+    .where(eq(recurringGaps.userId, userId))
     .orderBy(asc(recurringGaps.yearMonth), asc(recurringTransactions.dayOfMonth));
 
   return rows;

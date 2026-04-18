@@ -31,6 +31,7 @@ function daysInMonth(year: number, month: number): number {
  *     the cron has run).
  */
 export async function autoLinkTransaction(
+  userId: number,
   txId: number,
   database: DB = defaultDb,
 ): Promise<AutoLinkResult> {
@@ -43,7 +44,7 @@ export async function autoLinkTransaction(
       recurringId: transactions.recurringId,
     })
     .from(transactions)
-    .where(eq(transactions.id, txId))
+    .where(and(eq(transactions.userId, userId), eq(transactions.id, txId)))
     .limit(1);
 
   if (!tx) return { status: "no-open-gap" };
@@ -62,6 +63,7 @@ export async function autoLinkTransaction(
     .innerJoin(recurringTransactions, eq(recurringTransactions.id, recurringGaps.recurringId))
     .where(
       and(
+        eq(recurringGaps.userId, userId),
         eq(recurringTransactions.accountId, tx.accountId),
         eq(recurringTransactions.amountCents, tx.amountCents),
       ),
@@ -92,9 +94,17 @@ export async function autoLinkTransaction(
         recurringYearMonth: hit.gapYearMonth,
         updatedAt: new Date(),
       })
-      .where(and(eq(transactions.id, txId), isNull(transactions.recurringId)));
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          eq(transactions.id, txId),
+          isNull(transactions.recurringId),
+        ),
+      );
 
-    await trx.delete(recurringGaps).where(eq(recurringGaps.id, hit.gapId));
+    await trx
+      .delete(recurringGaps)
+      .where(and(eq(recurringGaps.userId, userId), eq(recurringGaps.id, hit.gapId)));
 
     return {
       status: "linked" as const,

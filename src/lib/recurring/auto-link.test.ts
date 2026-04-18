@@ -88,7 +88,7 @@ describe("autoLinkTransaction (integration)", () => {
       occurredOn: "2026-04-10",
       amountCents: BigInt(-100000),
     });
-    const result = await autoLinkTransaction(txId);
+    const result = await autoLinkTransaction(1, txId);
     expect(result.status).toBe("no-open-gap");
   });
 
@@ -106,7 +106,7 @@ describe("autoLinkTransaction (integration)", () => {
       recurringId,
       recurringYearMonth: "2026-04",
     });
-    const result = await autoLinkTransaction(txId);
+    const result = await autoLinkTransaction(1, txId);
     expect(result.status).toBe("already-linked");
   });
 
@@ -123,7 +123,7 @@ describe("autoLinkTransaction (integration)", () => {
       amountCents: BigInt(-100000),
     });
 
-    const result = await autoLinkTransaction(txId);
+    const result = await autoLinkTransaction(1, txId);
     expect(result.status).toBe("linked");
 
     const [linked] = await db
@@ -163,7 +163,7 @@ describe("autoLinkTransaction (integration)", () => {
       amountCents: BigInt(-100000),
     });
 
-    const result = await autoLinkTransaction(txId);
+    const result = await autoLinkTransaction(1, txId);
     expect(result.status).toBe("ambiguous");
     if (result.status === "ambiguous") {
       expect(result.candidateCount).toBe(2);
@@ -182,7 +182,7 @@ describe("autoLinkTransaction (integration)", () => {
       occurredOn: "2026-04-10",
       amountCents: BigInt(-347000),
     });
-    const result = await autoLinkTransaction(txId);
+    const result = await autoLinkTransaction(1, txId);
     expect(result.status).toBe("no-open-gap");
   });
 
@@ -199,7 +199,7 @@ describe("autoLinkTransaction (integration)", () => {
       occurredOn: "2026-04-16",
       amountCents: BigInt(-100000),
     });
-    const result = await autoLinkTransaction(txId);
+    const result = await autoLinkTransaction(1, txId);
     expect(result.status).toBe("no-open-gap");
   });
 });

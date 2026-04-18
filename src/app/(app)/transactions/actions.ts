@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
@@ -11,6 +11,7 @@ import {
   counterpartyType,
   transactions,
 } from "@/lib/db/schema";
+import { getSessionUser } from "@/lib/auth/session";
 import { classifySingleWithAi as classifySingleWithAiLib } from "@/lib/classification/ai";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { emit } from "@/lib/events/bus";
@@ -29,6 +30,7 @@ export async function updateTransactionCategory(input: {
   txId: number;
   categorySlug: string | null;
 }) {
+  const session = await getSessionUser();
   const { txId, categorySlug } = updateSchema.parse(input);
 
   await db
@@ -39,7 +41,7 @@ export async function updateTransactionCategory(input: {
       classificationConfidence: categorySlug ? 100 : null,
       updatedAt: new Date(),
     })
-    .where(eq(transactions.id, txId));
+    .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
 
   revalidatePath("/transactions");
 }
@@ -88,6 +90,7 @@ export async function createManualExpense(input: {
   occurredOn: string;
   notes: string | null;
 }) {
+  const session = await getSessionUser();
   // Server actions serialize errors to the client — ZodError.message is a
   // JSON blob. Flatten to the first issue so the form can toast it cleanly.
   const result = expenseSchema.safeParse(input);
@@ -99,7 +102,7 @@ export async function createManualExpense(input: {
   const [account] = await db
     .select({ id: accounts.id, currency: accounts.currency })
     .from(accounts)
-    .where(eq(accounts.id, parsed.accountId))
+    .where(and(eq(accounts.userId, session.id), eq(accounts.id, parsed.accountId)))
     .limit(1);
 
   if (!account) throw new Error("Account not found");
@@ -118,6 +121,7 @@ export async function createManualExpense(input: {
   const [inserted] = await db
     .insert(transactions)
     .values({
+      userId: session.id,
       accountId: account.id,
       occurredAt,
       amountCents: -parsed.amount,
@@ -133,7 +137,7 @@ export async function createManualExpense(input: {
     })
     .returning({ id: transactions.id });
 
-  await autoLinkTransaction(inserted.id);
+  await autoLinkTransaction(session.id, inserted.id);
 
   revalidatePath("/");
   revalidatePath("/transactions");
@@ -147,7 +151,8 @@ export async function createManualExpense(input: {
 }
 
 export async function runAiClassifier() {
-  const result = await classifyUnclassifiedBatch();
+  const session = await getSessionUser();
+  const result = await classifyUnclassifiedBatch(session.id);
   revalidatePath("/");
   revalidatePath("/transactions");
   return result;
@@ -167,6 +172,7 @@ export type ClassifySingleResult = {
 export async function classifySingleWithAi(
   input: ClassifySingleInput,
 ): Promise<ClassifySingleResult> {
+  const session = await getSessionUser();
   const { txId } = classifySingleSchema.parse(input);
 
   const [tx] = await db
@@ -181,7 +187,7 @@ export async function classifySingleWithAi(
       categorySlug: transactions.categorySlug,
     })
     .from(transactions)
-    .where(eq(transactions.id, txId))
+    .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)))
     .limit(1);
 
   if (!tx) throw new Error("Transaction not found");
@@ -227,7 +233,7 @@ export async function classifySingleWithAi(
       classificationConfidence: hit.confidence,
       updatedAt: new Date(),
     })
-    .where(eq(transactions.id, txId));
+    .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
 
   revalidatePath("/");
   revalidatePath("/transactions");
@@ -267,6 +273,7 @@ export type UpdateCounterpartyResult = {
 export async function updateCounterparty(
   input: UpdateCounterpartyInput,
 ): Promise<UpdateCounterpartyResult> {
+  const session = await getSessionUser();
   const parsed = updateCounterpartySchema.parse(input);
 
   if (parsed.defaultCategorySlug) {
@@ -288,7 +295,7 @@ export async function updateCounterparty(
         notes: parsed.notes,
         updatedAt: new Date(),
       })
-      .where(eq(counterparties.id, parsed.id));
+      .where(and(eq(counterparties.userId, session.id), eq(counterparties.id, parsed.id)));
 
     if (!parsed.defaultCategorySlug) return 0;
 
@@ -298,7 +305,8 @@ export async function updateCounterparty(
         classification_method = 'rule'::classification_method,
         classification_confidence = 100,
         updated_at = now()
-      WHERE counterparty_id = ${parsed.id}
+      WHERE user_id = ${session.id}
+        AND counterparty_id = ${parsed.id}
         AND category_slug IS NULL
       RETURNING id
     `);
@@ -355,6 +363,7 @@ export type MergeCounterpartyResult = {
 export async function mergeCounterparty(
   input: MergeCounterpartyInput,
 ): Promise<MergeCounterpartyResult> {
+  const session = await getSessionUser();
   const parsed = mergeCounterpartySchema.parse(input);
 
   const result = await db.transaction(async (trx) => {
@@ -364,7 +373,7 @@ export async function mergeCounterparty(
         defaultCategorySlug: counterparties.defaultCategorySlug,
       })
       .from(counterparties)
-      .where(eq(counterparties.id, parsed.targetId))
+      .where(and(eq(counterparties.userId, session.id), eq(counterparties.id, parsed.targetId)))
       .limit(1);
     const [source] = await trx
       .select({
@@ -373,7 +382,7 @@ export async function mergeCounterparty(
         hitCount: counterparties.hitCount,
       })
       .from(counterparties)
-      .where(eq(counterparties.id, parsed.sourceId))
+      .where(and(eq(counterparties.userId, session.id), eq(counterparties.id, parsed.sourceId)))
       .limit(1);
 
     if (!target) throw new Error("Target counterparty not found");
@@ -387,17 +396,19 @@ export async function mergeCounterparty(
           defaultCategorySlug: source.defaultCategorySlug,
           updatedAt: new Date(),
         })
-        .where(eq(counterparties.id, target.id));
+        .where(and(eq(counterparties.userId, session.id), eq(counterparties.id, target.id)));
     }
 
     // Move aliases (drop any that would violate unique kind+value on target).
     const aliasMove = await trx.execute<{ id: number }>(sql`
       UPDATE counterparty_aliases
       SET counterparty_id = ${target.id}
-      WHERE counterparty_id = ${source.id}
+      WHERE user_id = ${session.id}
+        AND counterparty_id = ${source.id}
         AND NOT EXISTS (
           SELECT 1 FROM counterparty_aliases existing
-          WHERE existing.counterparty_id = ${target.id}
+          WHERE existing.user_id = ${session.id}
+            AND existing.counterparty_id = ${target.id}
             AND existing.kind = counterparty_aliases.kind
             AND existing.value = counterparty_aliases.value
         )
@@ -408,7 +419,7 @@ export async function mergeCounterparty(
     const txMove = await trx.execute<{ id: number }>(sql`
       UPDATE transactions
       SET counterparty_id = ${target.id}, updated_at = now()
-      WHERE counterparty_id = ${source.id}
+      WHERE user_id = ${session.id} AND counterparty_id = ${source.id}
       RETURNING id
     `);
 
@@ -417,12 +428,14 @@ export async function mergeCounterparty(
       UPDATE counterparties
       SET hit_count = hit_count + ${source.hitCount},
           updated_at = now()
-      WHERE id = ${target.id}
+      WHERE user_id = ${session.id} AND id = ${target.id}
     `);
 
     // Source counterparty (and any residual aliases / refs with SET NULL on
     // tx FK — already moved above) removed. CASCADE cleans aliases.
-    await trx.delete(counterparties).where(eq(counterparties.id, source.id));
+    await trx
+      .delete(counterparties)
+      .where(and(eq(counterparties.userId, session.id), eq(counterparties.id, source.id)));
 
     return {
       movedTxCount: txMove.length,
@@ -479,6 +492,7 @@ export type SplitCounterpartyResult = {
 export async function splitCounterparty(
   input: SplitCounterpartyInput,
 ): Promise<SplitCounterpartyResult> {
+  const session = await getSessionUser();
   const parsed = splitCounterpartySchema.parse(input);
   const aliasIdSet = new Set(parsed.aliasIds);
   if (aliasIdSet.size !== parsed.aliasIds.length) {
@@ -493,7 +507,7 @@ export async function splitCounterparty(
   }>(sql`
     SELECT id, display_name, type, default_category_slug
     FROM counterparties
-    WHERE id = ${parsed.sourceId}
+    WHERE user_id = ${session.id} AND id = ${parsed.sourceId}
     LIMIT 1
   `);
   if (!source) throw new Error("Source counterparty not found");
@@ -505,7 +519,7 @@ export async function splitCounterparty(
   }>(sql`
     SELECT id, kind, value
     FROM counterparty_aliases
-    WHERE counterparty_id = ${parsed.sourceId}
+    WHERE user_id = ${session.id} AND counterparty_id = ${parsed.sourceId}
   `);
   if (allAliases.length < 2) {
     throw new Error("Counterparty needs at least 2 aliases to split");
@@ -527,7 +541,7 @@ export async function splitCounterparty(
   const sourceTxs = await db.execute<{ id: number; raw_data: unknown }>(sql`
     SELECT id, raw_data
     FROM transactions
-    WHERE counterparty_id = ${parsed.sourceId}
+    WHERE user_id = ${session.id} AND counterparty_id = ${parsed.sourceId}
   `);
 
   const movedTxIds: number[] = [];
@@ -549,8 +563,9 @@ export async function splitCounterparty(
 
   const result = await db.transaction(async (trx) => {
     const [inserted] = await trx.execute<{ id: number }>(sql`
-      INSERT INTO counterparties (display_name, type, default_category_slug, hit_count, last_hit_at)
+      INSERT INTO counterparties (user_id, display_name, type, default_category_slug, hit_count, last_hit_at)
       VALUES (
+        ${session.id},
         ${parsed.newDisplayName ?? source.display_name},
         ${source.type}::counterparty_type,
         ${source.default_category_slug},
@@ -564,10 +579,11 @@ export async function splitCounterparty(
     await trx.execute(sql`
       UPDATE counterparty_aliases
       SET counterparty_id = ${newId}
-      WHERE id = ANY(${sql`ARRAY[${sql.join(
-        parsed.aliasIds.map((id) => sql`${id}`),
-        sql`, `,
-      )}]::int[]`})
+      WHERE user_id = ${session.id}
+        AND id = ANY(${sql`ARRAY[${sql.join(
+          parsed.aliasIds.map((id) => sql`${id}`),
+          sql`, `,
+        )}]::int[]`})
     `);
 
     let movedTxCount = 0;
@@ -575,10 +591,11 @@ export async function splitCounterparty(
       const updated = await trx.execute<{ id: number }>(sql`
         UPDATE transactions
         SET counterparty_id = ${newId}, updated_at = now()
-        WHERE id = ANY(${sql`ARRAY[${sql.join(
-          movedTxIds.map((id) => sql`${id}`),
-          sql`, `,
-        )}]::int[]`})
+        WHERE user_id = ${session.id}
+          AND id = ANY(${sql`ARRAY[${sql.join(
+            movedTxIds.map((id) => sql`${id}`),
+            sql`, `,
+          )}]::int[]`})
         RETURNING id
       `);
       movedTxCount = updated.length;
@@ -587,7 +604,7 @@ export async function splitCounterparty(
     await trx
       .update(counterparties)
       .set({ updatedAt: new Date() })
-      .where(eq(counterparties.id, parsed.sourceId));
+      .where(and(eq(counterparties.userId, session.id), eq(counterparties.id, parsed.sourceId)));
 
     return {
       newCounterpartyId: newId,

@@ -1,25 +1,28 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { insightsReports } from "@/lib/db/schema";
+import { getSessionUser } from "@/lib/auth/session";
 import { buildInsightsSummary, generateInsightsReport, hashSummary } from "@/lib/ai/insights";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 
 const ymSchema = z.string().regex(/^\d{4}-\d{2}$/);
 
 export async function generateInsight(ym: string) {
+  const session = await getSessionUser();
   const parsed = ymSchema.parse(ym);
   const fx = await getCurrentFxRate();
-  const summary = await buildInsightsSummary(parsed, fx.rate);
+  const summary = await buildInsightsSummary(session.id, parsed, fx.rate);
   const inputHash = hashSummary(summary);
   const result = await generateInsightsReport({ summary });
 
   await db
     .insert(insightsReports)
     .values({
+      userId: session.id,
       yearMonth: parsed,
       inputHash,
       markdown: result.markdown,
@@ -29,7 +32,7 @@ export async function generateInsight(ym: string) {
       generatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: insightsReports.yearMonth,
+      target: [insightsReports.userId, insightsReports.yearMonth],
       set: {
         inputHash,
         markdown: result.markdown,
@@ -45,7 +48,10 @@ export async function generateInsight(ym: string) {
 }
 
 export async function deleteInsight(ym: string) {
+  const session = await getSessionUser();
   const parsed = ymSchema.parse(ym);
-  await db.delete(insightsReports).where(eq(insightsReports.yearMonth, parsed));
+  await db
+    .delete(insightsReports)
+    .where(and(eq(insightsReports.userId, session.id), eq(insightsReports.yearMonth, parsed)));
   revalidatePath("/insights");
 }

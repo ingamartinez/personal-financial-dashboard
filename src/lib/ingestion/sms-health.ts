@@ -75,6 +75,7 @@ export function computeIsDrift(input: {
 }
 
 export async function getSmsHealthHistory(
+  userId: number,
   days = 30,
   now: Date = new Date(),
 ): Promise<SmsHealthDay[]> {
@@ -89,7 +90,13 @@ export async function getSmsHealthHistory(
       lastSmsAt: sql<string | null>`max(${ingestionLogs.startedAt})`,
     })
     .from(ingestionLogs)
-    .where(and(eq(ingestionLogs.source, "sms"), gte(ingestionLogs.startedAt, cutoff)))
+    .where(
+      and(
+        eq(ingestionLogs.userId, userId),
+        eq(ingestionLogs.source, "sms"),
+        gte(ingestionLogs.startedAt, cutoff),
+      ),
+    )
     .groupBy(sql`((${ingestionLogs.startedAt}) AT TIME ZONE 'America/Bogota')::date`)
     .orderBy(sql`((${ingestionLogs.startedAt}) AT TIME ZONE 'America/Bogota')::date DESC`);
 
@@ -103,8 +110,11 @@ export async function getSmsHealthHistory(
   }));
 }
 
-export async function getSmsHealthSnapshot(now: Date = new Date()): Promise<SmsHealthSnapshot> {
-  const history = await getSmsHealthHistory(8, now);
+export async function getSmsHealthSnapshot(
+  userId: number,
+  now: Date = new Date(),
+): Promise<SmsHealthSnapshot> {
+  const history = await getSmsHealthHistory(userId, 8, now);
   const todayCopDate = todayInCop(now);
   const nowCopHour = hourInCop(now);
 

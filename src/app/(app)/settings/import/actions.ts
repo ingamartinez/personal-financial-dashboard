@@ -5,6 +5,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { accounts, ingestionLogs, transactions } from "@/lib/db/schema";
+import { getSessionUser } from "@/lib/auth/session";
 import { classifyByRule } from "@/lib/classification/rules";
 import { parseBancolombiaXlsx, type ParsedRow } from "@/lib/ingestion/xlsx-bancolombia";
 import {
@@ -28,6 +29,7 @@ export type PreviewResult = {
 };
 
 export async function previewBancolombiaXlsx(formData: FormData): Promise<PreviewResult> {
+  const session = await getSessionUser();
   const { accountId } = previewSchema.parse({ accountId: formData.get("accountId") });
   const file = formData.get("file");
   if (!(file instanceof File)) throw new Error("No file uploaded");
@@ -37,7 +39,7 @@ export async function previewBancolombiaXlsx(formData: FormData): Promise<Previe
   const [account] = await db
     .select({ id: accounts.id })
     .from(accounts)
-    .where(eq(accounts.id, accountId))
+    .where(and(eq(accounts.userId, session.id), eq(accounts.id, accountId)))
     .limit(1);
   if (!account) throw new Error("Account not found");
 
@@ -50,7 +52,11 @@ export async function previewBancolombiaXlsx(formData: FormData): Promise<Previe
         .select({ externalId: transactions.externalId })
         .from(transactions)
         .where(
-          and(eq(transactions.accountId, accountId), inArray(transactions.externalId, externalIds)),
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.accountId, accountId),
+            inArray(transactions.externalId, externalIds),
+          ),
         )
     : [];
   const existingSet = new Set(existing.map((e) => e.externalId));
@@ -92,13 +98,14 @@ export type ConfirmResult = {
 };
 
 export async function confirmBancolombiaImport(input: ConfirmInput): Promise<ConfirmResult> {
+  const session = await getSessionUser();
   const parsed = confirmSchema.parse(input);
   const startedAt = new Date();
 
   const [account] = await db
     .select({ id: accounts.id, currency: accounts.currency })
     .from(accounts)
-    .where(eq(accounts.id, parsed.accountId))
+    .where(and(eq(accounts.userId, session.id), eq(accounts.id, parsed.accountId)))
     .limit(1);
   if (!account) throw new Error("Account not found");
 
@@ -108,10 +115,11 @@ export async function confirmBancolombiaImport(input: ConfirmInput): Promise<Con
 
   for (const r of parsed.rows) {
     try {
-      const cls = await classifyByRule({ descriptionRaw: r.description });
+      const cls = await classifyByRule(session.id, { descriptionRaw: r.description });
       const result = await db
         .insert(transactions)
         .values({
+          userId: session.id,
           accountId: account.id,
           occurredAt: new Date(`${r.occurredOn}T12:00:00Z`),
           amountCents: BigInt(r.amountCents),
@@ -133,7 +141,7 @@ export async function confirmBancolombiaImport(input: ConfirmInput): Promise<Con
 
       if (result.length > 0) {
         inserted++;
-        await autoLinkTransaction(result[0].id);
+        await autoLinkTransaction(session.id, result[0].id);
       } else duplicated++;
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
@@ -141,6 +149,7 @@ export async function confirmBancolombiaImport(input: ConfirmInput): Promise<Con
   }
 
   await db.insert(ingestionLogs).values({
+    userId: session.id,
     source: "csv",
     status: errors.length === 0 ? "ok" : "partial",
     itemsReceived: parsed.rows.length,
@@ -176,6 +185,7 @@ export type OcrPreviewResult = {
 };
 
 export async function previewScreenshotOcr(formData: FormData): Promise<OcrPreviewResult> {
+  const session = await getSessionUser();
   const { accountId } = ocrPreviewSchema.parse({
     accountId: formData.get("accountId"),
   });
@@ -190,7 +200,7 @@ export async function previewScreenshotOcr(formData: FormData): Promise<OcrPrevi
   const [account] = await db
     .select({ id: accounts.id })
     .from(accounts)
-    .where(eq(accounts.id, accountId))
+    .where(and(eq(accounts.userId, session.id), eq(accounts.id, accountId)))
     .limit(1);
   if (!account) throw new Error("Account not found");
 
@@ -209,7 +219,11 @@ export async function previewScreenshotOcr(formData: FormData): Promise<OcrPrevi
         .select({ externalId: transactions.externalId })
         .from(transactions)
         .where(
-          and(eq(transactions.accountId, accountId), inArray(transactions.externalId, externalIds)),
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.accountId, accountId),
+            inArray(transactions.externalId, externalIds),
+          ),
         )
     : [];
   const existingSet = new Set(existing.map((e) => e.externalId));
@@ -248,13 +262,14 @@ const confirmOcrSchema = z.object({
 export type ConfirmOcrInput = z.infer<typeof confirmOcrSchema>;
 
 export async function confirmOcrImport(input: ConfirmOcrInput): Promise<ConfirmResult> {
+  const session = await getSessionUser();
   const parsed = confirmOcrSchema.parse(input);
   const startedAt = new Date();
 
   const [account] = await db
     .select({ id: accounts.id, currency: accounts.currency })
     .from(accounts)
-    .where(eq(accounts.id, parsed.accountId))
+    .where(and(eq(accounts.userId, session.id), eq(accounts.id, parsed.accountId)))
     .limit(1);
   if (!account) throw new Error("Account not found");
 
@@ -264,10 +279,11 @@ export async function confirmOcrImport(input: ConfirmOcrInput): Promise<ConfirmR
 
   for (const r of parsed.rows) {
     try {
-      const cls = await classifyByRule({ descriptionRaw: r.description });
+      const cls = await classifyByRule(session.id, { descriptionRaw: r.description });
       const result = await db
         .insert(transactions)
         .values({
+          userId: session.id,
           accountId: account.id,
           occurredAt: new Date(`${r.occurredOn}T12:00:00Z`),
           amountCents: BigInt(r.amountCents),
@@ -289,7 +305,7 @@ export async function confirmOcrImport(input: ConfirmOcrInput): Promise<ConfirmR
 
       if (result.length > 0) {
         inserted++;
-        await autoLinkTransaction(result[0].id);
+        await autoLinkTransaction(session.id, result[0].id);
       } else duplicated++;
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
@@ -297,6 +313,7 @@ export async function confirmOcrImport(input: ConfirmOcrInput): Promise<ConfirmR
   }
 
   await db.insert(ingestionLogs).values({
+    userId: session.id,
     source: "ocr",
     status: errors.length === 0 ? "ok" : "partial",
     itemsReceived: parsed.rows.length,
