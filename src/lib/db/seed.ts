@@ -224,7 +224,13 @@ export async function runSeed() {
   }
 
   console.log("seeding classification rules...");
-  await db.insert(classificationRules).values(seedRules).onConflictDoNothing();
+  const existingRuleCount = await db.$count(classificationRules);
+  if (existingRuleCount === 0) {
+    await db.insert(classificationRules).values(seedRules);
+    console.log(`  inserted ${seedRules.length} classification rules`);
+  } else {
+    console.log(`  ${existingRuleCount} classification rules already present — skipping`);
+  }
 
   console.log("seeding classification rule seeds (signup template)...");
   const existingSeedCount = await db.$count(classificationRuleSeeds);
