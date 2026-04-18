@@ -31,6 +31,12 @@ const LINKS = [
     description:
       "Register your BotFather bot. Findash encrypts the token at rest and serves the webhook at /api/telegram/webhook/<botId>.",
   },
+  {
+    href: "/settings/invites",
+    title: "Invitaciones",
+    description:
+      "Generá códigos para que más gente pueda crear cuenta. El registro en Findash es cerrado — solo quien tiene un link válido se puede firmar.",
+  },
 ];
 
 export default function SettingsPage() {
