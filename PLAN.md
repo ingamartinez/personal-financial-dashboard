@@ -427,3 +427,10 @@ personal-financial-dashboard/
 7. **Phase 3**: Crear presupuesto → barra de progreso → alerta cuando excede
 8. **Phase 4**: Insights page → reporte coherente con sugerencias accionables
 9. **E2E**: Acceder desde celular via Tailscale → PWA instalable → dashboard responsive
+
+---
+
+## Related planning documents
+
+- **[docs/multi-user-plan.md](./docs/multi-user-plan.md)** — migration plan from single-user to multi-tenant (NextAuth + Google OAuth + invite codes + `user_id` on every tenant table). Canonical design reference for issue #179 and everything it unblocks.
+- **[docs/telegram-bot.md](./docs/telegram-bot.md)** — Telegram ingestion channel setup and usage.
