@@ -41,7 +41,7 @@ ssh root@droplet 'sudo -u findash /usr/local/bin/findash-backup.sh --force-r2'
 
 `infra/bootstrap.sh` handles:
 
-- Installing `awscli` via apt
+- Installing `awscli` via pipx into `/usr/local/bin` (apt dropped the package in Ubuntu 24.04)
 - Creating `/srv/findash/backups/daily/` with correct ownership
 - Copying `findash-backup.sh` to `/usr/local/bin/findash-backup.sh` (0755)
 - Installing `findash-backup.cron` to `/etc/cron.d/findash-backup` (0644)
