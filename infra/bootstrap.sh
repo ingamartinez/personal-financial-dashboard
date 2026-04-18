@@ -46,7 +46,8 @@ log "apt: install base packages"
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   curl ca-certificates gnupg lsb-release \
   ufw fail2ban unattended-upgrades \
-  build-essential rsync
+  build-essential rsync unzip \
+  debian-keyring debian-archive-keyring apt-transport-https
 
 log "users: ensure $FINDASH_USER and $DEPLOY_USER exist"
 for u in "$FINDASH_USER" "$DEPLOY_USER"; do
@@ -100,10 +101,13 @@ fi
 
 log "caddy 2: install"
 if ! command -v caddy &>/dev/null; then
-  install -d /etc/apt/keyrings
-  curl -fsSL "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" |
-    gpg --dearmor -o /etc/apt/keyrings/caddy-stable.gpg
-  curl -fsSL "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt" \
+  # Caddy's cloudsmith sources.list (debian.deb.txt) declares
+  # signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg — the
+  # keyring MUST land at that exact path or apt rejects the repo with
+  # NO_PUBKEY. Match the vendor's documented install flow exactly.
+  curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" |
+    gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt" \
     >/etc/apt/sources.list.d/caddy-stable.list
   apt-get update -y
   apt-get install -y caddy
