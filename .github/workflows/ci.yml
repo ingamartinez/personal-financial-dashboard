@@ -43,6 +43,10 @@ jobs:
       # NextAuth requires AUTH_SECRET at build/runtime. CI uses a dummy value;
       # real secrets live in production env files.
       AUTH_SECRET: ci-dummy-secret-not-used-in-production
+      # Seeds the bootstrap user (id=1) that every tenant table's user_id
+      # column defaults to. Without it the FK in #183's migrations fails.
+      BOOTSTRAP_USER_EMAIL: ci@findash.local
+      BOOTSTRAP_USER_NAME: CI Bootstrap
 
     steps:
       - uses: actions/checkout@v6
