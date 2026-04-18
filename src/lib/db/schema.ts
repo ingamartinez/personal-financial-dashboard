@@ -454,6 +454,18 @@ export type TelegramSessionState = {
   batch?: TelegramBatchItem[];
 };
 
+export const telegramBots = pgTable("telegram_bots", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenEncrypted: text("token_encrypted").notNull(),
+  username: varchar("username", { length: 64 }).notNull(),
+  webhookSecret: varchar("webhook_secret", { length: 64 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const telegramSessions = pgTable(
   "telegram_sessions",
   {
@@ -468,11 +480,3 @@ export const telegramSessions = pgTable(
   },
   (t) => [index("telegram_sessions_user_idx").on(t.userId)],
 );
-
-export const telegramPollState = pgTable("telegram_poll_state", {
-  id: integer("id").primaryKey(),
-  lastUpdateId: bigint("last_update_id", { mode: "bigint" })
-    .notNull()
-    .default(sql`0`),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});

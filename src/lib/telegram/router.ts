@@ -4,7 +4,6 @@ import type { AccountDetail } from "@/lib/accounts/queries";
 import type { NluAccountOption, NluCategoryOption, NluResult } from "@/lib/ai/transaction-nlu";
 import type { TelegramBatchItem, TelegramDraft, TelegramSessionState } from "@/lib/db/schema";
 import type { OcrMediaType, OcrResult } from "@/lib/ingestion/ocr";
-import { isAllowed } from "@/lib/telegram/allowlist";
 import { handleCommand, parseCommand } from "@/lib/telegram/commands";
 import { clearSession, getSession, mergeDraft, upsertSession } from "@/lib/telegram/session";
 import {
@@ -27,7 +26,6 @@ import {
   renderInserted,
   renderOcrEmpty,
   renderOcrProcessing,
-  renderUnauthorized,
   renderVoiceProcessing,
   renderVoiceTooLong,
   renderVoiceTranscription,
@@ -38,7 +36,6 @@ import { buildDraftFromParsedSms } from "@/lib/telegram/sms-draft";
 import { buildDraftFromOcrRow } from "@/lib/telegram/ocr-draft";
 
 export type RouterDeps = {
-  allowlist: Set<number>;
   listAccounts: () => Promise<AccountDetail[]>;
   listCategories: () => Promise<NluCategoryOption[]>;
   parseNlu: (opts: {
@@ -610,12 +607,6 @@ export async function handleUpdate(
 ): Promise<void> {
   if (update.message) {
     const msg = update.message;
-    if (!isAllowed(msg.from?.id, deps.allowlist)) {
-      if (msg.from?.id) {
-        await client.sendMessage({ chat_id: msg.chat.id, text: renderUnauthorized() });
-      }
-      return;
-    }
     if (msg.photo && msg.photo.length > 0) {
       await handlePhoto(msg, client, deps);
       return;
@@ -632,10 +623,6 @@ export async function handleUpdate(
 
   if (update.callback_query) {
     const cb = update.callback_query;
-    if (!isAllowed(cb.from.id, deps.allowlist)) {
-      await client.answerCallbackQuery({ callback_query_id: cb.id, text: "No autorizado" });
-      return;
-    }
     await handleCallback(cb, client, deps);
   }
 }

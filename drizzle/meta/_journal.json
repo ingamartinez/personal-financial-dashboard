@@ -113,6 +113,13 @@
       "when": 1776568000000,
       "tag": "0015_mighty_sheva_callister",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1776536908532,
+      "tag": "0016_telegram_bots_drop_poll_state",
+      "breakpoints": true
     }
   ]
 }

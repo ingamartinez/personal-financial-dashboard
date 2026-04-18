@@ -40,7 +40,6 @@ function buildClient(): {
 
 function buildDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
   return {
-    allowlist: new Set([111]),
     listAccounts: async () => [],
     listCategories: async () => [],
     parseNlu: async () => {
