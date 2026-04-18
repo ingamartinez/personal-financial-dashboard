@@ -4,6 +4,7 @@ import Google from "next-auth/providers/google";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
+import { copyRuleSeedsToUser } from "@/lib/auth/signup";
 
 declare module "next-auth" {
   interface Session {
@@ -53,8 +54,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           .update(users)
           .set({ googleSub: sub, name, pictureUrl, updatedAt: new Date() })
           .where(eq(users.id, row.id));
+        // Bootstrap users predate the seeds table — top up any missing rules
+        // so every user ends up with the full template regardless of signup
+        // timing. The unique index + ON CONFLICT makes this a cheap no-op once
+        // a user already owns the full set.
+        await copyRuleSeedsToUser(row.id);
       } else {
-        await db.insert(users).values({ googleSub: sub, email, name, pictureUrl });
+        const [inserted] = await db
+          .insert(users)
+          .values({ googleSub: sub, email, name, pictureUrl })
+          .returning({ id: users.id });
+        await copyRuleSeedsToUser(inserted.id);
       }
       return true;
     },
