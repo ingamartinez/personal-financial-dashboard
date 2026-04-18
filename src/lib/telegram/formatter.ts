@@ -73,10 +73,6 @@ export function renderAskCategory(): string {
   return "¿Qué categoría?";
 }
 
-export function renderUnauthorized(): string {
-  return "No autorizado.";
-}
-
 export function renderStart(): string {
   return [
     "¡Hola! Soy tu bot de Findash.",
