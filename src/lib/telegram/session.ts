@@ -30,17 +30,15 @@ export async function getSession(chatId: number): Promise<TelegramSessionState |
 
 export async function upsertSession(opts: {
   chatId: number;
+  userId: number;
   telegramUserId: number;
   state: TelegramSessionState;
 }): Promise<void> {
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-  // Single-bot poll worker scopes every session to user 1; #185 will resolve
-  // the Telegram chat → Findash user via telegram_bots + webhooks.
-  const userId = 1;
   await db
     .insert(telegramSessions)
     .values({
-      userId,
+      userId: opts.userId,
       chatId: BigInt(opts.chatId),
       telegramUserId: BigInt(opts.telegramUserId),
       state: opts.state,
@@ -50,7 +48,7 @@ export async function upsertSession(opts: {
     .onConflictDoUpdate({
       target: telegramSessions.chatId,
       set: {
-        userId,
+        userId: opts.userId,
         telegramUserId: BigInt(opts.telegramUserId),
         state: opts.state,
         updatedAt: new Date(),
