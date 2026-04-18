@@ -107,7 +107,7 @@ describe("POST /api/ingest/sms", () => {
   // Auth
   // ---------------------------------------------------------------------------
 
-  it("returns 503 when INGEST_WEBHOOK_TOKEN is not configured", async () => {
+  it("returns 401 when no auth path matches (no env var, no per-user token)", async () => {
     delete process.env.INGEST_WEBHOOK_TOKEN;
     const res = await POST(
       makeRequest({
@@ -115,7 +115,7 @@ describe("POST /api/ingest/sms", () => {
         headers: authedHeaders(),
       }),
     );
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(401);
   });
 
   it("returns 401 when Authorization header is missing", async () => {

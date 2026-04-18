@@ -13,6 +13,7 @@ import {
   type RoutableAccount,
 } from "@/lib/ingestion/sms-bancolombia";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
+import { resolveWebhookAuth } from "@/lib/webhook-tokens";
 import type { ClassificationMethod } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -32,14 +33,11 @@ type IngestOutcome =
 export async function POST(req: Request) {
   const startedAt = new Date();
 
-  const expectedToken = process.env.INGEST_WEBHOOK_TOKEN;
-  if (!expectedToken) {
-    return NextResponse.json({ error: "INGEST_WEBHOOK_TOKEN not configured" }, { status: 503 });
-  }
-
-  const authHeader = req.headers.get("authorization") ?? "";
-  const providedToken = authHeader.replace(/^Bearer\s+/i, "").trim();
-  if (!providedToken || providedToken !== expectedToken) {
+  const auth = await resolveWebhookAuth({
+    authHeader: req.headers.get("authorization"),
+    purpose: "sms",
+  });
+  if (!auth) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -94,7 +92,7 @@ export async function POST(req: Request) {
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    hint: "POST { sender, body, receivedAt? } with Authorization: Bearer <INGEST_WEBHOOK_TOKEN>",
+    hint: "POST { sender, body, receivedAt? } with Authorization: Bearer <per-user token from /settings/webhooks>",
   });
 }
 

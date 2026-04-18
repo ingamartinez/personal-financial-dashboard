@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { ingestionLogs } from "@/lib/db/schema";
+import { resolveWebhookAuth } from "@/lib/webhook-tokens";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,14 +11,11 @@ const MAX_BODY_BYTES = 50 * 1024;
 export async function POST(req: Request) {
   const startedAt = new Date();
 
-  const expectedToken = process.env.INGEST_WEBHOOK_TOKEN;
-  if (!expectedToken) {
-    return NextResponse.json({ error: "INGEST_WEBHOOK_TOKEN not configured" }, { status: 503 });
-  }
-
-  const authHeader = req.headers.get("authorization") ?? "";
-  const providedToken = authHeader.replace(/^Bearer\s+/i, "").trim();
-  if (!providedToken || providedToken !== expectedToken) {
+  const auth = await resolveWebhookAuth({
+    authHeader: req.headers.get("authorization"),
+    purpose: "debug",
+  });
+  if (!auth) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -89,6 +87,6 @@ export async function POST(req: Request) {
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    hint: "POST any payload with Authorization: Bearer <INGEST_WEBHOOK_TOKEN>",
+    hint: "POST any payload with Authorization: Bearer <per-user token from /settings/webhooks>",
   });
 }
