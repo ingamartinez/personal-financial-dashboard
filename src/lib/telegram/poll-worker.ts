@@ -62,11 +62,22 @@ export async function runPollWorker(opts: PollWorkerOptions): Promise<void> {
     now: opts.deps?.now,
   };
 
+  // If no external signal is provided, own the shutdown lifecycle. This keeps
+  // `process.once` out of `instrumentation.ts` (which Next.js analyzes for
+  // Edge runtime compatibility) and limits it to this Node-only module.
+  const ownedAbort = opts.signal ? null : new AbortController();
+  const signal = opts.signal ?? ownedAbort!.signal;
+  const shutdown = () => ownedAbort?.abort();
+  if (ownedAbort) {
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+  }
+
   let offset = await getOffset();
   let backoff = BACKOFF_MIN_MS;
   console.log(`[telegram] long-poll worker started (offset=${offset})`);
 
-  while (!opts.signal?.aborted) {
+  while (!signal.aborted) {
     try {
       const updates = await client.getUpdates({
         offset: offset + 1,
@@ -86,12 +97,26 @@ export async function runPollWorker(opts: PollWorkerOptions): Promise<void> {
         }
       }
     } catch (err) {
-      (opts.onError ?? ((e) => console.error("[telegram] poll error:", e)))(err);
-      await delay(backoff, opts.signal);
+      const reason = describePollError(err);
+      (opts.onError ?? ((e) => console.error(`[telegram] poll error (${reason}):`, e)))(err);
+      await delay(backoff, signal);
       backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
     }
   }
   console.log("[telegram] long-poll worker stopped");
+}
+
+function describePollError(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as Error & { cause?: { code?: string } }).cause;
+    if (cause?.code === "ETIMEDOUT")
+      return "network timeout reaching api.telegram.org — check connectivity";
+    if (cause?.code === "ENOTFOUND") return "DNS lookup failed for api.telegram.org";
+    if (cause?.code === "ECONNREFUSED") return "connection refused by api.telegram.org";
+    if (err.message.includes("401")) return "invalid TELEGRAM_BOT_TOKEN";
+    return err.message;
+  }
+  return String(err);
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {

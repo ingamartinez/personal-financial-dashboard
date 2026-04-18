@@ -2,7 +2,6 @@
 // spawning duplicate long-poll workers or duplicate cron schedules.
 declare global {
   var __findashBgRegistered: boolean | undefined;
-  var __findashTelegramAbort: AbortController | undefined;
 }
 
 /**
@@ -54,18 +53,14 @@ export async function register() {
   }
 
   const { runPollWorker } = await import("@/lib/telegram/poll-worker");
-  const abort = new AbortController();
-  globalThis.__findashTelegramAbort = abort;
 
+  // runPollWorker wires its own SIGTERM/SIGINT handlers. Keeping those out of
+  // this file avoids Next.js flagging `process.once` during the Edge-runtime
+  // static analysis of the instrumentation hook.
   void runPollWorker({
     token,
     allowedUserIds: process.env.TELEGRAM_ALLOWED_USER_IDS,
-    signal: abort.signal,
   }).catch((err) => {
     console.error("[findash] telegram worker crashed:", err);
   });
-
-  const shutdown = () => abort.abort();
-  process.once("SIGTERM", shutdown);
-  process.once("SIGINT", shutdown);
 }
