@@ -1,0 +1,196 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (defaults to main)"
+        required: false
+        default: "main"
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to DigitalOcean
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
+
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      APP_HEALTH_URL: ${{ secrets.APP_HEALTH_URL }}
+      APP_ROOT: /srv/findash
+
+    steps:
+      - name: Resolve target ref
+        id: target
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            echo "ref=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.target.outputs.ref }}
+          fetch-depth: 1
+
+      - name: Resolve SHA
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build standalone artifact
+        env:
+          # Build-time stubs only. Real secrets live on the droplet in
+          # /srv/findash/env/findash.env and are read by systemd at process start.
+          AUTH_SECRET: build-dummy-never-used-in-prod
+          BOOTSTRAP_USER_EMAIL: build@findash.local
+          BOOTSTRAP_USER_NAME: Build Bootstrap
+        run: bun run build
+
+      - name: Package release tarball
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          STAGE=release-stage
+          mkdir -p "$STAGE"
+          cp -r .next/standalone/. "$STAGE"/
+          mkdir -p "$STAGE/.next"
+          cp -r .next/static "$STAGE/.next/static"
+          if [ -d public ]; then cp -r public "$STAGE/public"; fi
+          # drizzle-orm/postgres-js/migrator isn't traced by Next's standalone
+          # output (no app code imports it), so overlay the full drizzle-orm
+          # and postgres packages. Tarball stays well under 50 MB.
+          cp -r node_modules/drizzle-orm "$STAGE/node_modules/drizzle-orm"
+          cp -r node_modules/postgres "$STAGE/node_modules/postgres"
+          cp -r drizzle "$STAGE/drizzle"
+          cp scripts/migrate-prod.ts "$STAGE/migrate-prod.ts"
+          echo "$GIT_SHA" > "$STAGE/GIT_SHA"
+          tar -czf release.tar.gz -C "$STAGE" .
+          ls -lh release.tar.gz
+
+      - name: Setup SSH
+        run: |
+          set -eu
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Upload tarball
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            release.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/release-$GIT_SHA.tar.gz"
+
+      - name: Extract release + write release.env
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
+          TARBALL="/tmp/release-$GIT_SHA.tar.gz"
+          ENV_FILE="$APP_ROOT/env/release.env"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            sudo -n -u findash install -d -m 0755 '$RELEASE_DIR'
+            sudo -n -u findash tar -xzf '$TARBALL' -C '$RELEASE_DIR'
+            rm -f '$TARBALL'
+            printf 'GIT_SHA=%s\n' '$GIT_SHA' | sudo -n -u findash tee '$ENV_FILE' >/dev/null
+            sudo -n -u findash chmod 0640 '$ENV_FILE'
+          "
+
+      - name: Run migrations
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            cd '$RELEASE_DIR'
+            sudo -n -u findash /usr/local/bin/bun migrate-prod.ts
+          "
+
+      - name: Flip symlink + restart findash
+        id: flip
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          PREV=$(ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "readlink '$APP_ROOT/app/current' 2>/dev/null || true")
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            sudo -n -u findash ln -sfn '$APP_ROOT/app/releases/$GIT_SHA' '$APP_ROOT/app/current'
+            sudo -n systemctl restart findash.service
+          "
+
+      - name: Health probe
+        run: |
+          set -eu
+          for i in $(seq 1 15); do
+            body=$(curl -fsS --max-time 5 "$APP_HEALTH_URL" 2>/dev/null || true)
+            if echo "$body" | grep -q '"ok":true'; then
+              echo "health OK on attempt $i"
+              echo "$body"
+              exit 0
+            fi
+            echo "health $i/15: not ready (body: ${body:-<empty>})"
+            sleep 3
+          done
+          echo "health check failed after 15 attempts"
+          exit 1
+
+      - name: Rollback on failure
+        if: failure() && steps.flip.outputs.prev != ''
+        env:
+          PREV: ${{ steps.flip.outputs.prev }}
+        run: |
+          set -eu
+          echo "rolling back to $PREV"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            sudo -n -u findash ln -sfn '$PREV' '$APP_ROOT/app/current'
+            sudo -n systemctl restart findash.service
+          "
+
+      - name: Prune old releases (keep 5)
+        if: success()
+        run: |
+          set -eu
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            cd '$APP_ROOT/app/releases'
+            ls -1t | tail -n +6 | while read -r rel; do
+              [ -n \"\$rel\" ] || continue
+              sudo -n -u findash rm -rf \"\$rel\"
+              echo \"pruned \$rel\"
+            done
+          "
