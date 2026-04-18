@@ -126,6 +126,14 @@ export function renderAskPhotoAccount(): string {
   return "📸 Recibí la foto. ¿A qué cuenta pertenece?";
 }
 
+export function renderNoAccounts(): string {
+  return [
+    "⚠️ Todavía no tenés cuentas cargadas.",
+    "",
+    "Entrá a Findash en la web, andá a *Settings → Accounts* y creá al menos una antes de registrar movimientos.",
+  ].join("\n");
+}
+
 export function renderVoiceProcessing(): string {
   return "🎙️ Escuchando el audio…";
 }
