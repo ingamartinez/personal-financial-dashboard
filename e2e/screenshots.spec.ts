@@ -9,6 +9,8 @@ const pages = [
   { name: "insights", path: "/insights", hasDonut: false },
   { name: "settings", path: "/settings", hasDonut: false },
   { name: "settings-ingestion", path: "/settings/ingestion", hasDonut: false },
+  { name: "signup-missing", path: "/signup", hasDonut: false },
+  { name: "signup-unknown", path: "/signup?code=__DOESNOTEXIST__", hasDonut: false },
 ];
 
 const modes = ["light", "dark"] as const;

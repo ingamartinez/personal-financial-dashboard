@@ -5,6 +5,8 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
 import { copyRuleSeedsToUser } from "@/lib/auth/signup";
+import { consumeInviteCode } from "@/lib/invite-codes";
+import { clearInviteCookie, readInviteCookie } from "@/lib/invite-codes/cookie";
 
 declare module "next-auth" {
   interface Session {
@@ -28,6 +30,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: "jwt" },
   pages: {
     signIn: "/login",
+    // When signIn returns false (new user without a consumable invite) we want
+    // the user to land back on /signup with a friendly error, not on the
+    // default NextAuth error screen.
+    error: "/signup",
   },
   callbacks: {
     async signIn({ account, profile }) {
@@ -59,12 +65,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // timing. The unique index + ON CONFLICT makes this a cheap no-op once
         // a user already owns the full set.
         await copyRuleSeedsToUser(row.id);
+        // Existing user re-auth — never consume an invite cookie they may have
+        // been carrying; issue spec is explicit about not double-spending.
+        await clearInviteCookie();
       } else {
+        // New user: require a valid, unconsumed invite. Atomic consumption is
+        // the real gate — the cookie-validation on /signup is only a UX hint.
+        const pendingCode = await readInviteCookie();
+        if (!pendingCode) return false;
+        const consumed = await consumeInviteCode(pendingCode);
+        if (!consumed) return false;
         const [inserted] = await db
           .insert(users)
           .values({ googleSub: sub, email, name, pictureUrl })
           .returning({ id: users.id });
         await copyRuleSeedsToUser(inserted.id);
+        await clearInviteCookie();
       }
       return true;
     },
