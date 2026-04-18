@@ -24,6 +24,7 @@ import {
   renderConfirmCard,
   renderError,
   renderInserted,
+  renderNoAccounts,
   renderOcrEmpty,
   renderOcrProcessing,
   renderVoiceProcessing,
@@ -118,6 +119,17 @@ function pickDefaultCurrency(accounts: NluAccountOption[], accountId?: number): 
   return "COP";
 }
 
+async function bailIfNoAccounts(
+  chatId: number,
+  accounts: NluAccountOption[],
+  client: TelegramClient,
+): Promise<boolean> {
+  if (accounts.length > 0) return false;
+  await clearSession(chatId);
+  await client.sendMessage({ chat_id: chatId, text: renderNoAccounts() });
+  return true;
+}
+
 async function advanceFlow(opts: {
   chatId: number;
   telegramUserId: number;
@@ -138,6 +150,7 @@ async function advanceFlow(opts: {
   }
 
   if (typeof draft.accountId !== "number") {
+    if (await bailIfNoAccounts(chatId, accounts, client)) return;
     const next: TelegramSessionState = { ...state, step: "awaiting_account" };
     await upsertSession({ chatId, userId: deps.userId, telegramUserId, state: next });
     await client.sendMessage({
@@ -174,6 +187,8 @@ async function handlePhoto(
 
   const accountsFull = await deps.listAccounts();
   const accounts = accountsToNluOptions(accountsFull);
+
+  if (await bailIfNoAccounts(chatId, accounts, client)) return;
 
   const state: TelegramSessionState = {
     step: "awaiting_photo_account",
@@ -557,9 +572,10 @@ async function handleCallback(
   }
 
   if (data === CALLBACK.EDIT_ACCOUNT) {
+    await client.answerCallbackQuery({ callback_query_id: cb.id });
+    if (await bailIfNoAccounts(chatId, accounts, client)) return;
     const next: TelegramSessionState = { ...session, step: "awaiting_account" };
     await upsertSession({ chatId, userId: deps.userId, telegramUserId: userId, state: next });
-    await client.answerCallbackQuery({ callback_query_id: cb.id });
     await client.sendMessage({
       chat_id: chatId,
       text: renderAskAccount(),
