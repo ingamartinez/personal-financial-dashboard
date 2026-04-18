@@ -71,17 +71,15 @@ export async function listWebhookTokensForUser(userId: number) {
 
 export type ResolvedWebhookAuth = {
   userId: number;
-  source: "per-user-token" | "legacy-env-token";
-  tokenId: number | null;
+  tokenId: number;
 };
 
 /**
  * Resolves a webhook request's userId from an `Authorization: Bearer <token>`
- * header. Tries the per-user webhook_tokens table first; if that misses, falls
- * back to the legacy INGEST_WEBHOOK_TOKEN env var (attributes to user 1).
+ * header by hashing the plaintext and looking it up in webhook_tokens.
  *
- * Returns null if neither path authenticates. Callers must NOT leak which path
- * succeeded in error messages — both misses return the same null.
+ * Returns null when the header is missing, the hash doesn't match any row, the
+ * matched row is revoked, or the row's purpose doesn't match.
  */
 export async function resolveWebhookAuth(opts: {
   authHeader: string | null;
@@ -91,17 +89,9 @@ export async function resolveWebhookAuth(opts: {
   if (!provided) return null;
 
   const match = await lookupPerUserToken(provided, opts.purpose);
-  if (match) {
-    void markTokenUsed(match.tokenId);
-    return { userId: match.userId, source: "per-user-token", tokenId: match.tokenId };
-  }
-
-  const legacy = process.env.INGEST_WEBHOOK_TOKEN;
-  if (legacy && provided === legacy) {
-    return { userId: 1, source: "legacy-env-token", tokenId: null };
-  }
-
-  return null;
+  if (!match) return null;
+  void markTokenUsed(match.tokenId);
+  return { userId: match.userId, tokenId: match.tokenId };
 }
 
 async function lookupPerUserToken(

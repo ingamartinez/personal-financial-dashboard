@@ -43,7 +43,7 @@ describe("webhook-tokens module", () => {
   });
 
   it("resolveWebhookAuth accepts a valid per-user token and returns userId", async () => {
-    const { plaintext } = await mintWebhookToken({
+    const { id, plaintext } = await mintWebhookToken({
       userId: TEST_USER_ID,
       purpose: "sms",
       label: LABEL_PREFIX,
@@ -54,7 +54,7 @@ describe("webhook-tokens module", () => {
     });
     expect(result).not.toBeNull();
     expect(result?.userId).toBe(TEST_USER_ID);
-    expect(result?.source).toBe("per-user-token");
+    expect(result?.tokenId).toBe(id);
   });
 
   it("resolveWebhookAuth rejects a token minted for a different purpose", async () => {
@@ -89,16 +89,14 @@ describe("webhook-tokens module", () => {
     expect(retry).toBe(false);
   });
 
-  it("resolveWebhookAuth falls back to INGEST_WEBHOOK_TOKEN env var and attributes to user 1", async () => {
-    process.env.INGEST_WEBHOOK_TOKEN = "legacy-fallback-token-for-test";
+  it("resolveWebhookAuth ignores the retired INGEST_WEBHOOK_TOKEN env var", async () => {
+    process.env.INGEST_WEBHOOK_TOKEN = "legacy-fallback-token-no-longer-honored";
     try {
       const result = await resolveWebhookAuth({
-        authHeader: `Bearer legacy-fallback-token-for-test`,
+        authHeader: `Bearer legacy-fallback-token-no-longer-honored`,
         purpose: "sms",
       });
-      expect(result).not.toBeNull();
-      expect(result?.userId).toBe(1);
-      expect(result?.source).toBe("legacy-env-token");
+      expect(result).toBeNull();
     } finally {
       delete process.env.INGEST_WEBHOOK_TOKEN;
     }

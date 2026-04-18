@@ -1,10 +1,14 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { webhookTokens } from "@/lib/db/schema";
+import { mintWebhookToken } from "@/lib/webhook-tokens";
 import { POST } from "./route";
 import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
-const TEST_TOKEN = "test-token-vitest-sms-ingest";
+const TEST_USER_ID = 1;
+const TEST_TOKEN_LABEL = "vitest-sms-route";
+let TEST_TOKEN = "";
 // SMS bodies used in tests — we clean up by externalId, not by marker,
 // because the externalId is deterministic per (kind, amount, date, ...).
 const TEST_EXTERNAL_ID_PREFIX = "bcol-sms:";
@@ -94,12 +98,21 @@ function authedHeaders() {
 }
 
 describe("POST /api/ingest/sms", () => {
-  beforeEach(() => {
-    process.env.INGEST_WEBHOOK_TOKEN = TEST_TOKEN;
+  beforeAll(async () => {
+    const { plaintext } = await mintWebhookToken({
+      userId: TEST_USER_ID,
+      purpose: "sms",
+      label: TEST_TOKEN_LABEL,
+    });
+    TEST_TOKEN = plaintext;
   });
   afterEach(cleanup);
   afterAll(async () => {
-    delete process.env.INGEST_WEBHOOK_TOKEN;
+    await db
+      .delete(webhookTokens)
+      .where(
+        and(eq(webhookTokens.userId, TEST_USER_ID), eq(webhookTokens.label, TEST_TOKEN_LABEL)),
+      );
     await db.$client.end({ timeout: 1 });
   });
 
@@ -107,23 +120,12 @@ describe("POST /api/ingest/sms", () => {
   // Auth
   // ---------------------------------------------------------------------------
 
-  it("returns 401 when no auth path matches (no env var, no per-user token)", async () => {
-    delete process.env.INGEST_WEBHOOK_TOKEN;
-    const res = await POST(
-      makeRequest({
-        body: jsonBody({ body: "test" }),
-        headers: authedHeaders(),
-      }),
-    );
-    expect(res.status).toBe(401);
-  });
-
   it("returns 401 when Authorization header is missing", async () => {
     const res = await POST(makeRequest({ body: jsonBody({ body: "test" }) }));
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 when bearer token does not match", async () => {
+  it("returns 401 when bearer token does not match any webhook_token row", async () => {
     const res = await POST(
       makeRequest({
         body: jsonBody({ body: "test" }),
