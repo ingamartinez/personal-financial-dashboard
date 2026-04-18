@@ -115,6 +115,14 @@ psql -d findash          # direct DB access (peer auth, no password)
 
 `.env.local` is NOT committed — see `.env.example` for required vars.
 
+## Production deploy
+
+Full runbook: **`docs/deploy.md`**
+
+Covers topology, host inventory, first-time bring-up, automated CD flow,
+manual deploy via `workflow_dispatch`, rollback, day-2 ops, backup/restore,
+secret rotation, R2 off-site backup setup, and the threat model.
+
 ## Test database (findash_test)
 
 Integration tests DELETE rows during cleanup, so they MUST run against a
