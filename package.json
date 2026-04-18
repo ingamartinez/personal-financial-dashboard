@@ -16,6 +16,7 @@
     "db:migrate:test": "PGDATABASE=findash_test drizzle-kit migrate",
     "db:seed:test": "PGDATABASE=findash_test bun run src/lib/db/seed.ts",
     "db:bootstrap:invites": "bun run scripts/bootstrap-invites.ts",
+    "db:bootstrap:webhook-tokens": "bun run scripts/bootstrap-webhook-tokens.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",

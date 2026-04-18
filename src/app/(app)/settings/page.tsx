@@ -19,6 +19,12 @@ const LINKS = [
     description:
       "Salud de la ingestión por SMS: últimos 30 días, detección de drift y regla activa.",
   },
+  {
+    href: "/settings/webhooks",
+    title: "Webhook tokens",
+    description:
+      "Per-user bearer tokens for the SMS and debug ingest endpoints. Mint, copy once, revoke when needed.",
+  },
 ];
 
 export default function SettingsPage() {

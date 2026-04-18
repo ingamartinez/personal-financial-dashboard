@@ -43,6 +43,29 @@ export const inviteCodes = pgTable(
   (t) => [check("invite_codes_uses_count_check", sql`${t.usesCount} <= ${t.maxUses}`)],
 );
 
+export const webhookPurpose = pgEnum("webhook_purpose", ["sms", "debug"]);
+
+export const webhookTokens = pgTable(
+  "webhook_tokens",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    purpose: webhookPurpose("purpose").notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+    label: varchar("label", { length: 120 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("webhook_tokens_user_purpose_active_idx")
+      .on(t.userId, t.purpose)
+      .where(sql`${t.revokedAt} IS NULL`),
+  ],
+);
+
 export const accountType = pgEnum("account_type", ["savings", "credit_card", "loan"]);
 
 export const currency = pgEnum("currency", ["COP", "USD"]);

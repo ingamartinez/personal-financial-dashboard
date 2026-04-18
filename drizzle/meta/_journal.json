@@ -99,6 +99,13 @@
       "when": 1776567800000,
       "tag": "0013_mature_jackpot",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1776567900000,
+      "tag": "0014_fuzzy_zzzax",
+      "breakpoints": true
     }
   ]
 }
