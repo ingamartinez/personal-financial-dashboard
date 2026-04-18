@@ -14,7 +14,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { linkTxToRecurring } from "@/app/settings/recurring/actions";
+import { linkTxToRecurring } from "@/app/(app)/settings/recurring/actions";
 import type { LinkCandidate } from "@/lib/recurring/gap-queries";
 import type { Currency } from "@/lib/types";
 

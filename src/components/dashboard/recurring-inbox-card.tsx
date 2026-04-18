@@ -14,7 +14,7 @@ import {
   dismissUpcoming,
   fetchLinkCandidates,
   promoteUpcoming,
-} from "@/app/settings/recurring/actions";
+} from "@/app/(app)/settings/recurring/actions";
 import { RecurringGapLinkDialog } from "@/components/dashboard/recurring-gap-link-dialog";
 import type { LinkCandidate } from "@/lib/recurring/gap-queries";
 import type { Currency } from "@/lib/types";

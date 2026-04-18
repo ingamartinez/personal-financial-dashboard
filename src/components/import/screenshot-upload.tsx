@@ -13,7 +13,7 @@ import {
   confirmOcrImport,
   previewScreenshotOcr,
   type OcrPreviewResult,
-} from "@/app/settings/import/actions";
+} from "@/app/(app)/settings/import/actions";
 import type { Currency } from "@/lib/types";
 
 type AccountOption = { id: number; name: string; currency: Currency };

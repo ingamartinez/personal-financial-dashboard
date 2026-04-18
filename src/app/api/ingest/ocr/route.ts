@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { previewScreenshotOcr } from "@/app/settings/import/actions";
+import { previewScreenshotOcr } from "@/app/(app)/settings/import/actions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

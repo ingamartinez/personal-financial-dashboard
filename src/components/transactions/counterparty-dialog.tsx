@@ -27,7 +27,7 @@ import {
   updateCounterparty,
   mergeCounterparty,
   splitCounterparty,
-} from "@/app/transactions/actions";
+} from "@/app/(app)/transactions/actions";
 import type { CounterpartyAlias, CounterpartyBrief, CounterpartyValue } from "@/lib/types";
 import type { CategoryOption } from "./category-cell";
 import { CategoryCombobox } from "./category-combobox";
