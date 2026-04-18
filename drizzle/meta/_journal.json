@@ -127,6 +127,13 @@
       "when": 1776568200000,
       "tag": "0017_nebulous_rachel_grey",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1776568300000,
+      "tag": "0018_simple_pestilence",
+      "breakpoints": true
     }
   ]
 }

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { getSessionUser } from "@/lib/auth/session";
+import { requireAdmin } from "@/lib/auth/session";
 import { mintInviteCode, setInviteDisabled } from "@/lib/invite-codes";
 import { buildSignupUrl } from "./signup-url";
 
@@ -20,7 +20,7 @@ export async function mintInviteCodeAction(
   _prev: MintActionState,
   formData: FormData,
 ): Promise<MintActionState> {
-  const session = await getSessionUser();
+  const session = await requireAdmin();
   const parsed = mintSchema.safeParse({
     maxUses: formData.get("maxUses"),
     expiresInDays: formData.get("expiresInDays") || undefined,
@@ -47,7 +47,7 @@ const toggleSchema = z.object({
 });
 
 export async function setInviteDisabledAction(formData: FormData): Promise<void> {
-  const session = await getSessionUser();
+  const session = await requireAdmin();
   const parsed = toggleSchema.safeParse({
     code: formData.get("code"),
     disabled: formData.get("disabled"),

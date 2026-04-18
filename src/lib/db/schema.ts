@@ -18,15 +18,21 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
-export const users = pgTable("users", {
-  id: serial("id").primaryKey(),
-  googleSub: varchar("google_sub", { length: 255 }).unique(),
-  email: varchar("email", { length: 320 }).notNull().unique(),
-  name: varchar("name", { length: 200 }).notNull(),
-  pictureUrl: text("picture_url"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: serial("id").primaryKey(),
+    googleSub: varchar("google_sub", { length: 255 }).unique(),
+    email: varchar("email", { length: 320 }).notNull().unique(),
+    name: varchar("name", { length: 200 }).notNull(),
+    pictureUrl: text("picture_url"),
+    role: varchar("role", { length: 20 }).notNull().default("user"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("users_role_check", sql`${t.role} IN ('admin', 'user')`)],
+);
 
 export const inviteCodes = pgTable(
   "invite_codes",

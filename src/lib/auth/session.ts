@@ -4,6 +4,8 @@ export type SessionUser = {
   id: number;
   email: string;
   name: string;
+  role: "admin" | "user";
+  active: boolean;
 };
 
 export async function getSessionUser(): Promise<SessionUser> {
@@ -15,6 +17,8 @@ export async function getSessionUser(): Promise<SessionUser> {
     id: session.user.id,
     email: session.user.email,
     name: session.user.name ?? session.user.email,
+    role: session.user.role ?? "user",
+    active: session.user.active ?? true,
   };
 }
 
@@ -27,5 +31,15 @@ export async function getSessionUserOrNull(): Promise<SessionUser | null> {
     id: session.user.id,
     email: session.user.email,
     name: session.user.name ?? session.user.email,
+    role: session.user.role ?? "user",
+    active: session.user.active ?? true,
   };
+}
+
+export async function requireAdmin(): Promise<SessionUser> {
+  const user = await getSessionUser();
+  if (user.role !== "admin") {
+    throw new Error("FORBIDDEN");
+  }
+  return user;
 }
