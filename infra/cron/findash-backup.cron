@@ -1,0 +1,12 @@
+# findash-backup — daily pg_dump at 03:15 UTC (runs as findash user).
+# Weekly R2 off-site sync is triggered from within the script on Sundays.
+#
+# Install: cp infra/cron/findash-backup.cron /etc/cron.d/findash-backup
+# Permissions: chmod 0644 /etc/cron.d/findash-backup (owned root:root)
+#
+# Logs: /srv/findash/logs/backup.log
+#
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+15 3 * * * findash /usr/local/bin/findash-backup.sh
