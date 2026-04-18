@@ -7,8 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Nav } from "./nav";
 import { ThemeToggle } from "./theme-toggle";
+import { UserMenu } from "./user-menu";
 
-export function Header() {
+type HeaderProps = {
+  user: {
+    email: string;
+    name: string;
+    pictureUrl?: string | null;
+  } | null;
+};
+
+export function Header({ user }: HeaderProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -25,6 +34,7 @@ export function Header() {
 
         <div className="ml-auto flex items-center gap-1">
           <ThemeToggle />
+          {user ? <UserMenu user={user} /> : null}
           <div className="md:hidden">
             <Sheet open={open} onOpenChange={setOpen}>
               <SheetTrigger asChild>
