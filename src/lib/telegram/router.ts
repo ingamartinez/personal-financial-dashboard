@@ -28,6 +28,9 @@ import {
   renderOcrEmpty,
   renderOcrProcessing,
   renderUnauthorized,
+  renderVoiceProcessing,
+  renderVoiceTooLong,
+  renderVoiceTranscription,
 } from "@/lib/telegram/formatter";
 import { insertBatch, insertFromDraft, isDraftComplete } from "@/lib/telegram/confirm";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
@@ -47,8 +50,15 @@ export type RouterDeps = {
     mediaType: OcrMediaType;
     accountId: number;
   }) => Promise<OcrResult>;
+  transcribeVoice: (opts: {
+    audioBuffer: Buffer;
+    mimeType: string;
+    language?: "es" | "en";
+  }) => Promise<{ text: string; durationMs: number; model: string }>;
   now?: () => Date;
 };
+
+export const MAX_VOICE_DURATION_SECONDS = 60;
 
 function accountsToNluOptions(accounts: AccountDetail[]): NluAccountOption[] {
   return accounts
@@ -262,6 +272,64 @@ function mediaTypeFromPath(filePath: string): OcrMediaType {
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".gif")) return "image/gif";
   return "image/jpeg";
+}
+
+async function handleVoice(
+  message: TelegramMessage,
+  client: TelegramClient,
+  deps: RouterDeps,
+): Promise<void> {
+  // Voice notes (`.voice`) are OGG/Opus from the Telegram mic; uploaded audio
+  // files (`.audio`) can be MP3/M4A/WAV. Both carry `duration` in seconds.
+  const media = message.voice ?? message.audio;
+  const chatId = message.chat.id;
+  if (!media) return;
+
+  if (media.duration > MAX_VOICE_DURATION_SECONDS) {
+    await client.sendMessage({
+      chat_id: chatId,
+      text: renderVoiceTooLong(MAX_VOICE_DURATION_SECONDS),
+    });
+    return;
+  }
+
+  await client.sendMessage({ chat_id: chatId, text: renderVoiceProcessing() });
+
+  let transcribed: string;
+  try {
+    const file = await client.getFile(media.file_id);
+    if (!file.file_path) throw new Error("Telegram did not return a file_path");
+    const buf = await client.downloadFile(file.file_path);
+    const result = await deps.transcribeVoice({
+      audioBuffer: buf,
+      mimeType: media.mime_type ?? "audio/ogg",
+      language: "es",
+    });
+    transcribed = result.text;
+  } catch (err) {
+    console.error("[telegram] STT failed:", err);
+    await client.sendMessage({
+      chat_id: chatId,
+      text: renderError("No pude transcribir el audio. Probá de nuevo o mandalo como texto."),
+    });
+    return;
+  }
+
+  if (!transcribed.trim()) {
+    await client.sendMessage({
+      chat_id: chatId,
+      text: renderError("No entendí el audio. Probá hablar más cerca del micrófono."),
+    });
+    return;
+  }
+
+  // Echo the transcription first so the user can eyeball misrecognitions
+  // BEFORE the NLU commits it to a draft.
+  await client.sendMessage({ chat_id: chatId, text: renderVoiceTranscription(transcribed) });
+
+  // Reuse the full text pipeline (commands, amount-step shortcut, SMS, NLU).
+  // A transcription will not start with "/", so commands naturally don't fire.
+  await handleText({ ...message, text: transcribed }, client, deps);
 }
 
 async function handleText(
@@ -547,6 +615,10 @@ export async function handleUpdate(
     }
     if (msg.photo && msg.photo.length > 0) {
       await handlePhoto(msg, client, deps);
+      return;
+    }
+    if (msg.voice || msg.audio) {
+      await handleVoice(msg, client, deps);
       return;
     }
     if (typeof msg.text === "string") {

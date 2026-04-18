@@ -15,6 +15,7 @@ import { handleUpdate, type RouterDeps } from "@/lib/telegram/router";
 import { parseAllowlist } from "@/lib/telegram/allowlist";
 import { parseTransactionMessage } from "@/lib/ai/transaction-nlu";
 import { extractTransactionsFromImage } from "@/lib/ingestion/ocr";
+import { transcribeAudio } from "@/lib/stt/transcribe";
 import { listAccountsDetailed } from "@/lib/accounts/queries";
 import { listCategories } from "@/lib/transactions/queries";
 
@@ -70,6 +71,7 @@ export async function runPollWorker(opts: PollWorkerOptions): Promise<void> {
     parseNlu:
       opts.deps?.parseNlu ?? ((p) => parseTransactionMessage({ text: p.text, context: p.context })),
     runOcr: opts.deps?.runOcr ?? ((p) => extractTransactionsFromImage(p)),
+    transcribeVoice: opts.deps?.transcribeVoice ?? ((p) => transcribeAudio(p)),
     now: opts.deps?.now,
   };
 

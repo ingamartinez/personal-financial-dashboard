@@ -130,6 +130,18 @@ export function renderAskPhotoAccount(): string {
   return "📸 Recibí la foto. ¿A qué cuenta pertenece?";
 }
 
+export function renderVoiceProcessing(): string {
+  return "🎙️ Escuchando el audio…";
+}
+
+export function renderVoiceTooLong(maxSeconds: number): string {
+  return `⚠️ El audio es muy largo (>${maxSeconds}s). Mandalo como texto o grabá uno más corto.`;
+}
+
+export function renderVoiceTranscription(text: string): string {
+  return `🎙️ Escuché: "${text}"`;
+}
+
 export function renderOcrProcessing(): string {
   return "⏳ Procesando foto con OCR…";
 }
