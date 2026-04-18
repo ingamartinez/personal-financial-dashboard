@@ -302,7 +302,14 @@ export type TelegramSessionStep =
   | "awaiting_account"
   | "awaiting_amount"
   | "awaiting_category"
-  | "awaiting_confirm";
+  | "awaiting_confirm"
+  | "awaiting_photo_account"
+  | "awaiting_batch_confirm";
+
+export type TelegramBatchItem = {
+  draft: TelegramDraft;
+  externalId: string;
+};
 
 export type TelegramDraft = {
   amountCents?: string;
@@ -323,6 +330,8 @@ export type TelegramSessionState = {
   sourceMessageId?: number;
   promptMessageId?: number;
   externalIdOverride?: string;
+  photoFileId?: string;
+  batch?: TelegramBatchItem[];
 };
 
 export const telegramSessions = pgTable("telegram_sessions", {

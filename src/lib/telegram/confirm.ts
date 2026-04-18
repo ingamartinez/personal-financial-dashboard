@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { transactions, type TelegramDraft } from "@/lib/db/schema";
+import { transactions, type TelegramBatchItem, type TelegramDraft } from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
 
@@ -100,4 +100,31 @@ export async function insertFromDraft(opts: {
   } catch (err) {
     return { status: "error", reason: err instanceof Error ? err.message : String(err) };
   }
+}
+
+export type BatchResult = {
+  inserted: number[];
+  duplicated: number;
+  errors: string[];
+};
+
+export async function insertBatch(opts: {
+  items: TelegramBatchItem[];
+  chatId: number;
+}): Promise<BatchResult> {
+  const { items, chatId } = opts;
+  const result: BatchResult = { inserted: [], duplicated: 0, errors: [] };
+
+  for (const item of items) {
+    const outcome = await insertFromDraft({
+      draft: item.draft,
+      chatId,
+      externalIdOverride: item.externalId,
+    });
+    if (outcome.status === "inserted") result.inserted.push(outcome.txId);
+    else if (outcome.status === "duplicated") result.duplicated += 1;
+    else result.errors.push(outcome.reason);
+  }
+
+  return result;
 }

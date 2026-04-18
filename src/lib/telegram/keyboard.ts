@@ -9,6 +9,7 @@ export const CALLBACK = {
   ACCOUNT_PREFIX: "a:",
   CATEGORY_PREFIX: "k:",
   BACK: "b",
+  BATCH_CONFIRM: "bc",
 } as const;
 
 export function confirmKeyboard(): InlineKeyboardMarkup {
@@ -42,6 +43,17 @@ export function accountsKeyboard(accounts: NluAccountOption[]): InlineKeyboardMa
   }
   rows.push([{ text: "⬅️ Volver", callback_data: CALLBACK.BACK }]);
   return { inline_keyboard: rows };
+}
+
+export function batchConfirmKeyboard(count: number): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [
+        { text: `✅ Confirmar (${count})`, callback_data: CALLBACK.BATCH_CONFIRM },
+        { text: "❌ Cancelar", callback_data: CALLBACK.CANCEL },
+      ],
+    ],
+  };
 }
 
 export function categoriesKeyboard(

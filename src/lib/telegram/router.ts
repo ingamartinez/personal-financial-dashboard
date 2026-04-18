@@ -2,12 +2,14 @@ import type { TelegramClient } from "@/lib/telegram/client";
 import type { TelegramUpdate, TelegramMessage, TelegramCallbackQuery } from "@/lib/telegram/types";
 import type { AccountDetail } from "@/lib/accounts/queries";
 import type { NluAccountOption, NluCategoryOption, NluResult } from "@/lib/ai/transaction-nlu";
-import type { TelegramDraft, TelegramSessionState } from "@/lib/db/schema";
+import type { TelegramBatchItem, TelegramDraft, TelegramSessionState } from "@/lib/db/schema";
+import type { OcrMediaType, OcrResult } from "@/lib/ingestion/ocr";
 import { isAllowed } from "@/lib/telegram/allowlist";
 import { handleCommand, parseCommand } from "@/lib/telegram/commands";
 import { clearSession, getSession, mergeDraft, upsertSession } from "@/lib/telegram/session";
 import {
   accountsKeyboard,
+  batchConfirmKeyboard,
   categoriesKeyboard,
   CALLBACK,
   confirmKeyboard,
@@ -16,15 +18,21 @@ import {
   renderAskAccount,
   renderAskAmount,
   renderAskCategory,
+  renderAskPhotoAccount,
+  renderBatchInserted,
+  renderBatchSummary,
   renderCanceled,
   renderConfirmCard,
   renderError,
   renderInserted,
+  renderOcrEmpty,
+  renderOcrProcessing,
   renderUnauthorized,
 } from "@/lib/telegram/formatter";
-import { insertFromDraft, isDraftComplete } from "@/lib/telegram/confirm";
+import { insertBatch, insertFromDraft, isDraftComplete } from "@/lib/telegram/confirm";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { buildDraftFromParsedSms } from "@/lib/telegram/sms-draft";
+import { buildDraftFromOcrRow } from "@/lib/telegram/ocr-draft";
 
 export type RouterDeps = {
   allowlist: Set<number>;
@@ -34,6 +42,11 @@ export type RouterDeps = {
     text: string;
     context: { now: Date; accounts: NluAccountOption[]; categories: NluCategoryOption[] };
   }) => Promise<NluResult>;
+  runOcr: (opts: {
+    imageBase64: string;
+    mediaType: OcrMediaType;
+    accountId: number;
+  }) => Promise<OcrResult>;
   now?: () => Date;
 };
 
@@ -134,6 +147,121 @@ async function advanceFlow(opts: {
   });
   next.promptMessageId = sent.message_id;
   await upsertSession({ chatId, userId, state: next });
+}
+
+async function handlePhoto(
+  message: TelegramMessage,
+  client: TelegramClient,
+  deps: RouterDeps,
+): Promise<void> {
+  const photos = message.photo;
+  const chatId = message.chat.id;
+  const userId = message.from?.id ?? 0;
+  if (!photos || photos.length === 0) return;
+
+  // Telegram sends an array of PhotoSize (varying resolutions); the largest
+  // is always the last. OCR benefits from max resolution.
+  const largest = photos[photos.length - 1];
+
+  const accountsFull = await deps.listAccounts();
+  const accounts = accountsToNluOptions(accountsFull);
+
+  const state: TelegramSessionState = {
+    step: "awaiting_photo_account",
+    draft: {},
+    sourceChatId: chatId,
+    sourceMessageId: message.message_id,
+    photoFileId: largest.file_id,
+  };
+  await upsertSession({ chatId, userId, state });
+
+  await client.sendMessage({
+    chat_id: chatId,
+    text: renderAskPhotoAccount(),
+    reply_markup: accountsKeyboard(accounts),
+  });
+}
+
+async function runOcrAndAdvance(opts: {
+  chatId: number;
+  userId: number;
+  session: TelegramSessionState;
+  account: AccountDetail;
+  accounts: NluAccountOption[];
+  categories: NluCategoryOption[];
+  client: TelegramClient;
+  deps: RouterDeps;
+}): Promise<void> {
+  const { chatId, userId, session, account, accounts, categories, client, deps } = opts;
+  const fileId = session.photoFileId;
+  if (!fileId) {
+    await client.sendMessage({ chat_id: chatId, text: renderError("Foto no encontrada.") });
+    await clearSession(chatId);
+    return;
+  }
+
+  await client.sendMessage({ chat_id: chatId, text: renderOcrProcessing() });
+
+  let ocr: OcrResult;
+  try {
+    const file = await client.getFile(fileId);
+    if (!file.file_path) throw new Error("Telegram did not return a file_path");
+    const buf = await client.downloadFile(file.file_path);
+    const imageBase64 = buf.toString("base64");
+    const mediaType = mediaTypeFromPath(file.file_path);
+    ocr = await deps.runOcr({ imageBase64, mediaType, accountId: account.id });
+  } catch (err) {
+    console.error("[telegram] OCR failed:", err);
+    await client.sendMessage({
+      chat_id: chatId,
+      text: renderError("No pude procesar la foto. Probá con otra imagen."),
+    });
+    await clearSession(chatId);
+    return;
+  }
+
+  if (ocr.rows.length === 0) {
+    await client.sendMessage({ chat_id: chatId, text: renderOcrEmpty() });
+    await clearSession(chatId);
+    return;
+  }
+
+  if (ocr.rows.length === 1) {
+    const { draft, externalId } = buildDraftFromOcrRow(ocr.rows[0], account);
+    const next: TelegramSessionState = {
+      step: "idle",
+      draft,
+      sourceChatId: chatId,
+      sourceMessageId: session.sourceMessageId,
+      externalIdOverride: externalId,
+    };
+    await advanceFlow({ chatId, userId, state: next, accounts, categories, client });
+    return;
+  }
+
+  const batch: TelegramBatchItem[] = ocr.rows.map((row) => buildDraftFromOcrRow(row, account));
+  const next: TelegramSessionState = {
+    step: "awaiting_batch_confirm",
+    draft: {},
+    sourceChatId: chatId,
+    sourceMessageId: session.sourceMessageId,
+    batch,
+  };
+  const sent = await client.sendMessage({
+    chat_id: chatId,
+    text: renderBatchSummary(batch),
+    reply_markup: batchConfirmKeyboard(batch.length),
+  });
+  next.promptMessageId = sent.message_id;
+  await upsertSession({ chatId, userId, state: next });
+}
+
+function mediaTypeFromPath(filePath: string): OcrMediaType {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  return "image/jpeg";
 }
 
 async function handleText(
@@ -271,6 +399,28 @@ async function handleCallback(
   const accounts = accountsToNluOptions(accountsFull);
   const categories = await deps.listCategories();
 
+  if (data === CALLBACK.BATCH_CONFIRM) {
+    if (!session.batch || session.batch.length === 0) {
+      await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Sin datos" });
+      return;
+    }
+    await client.answerCallbackQuery({ callback_query_id: cb.id });
+    const result = await insertBatch({ items: session.batch, chatId });
+    await client.sendMessage({
+      chat_id: chatId,
+      text: renderBatchInserted({
+        inserted: result.inserted,
+        duplicated: result.duplicated,
+        errors: result.errors.length,
+      }),
+    });
+    if (result.errors.length > 0) {
+      console.error("[telegram] batch insert errors:", result.errors);
+    }
+    await clearSession(chatId);
+    return;
+  }
+
   if (data === CALLBACK.CONFIRM) {
     if (!isDraftComplete(session.draft)) {
       await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Faltan datos" });
@@ -342,6 +492,21 @@ async function handleCallback(
       await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Cuenta inválida" });
       return;
     }
+    if (session.step === "awaiting_photo_account") {
+      const accountDetail = accountsFull.find((a) => a.id === id)!;
+      await client.answerCallbackQuery({ callback_query_id: cb.id });
+      await runOcrAndAdvance({
+        chatId,
+        userId,
+        session,
+        account: accountDetail,
+        accounts,
+        categories,
+        client,
+        deps,
+      });
+      return;
+    }
     const picked = accounts.find((a) => a.id === id)!;
     const patched = mergeDraft(session, {
       accountId: id,
@@ -378,6 +543,10 @@ export async function handleUpdate(
       if (msg.from?.id) {
         await client.sendMessage({ chat_id: msg.chat.id, text: renderUnauthorized() });
       }
+      return;
+    }
+    if (msg.photo && msg.photo.length > 0) {
+      await handlePhoto(msg, client, deps);
       return;
     }
     if (typeof msg.text === "string") {
