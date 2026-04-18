@@ -23,8 +23,9 @@ export async function insertFromDraft(opts: {
   draft: TelegramDraft;
   chatId: number;
   sourceMessageId?: number;
+  externalIdOverride?: string;
 }): Promise<ConfirmResult> {
-  const { draft, chatId, sourceMessageId } = opts;
+  const { draft, chatId, sourceMessageId, externalIdOverride } = opts;
 
   if (!isDraftComplete(draft)) {
     return { status: "error", reason: "draft is incomplete" };
@@ -54,7 +55,8 @@ export async function insertFromDraft(opts: {
     }
   }
 
-  const externalId = sourceMessageId ? `tg:${chatId}:${sourceMessageId}` : null;
+  const externalId =
+    externalIdOverride ?? (sourceMessageId ? `tg:${chatId}:${sourceMessageId}` : null);
 
   try {
     const result = await db
