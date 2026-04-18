@@ -133,14 +133,14 @@ async function advanceFlow(opts: {
 
   if (!draft.amountCents) {
     const next: TelegramSessionState = { ...state, step: "awaiting_amount" };
-    await upsertSession({ chatId, userId, state: next });
+    await upsertSession({ chatId, telegramUserId: userId, state: next });
     await client.sendMessage({ chat_id: chatId, text: renderAskAmount() });
     return;
   }
 
   if (typeof draft.accountId !== "number") {
     const next: TelegramSessionState = { ...state, step: "awaiting_account" };
-    await upsertSession({ chatId, userId, state: next });
+    await upsertSession({ chatId, telegramUserId: userId, state: next });
     await client.sendMessage({
       chat_id: chatId,
       text: renderAskAccount(),
@@ -156,7 +156,7 @@ async function advanceFlow(opts: {
     reply_markup: confirmKeyboard(),
   });
   next.promptMessageId = sent.message_id;
-  await upsertSession({ chatId, userId, state: next });
+  await upsertSession({ chatId, telegramUserId: userId, state: next });
 }
 
 async function handlePhoto(
@@ -183,7 +183,7 @@ async function handlePhoto(
     sourceMessageId: message.message_id,
     photoFileId: largest.file_id,
   };
-  await upsertSession({ chatId, userId, state });
+  await upsertSession({ chatId, telegramUserId: userId, state });
 
   await client.sendMessage({
     chat_id: chatId,
@@ -263,7 +263,7 @@ async function runOcrAndAdvance(opts: {
     reply_markup: batchConfirmKeyboard(batch.length),
   });
   next.promptMessageId = sent.message_id;
-  await upsertSession({ chatId, userId, state: next });
+  await upsertSession({ chatId, telegramUserId: userId, state: next });
 }
 
 function mediaTypeFromPath(filePath: string): OcrMediaType {
@@ -526,7 +526,7 @@ async function handleCallback(
 
   if (data === CALLBACK.EDIT_ACCOUNT) {
     const next: TelegramSessionState = { ...session, step: "awaiting_account" };
-    await upsertSession({ chatId, userId, state: next });
+    await upsertSession({ chatId, telegramUserId: userId, state: next });
     await client.answerCallbackQuery({ callback_query_id: cb.id });
     await client.sendMessage({
       chat_id: chatId,
@@ -538,7 +538,7 @@ async function handleCallback(
 
   if (data === CALLBACK.EDIT_CATEGORY) {
     const next: TelegramSessionState = { ...session, step: "awaiting_category" };
-    await upsertSession({ chatId, userId, state: next });
+    await upsertSession({ chatId, telegramUserId: userId, state: next });
     await client.answerCallbackQuery({ callback_query_id: cb.id });
     await client.sendMessage({
       chat_id: chatId,

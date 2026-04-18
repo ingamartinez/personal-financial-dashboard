@@ -30,7 +30,7 @@ export async function getSession(chatId: number): Promise<TelegramSessionState |
 
 export async function upsertSession(opts: {
   chatId: number;
-  userId: number;
+  telegramUserId: number;
   state: TelegramSessionState;
 }): Promise<void> {
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
@@ -38,7 +38,7 @@ export async function upsertSession(opts: {
     .insert(telegramSessions)
     .values({
       chatId: BigInt(opts.chatId),
-      userId: BigInt(opts.userId),
+      telegramUserId: BigInt(opts.telegramUserId),
       state: opts.state,
       updatedAt: new Date(),
       expiresAt,
@@ -46,7 +46,7 @@ export async function upsertSession(opts: {
     .onConflictDoUpdate({
       target: telegramSessions.chatId,
       set: {
-        userId: BigInt(opts.userId),
+        telegramUserId: BigInt(opts.telegramUserId),
         state: opts.state,
         updatedAt: new Date(),
         expiresAt,

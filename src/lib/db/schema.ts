@@ -75,6 +75,10 @@ export const counterpartyKeyKind = pgEnum("counterparty_key_kind", [
 
 export const accounts = pgTable("accounts", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .default(1)
+    .references(() => users.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 100 }).notNull(),
   institution: varchar("institution", { length: 50 }).notNull(),
   type: accountType("type").notNull(),
@@ -125,6 +129,10 @@ export const categories = pgTable("categories", {
 
 export const counterparties = pgTable("counterparties", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .default(1)
+    .references(() => users.id, { onDelete: "cascade" }),
   displayName: varchar("display_name", { length: 120 }).notNull(),
   type: counterpartyType("type").notNull().default("unknown"),
   defaultCategorySlug: varchar("default_category_slug", { length: 60 }).references(
@@ -142,6 +150,10 @@ export const counterpartyAliases = pgTable(
   "counterparty_aliases",
   {
     id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
     counterpartyId: integer("counterparty_id")
       .notNull()
       .references(() => counterparties.id, { onDelete: "cascade" }),
@@ -159,6 +171,10 @@ export const transactions = pgTable(
   "transactions",
   {
     id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
     accountId: integer("account_id")
       .notNull()
       .references(() => accounts.id, { onDelete: "restrict" }),
@@ -207,6 +223,10 @@ export const classificationRules = pgTable(
   "classification_rules",
   {
     id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
     pattern: text("pattern").notNull(),
     categorySlug: varchar("category_slug", { length: 60 })
       .notNull()
@@ -232,6 +252,10 @@ export const classificationRuleSeeds = pgTable("classification_rule_seeds", {
 
 export const budgets = pgTable("budgets", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .default(1)
+    .references(() => users.id, { onDelete: "cascade" }),
   categorySlug: varchar("category_slug", { length: 60 })
     .notNull()
     .references(() => categories.slug, { onDelete: "cascade" }),
@@ -245,6 +269,10 @@ export const budgets = pgTable("budgets", {
 
 export const recurringTransactions = pgTable("recurring_transactions", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .default(1)
+    .references(() => users.id, { onDelete: "cascade" }),
   accountId: integer("account_id")
     .notNull()
     .references(() => accounts.id, { onDelete: "cascade" }),
@@ -266,6 +294,10 @@ export const recurringGaps = pgTable(
   "recurring_gaps",
   {
     id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
     recurringId: integer("recurring_id")
       .notNull()
       .references(() => recurringTransactions.id, { onDelete: "cascade" }),
@@ -280,6 +312,10 @@ export const recurringGaps = pgTable(
 
 export const ingestionLogs = pgTable("ingestion_logs", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .default(1)
+    .references(() => users.id, { onDelete: "cascade" }),
   source: txSource("source").notNull(),
   status: varchar("status", { length: 20 }).notNull(),
   itemsReceived: integer("items_received").notNull().default(0),
@@ -293,6 +329,10 @@ export const ingestionLogs = pgTable("ingestion_logs", {
 
 export const insightsReports = pgTable("insights_reports", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .default(1)
+    .references(() => users.id, { onDelete: "cascade" }),
   yearMonth: varchar("year_month", { length: 7 }).notNull().unique(),
   generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
   inputHash: varchar("input_hash", { length: 64 }).notNull(),
@@ -323,6 +363,10 @@ export const accountSnapshots = pgTable(
   "account_snapshots",
   {
     id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
     accountId: integer("account_id")
       .notNull()
       .references(() => accounts.id, { onDelete: "cascade" }),
@@ -372,7 +416,11 @@ export type TelegramSessionState = {
 
 export const telegramSessions = pgTable("telegram_sessions", {
   chatId: bigint("chat_id", { mode: "bigint" }).primaryKey(),
-  userId: bigint("user_id", { mode: "bigint" }).notNull(),
+  userId: integer("user_id")
+    .notNull()
+    .default(1)
+    .references(() => users.id, { onDelete: "cascade" }),
+  telegramUserId: bigint("telegram_user_id", { mode: "bigint" }).notNull(),
   state: jsonb("state").$type<TelegramSessionState>().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
