@@ -92,6 +92,13 @@
       "when": 1776567700000,
       "tag": "0012_broad_mercury",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1776567800000,
+      "tag": "0013_mature_jackpot",
+      "breakpoints": true
     }
   ]
 }

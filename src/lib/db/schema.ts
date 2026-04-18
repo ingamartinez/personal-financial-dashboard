@@ -73,24 +73,28 @@ export const counterpartyKeyKind = pgEnum("counterparty_key_kind", [
   "name",
 ]);
 
-export const accounts = pgTable("accounts", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .default(1)
-    .references(() => users.id, { onDelete: "cascade" }),
-  name: varchar("name", { length: 100 }).notNull(),
-  institution: varchar("institution", { length: 50 }).notNull(),
-  type: accountType("type").notNull(),
-  currency: currency("currency").notNull(),
-  balanceCents: bigint("balance_cents", { mode: "bigint" })
-    .notNull()
-    .default(sql`0`),
-  active: boolean("active").notNull().default(true),
-  metadata: jsonb("metadata").$type<AccountMetadata>().notNull().default({}),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const accounts = pgTable(
+  "accounts",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 100 }).notNull(),
+    institution: varchar("institution", { length: 50 }).notNull(),
+    type: accountType("type").notNull(),
+    currency: currency("currency").notNull(),
+    balanceCents: bigint("balance_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    active: boolean("active").notNull().default(true),
+    metadata: jsonb("metadata").$type<AccountMetadata>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("accounts_user_active_idx").on(t.userId, t.active)],
+);
 
 export type AccountMetadata = {
   last4s?: string[];
@@ -127,24 +131,28 @@ export const categories = pgTable("categories", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const counterparties = pgTable("counterparties", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .default(1)
-    .references(() => users.id, { onDelete: "cascade" }),
-  displayName: varchar("display_name", { length: 120 }).notNull(),
-  type: counterpartyType("type").notNull().default("unknown"),
-  defaultCategorySlug: varchar("default_category_slug", { length: 60 }).references(
-    () => categories.slug,
-    { onDelete: "set null" },
-  ),
-  notes: text("notes"),
-  hitCount: integer("hit_count").notNull().default(0),
-  lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const counterparties = pgTable(
+  "counterparties",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
+    displayName: varchar("display_name", { length: 120 }).notNull(),
+    type: counterpartyType("type").notNull().default("unknown"),
+    defaultCategorySlug: varchar("default_category_slug", { length: 60 }).references(
+      () => categories.slug,
+      { onDelete: "set null" },
+    ),
+    notes: text("notes"),
+    hitCount: integer("hit_count").notNull().default(0),
+    lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("counterparties_user_display_idx").on(t.userId, t.displayName)],
+);
 
 export const counterpartyAliases = pgTable(
   "counterparty_aliases",
@@ -162,7 +170,7 @@ export const counterpartyAliases = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("counterparty_aliases_kind_value_unique").on(t.kind, t.value),
+    uniqueIndex("counterparty_aliases_user_kind_value_unique").on(t.userId, t.kind, t.value),
     index("counterparty_aliases_counterparty_idx").on(t.counterpartyId),
   ],
 );
@@ -207,9 +215,9 @@ export const transactions = pgTable(
   },
   (t) => [
     index("transactions_account_occurred_idx").on(t.accountId, t.occurredAt),
-    index("transactions_category_idx").on(t.categorySlug),
-    index("transactions_counterparty_idx").on(t.counterpartyId),
-    index("transactions_occurred_idx").on(t.occurredAt),
+    index("transactions_user_occurred_idx").on(t.userId, t.occurredAt),
+    index("transactions_user_category_idx").on(t.userId, t.categorySlug),
+    index("transactions_user_counterparty_idx").on(t.userId, t.counterpartyId),
     uniqueIndex("transactions_external_unique")
       .on(t.accountId, t.externalId)
       .where(sql`${t.externalId} IS NOT NULL`),
@@ -237,7 +245,10 @@ export const classificationRules = pgTable(
     lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("rules_priority_idx").on(t.priority)],
+  (t) => [
+    index("rules_user_priority_id_idx").on(t.userId, t.priority, t.id),
+    uniqueIndex("rules_user_pattern_category_unique").on(t.userId, t.pattern, t.categorySlug),
+  ],
 );
 
 export const classificationRuleSeeds = pgTable("classification_rule_seeds", {
@@ -250,45 +261,53 @@ export const classificationRuleSeeds = pgTable("classification_rule_seeds", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const budgets = pgTable("budgets", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .default(1)
-    .references(() => users.id, { onDelete: "cascade" }),
-  categorySlug: varchar("category_slug", { length: 60 })
-    .notNull()
-    .references(() => categories.slug, { onDelete: "cascade" }),
-  amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
-  currency: currency("currency").notNull().default("COP"),
-  periodStart: date("period_start").notNull(),
-  periodEnd: date("period_end").notNull(),
-  active: boolean("active").notNull().default(true),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const budgets = pgTable(
+  "budgets",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
+    categorySlug: varchar("category_slug", { length: 60 })
+      .notNull()
+      .references(() => categories.slug, { onDelete: "cascade" }),
+    amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
+    currency: currency("currency").notNull().default("COP"),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("budgets_user_period_idx").on(t.userId, t.periodStart)],
+);
 
-export const recurringTransactions = pgTable("recurring_transactions", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .default(1)
-    .references(() => users.id, { onDelete: "cascade" }),
-  accountId: integer("account_id")
-    .notNull()
-    .references(() => accounts.id, { onDelete: "cascade" }),
-  label: varchar("label", { length: 120 }).notNull(),
-  amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
-  currency: currency("currency").notNull(),
-  categorySlug: varchar("category_slug", { length: 60 }).references(() => categories.slug, {
-    onDelete: "set null",
-  }),
-  dayOfMonth: smallint("day_of_month").notNull(),
-  active: boolean("active").notNull().default(true),
-  lastGeneratedAt: timestamp("last_generated_at", { withTimezone: true }),
-  skippedMonths: jsonb("skipped_months").$type<string[]>().notNull().default([]),
-  notes: text("notes"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const recurringTransactions = pgTable(
+  "recurring_transactions",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    label: varchar("label", { length: 120 }).notNull(),
+    amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
+    currency: currency("currency").notNull(),
+    categorySlug: varchar("category_slug", { length: 60 }).references(() => categories.slug, {
+      onDelete: "set null",
+    }),
+    dayOfMonth: smallint("day_of_month").notNull(),
+    active: boolean("active").notNull().default(true),
+    lastGeneratedAt: timestamp("last_generated_at", { withTimezone: true }),
+    skippedMonths: jsonb("skipped_months").$type<string[]>().notNull().default([]),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("recurring_tx_user_day_idx").on(t.userId, t.dayOfMonth)],
+);
 
 export const recurringGaps = pgTable(
   "recurring_gaps",
@@ -307,40 +326,49 @@ export const recurringGaps = pgTable(
   (t) => [
     uniqueIndex("recurring_gaps_recurring_month_unique").on(t.recurringId, t.yearMonth),
     index("recurring_gaps_detected_idx").on(t.detectedAt),
+    index("recurring_gaps_user_detected_idx").on(t.userId, t.detectedAt),
   ],
 );
 
-export const ingestionLogs = pgTable("ingestion_logs", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .default(1)
-    .references(() => users.id, { onDelete: "cascade" }),
-  source: txSource("source").notNull(),
-  status: varchar("status", { length: 20 }).notNull(),
-  itemsReceived: integer("items_received").notNull().default(0),
-  itemsInserted: integer("items_inserted").notNull().default(0),
-  itemsDuplicated: integer("items_duplicated").notNull().default(0),
-  errorMessage: text("error_message"),
-  payload: jsonb("payload"),
-  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
-  finishedAt: timestamp("finished_at", { withTimezone: true }),
-});
+export const ingestionLogs = pgTable(
+  "ingestion_logs",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
+    source: txSource("source").notNull(),
+    status: varchar("status", { length: 20 }).notNull(),
+    itemsReceived: integer("items_received").notNull().default(0),
+    itemsInserted: integer("items_inserted").notNull().default(0),
+    itemsDuplicated: integer("items_duplicated").notNull().default(0),
+    errorMessage: text("error_message"),
+    payload: jsonb("payload"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("ingestion_logs_user_started_idx").on(t.userId, t.startedAt)],
+);
 
-export const insightsReports = pgTable("insights_reports", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .default(1)
-    .references(() => users.id, { onDelete: "cascade" }),
-  yearMonth: varchar("year_month", { length: 7 }).notNull().unique(),
-  generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
-  inputHash: varchar("input_hash", { length: 64 }).notNull(),
-  markdown: text("markdown").notNull(),
-  model: varchar("model", { length: 50 }).notNull(),
-  inputTokens: integer("input_tokens").notNull().default(0),
-  outputTokens: integer("output_tokens").notNull().default(0),
-});
+export const insightsReports = pgTable(
+  "insights_reports",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
+    yearMonth: varchar("year_month", { length: 7 }).notNull(),
+    generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+    inputHash: varchar("input_hash", { length: 64 }).notNull(),
+    markdown: text("markdown").notNull(),
+    model: varchar("model", { length: 50 }).notNull(),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+  },
+  (t) => [uniqueIndex("insights_reports_user_year_month_unique").on(t.userId, t.yearMonth)],
+);
 
 export const fxRates = pgTable(
   "fx_rates",
@@ -414,17 +442,21 @@ export type TelegramSessionState = {
   batch?: TelegramBatchItem[];
 };
 
-export const telegramSessions = pgTable("telegram_sessions", {
-  chatId: bigint("chat_id", { mode: "bigint" }).primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .default(1)
-    .references(() => users.id, { onDelete: "cascade" }),
-  telegramUserId: bigint("telegram_user_id", { mode: "bigint" }).notNull(),
-  state: jsonb("state").$type<TelegramSessionState>().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-});
+export const telegramSessions = pgTable(
+  "telegram_sessions",
+  {
+    chatId: bigint("chat_id", { mode: "bigint" }).primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .default(1)
+      .references(() => users.id, { onDelete: "cascade" }),
+    telegramUserId: bigint("telegram_user_id", { mode: "bigint" }).notNull(),
+    state: jsonb("state").$type<TelegramSessionState>().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("telegram_sessions_user_idx").on(t.userId)],
+);
 
 export const telegramPollState = pgTable("telegram_poll_state", {
   id: integer("id").primaryKey(),
