@@ -25,6 +25,12 @@ const LINKS = [
     description:
       "Per-user bearer tokens for the SMS and debug ingest endpoints. Mint, copy once, revoke when needed.",
   },
+  {
+    href: "/settings/telegram",
+    title: "Telegram bot",
+    description:
+      "Register your BotFather bot. Findash encrypts the token at rest and serves the webhook at /api/telegram/webhook/<botId>.",
+  },
 ];
 
 export default function SettingsPage() {
