@@ -10,6 +10,13 @@ const TELEGRAM_HOST = "api.telegram.org";
 
 type TelegramResponse<T> = { ok: true; result: T } | { ok: false; description: string };
 
+export type TelegramBotProfile = {
+  id: number;
+  is_bot: boolean;
+  first_name: string;
+  username: string;
+};
+
 export type TelegramClient = {
   getUpdates: (opts: {
     offset?: number;
@@ -21,6 +28,9 @@ export type TelegramClient = {
   answerCallbackQuery: (opts: { callback_query_id: string; text?: string }) => Promise<void>;
   getFile: (fileId: string) => Promise<TelegramFile>;
   downloadFile: (filePath: string) => Promise<Buffer>;
+  getMe: () => Promise<TelegramBotProfile>;
+  setWebhook: (opts: { url: string; secretToken: string }) => Promise<void>;
+  deleteWebhook: (opts?: { dropPendingUpdates?: boolean }) => Promise<void>;
 };
 
 // Built on node:https (not fetch) because undici's default fetch in Node 20+
@@ -153,6 +163,29 @@ export function createTelegramClient(opts: { token: string }): TelegramClient {
         path: `/file/bot${opts.token}/${filePath}`,
         timeoutMs: 30_000,
       });
+    },
+    async getMe() {
+      return call<TelegramBotProfile>("getMe", {}, 10_000);
+    },
+    async setWebhook({ url, secretToken }) {
+      await call<true>(
+        "setWebhook",
+        {
+          url,
+          secret_token: secretToken,
+          allowed_updates: ["message", "callback_query"],
+        },
+        15_000,
+      );
+    },
+    async deleteWebhook(deleteOpts) {
+      await call<true>(
+        "deleteWebhook",
+        {
+          drop_pending_updates: deleteOpts?.dropPendingUpdates ?? false,
+        },
+        10_000,
+      );
     },
   };
 }

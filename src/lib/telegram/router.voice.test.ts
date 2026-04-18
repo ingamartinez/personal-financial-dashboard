@@ -34,12 +34,16 @@ function buildClient(): {
       downloadCalls.push(path);
       return Buffer.from("fake-audio-bytes");
     },
+    getMe: async () => ({ id: 1, is_bot: true, first_name: "Bot", username: "bot" }),
+    setWebhook: async () => {},
+    deleteWebhook: async () => {},
   };
   return { client, sent, getFileCalls, downloadCalls };
 }
 
 function buildDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
   return {
+    userId: 1,
     listAccounts: async () => [],
     listCategories: async () => [],
     parseNlu: async () => {

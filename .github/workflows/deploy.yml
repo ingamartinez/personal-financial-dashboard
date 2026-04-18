@@ -67,6 +67,10 @@ jobs:
           AUTH_SECRET: build-dummy-never-used-in-prod
           BOOTSTRAP_USER_EMAIL: build@findash.local
           BOOTSTRAP_USER_NAME: Build Bootstrap
+          # Required by src/lib/crypto/symmetric.ts at module-load time —
+          # Next.js page-data collection imports the webhook route. 32 zero
+          # bytes base64. Real key lives on the droplet in findash.env.
+          TELEGRAM_TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
         run: bun run build
 
       - name: Package release tarball

@@ -47,6 +47,10 @@ jobs:
       # column defaults to. Without it the FK in #183's migrations fails.
       BOOTSTRAP_USER_EMAIL: ci@findash.local
       BOOTSTRAP_USER_NAME: CI Bootstrap
+      # Required by src/lib/crypto/symmetric.ts at module-load time — Next.js
+      # page-data collection imports the webhook route (#185) during `next build`.
+      # 32 zero bytes base64. Real key lives in prod findash.env.
+      TELEGRAM_TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 
     steps:
       - uses: actions/checkout@v6

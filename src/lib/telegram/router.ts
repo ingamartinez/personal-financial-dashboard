@@ -36,6 +36,7 @@ import { buildDraftFromParsedSms } from "@/lib/telegram/sms-draft";
 import { buildDraftFromOcrRow } from "@/lib/telegram/ocr-draft";
 
 export type RouterDeps = {
+  userId: number;
   listAccounts: () => Promise<AccountDetail[]>;
   listCategories: () => Promise<NluCategoryOption[]>;
   parseNlu: (opts: {
@@ -119,25 +120,26 @@ function pickDefaultCurrency(accounts: NluAccountOption[], accountId?: number): 
 
 async function advanceFlow(opts: {
   chatId: number;
-  userId: number;
+  telegramUserId: number;
   state: TelegramSessionState;
   accounts: NluAccountOption[];
   categories: NluCategoryOption[];
   client: TelegramClient;
+  deps: RouterDeps;
 }): Promise<void> {
-  const { chatId, userId, state, accounts, categories, client } = opts;
+  const { chatId, telegramUserId, state, accounts, categories, client, deps } = opts;
   const draft = state.draft;
 
   if (!draft.amountCents) {
     const next: TelegramSessionState = { ...state, step: "awaiting_amount" };
-    await upsertSession({ chatId, telegramUserId: userId, state: next });
+    await upsertSession({ chatId, userId: deps.userId, telegramUserId, state: next });
     await client.sendMessage({ chat_id: chatId, text: renderAskAmount() });
     return;
   }
 
   if (typeof draft.accountId !== "number") {
     const next: TelegramSessionState = { ...state, step: "awaiting_account" };
-    await upsertSession({ chatId, telegramUserId: userId, state: next });
+    await upsertSession({ chatId, userId: deps.userId, telegramUserId, state: next });
     await client.sendMessage({
       chat_id: chatId,
       text: renderAskAccount(),
@@ -153,7 +155,7 @@ async function advanceFlow(opts: {
     reply_markup: confirmKeyboard(),
   });
   next.promptMessageId = sent.message_id;
-  await upsertSession({ chatId, telegramUserId: userId, state: next });
+  await upsertSession({ chatId, userId: deps.userId, telegramUserId, state: next });
 }
 
 async function handlePhoto(
@@ -180,7 +182,7 @@ async function handlePhoto(
     sourceMessageId: message.message_id,
     photoFileId: largest.file_id,
   };
-  await upsertSession({ chatId, telegramUserId: userId, state });
+  await upsertSession({ chatId, userId: deps.userId, telegramUserId: userId, state });
 
   await client.sendMessage({
     chat_id: chatId,
@@ -242,7 +244,15 @@ async function runOcrAndAdvance(opts: {
       sourceMessageId: session.sourceMessageId,
       externalIdOverride: externalId,
     };
-    await advanceFlow({ chatId, userId, state: next, accounts, categories, client });
+    await advanceFlow({
+      chatId,
+      telegramUserId: userId,
+      state: next,
+      accounts,
+      categories,
+      client,
+      deps,
+    });
     return;
   }
 
@@ -260,7 +270,7 @@ async function runOcrAndAdvance(opts: {
     reply_markup: batchConfirmKeyboard(batch.length),
   });
   next.promptMessageId = sent.message_id;
-  await upsertSession({ chatId, telegramUserId: userId, state: next });
+  await upsertSession({ chatId, userId: deps.userId, telegramUserId: userId, state: next });
 }
 
 function mediaTypeFromPath(filePath: string): OcrMediaType {
@@ -353,7 +363,15 @@ async function handleText(
       const patched = mergeDraft(existing, { amountCents });
       const accounts = accountsToNluOptions(await deps.listAccounts());
       const categories = await deps.listCategories();
-      await advanceFlow({ chatId, userId, state: patched, accounts, categories, client });
+      await advanceFlow({
+        chatId,
+        telegramUserId: userId,
+        state: patched,
+        accounts,
+        categories,
+        client,
+        deps,
+      });
       return;
     }
   }
@@ -375,7 +393,15 @@ async function handleText(
       externalIdOverride: externalId,
     };
     const accounts = accountsToNluOptions(accountsFull);
-    await advanceFlow({ chatId, userId, state, accounts, categories, client });
+    await advanceFlow({
+      chatId,
+      telegramUserId: userId,
+      state,
+      accounts,
+      categories,
+      client,
+      deps,
+    });
     return;
   }
   if (smsParsed.reason === "failed" || smsParsed.reason === "non_transactional") {
@@ -434,7 +460,7 @@ async function handleText(
     sourceMessageId: message.message_id,
   };
 
-  await advanceFlow({ chatId, userId, state, accounts, categories, client });
+  await advanceFlow({ chatId, telegramUserId: userId, state, accounts, categories, client, deps });
 }
 
 async function handleCallback(
@@ -470,8 +496,7 @@ async function handleCallback(
       return;
     }
     await client.answerCallbackQuery({ callback_query_id: cb.id });
-    // Single-bot poll worker scopes to user 1 until #185 wires per-user bots.
-    const result = await insertBatch({ userId: 1, items: session.batch, chatId });
+    const result = await insertBatch({ userId: deps.userId, items: session.batch, chatId });
     await client.sendMessage({
       chat_id: chatId,
       text: renderBatchInserted({
@@ -490,12 +515,19 @@ async function handleCallback(
   if (data === CALLBACK.CONFIRM) {
     if (!isDraftComplete(session.draft)) {
       await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Faltan datos" });
-      await advanceFlow({ chatId, userId, state: session, accounts, categories, client });
+      await advanceFlow({
+        chatId,
+        telegramUserId: userId,
+        state: session,
+        accounts,
+        categories,
+        client,
+        deps,
+      });
       return;
     }
     const result = await insertFromDraft({
-      // Single-bot poll worker scopes to user 1 until #185 wires per-user bots.
-      userId: 1,
+      userId: deps.userId,
       draft: session.draft,
       chatId,
       sourceMessageId: session.sourceMessageId,
@@ -526,7 +558,7 @@ async function handleCallback(
 
   if (data === CALLBACK.EDIT_ACCOUNT) {
     const next: TelegramSessionState = { ...session, step: "awaiting_account" };
-    await upsertSession({ chatId, telegramUserId: userId, state: next });
+    await upsertSession({ chatId, userId: deps.userId, telegramUserId: userId, state: next });
     await client.answerCallbackQuery({ callback_query_id: cb.id });
     await client.sendMessage({
       chat_id: chatId,
@@ -538,7 +570,7 @@ async function handleCallback(
 
   if (data === CALLBACK.EDIT_CATEGORY) {
     const next: TelegramSessionState = { ...session, step: "awaiting_category" };
-    await upsertSession({ chatId, telegramUserId: userId, state: next });
+    await upsertSession({ chatId, userId: deps.userId, telegramUserId: userId, state: next });
     await client.answerCallbackQuery({ callback_query_id: cb.id });
     await client.sendMessage({
       chat_id: chatId,
@@ -550,7 +582,15 @@ async function handleCallback(
 
   if (data === CALLBACK.BACK) {
     await client.answerCallbackQuery({ callback_query_id: cb.id });
-    await advanceFlow({ chatId, userId, state: session, accounts, categories, client });
+    await advanceFlow({
+      chatId,
+      telegramUserId: userId,
+      state: session,
+      accounts,
+      categories,
+      client,
+      deps,
+    });
     return;
   }
 
@@ -581,7 +621,15 @@ async function handleCallback(
       currency: picked.currency,
     });
     await client.answerCallbackQuery({ callback_query_id: cb.id });
-    await advanceFlow({ chatId, userId, state: patched, accounts, categories, client });
+    await advanceFlow({
+      chatId,
+      telegramUserId: userId,
+      state: patched,
+      accounts,
+      categories,
+      client,
+      deps,
+    });
     return;
   }
 
@@ -593,7 +641,15 @@ async function handleCallback(
     }
     const patched = mergeDraft(session, { categorySlug: slug });
     await client.answerCallbackQuery({ callback_query_id: cb.id });
-    await advanceFlow({ chatId, userId, state: patched, accounts, categories, client });
+    await advanceFlow({
+      chatId,
+      telegramUserId: userId,
+      state: patched,
+      accounts,
+      categories,
+      client,
+      deps,
+    });
     return;
   }
 
