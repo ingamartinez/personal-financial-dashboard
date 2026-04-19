@@ -1,12 +1,18 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { decode } from "next-auth/jwt";
 import { db } from "@/lib/db";
+import { users } from "@/lib/db/schema";
 import { GET } from "./route";
 
 const SESSION_COOKIE = "authjs.session-token";
-const TEST_USER_EMAIL = "ing.amartinez94@gmail.com";
 const TEST_USER_ID = 1;
 const TEST_SECRET = "test-secret-for-vitest-only-do-not-use-elsewhere-ok-fine";
+
+// Email of the bootstrap user (id=1) — varies by environment (local uses the
+// developer's email, CI uses BOOTSTRAP_USER_EMAIL). We resolve it from the DB
+// in beforeAll so the test is portable across seeds.
+let TEST_USER_EMAIL = "";
 
 function makeRequest(opts: { search?: string; host?: string } = {}): Request {
   const qs = opts.search ?? `email=${encodeURIComponent(TEST_USER_EMAIL)}`;
@@ -17,6 +23,18 @@ function makeRequest(opts: { search?: string; host?: string } = {}): Request {
 }
 
 describe("GET /api/dev/login", () => {
+  beforeAll(async () => {
+    const [row] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, TEST_USER_ID))
+      .limit(1);
+    if (!row) {
+      throw new Error(`bootstrap user id=${TEST_USER_ID} not found — run db:seed:test`);
+    }
+    TEST_USER_EMAIL = row.email;
+  });
+
   beforeEach(() => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("DEV_AUTH_BYPASS", "1");
