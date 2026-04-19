@@ -31,6 +31,12 @@ export const users = pgTable(
     pictureUrl: text("picture_url"),
     role: varchar("role", { length: 20 }).notNull().default("user"),
     active: boolean("active").notNull().default(true),
+    // Phase 7 (SaaS productization) seam — all nullable, no defaults. Enforcement
+    // lives in canIngest(userId) and is a no-op in v1. See PLAN.md § Business Model.
+    subscriptionStatus: varchar("subscription_status", { length: 20 }),
+    planId: varchar("plan_id", { length: 40 }),
+    trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    mercadopagoCustomerId: varchar("mercadopago_customer_id", { length: 80 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
