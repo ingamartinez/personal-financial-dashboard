@@ -23,7 +23,7 @@ const SCREENSHOTS: Screenshot[] = [
   {
     src: "/ios-shortcut/automation.jpeg",
     alt: "Personal Automation with Run Immediately enabled and the shortcut as the action",
-    caption: "Step 4 — Automation with Run Immediately on",
+    caption: "Step 4 — Message contains + Run Immediately",
   },
 ];
 
@@ -64,9 +64,10 @@ export function IosShortcutCard() {
           </li>
           <li>
             Create a Personal Automation so the shortcut runs when bank SMS arrive: Shortcuts app →{" "}
-            <strong>Automation</strong> tab → <strong>+</strong> → <strong>Message</strong>. Set the
-            sender filter (e.g. your bank&apos;s shortcode), choose <strong>Run Immediately</strong>
-            , and pick <em>Findash SMS Prod</em> as the action.
+            <strong>Automation</strong> tab → <strong>+</strong> → <strong>Message</strong>. Leave{" "}
+            <em>Sender</em> as any, then add a <strong>Message contains</strong> filter with your
+            bank&apos;s keyword (e.g. <code className="font-mono">Bancolombia</code>). Enable{" "}
+            <strong>Run Immediately</strong> and pick <em>Findash SMS Prod</em> as the action.
           </li>
         </ol>
 
