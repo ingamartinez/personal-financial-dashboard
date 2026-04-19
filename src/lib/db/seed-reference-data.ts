@@ -14,7 +14,7 @@
 // Those are populated per-user by the signup flow or the one-shot backfill
 // scripts under scripts/backfill-*.ts — never globally.
 
-import { createLogger } from "@/lib/logger";
+import { createLogger } from "../logger";
 import { db as defaultDb, type DB } from "./index";
 import { categorySeeds, classificationRuleSeeds } from "./schema";
 

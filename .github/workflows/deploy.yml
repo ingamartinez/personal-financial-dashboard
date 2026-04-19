@@ -103,6 +103,7 @@ jobs:
           cp src/lib/db/schema.ts "$STAGE/src/lib/db/schema.ts"
           cp src/lib/db/seed-reference-data.ts "$STAGE/src/lib/db/seed-reference-data.ts"
           cp src/lib/auth/signup.ts "$STAGE/src/lib/auth/signup.ts"
+          cp src/lib/logger.ts "$STAGE/src/lib/logger.ts"
           echo "$GIT_SHA" > "$STAGE/GIT_SHA"
           tar -czf release.tar.gz -C "$STAGE" .
           ls -lh release.tar.gz
