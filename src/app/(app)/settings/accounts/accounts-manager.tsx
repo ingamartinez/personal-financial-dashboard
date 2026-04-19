@@ -1,7 +1,15 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { LinkIcon, PencilIcon, PlusIcon, Trash2Icon, WrenchIcon } from "lucide-react";
+import Link from "next/link";
+import {
+  ArrowLeftRightIcon,
+  LinkIcon,
+  PencilIcon,
+  PlusIcon,
+  Trash2Icon,
+  WrenchIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -183,6 +191,17 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
                               </td>
                               <td className="p-2 text-right">
                                 <div className="flex justify-end gap-1">
+                                  <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    aria-label="Reconcile from statement"
+                                    title="Conciliar con extracto bancario"
+                                  >
+                                    <Link href={`/settings/accounts/${r.id}/reconcile`}>
+                                      <ArrowLeftRightIcon className="size-4" />
+                                    </Link>
+                                  </Button>
                                   <Button
                                     variant="ghost"
                                     size="sm"

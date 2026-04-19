@@ -1,9 +1,9 @@
+import Link from "next/link";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { ScreenshotUpload } from "@/components/import/screenshot-upload";
-import { ImportForm } from "./import-form";
 
 export const dynamic = "force-dynamic";
 
@@ -19,10 +19,13 @@ export default async function ImportPage() {
       <header>
         <h1 className="text-h1">Import</h1>
         <p className="text-body text-muted-foreground">
-          Bulk-import transactions from a bank export.
+          OCR from screenshots. For Bancolombia XLSX statements, use the per-account{" "}
+          <Link href="/settings/accounts" className="underline underline-offset-2">
+            Reconcile
+          </Link>{" "}
+          flow — it reconciles against the bank statement instead of fire-and-forget importing.
         </p>
       </header>
-      <ImportForm accounts={accs} />
       <ScreenshotUpload accounts={accs} />
     </main>
   );
