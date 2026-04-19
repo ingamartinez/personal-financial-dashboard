@@ -109,29 +109,21 @@ describe("compareProjections", () => {
 });
 
 describe("safeLogDetail", () => {
-  it("encodes newlines and control chars so log lines can't be forged", () => {
+  it("returns the Error class name, never the message (defeats log-injection)", () => {
     const tainted = new Error("parse failed\nFAKE LOG\rERROR: admin hijacked\x00bytes");
-    const out = safeLogDetail(tainted);
-    expect(out).not.toContain("\n");
-    expect(out).not.toContain("\r");
-    expect(out).not.toContain("\x00");
-    // encodeURIComponent preserves the semantic payload — the operator can
-    // still decode it for debugging if they need to.
-    expect(out).toContain("parse%20failed");
-    expect(out).toContain("%0A"); // \n
-    expect(out).toContain("%0D"); // \r
+    expect(safeLogDetail(tainted)).toBe("Error");
   });
 
-  it("truncates the pre-encode message to 500 chars", () => {
-    const long = new Error("x".repeat(5000));
-    // After encoding "x"*500 is still 500 chars (x doesn't need escaping).
-    expect(safeLogDetail(long)).toHaveLength(500);
+  it("returns the constructor name for subclasses of Error", () => {
+    class CanaryBoom extends Error {}
+    expect(safeLogDetail(new CanaryBoom("x"))).toBe("CanaryBoom");
+    expect(safeLogDetail(new SyntaxError("y"))).toBe("SyntaxError");
   });
 
-  it("coerces non-Error values to string", () => {
-    expect(safeLogDetail("plain string")).toBe("plain%20string");
-    expect(safeLogDetail(42)).toBe("42");
-    expect(safeLogDetail(null)).toBe("null");
+  it("returns the typeof for non-Error values", () => {
+    expect(safeLogDetail("plain string")).toBe("string");
+    expect(safeLogDetail(42)).toBe("number");
+    expect(safeLogDetail(null)).toBe("object");
   });
 });
 

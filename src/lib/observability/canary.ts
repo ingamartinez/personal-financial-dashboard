@@ -156,14 +156,14 @@ function coerceStringOrNull(v: unknown): string | null {
   return null;
 }
 
-// Sanitize an error (possibly wrapping user-controlled SMS bytes) before
-// writing to console — encodes CR / LF / control chars via encodeURIComponent
-// so a malicious payload can't forge fake log lines. encodeURIComponent is
-// the CodeQL-recognized sanitizer for js/log-injection (our prior regex-strip
-// was effectively equivalent but CodeQL couldn't prove it).
+// Returns the error CLASS only — never message content. Defeats log-injection
+// by construction: no user-controlled bytes reach the logger. Diagnostic
+// value is "which kind of failure happened", not "what was the exact text".
+// When we introduce a centralized logger (Pino), it will serialize the full
+// err object with safe encoding and this helper can retire.
 export function safeLogDetail(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  return encodeURIComponent(msg.slice(0, 500));
+  if (err instanceof Error) return err.constructor.name;
+  return typeof err;
 }
 
 // Entry point used by the SMS route's after() hook. Swallows errors — a
