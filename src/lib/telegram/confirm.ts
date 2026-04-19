@@ -1,6 +1,11 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { transactions, type TelegramBatchItem, type TelegramDraft } from "@/lib/db/schema";
+import {
+  ingestionLogs,
+  transactions,
+  type TelegramBatchItem,
+  type TelegramDraft,
+} from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
 
@@ -27,6 +32,7 @@ export async function insertFromDraft(opts: {
   externalIdOverride?: string;
 }): Promise<ConfirmResult> {
   const { userId, draft, chatId, sourceMessageId, externalIdOverride } = opts;
+  const startedAt = new Date();
 
   if (!isDraftComplete(draft)) {
     return { status: "error", reason: "draft is incomplete" };
@@ -59,6 +65,7 @@ export async function insertFromDraft(opts: {
   const externalId =
     externalIdOverride ?? (sourceMessageId ? `tg:${chatId}:${sourceMessageId}` : null);
 
+  let outcome: ConfirmResult;
   try {
     const result = await db
       .insert(transactions)
@@ -90,18 +97,44 @@ export async function insertFromDraft(opts: {
       })
       .returning({ id: transactions.id });
 
-    if (result.length === 0) return { status: "duplicated" };
-
-    emit({
-      type: "transaction:created",
-      id: result[0].id,
-      source: "telegram",
-      timestamp: Date.now(),
-    });
-    return { status: "inserted", txId: result[0].id };
+    if (result.length === 0) {
+      outcome = { status: "duplicated" };
+    } else {
+      emit({
+        type: "transaction:created",
+        id: result[0].id,
+        source: "telegram",
+        timestamp: Date.now(),
+      });
+      outcome = { status: "inserted", txId: result[0].id };
+    }
   } catch (err) {
-    return { status: "error", reason: err instanceof Error ? err.message : String(err) };
+    outcome = { status: "error", reason: err instanceof Error ? err.message : String(err) };
   }
+
+  await db.insert(ingestionLogs).values({
+    userId,
+    source: "telegram",
+    status: outcome.status,
+    itemsReceived: 1,
+    itemsInserted: outcome.status === "inserted" ? 1 : 0,
+    itemsDuplicated: outcome.status === "duplicated" ? 1 : 0,
+    errorMessage: outcome.status === "error" ? outcome.reason : null,
+    payload: {
+      chatId,
+      sourceMessageId,
+      draft: {
+        amountCents: draft.amountCents,
+        currency: draft.currency,
+        direction: draft.direction,
+        accountId: draft.accountId,
+      },
+    },
+    startedAt,
+    finishedAt: new Date(),
+  });
+
+  return outcome;
 }
 
 export type BatchResult = {

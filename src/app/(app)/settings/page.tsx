@@ -40,24 +40,16 @@ const LINKS = [
   },
 ];
 
-const ADMIN_LINKS = [
-  {
-    href: "/settings/invites",
-    title: "Invitaciones",
-    description:
-      "Generá códigos para que más gente pueda crear cuenta. El registro en Findash es cerrado — solo quien tiene un link válido se puede firmar.",
-  },
-  {
-    href: "/settings/users",
-    title: "Usuarios",
-    description:
-      "Listado de usuarios con toggle activo/inactivo y cambio de rol. Solo visible para admins.",
-  },
-];
+const ADMIN_LINK = {
+  href: "/admin",
+  title: "Admin",
+  description:
+    "Panel de operador: invitaciones, usuarios, salud por usuario. Solo visible para admins.",
+};
 
 export default async function SettingsPage() {
   const session = await getSessionUser();
-  const links = session.role === "admin" ? [...LINKS, ...ADMIN_LINKS] : LINKS;
+  const links = session.role === "admin" ? [...LINKS, ADMIN_LINK] : LINKS;
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header>

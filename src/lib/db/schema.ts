@@ -7,6 +7,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   serial,
@@ -509,4 +510,36 @@ export const telegramSessions = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (t) => [index("telegram_sessions_user_idx").on(t.userId)],
+);
+
+export type CaptureSources30d = Partial<Record<(typeof txSource.enumValues)[number], number>>;
+
+export const userHealthSnapshots = pgTable(
+  "user_health_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSmsReceivedAt: timestamp("last_sms_received_at", { withTimezone: true }),
+    lastCaptureAt: timestamp("last_capture_at", { withTimezone: true }),
+    captureSources30d: jsonb("capture_sources_30d")
+      .$type<CaptureSources30d>()
+      .notNull()
+      .default({}),
+    // NULL when user had zero ingest attempts in the 30d window — avoids
+    // painting green dashboards for dormant users.
+    parserSuccessRate30d: numeric("parser_success_rate_30d", { precision: 5, scale: 4 }),
+    unreconciledTxnCount: integer("unreconciled_txn_count").notNull().default(0),
+    // NULL until Epic R (bank reconciliation) lands.
+    divergenceCents: bigint("divergence_cents", { mode: "bigint" }),
+    churnSignalFlag: boolean("churn_signal_flag").notNull().default(false),
+  },
+  (t) => [
+    index("user_health_snapshots_user_captured_idx").on(t.userId, t.capturedAt),
+    index("user_health_snapshots_churn_idx")
+      .on(t.capturedAt)
+      .where(sql`${t.churnSignalFlag} = true`),
+  ],
 );

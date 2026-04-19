@@ -37,7 +37,7 @@ export async function mintInviteCodeAction(
     expiresAt,
   });
   const signupUrl = await buildSignupUrl(row.code);
-  revalidatePath("/settings/invites");
+  revalidatePath("/admin/invites");
   return { status: "success", code: row.code, signupUrl };
 }
 
@@ -58,5 +58,5 @@ export async function setInviteDisabledAction(formData: FormData): Promise<void>
     ownerUserId: session.id,
     disabled: parsed.data.disabled,
   });
-  revalidatePath("/settings/invites");
+  revalidatePath("/admin/invites");
 }
