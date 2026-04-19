@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull, max } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { categories } from "@/lib/db/schema";
@@ -23,7 +23,6 @@ const createSchema = z.object({
   parentSlug: slugSchema.nullable(),
   icon: z.string().max(40).nullable(),
   color: hexColorSchema.nullable(),
-  sortOrder: z.coerce.number().int().min(0).max(9999).default(500),
 });
 
 const updateSchema = z.object({
@@ -32,10 +31,16 @@ const updateSchema = z.object({
   parentSlug: slugSchema.nullable(),
   icon: z.string().max(40).nullable(),
   color: hexColorSchema.nullable(),
-  sortOrder: z.coerce.number().int().min(0).max(9999),
 });
 
 const archiveSchema = z.object({ slug: slugSchema });
+
+// Reorder payload: ordered list of root-or-sibling slugs sharing a parent.
+// Children reorder independently; leave `parentSlug` null for roots.
+const reorderSchema = z.object({
+  parentSlug: slugSchema.nullable(),
+  slugs: z.array(slugSchema).min(1).max(500),
+});
 
 export type CategoryActionResult = { status: "ok" } | { status: "error"; message: string };
 
@@ -62,6 +67,22 @@ export async function createCategory(
     }
   }
 
+  // sortOrder is owned by drag-and-drop; for new rows we just park them at
+  // the end of their sibling group.
+  const [{ current }] = await db
+    .select({ current: max(categories.sortOrder) })
+    .from(categories)
+    .where(
+      and(
+        eq(categories.userId, session.id),
+        parsed.data.parentSlug
+          ? eq(categories.parentSlug, parsed.data.parentSlug)
+          : isNull(categories.parentSlug),
+        notDeleted(categories.deletedAt),
+      ),
+    );
+  const nextSortOrder = (current ?? 0) + 10;
+
   await db.insert(categories).values({
     userId: session.id,
     slug: parsed.data.slug,
@@ -69,7 +90,7 @@ export async function createCategory(
     parentSlug: parsed.data.parentSlug,
     icon: parsed.data.icon,
     color: parsed.data.color,
-    sortOrder: parsed.data.sortOrder,
+    sortOrder: nextSortOrder,
   });
 
   revalidatePath("/settings/categories");
@@ -106,7 +127,6 @@ export async function updateCategory(
       parentSlug: parsed.data.parentSlug,
       icon: parsed.data.icon,
       color: parsed.data.color,
-      sortOrder: parsed.data.sortOrder,
       updatedAt: new Date(),
     })
     .where(
@@ -116,6 +136,62 @@ export async function updateCategory(
         notDeleted(categories.deletedAt),
       ),
     );
+
+  revalidatePath("/settings/categories");
+  return { status: "ok" };
+}
+
+export async function reorderCategories(
+  input: z.input<typeof reorderSchema>,
+): Promise<CategoryActionResult> {
+  const session = await getSessionUser();
+  const parsed = reorderSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Input inválido." };
+  }
+
+  // Validate all slugs belong to the user + share the expected parent.
+  const rows = await db
+    .select({ slug: categories.slug, parentSlug: categories.parentSlug })
+    .from(categories)
+    .where(
+      and(
+        eq(categories.userId, session.id),
+        inArray(categories.slug, parsed.data.slugs),
+        notDeleted(categories.deletedAt),
+      ),
+    );
+
+  if (rows.length !== parsed.data.slugs.length) {
+    return { status: "error", message: "Alguna categoría no existe o está archivada." };
+  }
+
+  const expected = parsed.data.parentSlug;
+  const mismatch = rows.find((r) => (r.parentSlug ?? null) !== (expected ?? null));
+  if (mismatch) {
+    return {
+      status: "error",
+      message: "No se puede reordenar entre categorías de distinto padre.",
+    };
+  }
+
+  // One round-trip: rebuild sort_order via VALUES-join so all siblings update
+  // atomically at 10/20/30… Matches the FK-safe pattern used elsewhere.
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    for (const [index, slug] of parsed.data.slugs.entries()) {
+      await tx
+        .update(categories)
+        .set({ sortOrder: (index + 1) * 10, updatedAt: now })
+        .where(
+          and(
+            eq(categories.userId, session.id),
+            eq(categories.slug, slug),
+            notDeleted(categories.deletedAt),
+          ),
+        );
+    }
+  });
 
   revalidatePath("/settings/categories");
   return { status: "ok" };

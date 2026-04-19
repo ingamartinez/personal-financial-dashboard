@@ -1,8 +1,27 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
-import { ArchiveIcon, PencilIcon, PlusIcon } from "lucide-react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ArchiveIcon, GripVerticalIcon, PencilIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
+import { ColorPicker } from "@/components/categories/color-picker";
+import { CategoryIcon, IconPicker } from "@/components/categories/icon-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +35,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { archiveCategory, createCategory, updateCategory } from "./actions";
+import { cn } from "@/lib/utils";
+import { archiveCategory, createCategory, reorderCategories, updateCategory } from "./actions";
 
 export type CategoryRow = {
   id: number;
@@ -35,7 +55,6 @@ type FormState = {
   parentSlug: string;
   icon: string;
   color: string;
-  sortOrder: string;
   // Whether the slug field is editable. Slugs become immutable after
   // creation to protect composite FKs.
   slugLocked: boolean;
@@ -48,7 +67,6 @@ const EMPTY_FORM: FormState = {
   parentSlug: "",
   icon: "",
   color: "",
-  sortOrder: "500",
   slugLocked: false,
 };
 
@@ -68,7 +86,28 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
 
-  const roots = useMemo(() => rows.filter((r) => r.parentSlug === null), [rows]);
+  // Server-ordered root slugs. Local state so drag-and-drop can reorder
+  // optimistically; we re-sync when the server sends new props.
+  const serverRootSlugs = useMemo(
+    () => rows.filter((r) => r.parentSlug === null).map((r) => r.slug),
+    [rows],
+  );
+  const [rootOrder, setRootOrder] = useState<string[]>(serverRootSlugs);
+  useEffect(() => {
+    setRootOrder(serverRootSlugs);
+  }, [serverRootSlugs]);
+
+  const rowBySlug = useMemo(() => {
+    const map = new Map<string, CategoryRow>();
+    for (const r of rows) map.set(r.slug, r);
+    return map;
+  }, [rows]);
+
+  const orderedRoots = useMemo(
+    () => rootOrder.map((slug) => rowBySlug.get(slug)).filter((r): r is CategoryRow => !!r),
+    [rootOrder, rowBySlug],
+  );
+
   const childrenByParent = useMemo(() => {
     const map = new Map<string, CategoryRow[]>();
     for (const r of rows) {
@@ -80,6 +119,11 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
     }
     return map;
   }, [rows]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   function openCreate() {
     setForm(EMPTY_FORM);
@@ -94,7 +138,6 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
       parentSlug: row.parentSlug ?? "",
       icon: row.icon ?? "",
       color: row.color ?? "",
-      sortOrder: row.sortOrder.toString(),
       slugLocked: true,
     });
     setOpen(true);
@@ -107,7 +150,6 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
       parentSlug: form.parentSlug.trim() || null,
       icon: form.icon.trim() || null,
       color: form.color.trim() || null,
-      sortOrder: Number(form.sortOrder),
     };
 
     startTransition(async () => {
@@ -137,6 +179,27 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
     });
   }
 
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = rootOrder.indexOf(String(active.id));
+    const newIndex = rootOrder.indexOf(String(over.id));
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const next = arrayMove(rootOrder, oldIndex, newIndex);
+    setRootOrder(next);
+
+    startTransition(async () => {
+      const result = await reorderCategories({ parentSlug: null, slugs: next });
+      if (result.status === "error") {
+        toast.error(result.message);
+        // Revert optimistic order — server rejected the change.
+        setRootOrder(rootOrder);
+      }
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-end">
@@ -145,79 +208,22 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
         </Button>
       </div>
 
-      <div className="flex flex-col gap-3">
-        {roots.map((root) => {
-          const children = childrenByParent.get(root.slug) ?? [];
-          return (
-            <Card key={root.id}>
-              <CardHeader className="flex flex-row items-center justify-between gap-2">
-                <div className="flex items-center gap-3">
-                  {root.color && (
-                    <span
-                      aria-hidden
-                      className="size-5 rounded"
-                      style={{ background: root.color }}
-                    />
-                  )}
-                  <CardTitle className="text-base">{root.name}</CardTitle>
-                  <Badge variant="outline" className="font-mono text-xs">
-                    {root.slug}
-                  </Badge>
-                </div>
-                <div className="flex gap-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={pending}
-                    onClick={() => openEdit(root)}
-                  >
-                    <PencilIcon className="size-4" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={pending}
-                    onClick={() => archive(root.slug)}
-                  >
-                    <ArchiveIcon className="size-4" />
-                  </Button>
-                </div>
-              </CardHeader>
-              {children.length > 0 && (
-                <CardContent className="flex flex-wrap gap-2 border-t pt-3">
-                  {children.map((c) => (
-                    <div
-                      key={c.id}
-                      className="bg-muted/40 flex items-center gap-2 rounded-full border px-3 py-1 text-sm"
-                    >
-                      <span>{c.name}</span>
-                      <span className="text-muted-foreground font-mono text-xs">{c.slug}</span>
-                      <button
-                        type="button"
-                        className="text-muted-foreground hover:text-foreground"
-                        disabled={pending}
-                        onClick={() => openEdit(c)}
-                        aria-label={`Editar ${c.name}`}
-                      >
-                        <PencilIcon className="size-3" />
-                      </button>
-                      <button
-                        type="button"
-                        className="text-muted-foreground hover:text-destructive"
-                        disabled={pending}
-                        onClick={() => archive(c.slug)}
-                        aria-label={`Archivar ${c.name}`}
-                      >
-                        <ArchiveIcon className="size-3" />
-                      </button>
-                    </div>
-                  ))}
-                </CardContent>
-              )}
-            </Card>
-          );
-        })}
-      </div>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={rootOrder} strategy={verticalListSortingStrategy}>
+          <div className="flex flex-col gap-3">
+            {orderedRoots.map((root) => (
+              <SortableRootCard
+                key={root.slug}
+                root={root}
+                childRows={childrenByParent.get(root.slug) ?? []}
+                pending={pending}
+                onEdit={openEdit}
+                onArchive={archive}
+              />
+            ))}
+          </div>
+        </SortableContext>
+      </DndContext>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
@@ -268,7 +274,7 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
                 className="border-input bg-background focus:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus:ring-2"
               >
                 <option value="">— Ninguna (categoría raíz)</option>
-                {roots
+                {orderedRoots
                   .filter((r) => r.slug !== form.slug)
                   .map((r) => (
                     <option key={r.id} value={r.slug}>
@@ -277,33 +283,21 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
                   ))}
               </select>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-3">
               <div className="flex-1">
-                <Label htmlFor="cat-color">Color hex</Label>
-                <Input
+                <Label htmlFor="cat-color">Color</Label>
+                <ColorPicker
                   id="cat-color"
                   value={form.color}
-                  onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))}
-                  placeholder="#0ea5e9"
-                  className="font-mono"
+                  onChange={(color) => setForm((f) => ({ ...f, color }))}
                 />
               </div>
               <div className="flex-1">
-                <Label htmlFor="cat-icon">Icono (lucide)</Label>
-                <Input
+                <Label htmlFor="cat-icon">Icono</Label>
+                <IconPicker
                   id="cat-icon"
                   value={form.icon}
-                  onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))}
-                  placeholder="home"
-                />
-              </div>
-              <div className="w-24">
-                <Label htmlFor="cat-order">Orden</Label>
-                <Input
-                  id="cat-order"
-                  type="number"
-                  value={form.sortOrder}
-                  onChange={(e) => setForm((f) => ({ ...f, sortOrder: e.target.value }))}
+                  onChange={(icon) => setForm((f) => ({ ...f, icon }))}
                 />
               </div>
             </div>
@@ -318,6 +312,107 @@ export function CategoriesManager({ rows }: { rows: CategoryRow[] }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function SortableRootCard({
+  root,
+  childRows,
+  pending,
+  onEdit,
+  onArchive,
+}: {
+  root: CategoryRow;
+  childRows: CategoryRow[];
+  pending: boolean;
+  onEdit: (row: CategoryRow) => void;
+  onArchive: (slug: string) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: root.slug,
+  });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className={cn(isDragging && "z-10 opacity-80")}>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              aria-label={`Arrastrar ${root.name}`}
+              className="text-muted-foreground hover:text-foreground cursor-grab touch-none active:cursor-grabbing"
+              // dnd-kit generates aria-describedby="DndDescribedBy-N" via an
+              // internal counter that can differ between SSR and hydration
+              // (upstream issue). The attribute is otherwise stable, so we
+              // silence the hydration warning on this one element only.
+              suppressHydrationWarning
+              {...attributes}
+              {...listeners}
+            >
+              <GripVerticalIcon className="size-4" />
+            </button>
+            {root.color && (
+              <span aria-hidden className="size-5 rounded" style={{ background: root.color }} />
+            )}
+            {root.icon && <CategoryIcon name={root.icon} className="text-muted-foreground" />}
+            <CardTitle className="text-base">{root.name}</CardTitle>
+            <Badge variant="outline" className="font-mono text-xs">
+              {root.slug}
+            </Badge>
+          </div>
+          <div className="flex gap-1">
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => onEdit(root)}>
+              <PencilIcon className="size-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={pending}
+              onClick={() => onArchive(root.slug)}
+            >
+              <ArchiveIcon className="size-4" />
+            </Button>
+          </div>
+        </CardHeader>
+        {childRows.length > 0 && (
+          <CardContent className="flex flex-wrap gap-2 border-t pt-3">
+            {childRows.map((c) => (
+              <div
+                key={c.id}
+                className="bg-muted/40 flex items-center gap-2 rounded-full border px-3 py-1 text-sm"
+              >
+                {c.icon && <CategoryIcon name={c.icon} className="text-muted-foreground size-3" />}
+                <span>{c.name}</span>
+                <span className="text-muted-foreground font-mono text-xs">{c.slug}</span>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground"
+                  disabled={pending}
+                  onClick={() => onEdit(c)}
+                  aria-label={`Editar ${c.name}`}
+                >
+                  <PencilIcon className="size-3" />
+                </button>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-destructive"
+                  disabled={pending}
+                  onClick={() => onArchive(c.slug)}
+                  aria-label={`Archivar ${c.name}`}
+                >
+                  <ArchiveIcon className="size-3" />
+                </button>
+              </div>
+            ))}
+          </CardContent>
+        )}
+      </Card>
     </div>
   );
 }
