@@ -183,6 +183,13 @@
       "when": 1776632072094,
       "tag": "0025_amusing_winter_soldier",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1776632846337,
+      "tag": "0026_many_daredevil",
+      "breakpoints": true
     }
   ]
 }
