@@ -597,6 +597,65 @@ export const telegramSessions = pgTable(
 
 export type CaptureSources30d = Partial<Record<(typeof txSource.enumValues)[number], number>>;
 
+// AI canary — shadow-parses a deterministic 1% sample of incoming SMS via
+// Haiku and compares against the regex result. Detects Bancolombia format
+// drift before users notice. See PLAN.md § AI Strategy + issue #258.
+//
+// regexResult / aiResult shape is CanaryProjection — { amountCents, currency,
+// merchant, occurredOn } — see src/lib/observability/canary.ts.
+export type CanaryProjection = {
+  amountCents: string | null;
+  currency: "COP" | "USD" | null;
+  merchant: string | null;
+  occurredOn: string | null;
+};
+
+export const parserCanaryEvents = pgTable(
+  "parser_canary_events",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+    smsBodyHash: varchar("sms_body_hash", { length: 64 }).notNull(),
+    sender: varchar("sender", { length: 100 }),
+    regexResult: jsonb("regex_result").$type<CanaryProjection>().notNull(),
+    aiResult: jsonb("ai_result").$type<CanaryProjection>().notNull(),
+    agreement: boolean("agreement").notNull(),
+    divergenceFields: jsonb("divergence_fields").$type<string[]>().notNull().default([]),
+    aiModel: varchar("ai_model", { length: 50 }).notNull(),
+    aiInputTokens: integer("ai_input_tokens").notNull().default(0),
+    aiOutputTokens: integer("ai_output_tokens").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("parser_canary_events_created_idx").on(t.createdAt),
+    index("parser_canary_events_disagree_idx")
+      .on(t.createdAt)
+      .where(sql`${t.agreement} = false`),
+  ],
+);
+
+// Insert-only alert log with built-in dedup. Rules for the dispatcher:
+//   - Never fire a new alert if another is unresolved (resolvedAt IS NULL)
+//   - When rate recovers ≥ threshold, mark the most recent unresolved row as resolved
+// This gives us history + natural dedup without a separate state table.
+export const canaryAlerts = pgTable(
+  "canary_alerts",
+  {
+    id: serial("id").primaryKey(),
+    firedAt: timestamp("fired_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    rate: numeric("rate", { precision: 5, scale: 4 }).notNull(),
+    samples: integer("samples").notNull(),
+    topDivergences: jsonb("top_divergences").notNull().default([]),
+    notificationStatus: varchar("notification_status", { length: 40 }).notNull(),
+  },
+  (t) => [
+    index("canary_alerts_unresolved_idx")
+      .on(t.firedAt)
+      .where(sql`${t.resolvedAt} IS NULL`),
+  ],
+);
+
 export const userHealthSnapshots = pgTable(
   "user_health_snapshots",
   {

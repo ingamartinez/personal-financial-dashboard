@@ -1,9 +1,10 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { canIngest, paywallResponse } from "@/lib/auth/can-ingest";
 import { db } from "@/lib/db";
 import { ingestionLogs } from "@/lib/db/schema";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { ingestParsed, serializeParsed } from "@/lib/ingestion/sms-pipeline";
+import { runCanaryForSms } from "@/lib/observability/canary";
 import { resolveWebhookAuth } from "@/lib/webhook-tokens";
 
 export const runtime = "nodejs";
@@ -70,6 +71,20 @@ export async function POST(req: Request) {
     startedAt,
     finishedAt: new Date(),
   });
+
+  // Fire-and-forget: shadow-parse a 1% sample via Haiku and persist the
+  // comparison. Runs after the response is sent — no hot-path latency.
+  // after() requires a request scope, so unit tests that call POST() directly
+  // would throw — swallow so the test harness doesn't care.
+  try {
+    after(async () => {
+      await runCanaryForSms({ userId: auth.userId, body, sender });
+    });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "test") {
+      console.error("[canary] after() registration failed", err);
+    }
+  }
 
   return NextResponse.json({ ok: true, ...outcome });
 }
