@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import { ingestionLogs } from "@/lib/db/schema";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { ingestParsed, serializeParsed } from "@/lib/ingestion/sms-pipeline";
-import { runCanaryForSms } from "@/lib/observability/canary";
+import { runCanaryForSms, safeLogDetail } from "@/lib/observability/canary";
 import { resolveWebhookAuth } from "@/lib/webhook-tokens";
 
 export const runtime = "nodejs";
@@ -82,7 +82,7 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     if (process.env.NODE_ENV !== "test") {
-      console.error("[canary] after() registration failed", err);
+      console.error("[canary] after() registration failed:", safeLogDetail(err));
     }
   }
 

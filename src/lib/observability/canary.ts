@@ -156,6 +156,14 @@ function coerceStringOrNull(v: unknown): string | null {
   return null;
 }
 
+// Sanitize an error (possibly wrapping user-controlled SMS bytes) before
+// writing to console — strips control chars / CR / LF so a malicious payload
+// can't inject fake log lines. Flagged by CodeQL js/log-injection otherwise.
+export function safeLogDetail(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.replace(/[\r\n\x00-\x1f\x7f]/g, " ").slice(0, 500);
+}
+
 // Entry point used by the SMS route's after() hook. Swallows errors — a
 // canary failure must NEVER surface to the user or retry the ingestion.
 export async function runCanaryForSms(params: {
@@ -189,6 +197,6 @@ export async function runCanaryForSms(params: {
       aiOutputTokens: ai.outputTokens,
     });
   } catch (err) {
-    console.error("[canary] shadow parse failed", err);
+    console.error("[canary] shadow parse failed:", safeLogDetail(err));
   }
 }

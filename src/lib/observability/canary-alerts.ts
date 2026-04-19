@@ -8,6 +8,7 @@ import {
   users,
 } from "@/lib/db/schema";
 import { decrypt } from "@/lib/crypto/symmetric";
+import { safeLogDetail } from "@/lib/observability/canary";
 import { createTelegramClient } from "@/lib/telegram/client";
 import type { TrendPoint } from "@/lib/telemetry/slos";
 
@@ -116,7 +117,7 @@ export async function checkAndAlertCanary(database: DB = db): Promise<CheckDecis
     const topDivergences = await fetchTopDivergences(database, 3);
     const telegramStatus = await dispatchTelegramAlert(database, stats, topDivergences).catch(
       (err) => {
-        console.error("[canary] telegram dispatch failed", err);
+        console.error("[canary] telegram dispatch failed:", safeLogDetail(err));
         return "telegram_error";
       },
     );

@@ -4,6 +4,7 @@ import {
   hashSmsBody,
   parseProjectionJson,
   projectFromRegex,
+  safeLogDetail,
   sampleForCanary,
 } from "./canary";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
@@ -104,6 +105,28 @@ describe("compareProjections", () => {
     });
     expect(agreement).toBe(false);
     expect(divergenceFields).toEqual(["currency", "occurredOn"]);
+  });
+});
+
+describe("safeLogDetail", () => {
+  it("strips newlines, carriage returns, and control chars so log lines can't be forged", () => {
+    const tainted = new Error("parse failed\nFAKE LOG\rERROR: admin hijacked\x00bytes");
+    const out = safeLogDetail(tainted);
+    expect(out).not.toContain("\n");
+    expect(out).not.toContain("\r");
+    expect(out).not.toContain("\x00");
+    expect(out).toContain("parse failed");
+  });
+
+  it("truncates very long messages to 500 chars", () => {
+    const long = new Error("x".repeat(5000));
+    expect(safeLogDetail(long)).toHaveLength(500);
+  });
+
+  it("coerces non-Error values to string", () => {
+    expect(safeLogDetail("plain string")).toBe("plain string");
+    expect(safeLogDetail(42)).toBe("42");
+    expect(safeLogDetail(null)).toBe("null");
   });
 });
 
