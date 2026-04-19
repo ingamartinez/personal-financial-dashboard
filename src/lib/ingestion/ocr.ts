@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "ingestion/ocr" });
 
 export type OcrMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 
@@ -192,8 +195,14 @@ export async function extractTransactionsFromImage(opts: {
       return;
     }
     if (mismatch) {
-      console.warn(
-        `[ocr] row ${i} sign_token/amount mismatch — sign_token="${t.sign_token}" amount=${t.amount} → trusting sign_token`,
+      log.warn(
+        {
+          rowIndex: i,
+          signToken: t.sign_token,
+          amount: t.amount,
+          event: "ocr_sign_token_amount_mismatch",
+        },
+        "sign_token/amount mismatch — trusting sign_token",
       );
     }
 

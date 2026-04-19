@@ -25,6 +25,8 @@ export async function register() {
   const cron = (await import("node-cron")).default;
   const { closePreviousMonthForAllUsers } = await import("@/lib/recurring/gap-detector");
   const { snapshotAllActiveUsers } = await import("@/lib/telemetry/user-health");
+  const { createLogger } = await import("@/lib/logger");
+  const log = createLogger({ module: "instrumentation" });
 
   // Day 5 of each month at 06:00 America/Bogota — gives a 4-day grace window
   // for late-posting SMS/Apple Pay events before we finalize gaps.
@@ -35,19 +37,22 @@ export async function register() {
         const results = await closePreviousMonthForAllUsers();
         for (const entry of results) {
           if (entry.ok) {
-            console.log(
-              `[findash] recurring-gap detector closed ${entry.result.yearMonth} for user ${entry.userId}:`,
-              JSON.stringify(entry.result),
+            log.info(
+              { userId: entry.userId, result: entry.result, event: "recurring_gap_closed" },
+              `recurring-gap detector closed ${entry.result.yearMonth}`,
             );
           } else {
-            console.error(
-              `[findash] recurring-gap detector failed for user ${entry.userId}:`,
-              entry.error,
+            log.error(
+              { err: entry.error, userId: entry.userId, event: "recurring_gap_failed" },
+              "recurring-gap detector failed",
             );
           }
         }
       } catch (err) {
-        console.error("[findash] recurring-gap detector fan-out failed:", err);
+        log.error(
+          { err, event: "recurring_gap_fanout_failed" },
+          "recurring-gap detector fan-out failed",
+        );
       }
     },
     { timezone: "America/Bogota" },
@@ -63,25 +68,30 @@ export async function register() {
         const results = await snapshotAllActiveUsers();
         const churned = results.filter((r) => r.ok && r.data.churnSignalFlag).length;
         const failed = results.filter((r) => !r.ok).length;
-        console.log(
-          `[findash] user-health snapshots: ${results.length} users, ${churned} churn flags, ${failed} failures`,
+        log.info(
+          { total: results.length, churned, failed, event: "user_health_snapshots_done" },
+          "user-health snapshots",
         );
         for (const entry of results) {
           if (!entry.ok) {
-            console.error(
-              `[findash] user-health snapshot failed for user ${entry.userId}:`,
-              entry.error,
+            log.error(
+              { err: entry.error, userId: entry.userId, event: "user_health_snapshot_failed" },
+              "user-health snapshot failed",
             );
           }
         }
       } catch (err) {
-        console.error("[findash] user-health snapshot fan-out failed:", err);
+        log.error(
+          { err, event: "user_health_fanout_failed" },
+          "user-health snapshot fan-out failed",
+        );
       }
     },
     { timezone: "America/Bogota" },
   );
 
-  console.log(
-    "[findash] crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *) America/Bogota",
+  log.info(
+    { event: "crons_registered" },
+    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *) America/Bogota",
   );
 }

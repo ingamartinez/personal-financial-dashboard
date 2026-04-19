@@ -17,29 +17,50 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 // layout so dev and prod resolve these identically.
 import { db } from "../src/lib/db";
 import { seedReferenceData } from "../src/lib/db/seed-reference-data";
+import { createLogger } from "../src/lib/logger";
 import { backfillUsersReferenceData } from "./backfill-users-reference";
+
+const log = createLogger({ module: "migrate-prod" });
 
 const target = process.env.PGDATABASE ?? "findash";
 
-console.log(`[migrate-prod] applying migrations from ./drizzle against ${target}...`);
+log.info({ target, event: "migrate_prod_start" }, "applying migrations from ./drizzle");
 await migrate(db, { migrationsFolder: "./drizzle" });
-console.log("[migrate-prod] migrations applied.");
+log.info({ event: "migrate_prod_migrations_applied" }, "migrations applied");
 
-console.log("[migrate-prod] seeding global reference data...");
+log.info({ event: "migrate_prod_seed_ref_start" }, "seeding global reference data");
 const refResult = await seedReferenceData(db);
-console.log(
-  `[migrate-prod] reference data: +${refResult.categorySeeds} category seeds, +${refResult.ruleSeeds} rule seeds (existing rows skipped).`,
+log.info(
+  {
+    categorySeeds: refResult.categorySeeds,
+    ruleSeeds: refResult.ruleSeeds,
+    event: "migrate_prod_seed_ref_done",
+  },
+  "reference data seeded (existing rows skipped)",
 );
 
-console.log("[migrate-prod] backfilling per-user categories + rules for active users...");
+log.info(
+  { event: "migrate_prod_backfill_start" },
+  "backfilling per-user categories + rules for active users",
+);
 const backfill = await backfillUsersReferenceData();
 for (const r of backfill) {
   if (r.categories > 0 || r.rules > 0) {
-    console.log(
-      `[migrate-prod]   user=${r.userId} <${r.email}>: +${r.categories} categories, +${r.rules} rules`,
+    log.info(
+      {
+        userId: r.userId,
+        email: r.email,
+        categories: r.categories,
+        rules: r.rules,
+        event: "migrate_prod_backfill_row",
+      },
+      "backfilled user",
     );
   }
 }
-console.log(`[migrate-prod] backfill complete — processed ${backfill.length} active users.`);
+log.info(
+  { count: backfill.length, event: "migrate_prod_backfill_done" },
+  "backfill complete — processed active users",
+);
 
 await db.$client.end();

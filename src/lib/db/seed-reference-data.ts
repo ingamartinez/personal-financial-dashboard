@@ -14,8 +14,11 @@
 // Those are populated per-user by the signup flow or the one-shot backfill
 // scripts under scripts/backfill-*.ts — never globally.
 
+import { createLogger } from "@/lib/logger";
 import { db as defaultDb, type DB } from "./index";
 import { categorySeeds, classificationRuleSeeds } from "./schema";
+
+const log = createLogger({ module: "seed-reference-data" });
 
 export type CategorySeed = {
   slug: string;
@@ -197,13 +200,18 @@ export async function seedReferenceData(database: DB = defaultDb): Promise<{
 if (import.meta.main) {
   seedReferenceData()
     .then((result) => {
-      console.log(
-        `[seed-reference-data] inserted ${result.categorySeeds} category seeds, ${result.ruleSeeds} rule seeds`,
+      log.info(
+        {
+          categorySeeds: result.categorySeeds,
+          ruleSeeds: result.ruleSeeds,
+          event: "seed_reference_data_done",
+        },
+        `inserted ${result.categorySeeds} category seeds, ${result.ruleSeeds} rule seeds`,
       );
       process.exit(0);
     })
     .catch((err) => {
-      console.error(err);
+      log.error({ err, event: "seed_reference_data_failed" }, "seed-reference-data failed");
       process.exit(1);
     });
 }

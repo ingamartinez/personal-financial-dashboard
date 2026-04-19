@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { db } from "../src/lib/db";
 import { parseSmsBancolombia, type ParseResult } from "../src/lib/ingestion/sms-bancolombia";
+import { createLogger } from "../src/lib/logger";
+
+const log = createLogger({ module: "analyze-sms-dump" });
 
 type Source =
   | { kind: "db" }
@@ -260,7 +263,7 @@ async function main() {
     }
   }
 
-  console.log(out.join("\n"));
+  log.info({ event: "analyze_sms_report" }, out.join("\n"));
 
   if (src.kind === "db") {
     await db.$client.end();
@@ -269,6 +272,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  log.error({ err, event: "analyze_sms_failed" }, "analyze-sms-dump failed");
   process.exit(1);
 });

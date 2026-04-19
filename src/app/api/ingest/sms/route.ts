@@ -4,8 +4,11 @@ import { db } from "@/lib/db";
 import { ingestionLogs } from "@/lib/db/schema";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { ingestParsed, serializeParsed } from "@/lib/ingestion/sms-pipeline";
-import { runCanaryForSms, safeLogDetail } from "@/lib/observability/canary";
+import { createLogger } from "@/lib/logger";
+import { runCanaryForSms } from "@/lib/observability/canary";
 import { resolveWebhookAuth } from "@/lib/webhook-tokens";
+
+const log = createLogger({ module: "api/ingest/sms" });
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -82,7 +85,7 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     if (process.env.NODE_ENV !== "test") {
-      console.error("[canary] after() registration failed:", safeLogDetail(err));
+      log.error({ err, event: "canary_after_registration_failed" }, "after() registration failed");
     }
   }
 

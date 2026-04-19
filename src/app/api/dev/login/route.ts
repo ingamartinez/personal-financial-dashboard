@@ -3,6 +3,9 @@ import { encode } from "next-auth/jwt";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "api/dev/login" });
 
 // Dev-only session bypass for local testing (chrome-devtools, curl, Playwright).
 // Triple-gated so it is impossible to reach in production: NODE_ENV check,
@@ -67,8 +70,9 @@ export async function GET(req: Request) {
     maxAge: SESSION_MAX_AGE_SECONDS,
   });
 
-  console.warn(
-    `[dev-auth-bypass] issuing session for ${row.email} (id=${row.id}) — DEV_AUTH_BYPASS=1`,
+  log.warn(
+    { userId: row.id, email: row.email, event: "dev_auth_bypass_session_issued" },
+    "issuing session — DEV_AUTH_BYPASS=1",
   );
 
   const redirectTarget = url.searchParams.get("redirect") ?? "/";

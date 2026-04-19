@@ -1,7 +1,10 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { users, webhookTokens } from "@/lib/db/schema";
+import { createLogger } from "@/lib/logger";
 import { mintWebhookToken, type WebhookPurpose } from "@/lib/webhook-tokens";
+
+const log = createLogger({ module: "bootstrap-webhook-tokens" });
 
 const PURPOSES: readonly WebhookPurpose[] = ["sms", "debug"] as const;
 
@@ -41,13 +44,19 @@ export async function bootstrapWebhookTokens(): Promise<
   Array<{ purpose: WebhookPurpose; plaintext: string | null; skipped: boolean }>
 > {
   const bootstrap = await resolveBootstrapUser();
-  console.log(`bootstrap user: ${bootstrap.email} (id=${bootstrap.id})`);
+  log.info(
+    { email: bootstrap.email, userId: bootstrap.id, event: "bootstrap_webhook_user" },
+    "bootstrap user resolved",
+  );
 
   const results: Array<{ purpose: WebhookPurpose; plaintext: string | null; skipped: boolean }> =
     [];
   for (const purpose of PURPOSES) {
     if (await hasActiveToken(bootstrap.id, purpose)) {
-      console.log(`  ${purpose}: active token already exists — skipping`);
+      log.info(
+        { purpose, event: "bootstrap_webhook_skip_existing" },
+        "active token already exists — skipping",
+      );
       results.push({ purpose, plaintext: null, skipped: true });
       continue;
     }
@@ -66,18 +75,30 @@ if (import.meta.main) {
     .then((results) => {
       const minted = results.filter((r) => !r.skipped);
       if (minted.length === 0) {
-        console.log("\nnothing minted — revoke any existing token first to re-issue.");
+        log.info(
+          { event: "bootstrap_webhook_none_minted" },
+          "nothing minted — revoke any existing token first to re-issue.",
+        );
       } else {
-        console.log(`\nminted ${minted.length} tokens:`);
+        log.info(
+          { count: minted.length, event: "bootstrap_webhook_minted" },
+          "minted webhook tokens",
+        );
         for (const r of minted) {
-          console.log(`  ${r.purpose}: ${r.plaintext}`);
+          log.info(
+            { purpose: r.purpose, plaintext: r.plaintext, event: "bootstrap_webhook_token" },
+            "minted token",
+          );
         }
-        console.log("\nstore each — the plaintext will not be retrievable again.");
+        log.info(
+          { event: "bootstrap_webhook_done" },
+          "store each — the plaintext will not be retrievable again.",
+        );
       }
       process.exit(0);
     })
     .catch((err) => {
-      console.error(err);
+      log.error({ err, event: "bootstrap_webhook_failed" }, "bootstrap-webhook-tokens failed");
       process.exit(1);
     });
 }

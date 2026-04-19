@@ -8,9 +8,11 @@ import {
   users,
 } from "@/lib/db/schema";
 import { decrypt } from "@/lib/crypto/symmetric";
-import { safeLogDetail } from "@/lib/observability/canary";
+import { createLogger } from "@/lib/logger";
 import { createTelegramClient } from "@/lib/telegram/client";
 import type { TrendPoint } from "@/lib/telemetry/slos";
+
+const log = createLogger({ module: "canary-alerts" });
 
 export const CANARY_AGREEMENT_THRESHOLD = 0.97;
 export const CANARY_MIN_SAMPLES = 5;
@@ -117,7 +119,7 @@ export async function checkAndAlertCanary(database: DB = db): Promise<CheckDecis
     const topDivergences = await fetchTopDivergences(database, 3);
     const telegramStatus = await dispatchTelegramAlert(database, stats, topDivergences).catch(
       (err) => {
-        console.error("[canary] telegram dispatch failed:", safeLogDetail(err));
+        log.error({ err, event: "canary_telegram_dispatch_failed" }, "telegram dispatch failed");
         return "telegram_error";
       },
     );
