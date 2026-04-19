@@ -109,22 +109,27 @@ describe("compareProjections", () => {
 });
 
 describe("safeLogDetail", () => {
-  it("strips newlines, carriage returns, and control chars so log lines can't be forged", () => {
+  it("encodes newlines and control chars so log lines can't be forged", () => {
     const tainted = new Error("parse failed\nFAKE LOG\rERROR: admin hijacked\x00bytes");
     const out = safeLogDetail(tainted);
     expect(out).not.toContain("\n");
     expect(out).not.toContain("\r");
     expect(out).not.toContain("\x00");
-    expect(out).toContain("parse failed");
+    // encodeURIComponent preserves the semantic payload — the operator can
+    // still decode it for debugging if they need to.
+    expect(out).toContain("parse%20failed");
+    expect(out).toContain("%0A"); // \n
+    expect(out).toContain("%0D"); // \r
   });
 
-  it("truncates very long messages to 500 chars", () => {
+  it("truncates the pre-encode message to 500 chars", () => {
     const long = new Error("x".repeat(5000));
+    // After encoding "x"*500 is still 500 chars (x doesn't need escaping).
     expect(safeLogDetail(long)).toHaveLength(500);
   });
 
   it("coerces non-Error values to string", () => {
-    expect(safeLogDetail("plain string")).toBe("plain string");
+    expect(safeLogDetail("plain string")).toBe("plain%20string");
     expect(safeLogDetail(42)).toBe("42");
     expect(safeLogDetail(null)).toBe("null");
   });

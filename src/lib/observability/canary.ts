@@ -157,11 +157,13 @@ function coerceStringOrNull(v: unknown): string | null {
 }
 
 // Sanitize an error (possibly wrapping user-controlled SMS bytes) before
-// writing to console — strips control chars / CR / LF so a malicious payload
-// can't inject fake log lines. Flagged by CodeQL js/log-injection otherwise.
+// writing to console — encodes CR / LF / control chars via encodeURIComponent
+// so a malicious payload can't forge fake log lines. encodeURIComponent is
+// the CodeQL-recognized sanitizer for js/log-injection (our prior regex-strip
+// was effectively equivalent but CodeQL couldn't prove it).
 export function safeLogDetail(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
-  return msg.replace(/[\r\n\x00-\x1f\x7f]/g, " ").slice(0, 500);
+  return encodeURIComponent(msg.slice(0, 500));
 }
 
 // Entry point used by the SMS route's after() hook. Swallows errors — a
