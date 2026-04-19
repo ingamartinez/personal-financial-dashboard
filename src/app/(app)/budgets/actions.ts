@@ -1,10 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { budgets, categories, currency as currencyEnum } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 
 const ymSchema = z.string().regex(/^\d{4}-\d{2}$/);
@@ -68,6 +69,7 @@ export async function upsertBudget(input: BudgetInput) {
           eq(budgets.userId, session.id),
           eq(budgets.categorySlug, parsed.categorySlug),
           eq(budgets.periodStart, start),
+          notDeleted(budgets.deletedAt),
         ),
       )
       .limit(1);
@@ -87,8 +89,11 @@ export async function upsertBudget(input: BudgetInput) {
   revalidate();
 }
 
-export async function deleteBudget(id: number) {
+export async function archiveBudget(id: number) {
   const session = await getSessionUser();
-  await db.delete(budgets).where(and(eq(budgets.userId, session.id), eq(budgets.id, id)));
+  await db
+    .update(budgets)
+    .set({ deletedAt: sql`NOW()` })
+    .where(and(eq(budgets.userId, session.id), eq(budgets.id, id), notDeleted(budgets.deletedAt)));
   revalidate();
 }

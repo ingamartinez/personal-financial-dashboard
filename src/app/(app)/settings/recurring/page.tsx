@@ -1,6 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, recurringTransactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { RecurringManager } from "./recurring-manager";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +40,7 @@ export default async function RecurringPage() {
       })
       .from(recurringTransactions)
       .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
+      .where(notDeleted(recurringTransactions.deletedAt))
       .orderBy(asc(recurringTransactions.dayOfMonth)),
   ]);
 

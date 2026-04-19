@@ -1,6 +1,7 @@
 import { and, asc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { accounts, categories, recurringTransactions, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import {
   DEFAULT_WINDOW_AFTER_DAYS,
   DEFAULT_WINDOW_BEFORE_DAYS,
@@ -89,7 +90,13 @@ export async function getUpcomingForMonth(
     .from(recurringTransactions)
     .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
     .leftJoin(categories, eq(categories.slug, recurringTransactions.categorySlug))
-    .where(and(eq(recurringTransactions.userId, userId), eq(recurringTransactions.active, true)))
+    .where(
+      and(
+        eq(recurringTransactions.userId, userId),
+        eq(recurringTransactions.active, true),
+        notDeleted(recurringTransactions.deletedAt),
+      ),
+    )
     .orderBy(asc(recurringTransactions.dayOfMonth), asc(recurringTransactions.id));
 
   if (rows.length === 0) return [];

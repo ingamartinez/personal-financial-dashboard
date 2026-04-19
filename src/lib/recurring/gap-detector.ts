@@ -1,6 +1,7 @@
 import { and, asc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { recurringGaps, recurringTransactions, transactions, users } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 
 const DEFAULT_WINDOW_BEFORE_DAYS = 10;
 const DEFAULT_WINDOW_AFTER_DAYS = 5;
@@ -75,7 +76,13 @@ export async function detectGapsForMonth(
       skippedMonths: recurringTransactions.skippedMonths,
     })
     .from(recurringTransactions)
-    .where(and(eq(recurringTransactions.userId, userId), eq(recurringTransactions.active, true)));
+    .where(
+      and(
+        eq(recurringTransactions.userId, userId),
+        eq(recurringTransactions.active, true),
+        notDeleted(recurringTransactions.deletedAt),
+      ),
+    );
 
   const result: DetectResult = {
     yearMonth,

@@ -8,6 +8,7 @@ import {
   recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import type { Currency } from "@/lib/types";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
@@ -197,7 +198,13 @@ export async function buildInsightsSummary(
           currency: budgets.currency,
         })
         .from(budgets)
-        .where(and(eq(budgets.userId, userId), eq(budgets.periodStart, cur.startIso))),
+        .where(
+          and(
+            eq(budgets.userId, userId),
+            eq(budgets.periodStart, cur.startIso),
+            notDeleted(budgets.deletedAt),
+          ),
+        ),
       db
         .select({
           label: recurringTransactions.label,
@@ -208,7 +215,11 @@ export async function buildInsightsSummary(
         })
         .from(recurringTransactions)
         .where(
-          and(eq(recurringTransactions.userId, userId), eq(recurringTransactions.active, true)),
+          and(
+            eq(recurringTransactions.userId, userId),
+            eq(recurringTransactions.active, true),
+            notDeleted(recurringTransactions.deletedAt),
+          ),
         )
         .orderBy(asc(recurringTransactions.dayOfMonth)),
     ]);

@@ -302,8 +302,14 @@ export const budgets = pgTable(
     periodEnd: date("period_end").notNull(),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
-  (t) => [index("budgets_user_period_idx").on(t.userId, t.periodStart)],
+  (t) => [
+    index("budgets_user_period_idx").on(t.userId, t.periodStart),
+    index("budgets_user_period_live_idx")
+      .on(t.userId, t.periodStart)
+      .where(sql`${t.deletedAt} IS NULL`),
+  ],
 );
 
 export const recurringTransactions = pgTable(
@@ -328,8 +334,14 @@ export const recurringTransactions = pgTable(
     skippedMonths: jsonb("skipped_months").$type<string[]>().notNull().default([]),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
-  (t) => [index("recurring_tx_user_day_idx").on(t.userId, t.dayOfMonth)],
+  (t) => [
+    index("recurring_tx_user_day_idx").on(t.userId, t.dayOfMonth),
+    index("recurring_tx_user_day_live_idx")
+      .on(t.userId, t.dayOfMonth)
+      .where(sql`${t.deletedAt} IS NULL`),
+  ],
 );
 
 export const recurringGaps = pgTable(
