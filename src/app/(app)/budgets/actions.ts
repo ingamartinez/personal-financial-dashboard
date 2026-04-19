@@ -40,7 +40,13 @@ export async function upsertBudget(input: BudgetInput) {
   const [cat] = await db
     .select({ slug: categories.slug, parentSlug: categories.parentSlug })
     .from(categories)
-    .where(eq(categories.slug, parsed.categorySlug))
+    .where(
+      and(
+        eq(categories.userId, session.id),
+        eq(categories.slug, parsed.categorySlug),
+        notDeleted(categories.deletedAt),
+      ),
+    )
     .limit(1);
   if (!cat) throw new Error("Category not found");
   if (cat.parentSlug !== null) {

@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -156,21 +157,54 @@ export type AccountMetadata = {
   nextPaymentDate?: string;
 };
 
-export const categories = pgTable("categories", {
-  id: serial("id").primaryKey(),
-  slug: varchar("slug", { length: 60 }).notNull().unique(),
+// Global immutable template for categories. Populated by `seedReferenceData()`
+// on every deploy. Serves as the source for `copyCategorySeedsToUser(userId)`
+// during signup — users get their own per-user copies in `categories` below.
+export const categorySeeds = pgTable("category_seeds", {
+  slug: varchar("slug", { length: 60 }).primaryKey(),
   name: varchar("name", { length: 80 }).notNull(),
   parentSlug: varchar("parent_slug", { length: 60 }).references(
-    (): AnyPgColumn => categories.slug,
-    {
-      onDelete: "restrict",
-    },
+    (): AnyPgColumn => categorySeeds.slug,
+    { onDelete: "restrict" },
   ),
   icon: varchar("icon", { length: 40 }),
   color: varchar("color", { length: 20 }),
   sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Per-user taxonomy. Each row belongs to exactly one user; slug is unique
+// within a user but not globally (user A's "otros" and user B's "otros" are
+// distinct rows). The self-FK on parent_slug is composite — a parent must
+// belong to the same user.
+export const categories = pgTable(
+  "categories",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    slug: varchar("slug", { length: 60 }).notNull(),
+    name: varchar("name", { length: 80 }).notNull(),
+    parentSlug: varchar("parent_slug", { length: 60 }),
+    icon: varchar("icon", { length: 40 }),
+    color: varchar("color", { length: 20 }),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("categories_user_slug_unique").on(t.userId, t.slug),
+    foreignKey({
+      columns: [t.userId, t.parentSlug],
+      foreignColumns: [t.userId, t.slug],
+      name: "categories_user_parent_fk",
+    }).onDelete("restrict"),
+    index("categories_user_live_idx")
+      .on(t.userId)
+      .where(sql`${t.deletedAt} IS NULL`),
+  ],
+);
 
 export const counterparties = pgTable(
   "counterparties",
@@ -181,17 +215,21 @@ export const counterparties = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     displayName: varchar("display_name", { length: 120 }).notNull(),
     type: counterpartyType("type").notNull().default("unknown"),
-    defaultCategorySlug: varchar("default_category_slug", { length: 60 }).references(
-      () => categories.slug,
-      { onDelete: "set null" },
-    ),
+    defaultCategorySlug: varchar("default_category_slug", { length: 60 }),
     notes: text("notes"),
     hitCount: integer("hit_count").notNull().default(0),
     lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("counterparties_user_display_idx").on(t.userId, t.displayName)],
+  (t) => [
+    index("counterparties_user_display_idx").on(t.userId, t.displayName),
+    foreignKey({
+      columns: [t.userId, t.defaultCategorySlug],
+      foreignColumns: [categories.userId, categories.slug],
+      name: "counterparties_user_category_fk",
+    }).onDelete("set null"),
+  ],
 );
 
 export const counterpartyAliases = pgTable(
@@ -230,9 +268,7 @@ export const transactions = pgTable(
     descriptionRaw: text("description_raw").notNull(),
     descriptionClean: text("description_clean"),
     merchant: varchar("merchant", { length: 200 }),
-    categorySlug: varchar("category_slug", { length: 60 }).references(() => categories.slug, {
-      onDelete: "set null",
-    }),
+    categorySlug: varchar("category_slug", { length: 60 }),
     counterpartyId: integer("counterparty_id").references(() => counterparties.id, {
       onDelete: "set null",
     }),
@@ -262,6 +298,11 @@ export const transactions = pgTable(
     uniqueIndex("transactions_recurring_unique")
       .on(t.recurringId, t.recurringYearMonth)
       .where(sql`${t.recurringId} IS NOT NULL`),
+    foreignKey({
+      columns: [t.userId, t.categorySlug],
+      foreignColumns: [categories.userId, categories.slug],
+      name: "transactions_user_category_fk",
+    }).onDelete("set null"),
   ],
 );
 
@@ -273,9 +314,7 @@ export const classificationRules = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     pattern: text("pattern").notNull(),
-    categorySlug: varchar("category_slug", { length: 60 })
-      .notNull()
-      .references(() => categories.slug, { onDelete: "cascade" }),
+    categorySlug: varchar("category_slug", { length: 60 }).notNull(),
     priority: integer("priority").notNull().default(100),
     active: boolean("active").notNull().default(true),
     hitCount: integer("hit_count").notNull().default(0),
@@ -285,18 +324,33 @@ export const classificationRules = pgTable(
   (t) => [
     index("rules_user_priority_id_idx").on(t.userId, t.priority, t.id),
     uniqueIndex("rules_user_pattern_category_unique").on(t.userId, t.pattern, t.categorySlug),
+    foreignKey({
+      columns: [t.userId, t.categorySlug],
+      foreignColumns: [categories.userId, categories.slug],
+      name: "classification_rules_user_category_fk",
+    }).onDelete("cascade"),
   ],
 );
 
-export const classificationRuleSeeds = pgTable("classification_rule_seeds", {
-  id: serial("id").primaryKey(),
-  pattern: text("pattern").notNull(),
-  categorySlug: varchar("category_slug", { length: 60 })
-    .notNull()
-    .references(() => categories.slug, { onDelete: "cascade" }),
-  priority: integer("priority").notNull().default(100),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+// Global rule template; each row points at a category slug in `category_seeds`
+// (also global). On signup, `copyRuleSeedsToUser(userId)` materializes a
+// per-user copy in `classification_rules`, where the FK is composite against
+// the user's own categories (populated first via copyCategorySeedsToUser).
+export const classificationRuleSeeds = pgTable(
+  "classification_rule_seeds",
+  {
+    id: serial("id").primaryKey(),
+    pattern: text("pattern").notNull(),
+    categorySlug: varchar("category_slug", { length: 60 })
+      .notNull()
+      .references(() => categorySeeds.slug, { onDelete: "cascade" }),
+    priority: integer("priority").notNull().default(100),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("classification_rule_seeds_pattern_category_unique").on(t.pattern, t.categorySlug),
+  ],
+);
 
 export const budgets = pgTable(
   "budgets",
@@ -305,9 +359,7 @@ export const budgets = pgTable(
     userId: integer("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    categorySlug: varchar("category_slug", { length: 60 })
-      .notNull()
-      .references(() => categories.slug, { onDelete: "cascade" }),
+    categorySlug: varchar("category_slug", { length: 60 }).notNull(),
     amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
     currency: currency("currency").notNull().default("COP"),
     periodStart: date("period_start").notNull(),
@@ -321,6 +373,11 @@ export const budgets = pgTable(
     index("budgets_user_period_live_idx")
       .on(t.userId, t.periodStart)
       .where(sql`${t.deletedAt} IS NULL`),
+    foreignKey({
+      columns: [t.userId, t.categorySlug],
+      foreignColumns: [categories.userId, categories.slug],
+      name: "budgets_user_category_fk",
+    }).onDelete("cascade"),
   ],
 );
 
@@ -337,9 +394,7 @@ export const recurringTransactions = pgTable(
     label: varchar("label", { length: 120 }).notNull(),
     amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
     currency: currency("currency").notNull(),
-    categorySlug: varchar("category_slug", { length: 60 }).references(() => categories.slug, {
-      onDelete: "set null",
-    }),
+    categorySlug: varchar("category_slug", { length: 60 }),
     dayOfMonth: smallint("day_of_month").notNull(),
     active: boolean("active").notNull().default(true),
     lastGeneratedAt: timestamp("last_generated_at", { withTimezone: true }),
@@ -353,6 +408,11 @@ export const recurringTransactions = pgTable(
     index("recurring_tx_user_day_live_idx")
       .on(t.userId, t.dayOfMonth)
       .where(sql`${t.deletedAt} IS NULL`),
+    foreignKey({
+      columns: [t.userId, t.categorySlug],
+      foreignColumns: [categories.userId, categories.slug],
+      name: "recurring_transactions_user_category_fk",
+    }).onDelete("set null"),
   ],
 );
 

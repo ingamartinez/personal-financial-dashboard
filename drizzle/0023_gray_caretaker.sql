@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "classification_rule_seeds_pattern_category_unique" ON "classification_rule_seeds" USING btree ("pattern","category_slug");

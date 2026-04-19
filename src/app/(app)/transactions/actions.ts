@@ -120,7 +120,13 @@ export async function createManualExpense(input: {
     const [cat] = await db
       .select({ slug: categories.slug })
       .from(categories)
-      .where(eq(categories.slug, parsed.categorySlug))
+      .where(
+        and(
+          eq(categories.userId, session.id),
+          eq(categories.slug, parsed.categorySlug),
+          notDeleted(categories.deletedAt),
+        ),
+      )
       .limit(1);
     if (!cat) throw new Error("Category not found");
   }
@@ -228,7 +234,8 @@ export async function classifySingleWithAi(
       name: categories.name,
       parentSlug: categories.parentSlug,
     })
-    .from(categories);
+    .from(categories)
+    .where(and(eq(categories.userId, session.id), notDeleted(categories.deletedAt)));
 
   const result = await classifySingleWithAiLib({
     transaction: {
@@ -307,7 +314,13 @@ export async function updateCounterparty(
     const [cat] = await db
       .select({ slug: categories.slug })
       .from(categories)
-      .where(eq(categories.slug, parsed.defaultCategorySlug))
+      .where(
+        and(
+          eq(categories.userId, session.id),
+          eq(categories.slug, parsed.defaultCategorySlug),
+          notDeleted(categories.deletedAt),
+        ),
+      )
       .limit(1);
     if (!cat) throw new Error("Category not found");
   }

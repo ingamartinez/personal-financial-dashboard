@@ -4,7 +4,7 @@ import Google from "next-auth/providers/google";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
-import { copyRuleSeedsToUser } from "@/lib/auth/signup";
+import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "@/lib/auth/signup";
 import { consumeInviteCode } from "@/lib/invite-codes";
 import { clearInviteCookie, readInviteCookie } from "@/lib/invite-codes/cookie";
 
@@ -64,10 +64,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           .update(users)
           .set({ googleSub: sub, name, pictureUrl, updatedAt: new Date() })
           .where(eq(users.id, row.id));
-        // Bootstrap users predate the seeds table — top up any missing rules
-        // so every user ends up with the full template regardless of signup
-        // timing. The unique index + ON CONFLICT makes this a cheap no-op once
-        // a user already owns the full set.
+        // Bootstrap users predate the seeds tables — top up any missing
+        // categories + rules so every user ends up with the full template
+        // regardless of signup timing. The unique indexes + ON CONFLICT make
+        // these cheap no-ops once a user already owns the full set.
+        // Categories MUST run first — classification_rules composite-FKs
+        // against them.
+        await copyCategorySeedsToUser(row.id);
         await copyRuleSeedsToUser(row.id);
         // Existing user re-auth — never consume an invite cookie they may have
         // been carrying; issue spec is explicit about not double-spending.
@@ -83,6 +86,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           .insert(users)
           .values({ googleSub: sub, email, name, pictureUrl })
           .returning({ id: users.id });
+        // Categories first — classification_rules FK composite against them.
+        await copyCategorySeedsToUser(inserted.id);
         await copyRuleSeedsToUser(inserted.id);
         await clearInviteCookie();
       }

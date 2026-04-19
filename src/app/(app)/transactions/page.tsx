@@ -56,7 +56,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     await Promise.all([
       listTransactions(session.id, filters),
       listAccounts(session.id),
-      listCategories(),
+      listCategories(session.id),
       countTotal(session.id, {
         from: filters.from,
         to: filters.to,

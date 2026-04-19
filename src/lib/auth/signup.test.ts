@@ -1,14 +1,21 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { classificationRuleSeeds, classificationRules, users } from "@/lib/db/schema";
-import { copyRuleSeedsToUser } from "./signup";
+import {
+  categories,
+  categorySeeds,
+  classificationRuleSeeds,
+  classificationRules,
+  users,
+} from "@/lib/db/schema";
+import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "./signup";
 
-// Integration test for the signup → rules copy flow (PR 4 of #183).
-// Creates an isolated user, copies the seeds, and verifies:
-//   - every seed row became a classification_rules row with user_id set
-//   - the call is idempotent (ON CONFLICT on the (user_id, pattern, category_slug)
-//     unique constraint swallows reruns)
+// Integration test for the signup → categories + rules copy flow.
+//
+// Order matters: copyCategorySeedsToUser MUST run before copyRuleSeedsToUser
+// because classification_rules has a composite FK on (user_id, category_slug)
+// → categories(user_id, slug). The test asserts that ordering and the
+// idempotency guarantees of both hooks.
 
 const EMAIL_PREFIX = "signup-test-";
 
@@ -24,14 +31,66 @@ async function createTestUser(tag: string): Promise<number> {
   return row.id;
 }
 
-describe("copyRuleSeedsToUser", () => {
+describe("copyCategorySeedsToUser", () => {
   let seedCount = 0;
 
   beforeAll(async () => {
     await cleanup();
-    const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(classificationRuleSeeds);
+    const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(categorySeeds);
     seedCount = row.n;
     expect(seedCount).toBeGreaterThan(0);
+  });
+
+  afterEach(cleanup);
+
+  it("copies every category seed into categories with user_id set", async () => {
+    const userId = await createTestUser("cat-basic");
+    const inserted = await copyCategorySeedsToUser(userId);
+    expect(inserted).toBe(seedCount);
+
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(categories)
+      .where(eq(categories.userId, userId));
+    expect(row.n).toBe(seedCount);
+  });
+
+  it("is idempotent — second call returns 0 and row count is stable", async () => {
+    const userId = await createTestUser("cat-idempotent");
+    const first = await copyCategorySeedsToUser(userId);
+    expect(first).toBe(seedCount);
+
+    const second = await copyCategorySeedsToUser(userId);
+    expect(second).toBe(0);
+
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(categories)
+      .where(eq(categories.userId, userId));
+    expect(row.n).toBe(seedCount);
+  });
+
+  it("preserves parent_slug relationships per user", async () => {
+    const userId = await createTestUser("cat-parent");
+    await copyCategorySeedsToUser(userId);
+
+    // `mercado` is defined in the seed with parent_slug='alimentacion'.
+    const [row] = await db
+      .select({ parentSlug: categories.parentSlug })
+      .from(categories)
+      .where(and(eq(categories.userId, userId), eq(categories.slug, "mercado")));
+    expect(row.parentSlug).toBe("alimentacion");
+  });
+});
+
+describe("copyRuleSeedsToUser", () => {
+  let ruleSeedCount = 0;
+
+  beforeAll(async () => {
+    await cleanup();
+    const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(classificationRuleSeeds);
+    ruleSeedCount = row.n;
+    expect(ruleSeedCount).toBeGreaterThan(0);
   });
 
   afterEach(cleanup);
@@ -40,21 +99,24 @@ describe("copyRuleSeedsToUser", () => {
   });
 
   it("copies every seed into classification_rules with user_id set", async () => {
-    const userId = await createTestUser("basic");
+    const userId = await createTestUser("rule-basic");
+    // Categories must be materialized first — rules FK composite against them.
+    await copyCategorySeedsToUser(userId);
     const inserted = await copyRuleSeedsToUser(userId);
-    expect(inserted).toBe(seedCount);
+    expect(inserted).toBe(ruleSeedCount);
 
     const rules = await db
       .select({ pattern: classificationRules.pattern })
       .from(classificationRules)
       .where(eq(classificationRules.userId, userId));
-    expect(rules).toHaveLength(seedCount);
+    expect(rules).toHaveLength(ruleSeedCount);
   });
 
   it("is idempotent — second call returns 0 and row count is stable", async () => {
-    const userId = await createTestUser("idempotent");
+    const userId = await createTestUser("rule-idempotent");
+    await copyCategorySeedsToUser(userId);
     const first = await copyRuleSeedsToUser(userId);
-    expect(first).toBe(seedCount);
+    expect(first).toBe(ruleSeedCount);
 
     const second = await copyRuleSeedsToUser(userId);
     expect(second).toBe(0);
@@ -63,13 +125,12 @@ describe("copyRuleSeedsToUser", () => {
       .select({ n: sql<number>`count(*)::int` })
       .from(classificationRules)
       .where(eq(classificationRules.userId, userId));
-    expect(row.n).toBe(seedCount);
+    expect(row.n).toBe(ruleSeedCount);
   });
 
   it("tops up a partial rule set", async () => {
-    const userId = await createTestUser("partial");
-    // Simulate a user who manually deleted one rule: copy, then delete one,
-    // then copy again — the second call should re-insert only the missing row.
+    const userId = await createTestUser("rule-partial");
+    await copyCategorySeedsToUser(userId);
     await copyRuleSeedsToUser(userId);
 
     const [anyRule] = await db
@@ -93,13 +154,15 @@ describe("copyRuleSeedsToUser", () => {
       .select({ n: sql<number>`count(*)::int` })
       .from(classificationRules)
       .where(eq(classificationRules.userId, userId));
-    expect(row.n).toBe(seedCount);
+    expect(row.n).toBe(ruleSeedCount);
   });
 
   it("keeps users isolated — copying for userB does not affect userA", async () => {
-    const userA = await createTestUser("iso-a");
-    const userB = await createTestUser("iso-b");
+    const userA = await createTestUser("rule-iso-a");
+    const userB = await createTestUser("rule-iso-b");
 
+    await copyCategorySeedsToUser(userA);
+    await copyCategorySeedsToUser(userB);
     await copyRuleSeedsToUser(userA);
     await copyRuleSeedsToUser(userB);
 
@@ -112,7 +175,7 @@ describe("copyRuleSeedsToUser", () => {
       .from(classificationRules)
       .where(eq(classificationRules.userId, userB));
 
-    expect(countA.n).toBe(seedCount);
-    expect(countB.n).toBe(seedCount);
+    expect(countA.n).toBe(ruleSeedCount);
+    expect(countB.n).toBe(ruleSeedCount);
   });
 });

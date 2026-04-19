@@ -14,6 +14,7 @@ import {
   transactions,
   users,
 } from "@/lib/db/schema";
+import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "@/lib/auth/signup";
 import { classifyByRule } from "@/lib/classification/rules";
 import {
   getAccountStatuses,
@@ -43,6 +44,10 @@ const TAG = "ISOLATION_TEST";
 
 async function createUser(email: string): Promise<number> {
   const [row] = await db.insert(users).values({ email, name: email }).returning({ id: users.id });
+  // Mirror the real signup flow — every user needs their per-user categories
+  // before transactions / rules can FK against them.
+  await copyCategorySeedsToUser(row.id);
+  await copyRuleSeedsToUser(row.id);
   return row.id;
 }
 

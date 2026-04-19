@@ -2,11 +2,13 @@ import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, recurringTransactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { getSessionUser } from "@/lib/auth/session";
 import { RecurringManager } from "./recurring-manager";
 
 export const dynamic = "force-dynamic";
 
 export default async function RecurringPage() {
+  const session = await getSessionUser();
   const [accs, cats, items] = await Promise.all([
     db
       .select({
@@ -15,7 +17,13 @@ export default async function RecurringPage() {
         currency: accounts.currency,
       })
       .from(accounts)
-      .where(and(eq(accounts.active, true), notDeleted(accounts.deletedAt)))
+      .where(
+        and(
+          eq(accounts.userId, session.id),
+          eq(accounts.active, true),
+          notDeleted(accounts.deletedAt),
+        ),
+      )
       .orderBy(asc(accounts.name)),
     db
       .select({
@@ -24,6 +32,7 @@ export default async function RecurringPage() {
         parentSlug: categories.parentSlug,
       })
       .from(categories)
+      .where(and(eq(categories.userId, session.id), notDeleted(categories.deletedAt)))
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
     db
       .select({
@@ -40,7 +49,12 @@ export default async function RecurringPage() {
       })
       .from(recurringTransactions)
       .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
-      .where(notDeleted(recurringTransactions.deletedAt))
+      .where(
+        and(
+          eq(recurringTransactions.userId, session.id),
+          notDeleted(recurringTransactions.deletedAt),
+        ),
+      )
       .orderBy(asc(recurringTransactions.dayOfMonth)),
   ]);
 
