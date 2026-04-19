@@ -23,7 +23,12 @@ const SCREENSHOTS: Screenshot[] = [
   {
     src: "/ios-shortcut/set-sender.jpeg",
     alt: "Any Sender + Message Contains 'Bancolombia' + Run Immediately",
-    caption: "Step 4 — Any Sender, Message Contains keyword, Run Immediately",
+    caption: "Step 4a — Any Sender, Message Contains keyword, Run Immediately",
+  },
+  {
+    src: "/ios-shortcut/automation.jpeg",
+    alt: "Personal Automation summary: When I Get a Message Containing 'Bancolombia' → Findash SMS Prod",
+    caption: "Step 4b — Automation ready",
   },
 ];
 
@@ -71,7 +76,7 @@ export function IosShortcutCard() {
           </li>
         </ol>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {SCREENSHOTS.map((s) => (
             <figure key={s.src} className="flex flex-col gap-2">
               {/* eslint-disable-next-line @next/next/no-img-element */}
