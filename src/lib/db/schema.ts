@@ -14,6 +14,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
   varchar,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
@@ -119,10 +120,20 @@ export const accounts = pgTable(
       .default(sql`0`),
     active: boolean("active").notNull().default(true),
     metadata: jsonb("metadata").$type<AccountMetadata>().notNull().default({}),
+    physicalCardId: uuid("physical_card_id"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("accounts_user_active_idx").on(t.userId, t.active)],
+  (t) => [
+    index("accounts_user_active_idx").on(t.userId, t.active),
+    index("accounts_user_live_idx")
+      .on(t.userId)
+      .where(sql`${t.deletedAt} IS NULL`),
+    index("accounts_physical_card_live_idx")
+      .on(t.physicalCardId)
+      .where(sql`${t.physicalCardId} IS NOT NULL AND ${t.deletedAt} IS NULL`),
+  ],
 );
 
 export type AccountMetadata = {

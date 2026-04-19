@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, type DB } from "@/lib/db";
 import { accounts, ingestionLogs, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
@@ -115,7 +116,7 @@ export async function ingestParsed(userId: number, parsed: ParseResult): Promise
       type: accounts.type,
     })
     .from(accounts)
-    .where(eq(accounts.userId, userId))) as Array<
+    .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)))) as Array<
     RoutableAccount & { institution: string; type: string }
   >;
 

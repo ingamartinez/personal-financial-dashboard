@@ -1,6 +1,7 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { QuickExpenseDialog } from "./quick-expense-dialog";
 
 export async function QuickExpenseFab() {
@@ -8,7 +9,7 @@ export async function QuickExpenseFab() {
     db
       .select({ id: accounts.id, name: accounts.name, currency: accounts.currency })
       .from(accounts)
-      .where(eq(accounts.active, true))
+      .where(and(eq(accounts.active, true), notDeleted(accounts.deletedAt)))
       .orderBy(asc(accounts.name)),
     db
       .select({

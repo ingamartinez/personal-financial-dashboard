@@ -45,7 +45,13 @@ export async function upsertRecurring(input: RecurringInput) {
   const [account] = await db
     .select({ id: accounts.id, currency: accounts.currency })
     .from(accounts)
-    .where(and(eq(accounts.userId, session.id), eq(accounts.id, parsed.accountId)))
+    .where(
+      and(
+        eq(accounts.userId, session.id),
+        eq(accounts.id, parsed.accountId),
+        notDeleted(accounts.deletedAt),
+      ),
+    )
     .limit(1);
   if (!account) throw new Error("Account not found");
 

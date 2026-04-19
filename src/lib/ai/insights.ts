@@ -91,7 +91,13 @@ export async function buildInsightsSummary(
           balanceCents: accounts.balanceCents,
         })
         .from(accounts)
-        .where(and(eq(accounts.userId, userId), eq(accounts.active, true)))
+        .where(
+          and(
+            eq(accounts.userId, userId),
+            eq(accounts.active, true),
+            notDeleted(accounts.deletedAt),
+          ),
+        )
         .orderBy(asc(accounts.name)),
       db
         .select({

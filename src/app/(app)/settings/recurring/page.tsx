@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, recurringTransactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
@@ -15,7 +15,7 @@ export default async function RecurringPage() {
         currency: accounts.currency,
       })
       .from(accounts)
-      .where(eq(accounts.active, true))
+      .where(and(eq(accounts.active, true), notDeleted(accounts.deletedAt)))
       .orderBy(asc(accounts.name)),
     db
       .select({

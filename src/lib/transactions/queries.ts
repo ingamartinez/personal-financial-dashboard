@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, ilike, lt, lte, gte, ne, or, sql } from "drizzle-orm";
+import { notDeleted } from "@/lib/db/helpers";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -184,7 +185,9 @@ export async function listAccounts(userId: number) {
   return db
     .select({ id: accounts.id, name: accounts.name })
     .from(accounts)
-    .where(and(eq(accounts.userId, userId), eq(accounts.active, true)))
+    .where(
+      and(eq(accounts.userId, userId), eq(accounts.active, true), notDeleted(accounts.deletedAt)),
+    )
     .orderBy(asc(accounts.name));
 }
 

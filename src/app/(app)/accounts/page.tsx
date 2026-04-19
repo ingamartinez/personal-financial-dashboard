@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { CreditCardIcon, LandmarkIcon, PiggyBankIcon, WalletIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getSessionUser } from "@/lib/auth/session";
@@ -72,7 +74,12 @@ export default async function AccountsPage() {
           <EmptyState
             icon={<WalletIcon />}
             title="No accounts yet"
-            description="Run the seed script or add accounts through the database to see balances here."
+            description="Create your first account to start tracking balances and transactions."
+            action={
+              <Button asChild>
+                <Link href="/settings/accounts">Create account</Link>
+              </Button>
+            }
           />
         </Card>
       ) : null}

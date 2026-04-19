@@ -11,6 +11,7 @@ import {
   counterpartyType,
   transactions,
 } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { classifySingleWithAi as classifySingleWithAiLib } from "@/lib/classification/ai";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
@@ -102,7 +103,13 @@ export async function createManualExpense(input: {
   const [account] = await db
     .select({ id: accounts.id, currency: accounts.currency })
     .from(accounts)
-    .where(and(eq(accounts.userId, session.id), eq(accounts.id, parsed.accountId)))
+    .where(
+      and(
+        eq(accounts.userId, session.id),
+        eq(accounts.id, parsed.accountId),
+        notDeleted(accounts.deletedAt),
+      ),
+    )
     .limit(1);
 
   if (!account) throw new Error("Account not found");

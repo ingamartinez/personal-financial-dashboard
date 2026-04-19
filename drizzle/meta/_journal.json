@@ -141,6 +141,13 @@
       "when": 1776568400000,
       "tag": "0019_chief_layla_miller",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1776620189201,
+      "tag": "0020_eager_micromax",
+      "breakpoints": true
     }
   ]
 }
