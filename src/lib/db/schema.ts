@@ -95,9 +95,17 @@ export const txSource = pgEnum("tx_source", [
   "manual",
   "telegram",
   "balance_adjustment",
+  "csv_reconcile",
 ]);
 
 export const txChannel = pgEnum("tx_channel", ["bank", "manual", "transfer"]);
+
+export const reconciliationStatus = pgEnum("reconciliation_status", [
+  "unreconciled",
+  "matched",
+  "flagged",
+  "imported_from_statement",
+]);
 
 export const classificationMethod = pgEnum("classification_method", [
   "rule",
@@ -288,6 +296,14 @@ export const transactions = pgTable(
     source: txSource("source").notNull(),
     channel: txChannel("channel").notNull().default("bank"),
     isAdjustment: boolean("is_adjustment").notNull().default(false),
+    reconciliationStatus: reconciliationStatus("reconciliation_status")
+      .notNull()
+      .default("unreconciled"),
+    reconciledAt: timestamp("reconciled_at", { withTimezone: true }),
+    statementImportId: integer("statement_import_id").references(
+      (): AnyPgColumn => statementImports.id,
+      { onDelete: "set null" },
+    ),
     externalId: varchar("external_id", { length: 200 }),
     recurringId: integer("recurring_id").references((): AnyPgColumn => recurringTransactions.id, {
       onDelete: "set null",
@@ -303,6 +319,10 @@ export const transactions = pgTable(
     index("transactions_user_occurred_idx").on(t.userId, t.occurredAt),
     index("transactions_user_category_idx").on(t.userId, t.categorySlug),
     index("transactions_user_counterparty_idx").on(t.userId, t.counterpartyId),
+    index("transactions_account_recon_idx").on(t.accountId, t.reconciliationStatus, t.occurredAt),
+    index("transactions_flagged_idx")
+      .on(t.userId, t.occurredAt)
+      .where(sql`${t.reconciliationStatus} = 'flagged'`),
     uniqueIndex("transactions_external_unique")
       .on(t.accountId, t.externalId)
       .where(sql`${t.externalId} IS NOT NULL`),
@@ -314,6 +334,56 @@ export const transactions = pgTable(
       foreignColumns: [categories.userId, categories.slug],
       name: "transactions_user_category_fk",
     }).onDelete("set null"),
+  ],
+);
+
+export const statementImports = pgTable(
+  "statement_imports",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "restrict" }),
+    fileHash: varchar("file_hash", { length: 64 }).notNull(),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+    txnCount: integer("txn_count").notNull().default(0),
+    balanceAtEndCents: bigint("balance_at_end_cents", { mode: "bigint" }),
+  },
+  (t) => [
+    uniqueIndex("statement_imports_user_account_file_unique").on(t.userId, t.accountId, t.fileHash),
+    index("statement_imports_account_period_idx").on(t.accountId, t.periodStart, t.periodEnd),
+  ],
+);
+
+export const reconciliationDecisions = pgTable(
+  "reconciliation_decisions",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    txnId: integer("txn_id")
+      .notNull()
+      .references(() => transactions.id, { onDelete: "cascade" }),
+    action: varchar("action", { length: 32 }).notNull(),
+    mergedIntoTxnId: integer("merged_into_txn_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
+    note: text("note"),
+  },
+  (t) => [
+    index("reconciliation_decisions_user_decided_idx").on(t.userId, t.decidedAt),
+    index("reconciliation_decisions_txn_idx").on(t.txnId),
+    check(
+      "reconciliation_decisions_action_check",
+      sql`${t.action} IN ('archived', 'kept', 'merged_into')`,
+    ),
   ],
 );
 
