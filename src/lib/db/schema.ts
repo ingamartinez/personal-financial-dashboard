@@ -88,7 +88,10 @@ export const txSource = pgEnum("tx_source", [
   "recurring",
   "manual",
   "telegram",
+  "balance_adjustment",
 ]);
+
+export const txChannel = pgEnum("tx_channel", ["bank", "manual", "transfer"]);
 
 export const classificationMethod = pgEnum("classification_method", [
   "rule",
@@ -277,6 +280,8 @@ export const transactions = pgTable(
       .default("unclassified"),
     classificationConfidence: smallint("classification_confidence"),
     source: txSource("source").notNull(),
+    channel: txChannel("channel").notNull().default("bank"),
+    isAdjustment: boolean("is_adjustment").notNull().default(false),
     externalId: varchar("external_id", { length: 200 }),
     recurringId: integer("recurring_id").references((): AnyPgColumn => recurringTransactions.id, {
       onDelete: "set null",

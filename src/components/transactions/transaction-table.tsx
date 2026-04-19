@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ReceiptTextIcon, UserIcon, BuildingIcon } from "lucide-react";
+import { ReceiptTextIcon, UserIcon, BuildingIcon, WrenchIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -31,6 +31,7 @@ const sourceLabel: Record<TxRow["source"], string> = {
   recurring: "Recurring",
   manual: "Manual",
   telegram: "Telegram",
+  balance_adjustment: "Ajuste",
 };
 
 const methodVariant: Record<
@@ -42,6 +43,19 @@ const methodVariant: Record<
   manual: "outline",
   unclassified: "destructive",
 };
+
+function AdjustmentBadge() {
+  return (
+    <Badge
+      variant="outline"
+      className="shrink-0 gap-1 border-slate-300 text-[10px] font-medium tracking-wide uppercase"
+      title="Ajuste de saldo — reconciliación, excluido del spend"
+    >
+      <WrenchIcon className="size-2.5" />
+      Ajuste
+    </Badge>
+  );
+}
 
 function CounterpartyTypeBadge({ type }: { type: NonNullable<TxRow["counterparty"]>["type"] }) {
   if (type === "person") {
@@ -166,6 +180,7 @@ export function TransactionTable({
                     <TableCell className="px-4">
                       <div className="flex min-w-0 items-center gap-1.5">
                         <span className="truncate font-medium">{primaryDescription(tx)}</span>
+                        {tx.isAdjustment ? <AdjustmentBadge /> : null}
                         {tx.counterparty ? (
                           <CounterpartyTypeBadge type={tx.counterparty.type} />
                         ) : null}
@@ -240,6 +255,7 @@ export function TransactionTable({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate font-medium">{primaryDescription(tx)}</span>
+                      {tx.isAdjustment ? <AdjustmentBadge /> : null}
                       {tx.counterparty ? (
                         <CounterpartyTypeBadge type={tx.counterparty.type} />
                       ) : null}

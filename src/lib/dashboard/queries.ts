@@ -1,7 +1,7 @@
 import { aliasedTable, and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
-import { notDeleted } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import type { AccountType, CounterpartyType, Currency } from "@/lib/types";
 
@@ -80,6 +80,7 @@ export async function getMonthlyFlow(
         eq(transactions.userId, userId),
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
+        notAdjustment(transactions.isAdjustment),
       ),
     )
     .groupBy(transactions.currency);
@@ -131,6 +132,7 @@ export async function getCategoryBreakdown(
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
+        notAdjustment(transactions.isAdjustment),
       ),
     )
     .groupBy(rootSlug, transactions.currency, rootCategories.name, rootCategories.color);
@@ -201,6 +203,7 @@ export async function getTopExpenses(
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
+        notAdjustment(transactions.isAdjustment),
       ),
     )
     .orderBy(
