@@ -1,10 +1,20 @@
 import { NextResponse } from "next/server";
 import { previewScreenshotOcr } from "@/app/(app)/settings/import/actions";
+import { canIngest, paywallResponse } from "@/lib/auth/can-ingest";
+import { getSessionUserOrNull } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const session = await getSessionUserOrNull();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const gate = await canIngest(session.id);
+  if (!gate.allowed) return paywallResponse(gate.reason);
+
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.includes("multipart/form-data")) {
     return NextResponse.json(
