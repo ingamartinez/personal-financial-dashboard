@@ -2,6 +2,9 @@ import { randomInt } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { inviteCodes, users } from "@/lib/db/schema";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "bootstrap-invites" });
 
 const ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // no 0/O/I/1 ambiguity
 const CODE_LENGTH = 12;
@@ -33,7 +36,10 @@ async function resolveBootstrapUser(): Promise<{ id: number; email: string }> {
 
 export async function bootstrapInvites(count = 5): Promise<string[]> {
   const bootstrap = await resolveBootstrapUser();
-  console.log(`bootstrap user: ${bootstrap.email} (id=${bootstrap.id})`);
+  log.info(
+    { email: bootstrap.email, userId: bootstrap.id, event: "bootstrap_invites_user" },
+    "bootstrap user resolved",
+  );
 
   const codes: string[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -48,13 +54,18 @@ if (import.meta.main) {
   const count = Number(process.env.INVITE_COUNT ?? 5);
   bootstrapInvites(count)
     .then((codes) => {
-      console.log(`\nminted ${codes.length} invite codes:`);
-      for (const code of codes) console.log(`  ${code}`);
-      console.log("\nshare each code via a trusted channel — they are single-use.");
+      log.info({ count: codes.length, event: "bootstrap_invites_minted" }, "minted invite codes");
+      for (const code of codes) {
+        log.info({ code, event: "bootstrap_invites_code" }, "invite code");
+      }
+      log.info(
+        { event: "bootstrap_invites_done" },
+        "share each code via a trusted channel — they are single-use.",
+      );
       process.exit(0);
     })
     .catch((err) => {
-      console.error(err);
+      log.error({ err, event: "bootstrap_invites_failed" }, "bootstrap-invites failed");
       process.exit(1);
     });
 }

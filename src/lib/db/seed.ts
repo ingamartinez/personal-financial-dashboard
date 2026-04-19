@@ -13,11 +13,14 @@
 //    registration, so there's exactly one code path.
 
 import { eq, inArray } from "drizzle-orm";
+import { createLogger } from "@/lib/logger";
 import { db } from "./index";
 import { accounts, classificationRules, users, type AccountMetadata } from "./schema";
 import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "@/lib/auth/signup";
 import { seedReferenceData } from "./seed-reference-data";
 import type { AccountType, Currency } from "@/lib/types";
+
+const log = createLogger({ module: "seed" });
 
 const seedAccounts: Array<{
   name: string;
@@ -69,7 +72,7 @@ async function seedBootstrapUser(): Promise<number | null> {
   const email = process.env.BOOTSTRAP_USER_EMAIL?.trim();
   const name = process.env.BOOTSTRAP_USER_NAME?.trim() || email;
   if (!email) {
-    console.log("  BOOTSTRAP_USER_EMAIL not set — skipping bootstrap user");
+    log.info({ event: "bootstrap_user_skipped" }, "BOOTSTRAP_USER_EMAIL not set");
     return null;
   }
   await db
@@ -77,30 +80,44 @@ async function seedBootstrapUser(): Promise<number | null> {
     .values({ email, name: name ?? email })
     .onConflictDoNothing({ target: users.email });
   const [row] = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
-  console.log(`  bootstrap user ensured for ${email} (id=${row?.id ?? "?"})`);
+  log.info(
+    { email, userId: row?.id ?? null, event: "bootstrap_user_ensured" },
+    "bootstrap user ensured",
+  );
   return row?.id ?? null;
 }
 
 export async function runSeed() {
-  console.log("seeding global reference data (category_seeds + classification_rule_seeds)...");
+  log.info({ event: "seed_reference_start" }, "seeding global reference data");
   const refResult = await seedReferenceData();
-  console.log(
-    `  reference data: ${refResult.categorySeeds} category seeds, ${refResult.ruleSeeds} rule seeds inserted (new rows only; existing are idempotent)`,
+  log.info(
+    {
+      categorySeeds: refResult.categorySeeds,
+      ruleSeeds: refResult.ruleSeeds,
+      event: "seed_reference_done",
+    },
+    "reference data inserted (idempotent)",
   );
 
-  console.log("seeding bootstrap user...");
+  log.info({ event: "seed_bootstrap_start" }, "seeding bootstrap user");
   const bootstrapUserId = await seedBootstrapUser();
 
   if (bootstrapUserId === null) {
-    console.log("  skipping accounts + per-user seeds — no bootstrap user to attribute them to");
+    log.info(
+      { event: "seed_skip_per_user" },
+      "skipping accounts + per-user seeds — no bootstrap user",
+    );
     return;
   }
 
-  console.log("materializing per-user categories for bootstrap user...");
+  log.info({ userId: bootstrapUserId, event: "seed_categories_start" }, "materializing categories");
   const catCount = await copyCategorySeedsToUser(bootstrapUserId);
-  console.log(`  inserted ${catCount} categories (skipped existing)`);
+  log.info(
+    { count: catCount, userId: bootstrapUserId, event: "seed_categories_done" },
+    `inserted ${catCount} categories (skipped existing)`,
+  );
 
-  console.log("seeding accounts for bootstrap user...");
+  log.info({ userId: bootstrapUserId, event: "seed_accounts_start" }, "seeding accounts");
   const existing = await db
     .select({ name: accounts.name })
     .from(accounts)
@@ -114,31 +131,40 @@ export async function runSeed() {
   const toInsert = seedAccounts.filter((a) => !existingNames.has(a.name));
   if (toInsert.length > 0) {
     await db.insert(accounts).values(toInsert.map((a) => ({ ...a, userId: bootstrapUserId })));
-    console.log(`  inserted ${toInsert.length} new accounts`);
+    log.info(
+      { count: toInsert.length, event: "seed_accounts_inserted" },
+      `inserted ${toInsert.length} new accounts`,
+    );
   } else {
-    console.log("  all accounts already exist");
+    log.info({ event: "seed_accounts_all_exist" }, "all accounts already exist");
   }
 
-  console.log("materializing per-user classification rules for bootstrap user...");
+  log.info({ userId: bootstrapUserId, event: "seed_rules_start" }, "materializing rules");
   const existingRuleCount = await db.$count(
     classificationRules,
     eq(classificationRules.userId, bootstrapUserId),
   );
   if (existingRuleCount === 0) {
     const ruleCount = await copyRuleSeedsToUser(bootstrapUserId);
-    console.log(`  inserted ${ruleCount} classification rules`);
+    log.info(
+      { count: ruleCount, event: "seed_rules_inserted" },
+      `inserted ${ruleCount} classification rules`,
+    );
   } else {
-    console.log(`  ${existingRuleCount} classification rules already present — skipping`);
+    log.info(
+      { existing: existingRuleCount, event: "seed_rules_skipped" },
+      `${existingRuleCount} classification rules already present — skipping`,
+    );
   }
 
-  console.log("done");
+  log.info({ event: "seed_done" }, "done");
 }
 
 if (import.meta.main) {
   runSeed()
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error(err);
+      log.error({ err, event: "seed_failed" }, "seed failed");
       process.exit(1);
     });
 }

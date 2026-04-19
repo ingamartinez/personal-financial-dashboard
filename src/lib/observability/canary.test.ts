@@ -4,7 +4,6 @@ import {
   hashSmsBody,
   parseProjectionJson,
   projectFromRegex,
-  safeLogDetail,
   sampleForCanary,
 } from "./canary";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
@@ -105,25 +104,6 @@ describe("compareProjections", () => {
     });
     expect(agreement).toBe(false);
     expect(divergenceFields).toEqual(["currency", "occurredOn"]);
-  });
-});
-
-describe("safeLogDetail", () => {
-  it("returns the Error class name, never the message (defeats log-injection)", () => {
-    const tainted = new Error("parse failed\nFAKE LOG\rERROR: admin hijacked\x00bytes");
-    expect(safeLogDetail(tainted)).toBe("Error");
-  });
-
-  it("returns the constructor name for subclasses of Error", () => {
-    class CanaryBoom extends Error {}
-    expect(safeLogDetail(new CanaryBoom("x"))).toBe("CanaryBoom");
-    expect(safeLogDetail(new SyntaxError("y"))).toBe("SyntaxError");
-  });
-
-  it("returns the typeof for non-Error values", () => {
-    expect(safeLogDetail("plain string")).toBe("string");
-    expect(safeLogDetail(42)).toBe("number");
-    expect(safeLogDetail(null)).toBe("object");
   });
 });
 

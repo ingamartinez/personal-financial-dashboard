@@ -13,6 +13,9 @@ import { eq } from "drizzle-orm";
 import { db } from "../src/lib/db";
 import { users } from "../src/lib/db/schema";
 import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "../src/lib/auth/signup";
+import { createLogger } from "../src/lib/logger";
+
+const log = createLogger({ module: "backfill-users-reference" });
 
 export async function backfillUsersReferenceData(): Promise<
   { userId: number; email: string; categories: number; rules: number }[]
@@ -37,15 +40,25 @@ if (import.meta.main) {
   backfillUsersReferenceData()
     .then((rows) => {
       for (const r of rows) {
-        console.log(
-          `[backfill] user=${r.userId} <${r.email}>: +${r.categories} categories, +${r.rules} rules`,
+        log.info(
+          {
+            userId: r.userId,
+            email: r.email,
+            categories: r.categories,
+            rules: r.rules,
+            event: "backfill_users_row",
+          },
+          "backfilled user reference data",
         );
       }
-      console.log(`[backfill] done — processed ${rows.length} active users`);
+      log.info(
+        { count: rows.length, event: "backfill_users_done" },
+        "backfill done — processed active users",
+      );
       process.exit(0);
     })
     .catch((err) => {
-      console.error(err);
+      log.error({ err, event: "backfill_users_failed" }, "backfill-users-reference failed");
       process.exit(1);
     });
 }

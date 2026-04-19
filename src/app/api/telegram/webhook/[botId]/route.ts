@@ -5,6 +5,7 @@ import { canIngest, paywallResponse } from "@/lib/auth/can-ingest";
 import { db } from "@/lib/db";
 import { telegramBots } from "@/lib/db/schema";
 import { decrypt } from "@/lib/crypto/symmetric";
+import { createLogger } from "@/lib/logger";
 import { createTelegramClient } from "@/lib/telegram/client";
 import { handleUpdate, type RouterDeps } from "@/lib/telegram/router";
 import type { TelegramUpdate } from "@/lib/telegram/types";
@@ -18,6 +19,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
+const log = createLogger({ module: "api/telegram/webhook" });
 
 function unauthorized() {
   return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -60,7 +62,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ botId: 
   } catch (err) {
     // Ciphertext corrupt or encryption key rotated. Log + 200: Telegram
     // retrying won't help until the bot is re-registered.
-    console.error("[telegram/webhook] failed to decrypt token", { botId, err });
+    log.error({ err, botId, event: "telegram_token_decrypt_failed" }, "failed to decrypt token");
     return NextResponse.json({ ok: true });
   }
 
@@ -79,7 +81,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ botId: 
   } catch (err) {
     // Telegram retries on non-2xx, which would pile up broken updates.
     // Swallow downstream errors and return 200; the error is logged for ops.
-    console.error("[telegram/webhook] handler threw", { botId, err });
+    log.error({ err, botId, event: "telegram_handler_threw" }, "handler threw");
   }
 
   return NextResponse.json({ ok: true });

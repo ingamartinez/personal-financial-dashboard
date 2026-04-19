@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { db } from "@/lib/db";
 import { parserCanaryEvents, type CanaryProjection } from "@/lib/db/schema";
 import { parseSmsBancolombia, type ParseResult } from "@/lib/ingestion/sms-bancolombia";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "canary" });
 
 const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 const SAMPLE_NUMERATOR = 1;
@@ -156,16 +159,6 @@ function coerceStringOrNull(v: unknown): string | null {
   return null;
 }
 
-// Returns the error CLASS only — never message content. Defeats log-injection
-// by construction: no user-controlled bytes reach the logger. Diagnostic
-// value is "which kind of failure happened", not "what was the exact text".
-// When we introduce a centralized logger (Pino), it will serialize the full
-// err object with safe encoding and this helper can retire.
-export function safeLogDetail(err: unknown): string {
-  if (err instanceof Error) return err.constructor.name;
-  return typeof err;
-}
-
 // Entry point used by the SMS route's after() hook. Swallows errors — a
 // canary failure must NEVER surface to the user or retry the ingestion.
 export async function runCanaryForSms(params: {
@@ -199,6 +192,6 @@ export async function runCanaryForSms(params: {
       aiOutputTokens: ai.outputTokens,
     });
   } catch (err) {
-    console.error("[canary] shadow parse failed:", safeLogDetail(err));
+    log.error({ err, event: "canary_shadow_parse_failed" }, "shadow parse failed");
   }
 }

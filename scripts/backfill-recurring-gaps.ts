@@ -11,6 +11,9 @@
  */
 
 import { detectGapsForMonth } from "@/lib/recurring/gap-detector";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "backfill-recurring-gaps" });
 
 type Args = { from: string; to: string };
 
@@ -21,11 +24,14 @@ function parseArgs(argv: string[]): Args {
     else if (argv[i] === "--to") args.to = argv[++i];
   }
   if (!args.from || !args.to) {
-    console.error("Usage: bun run scripts/backfill-recurring-gaps.ts --from YYYY-MM --to YYYY-MM");
+    log.error(
+      { event: "backfill_gaps_usage" },
+      "Usage: bun run scripts/backfill-recurring-gaps.ts --from YYYY-MM --to YYYY-MM",
+    );
     process.exit(1);
   }
   if (!/^\d{4}-\d{2}$/.test(args.from) || !/^\d{4}-\d{2}$/.test(args.to)) {
-    console.error("--from and --to must match YYYY-MM");
+    log.error({ event: "backfill_gaps_invalid_format" }, "--from and --to must match YYYY-MM");
     process.exit(1);
   }
   return args as Args;
@@ -49,7 +55,7 @@ function monthsBetween(from: string, to: string): string[] {
 async function main() {
   const { from, to } = parseArgs(process.argv.slice(2));
   const months = monthsBetween(from, to);
-  console.log(`Backfilling ${months.length} month(s): ${from} → ${to}`);
+  log.info({ count: months.length, from, to, event: "backfill_gaps_start" }, "Backfilling months");
 
   let totalGapsCreated = 0;
   let totalAutoLinked = 0;
@@ -59,14 +65,17 @@ async function main() {
     const result = await detectGapsForMonth(1, ym);
     totalGapsCreated += result.gapsCreated;
     totalAutoLinked += result.autoLinked;
-    console.log(`  ${ym}: ${JSON.stringify(result)}`);
+    log.info({ ym, result, event: "backfill_gaps_month_done" }, "month processed");
   }
 
-  console.log(`Done. ${totalGapsCreated} new gaps, ${totalAutoLinked} auto-linked.`);
+  log.info(
+    { totalGapsCreated, totalAutoLinked, event: "backfill_gaps_done" },
+    "Done backfilling gaps",
+  );
   process.exit(0);
 }
 
 main().catch((err) => {
-  console.error(err);
+  log.error({ err, event: "backfill_gaps_failed" }, "backfill-recurring-gaps failed");
   process.exit(1);
 });

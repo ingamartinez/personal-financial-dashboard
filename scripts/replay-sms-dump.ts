@@ -4,6 +4,9 @@ import { sql } from "drizzle-orm";
 import { db } from "../src/lib/db";
 import { ingestParsed } from "../src/lib/ingestion/sms-pipeline";
 import { parseSmsBancolombia } from "../src/lib/ingestion/sms-bancolombia";
+import { createLogger } from "../src/lib/logger";
+
+const log = createLogger({ module: "replay-sms-dump" });
 
 // imessage-exporter txt block layout (blank-line separated):
 //   line 1: timestamp header ("Dec 09, 2025  4:32:26 PM (...)")
@@ -36,7 +39,7 @@ async function main() {
   }
 
   const bodies = loadFromImessageDir(dir);
-  console.log(`Loaded ${bodies.length} SMS bodies from ${dir}`);
+  log.info({ count: bodies.length, dir, event: "replay_sms_loaded" }, "Loaded SMS bodies");
 
   const counts = {
     inserted: 0,
@@ -60,22 +63,13 @@ async function main() {
     }
   }
 
-  console.log("\n## Ingest outcomes");
-  console.log(`inserted:   ${counts.inserted}`);
-  console.log(`duplicated: ${counts.duplicated}`);
-  console.log(`skipped:    ${counts.skipped}`);
-  console.log(`error:      ${counts.error}`);
+  log.info({ counts, event: "replay_sms_ingest_outcomes" }, "ingest outcomes");
 
-  console.log("\n## By parsed kind");
-  for (const [k, v] of Object.entries(byKind).sort((a, b) => b[1] - a[1])) {
-    console.log(`${k.padEnd(30)} ${v}`);
-  }
+  log.info({ byKind, event: "replay_sms_by_kind" }, "breakdown by parsed kind");
 
   if (errors.length > 0) {
-    console.log("\n## Errors (first 5)");
-    for (const e of errors.slice(0, 5)) {
-      console.log(`  ${e.reason}: ${e.body}…`);
-    }
+    const sample = errors.slice(0, 5);
+    log.info({ sample, event: "replay_sms_errors_sample" }, "errors (first 5)");
   }
 
   // Post-ingest DB summary
@@ -91,10 +85,7 @@ async function main() {
     GROUP BY source, raw_data->>'kind'
     ORDER BY c DESC
   `);
-  console.log("\n## DB transactions by (source, kind)");
-  for (const r of txStats) {
-    console.log(`${r.source.padEnd(12)} ${(r.kind ?? "-").padEnd(25)} ${r.c}`);
-  }
+  log.info({ txStats, event: "replay_sms_tx_stats" }, "DB transactions by (source, kind)");
 
   const cpStats = await db.execute<{
     c: number;
@@ -104,8 +95,13 @@ async function main() {
            COUNT(*) FILTER (WHERE default_category_slug IS NOT NULL)::int AS with_category
     FROM counterparties
   `);
-  console.log(
-    `\n## Counterparties: ${cpStats[0].c} total, ${cpStats[0].with_category} with default category`,
+  log.info(
+    {
+      total: cpStats[0].c,
+      withCategory: cpStats[0].with_category,
+      event: "replay_sms_counterparty_stats",
+    },
+    "counterparty totals",
   );
 
   const topCp = await db.execute<{
@@ -120,10 +116,7 @@ async function main() {
     ORDER BY c.hit_count DESC, c.display_name ASC
     LIMIT 10
   `);
-  console.log("\n## Top 10 counterparties by hit_count");
-  for (const r of topCp) {
-    console.log(`  [${r.hit_count}] ${r.display_name.padEnd(40)} [${r.aliases}]`);
-  }
+  log.info({ topCp, event: "replay_sms_top_counterparties" }, "top 10 counterparties by hit_count");
 
   const classification = await db.execute<{
     method: string;
@@ -134,15 +127,15 @@ async function main() {
     GROUP BY classification_method
     ORDER BY c DESC
   `);
-  console.log("\n## Classification method breakdown");
-  for (const r of classification) {
-    console.log(`${r.method.padEnd(15)} ${r.c}`);
-  }
+  log.info(
+    { classification, event: "replay_sms_classification" },
+    "classification method breakdown",
+  );
 
   await db.$client.end({ timeout: 1 });
 }
 
 main().catch((err) => {
-  console.error(err);
+  log.error({ err, event: "replay_sms_failed" }, "replay-sms-dump failed");
   process.exit(1);
 });

@@ -4,8 +4,11 @@ import type { AccountDetail } from "@/lib/accounts/queries";
 import type { NluAccountOption, NluCategoryOption, NluResult } from "@/lib/ai/transaction-nlu";
 import type { TelegramBatchItem, TelegramDraft, TelegramSessionState } from "@/lib/db/schema";
 import type { OcrMediaType, OcrResult } from "@/lib/ingestion/ocr";
+import { createLogger } from "@/lib/logger";
 import { handleCommand, parseCommand } from "@/lib/telegram/commands";
 import { clearSession, getSession, mergeDraft, upsertSession } from "@/lib/telegram/session";
+
+const log = createLogger({ module: "telegram/router" });
 import {
   accountsKeyboard,
   batchConfirmKeyboard,
@@ -235,7 +238,7 @@ async function runOcrAndAdvance(opts: {
     const mediaType = mediaTypeFromPath(file.file_path);
     ocr = await deps.runOcr({ imageBase64, mediaType, accountId: account.id });
   } catch (err) {
-    console.error("[telegram] OCR failed:", err);
+    log.error({ err, event: "telegram_ocr_failed" }, "OCR failed");
     await client.sendMessage({
       chat_id: chatId,
       text: renderError("No pude procesar la foto. Probá con otra imagen."),
@@ -329,7 +332,7 @@ async function handleVoice(
     });
     transcribed = result.text;
   } catch (err) {
-    console.error("[telegram] STT failed:", err);
+    log.error({ err, event: "telegram_stt_failed" }, "STT failed");
     await client.sendMessage({
       chat_id: chatId,
       text: renderError("No pude transcribir el audio. Probá de nuevo o mandalo como texto."),
@@ -440,7 +443,7 @@ async function handleText(
   try {
     nlu = await deps.parseNlu({ text, context: { now, accounts, categories } });
   } catch (err) {
-    console.error("[telegram] NLU parse failed:", err);
+    log.error({ err, event: "telegram_nlu_parse_failed" }, "NLU parse failed");
     await client.sendMessage({
       chat_id: chatId,
       text: renderError(
@@ -521,7 +524,10 @@ async function handleCallback(
       }),
     });
     if (result.errors.length > 0) {
-      console.error("[telegram] batch insert errors:", result.errors);
+      log.error(
+        { errors: result.errors, event: "telegram_batch_insert_errors" },
+        "batch insert errors",
+      );
     }
     await clearSession(chatId);
     return;

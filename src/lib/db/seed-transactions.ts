@@ -1,6 +1,9 @@
+import { createLogger } from "@/lib/logger";
 import { db } from "./index";
 import { accounts, transactions } from "./schema";
 import type { ClassificationMethod, TransactionSource } from "@/lib/types";
+
+const log = createLogger({ module: "seed-transactions" });
 
 type Sample = {
   description: string;
@@ -240,7 +243,10 @@ const samples: Sample[] = [
 async function main() {
   const accs = await db.select().from(accounts);
   if (accs.length === 0) {
-    console.error("No accounts found. Run `bun run db:seed` first.");
+    log.error(
+      { event: "seed_transactions_no_accounts" },
+      "No accounts found. Run `bun run db:seed` first.",
+    );
     process.exit(1);
   }
 
@@ -267,11 +273,14 @@ async function main() {
   });
 
   const inserted = await db.insert(transactions).values(rows).returning({ id: transactions.id });
-  console.log(`Inserted ${inserted.length} transactions across ${accs.length} accounts.`);
+  log.info(
+    { inserted: inserted.length, accounts: accs.length, event: "seed_transactions_done" },
+    `Inserted ${inserted.length} transactions across ${accs.length} accounts.`,
+  );
   process.exit(0);
 }
 
 main().catch((err) => {
-  console.error(err);
+  log.error({ err, event: "seed_transactions_failed" }, "seed-transactions failed");
   process.exit(1);
 });

@@ -8,7 +8,10 @@ import { db } from "@/lib/db";
 import { telegramBots, telegramSessions } from "@/lib/db/schema";
 import { decrypt, encrypt } from "@/lib/crypto/symmetric";
 import { getSessionUser } from "@/lib/auth/session";
+import { createLogger } from "@/lib/logger";
 import { createTelegramClient } from "@/lib/telegram/client";
+
+const log = createLogger({ module: "settings/telegram/actions" });
 
 const BOT_TOKEN_REGEX = /^\d{8,12}:[A-Za-z0-9_-]{30,}$/;
 
@@ -127,16 +130,19 @@ export async function revokeBotAction(): Promise<void> {
   try {
     token = decrypt(bot.tokenEncrypted);
   } catch (err) {
-    console.error("[telegram/revokeBot] decrypt failed — deleting row without Telegram call", err);
+    log.error(
+      { err, event: "telegram_revoke_decrypt_failed" },
+      "decrypt failed — deleting row without Telegram call",
+    );
   }
 
   if (token) {
     try {
       await createTelegramClient({ token }).deleteWebhook();
     } catch (err) {
-      console.error(
-        "[telegram/revokeBot] deleteWebhook failed — continuing with local delete anyway",
-        err,
+      log.error(
+        { err, event: "telegram_revoke_delete_webhook_failed" },
+        "deleteWebhook failed — continuing with local delete anyway",
       );
     }
   }
