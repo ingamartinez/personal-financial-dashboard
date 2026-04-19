@@ -2,6 +2,7 @@ import { aliasedTable, and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { budgets, categories, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { getSessionUser } from "@/lib/auth/session";
 import { BudgetsManager } from "./budgets-manager";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +31,7 @@ export default async function BudgetsPage({
 }: {
   searchParams: Promise<{ ym?: string }>;
 }) {
+  const session = await getSessionUser();
   const params = await searchParams;
   const ym = params.ym && /^\d{4}-\d{2}$/.test(params.ym) ? params.ym : currentYearMonth();
   const { start, end, startIso } = monthRange(ym);
@@ -42,6 +44,7 @@ export default async function BudgetsPage({
         parentSlug: categories.parentSlug,
       })
       .from(categories)
+      .where(and(eq(categories.userId, session.id), notDeleted(categories.deletedAt)))
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
     db
       .select({

@@ -64,7 +64,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ botId: 
   const deps: RouterDeps = {
     userId: bot.userId,
     listAccounts: () => listAccountsDetailed(bot.userId),
-    listCategories,
+    listCategories: () => listCategories(bot.userId),
     parseNlu: (p) => parseTransactionMessage({ text: p.text, context: p.context }),
     runOcr: (p) => extractTransactionsFromImage(p),
     transcribeVoice: (p) => transcribeAudio(p),

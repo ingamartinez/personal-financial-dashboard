@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { categories, ingestionLogs, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { classifyBatchWithAi, type AiCategoryOption } from "./ai";
 import { classifyByRule } from "./rules";
 
@@ -58,7 +59,8 @@ export async function classifyUnclassifiedBatch(
       name: categories.name,
       parentSlug: categories.parentSlug,
     })
-    .from(categories);
+    .from(categories)
+    .where(and(eq(categories.userId, userId), notDeleted(categories.deletedAt)));
   const catOptions: AiCategoryOption[] = cats;
 
   let ruleClassified = 0;

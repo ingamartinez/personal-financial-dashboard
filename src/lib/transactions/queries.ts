@@ -191,10 +191,11 @@ export async function listAccounts(userId: number) {
     .orderBy(asc(accounts.name));
 }
 
-export async function listCategories() {
+export async function listCategories(userId: number) {
   return db
     .select({ slug: categories.slug, name: categories.name, parentSlug: categories.parentSlug })
     .from(categories)
+    .where(and(eq(categories.userId, userId), notDeleted(categories.deletedAt)))
     .orderBy(asc(categories.sortOrder), asc(categories.name));
 }
 

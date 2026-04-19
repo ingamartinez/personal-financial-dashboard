@@ -10,6 +10,12 @@ const LINKS = [
       "Create and manage savings, credit cards, and loans. Required before any transaction can land.",
   },
   {
+    href: "/settings/categories",
+    title: "Categorías",
+    description:
+      "Tu taxonomía personal: agregá, renombrá o archivá categorías. Cada usuario tiene la suya.",
+  },
+  {
     href: "/settings/import",
     title: "Import",
     description: "Bulk-import from XLSX or drop a screenshot for OCR.",
