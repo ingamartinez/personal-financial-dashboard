@@ -1,5 +1,6 @@
 import { getSessionUser } from "@/lib/auth/session";
 import { listWebhookTokensForUser } from "@/lib/webhook-tokens";
+import { IosShortcutCard } from "./ios-shortcut-card";
 import { WebhookTokensManager } from "./webhook-tokens-manager";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +31,7 @@ export default async function WebhooksPage() {
           revokedAt: t.revokedAt ? t.revokedAt.toISOString() : null,
         }))}
       />
+      <IosShortcutCard />
     </main>
   );
 }
