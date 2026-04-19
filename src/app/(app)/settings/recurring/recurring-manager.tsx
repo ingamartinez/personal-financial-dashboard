@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { formatMoney } from "@/lib/money";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { deleteRecurring, toggleRecurringActive, upsertRecurring } from "./actions";
+import { archiveRecurring, toggleRecurringActive, upsertRecurring } from "./actions";
 
 type AccountOption = { id: number; name: string; currency: Currency };
 type CategoryOption = {
@@ -79,12 +79,12 @@ export function RecurringManager({
     });
   }
 
-  function onDelete(row: RecurringRow) {
-    if (!confirm(`Delete recurring "${row.label}"? This cannot be undone.`)) return;
+  function onArchive(row: RecurringRow) {
+    if (!confirm(`Archive recurring "${row.label}"?`)) return;
     startTransition(async () => {
       try {
-        await deleteRecurring(row.id);
-        toast.success("Deleted");
+        await archiveRecurring(row.id);
+        toast.success("Archived");
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed");
       }
@@ -182,9 +182,9 @@ export function RecurringManager({
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => onDelete(r)}
+                              onClick={() => onArchive(r)}
                               disabled={pending}
-                              aria-label="Delete"
+                              aria-label="Archive"
                             >
                               <Trash2Icon className="size-4" />
                             </Button>

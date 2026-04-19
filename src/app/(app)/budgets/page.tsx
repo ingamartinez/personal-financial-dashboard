@@ -1,6 +1,7 @@
 import { aliasedTable, and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { budgets, categories, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { BudgetsManager } from "./budgets-manager";
 
 export const dynamic = "force-dynamic";
@@ -54,7 +55,7 @@ export default async function BudgetsPage({
       })
       .from(budgets)
       .leftJoin(categories, eq(categories.slug, budgets.categorySlug))
-      .where(eq(budgets.periodStart, startIso))
+      .where(and(eq(budgets.periodStart, startIso), notDeleted(budgets.deletedAt)))
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
     (() => {
       const txCategory = aliasedTable(categories, "tx_category");

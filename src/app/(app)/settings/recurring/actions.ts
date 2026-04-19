@@ -11,6 +11,7 @@ import {
   recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
@@ -86,11 +87,18 @@ export async function upsertRecurring(input: RecurringInput) {
   revalidate();
 }
 
-export async function deleteRecurring(id: number) {
+export async function archiveRecurring(id: number) {
   const session = await getSessionUser();
   await db
-    .delete(recurringTransactions)
-    .where(and(eq(recurringTransactions.userId, session.id), eq(recurringTransactions.id, id)));
+    .update(recurringTransactions)
+    .set({ deletedAt: sql`NOW()` })
+    .where(
+      and(
+        eq(recurringTransactions.userId, session.id),
+        eq(recurringTransactions.id, id),
+        notDeleted(recurringTransactions.deletedAt),
+      ),
+    );
   revalidate();
 }
 
@@ -120,6 +128,7 @@ export async function dismissUpcoming(input: z.input<typeof dismissSchema>) {
         and(
           eq(recurringTransactions.userId, session.id),
           eq(recurringTransactions.id, recurringId),
+          notDeleted(recurringTransactions.deletedAt),
         ),
       )
       .limit(1);
@@ -165,7 +174,11 @@ export async function undismissUpcoming(input: z.input<typeof dismissSchema>) {
     .select({ skippedMonths: recurringTransactions.skippedMonths })
     .from(recurringTransactions)
     .where(
-      and(eq(recurringTransactions.userId, session.id), eq(recurringTransactions.id, recurringId)),
+      and(
+        eq(recurringTransactions.userId, session.id),
+        eq(recurringTransactions.id, recurringId),
+        notDeleted(recurringTransactions.deletedAt),
+      ),
     )
     .limit(1);
   if (!row) throw new Error("Recurring not found");
@@ -204,7 +217,11 @@ export async function promoteUpcoming(input: PromoteUpcomingInput) {
     })
     .from(recurringTransactions)
     .where(
-      and(eq(recurringTransactions.userId, session.id), eq(recurringTransactions.id, recurringId)),
+      and(
+        eq(recurringTransactions.userId, session.id),
+        eq(recurringTransactions.id, recurringId),
+        notDeleted(recurringTransactions.deletedAt),
+      ),
     )
     .limit(1);
   if (!r) throw new Error("Recurring not found");

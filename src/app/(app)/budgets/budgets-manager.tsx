@@ -27,7 +27,7 @@ import { CategoryCombobox } from "@/components/transactions/category-combobox";
 import { formatMoney } from "@/lib/money";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { deleteBudget, upsertBudget } from "./actions";
+import { archiveBudget, upsertBudget } from "./actions";
 
 type CategoryOption = {
   slug: string;
@@ -81,12 +81,12 @@ export function BudgetsManager({
     router.push(`/budgets?ym=${shiftMonth(ym, delta)}`);
   }
 
-  function onDelete(row: BudgetRow) {
-    if (!confirm(`Delete budget for ${row.categoryName}?`)) return;
+  function onArchive(row: BudgetRow) {
+    if (!confirm(`Archive budget for ${row.categoryName}?`)) return;
     startTransition(async () => {
       try {
-        await deleteBudget(row.id);
-        toast.success("Deleted");
+        await archiveBudget(row.id);
+        toast.success("Archived");
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed");
       }
@@ -154,7 +154,7 @@ export function BudgetsManager({
               key={row.id}
               row={row}
               onEdit={() => setEditor({ open: true, editing: row })}
-              onDelete={() => onDelete(row)}
+              onArchive={() => onArchive(row)}
               disabled={pending}
             />
           ))}
@@ -177,12 +177,12 @@ export function BudgetsManager({
 function BudgetCard({
   row,
   onEdit,
-  onDelete,
+  onArchive,
   disabled,
 }: {
   row: BudgetRow;
   onEdit: () => void;
-  onDelete: () => void;
+  onArchive: () => void;
   disabled: boolean;
 }) {
   const amount = BigInt(row.amountCents);
@@ -210,9 +210,9 @@ function BudgetCard({
             <Button
               variant="ghost"
               size="sm"
-              onClick={onDelete}
+              onClick={onArchive}
               disabled={disabled}
-              aria-label="Delete"
+              aria-label="Archive"
             >
               <Trash2Icon className="size-4" />
             </Button>

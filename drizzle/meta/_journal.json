@@ -134,6 +134,13 @@
       "when": 1776568300000,
       "tag": "0018_simple_pestilence",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1776568400000,
+      "tag": "0019_chief_layla_miller",
+      "breakpoints": true
     }
   ]
 }
