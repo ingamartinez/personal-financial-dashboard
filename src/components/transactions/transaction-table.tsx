@@ -32,6 +32,7 @@ const sourceLabel: Record<TxRow["source"], string> = {
   manual: "Manual",
   telegram: "Telegram",
   balance_adjustment: "Ajuste",
+  csv_reconcile: "CSV (recon)",
 };
 
 const methodVariant: Record<
