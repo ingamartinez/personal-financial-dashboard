@@ -485,14 +485,15 @@ Pre-requisito para invitar amigos al beta cerrado.
 - ✅ iOS Shortcut install card surfaced en `/settings/webhooks` (#243)
 - ✅ Telegram bot zero-accounts guard (#233 — fix de loop infinito)
 
-**Pendiente (issues nuevos a crear):**
+**Pendiente (orden por dependencias):**
 
-1. **`/settings/accounts` page con UI de creación/edición de cuentas** — CRÍTICO. Sin esto, ningún amigo puede dar de alta su primera cuenta. El bot Telegram ya apunta a esta ruta (en su zero-accounts guard) pero la ruta no existe; `/accounts` existe pero solo lista, sin crear (su empty state dice "use the seed script or DB"). Onboarding blocker.
-2. **Billing-ready columns en `users`** — `subscription_status`, `plan_id`, `trial_ends_at`, `mercadopago_customer_id` nullable. Seam para Phase 7 sin enforcement en v1.
-3. **`canIngest(userId)` seam** en `/api/ingest/*` — wrapper que retorna `true` en v1, hook para futuro paywall sin tocar endpoints.
-4. **Per-user telemetry foundation** — tabla `user_health_snapshots`, cron de actualización, vista admin privada `/admin/health` con last_sms_received_at, capture source breakdown, parser success rate, churn signals.
-5. **Bancolombia parser SLO instrumentation** — logging estructurado por intento de parseo + dashboard mostrando las 6 SLOs definidas + alerting cuando degrada.
-6. **iOS Shortcut onboarding polish** — más allá de la card actual: video/GIF demostrativo, troubleshooting section, advertencias sobre gotchas (no guardar como contacto, no responder 3+ veces — aplica también a la futura app nativa).
+1. **`/settings/accounts` page con UI de creación/edición de cuentas** (#245) — CRÍTICO. Sin esto, ningún amigo puede dar de alta su primera cuenta. El bot Telegram ya apunta a esta ruta (en su zero-accounts guard) pero la ruta no existe; `/accounts` existe pero solo lista, sin crear (su empty state dice "use the seed script or DB"). Onboarding blocker absoluto — es el primero en la cola.
+2. **Ingestion Inbox — recuperación de errores de ingesta huérfanos** (#261) — CRÍTICO. Hoy, si un SMS/Apple-Pay llega antes de que exista cuenta que matchee, el endpoint falla con `status="error"` y la txn nunca se crea. El raw queda en `ingestion_logs` sin UI ni path de recuperación → **data loss silenciosa**, rompe el SLO _"Data loss incidents por user/mes: 0"_. Requiere #245 para la UX end-to-end (dropdown de cuentas para retry). Va segundo.
+3. **Per-user telemetry foundation** (#248) — tabla `user_health_snapshots`, cron de actualización, vista admin privada `/admin/health` con last_sms_received_at, capture source breakdown, parser success rate, churn signals, **unresolved ingest errors** (surface del inbox #261).
+4. **Bancolombia parser SLO instrumentation** (#249) — logging estructurado por intento de parseo + dashboard mostrando las 6 SLOs definidas + alerting cuando degrada. Tiene sentido DESPUÉS del inbox: telemetría sin recovery path es prender una luz roja y quedarse mirándola.
+5. **Billing-ready columns en `users`** (#246) — `subscription_status`, `plan_id`, `trial_ends_at`, `mercadopago_customer_id` nullable. Seam para Phase 7 sin enforcement en v1. Independiente del resto — cualquier orden.
+6. **`canIngest(userId)` seam** en `/api/ingest/*` (#247) — wrapper que retorna `true` en v1, hook para futuro paywall sin tocar endpoints. Independiente.
+7. **iOS Shortcut onboarding polish** (#250) — más allá de la card actual: video/GIF demostrativo, troubleshooting section, advertencias sobre gotchas (no guardar como contacto, no responder 3+ veces — aplica también a la futura app nativa). Independiente.
 
 ### Phase 4.6: Web Product Depth (active, sequential to 4.5)
 
