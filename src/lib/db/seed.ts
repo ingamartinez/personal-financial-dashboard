@@ -22,9 +22,12 @@ import type { AccountType, Currency } from "@/lib/types";
 
 const log = createLogger({ module: "seed" });
 
+type InstitutionSlug = (typeof accounts.$inferInsert)["institutionSlug"];
+
 const seedAccounts: Array<{
   name: string;
   institution: string;
+  institutionSlug: InstitutionSlug;
   type: AccountType;
   currency: Currency;
   metadata?: AccountMetadata;
@@ -32,6 +35,7 @@ const seedAccounts: Array<{
   {
     name: "Bancolombia Ahorros",
     institution: "Bancolombia",
+    institutionSlug: "bancolombia",
     type: "savings",
     currency: "COP",
     metadata: { last4s: ["6126", "1802"] },
@@ -39,15 +43,29 @@ const seedAccounts: Array<{
   {
     name: "ARQ Ahorros",
     institution: "ARQ",
+    institutionSlug: "other",
     type: "savings",
     currency: "USD",
     metadata: { last4s: ["7073", "1356"] },
   },
-  { name: "Efectivo COP", institution: "Cash", type: "savings", currency: "COP" },
-  { name: "Efectivo USD", institution: "Cash", type: "savings", currency: "USD" },
+  {
+    name: "Efectivo COP",
+    institution: "Cash",
+    institutionSlug: "cash",
+    type: "savings",
+    currency: "COP",
+  },
+  {
+    name: "Efectivo USD",
+    institution: "Cash",
+    institutionSlug: "cash",
+    type: "savings",
+    currency: "USD",
+  },
   {
     name: "Bancolombia Visa *2575",
     institution: "Bancolombia",
+    institutionSlug: "bancolombia",
     type: "credit_card",
     currency: "COP",
     metadata: { last4s: ["2575"], network: "visa" },
@@ -55,6 +73,7 @@ const seedAccounts: Array<{
   {
     name: "Bancolombia Mastercard *7291 (COP)",
     institution: "Bancolombia",
+    institutionSlug: "bancolombia",
     type: "credit_card",
     currency: "COP",
     metadata: { last4s: ["7291"], network: "mastercard" },
@@ -62,6 +81,7 @@ const seedAccounts: Array<{
   {
     name: "Bancolombia Mastercard *7291 (USD)",
     institution: "Bancolombia",
+    institutionSlug: "bancolombia",
     type: "credit_card",
     currency: "USD",
     metadata: { last4s: ["7291"], network: "mastercard" },

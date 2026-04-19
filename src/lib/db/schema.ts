@@ -84,6 +84,18 @@ export const webhookTokens = pgTable(
 
 export const accountType = pgEnum("account_type", ["savings", "credit_card", "loan"]);
 
+export const institutionSlug = pgEnum("institution_slug", [
+  "bancolombia",
+  "davivienda",
+  "nequi",
+  "bbva",
+  "scotiabank",
+  "bancogalicia",
+  "rappipay",
+  "cash",
+  "other",
+]);
+
 export const currency = pgEnum("currency", ["COP", "USD"]);
 
 export const txSource = pgEnum("tx_source", [
@@ -132,6 +144,7 @@ export const accounts = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 100 }).notNull(),
     institution: varchar("institution", { length: 50 }).notNull(),
+    institutionSlug: institutionSlug("institution_slug").notNull().default("other"),
     type: accountType("type").notNull(),
     currency: currency("currency").notNull(),
     balanceCents: bigint("balance_cents", { mode: "bigint" })
