@@ -1,15 +1,16 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, users } from "@/lib/db/schema";
-import { notDeleted } from "@/lib/db/helpers";
+import { accounts, categories, transactions, users } from "@/lib/db/schema";
+import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/auth/session", () => ({
   getSessionUser: vi.fn().mockResolvedValue({ id: 1, email: "test@test.local", name: "Test" }),
 }));
 
-const { upsertAccount, archiveAccount, toggleAccountActive } = await import("./actions");
+const { upsertAccount, archiveAccount, toggleAccountActive, adjustAccountBalance } =
+  await import("./actions");
 
 const TEST_USER_ID = 1;
 const MARKER = "__test_accounts_ui";
@@ -243,5 +244,135 @@ describe("accounts actions: auth scoping", () => {
     await toggleAccountActive(row.id, false);
     const [after] = await db.select().from(accounts).where(eq(accounts.id, row.id));
     expect(after.active).toBe(false);
+  });
+});
+
+describe("adjustAccountBalance", () => {
+  const ADJ_MARKER = "__test_adjust_acct";
+
+  async function adjustCleanup() {
+    await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE 'Ajuste de saldo%'`);
+    await db.execute(sql`DELETE FROM accounts WHERE name LIKE ${ADJ_MARKER + "%"}`);
+  }
+
+  afterEach(adjustCleanup);
+
+  async function seedAccount(balance: number): Promise<number> {
+    await upsertAccount({
+      name: `${ADJ_MARKER}-main`,
+      institution: "Bancolombia",
+      type: "savings",
+      primary: { currency: "COP", balance },
+    });
+    const [row] = await db
+      .select({ id: accounts.id })
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${ADJ_MARKER}-main`)));
+    return row.id;
+  }
+
+  it("positive diff: creates adjustment tx and bumps account balance up", async () => {
+    const accountId = await seedAccount(100_000); // balance 10_000_000 cents
+    const result = await adjustAccountBalance({
+      accountId,
+      declaredBalanceCents: 12_000_000,
+      reason: "Transferencia que no llegó por SMS",
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.diffCents).toBe("2000000");
+      const [tx] = await db.select().from(transactions).where(eq(transactions.id, result.txId));
+      expect(tx.isAdjustment).toBe(true);
+      expect(tx.amountCents).toBe(BigInt(2_000_000));
+      expect(tx.categorySlug).toBe("adjustments");
+      expect(tx.source).toBe("balance_adjustment");
+      expect(tx.channel).toBe("manual");
+      expect(tx.classificationMethod).toBe("manual");
+    }
+
+    const [after] = await db.select().from(accounts).where(eq(accounts.id, accountId));
+    expect(after.balanceCents).toBe(BigInt(12_000_000));
+  });
+
+  it("negative diff: creates adjustment tx for the shortfall", async () => {
+    const accountId = await seedAccount(100_000);
+    const result = await adjustAccountBalance({ accountId, declaredBalanceCents: 8_000_000 });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.diffCents).toBe("-2000000");
+    }
+  });
+
+  it("no-op when declared matches current", async () => {
+    const accountId = await seedAccount(100_000);
+    const result = await adjustAccountBalance({ accountId, declaredBalanceCents: 10_000_000 });
+    expect(result.status).toBe("noop");
+
+    const txs = await db.select().from(transactions).where(eq(transactions.accountId, accountId));
+    expect(txs).toHaveLength(0);
+  });
+
+  it("auto-heals: creates 'adjustments' category if user archived it", async () => {
+    const accountId = await seedAccount(100_000);
+    await db
+      .update(categories)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(categories.userId, TEST_USER_ID), eq(categories.slug, "adjustments")));
+
+    const result = await adjustAccountBalance({ accountId, declaredBalanceCents: 11_000_000 });
+    expect(result.status).toBe("ok");
+
+    const [cat] = await db
+      .select()
+      .from(categories)
+      .where(and(eq(categories.userId, TEST_USER_ID), eq(categories.slug, "adjustments")));
+    expect(cat.deletedAt).toBeNull();
+  });
+
+  it("refuses to adjust another user's account", async () => {
+    // Create a second user + account
+    const [otherUser] = await db
+      .insert(users)
+      .values({ email: `${ADJ_MARKER}-other@test.local`, name: "Other" })
+      .returning({ id: users.id });
+    const [otherAccount] = await db
+      .insert(accounts)
+      .values({
+        userId: otherUser.id,
+        name: `${ADJ_MARKER}-other-account`,
+        institution: "Bancolombia",
+        type: "savings",
+        currency: "COP",
+        balanceCents: BigInt(100_000_00),
+      })
+      .returning({ id: accounts.id });
+
+    const result = await adjustAccountBalance({
+      accountId: otherAccount.id,
+      declaredBalanceCents: 200_000_00,
+    });
+    expect(result.status).toBe("error");
+
+    await db.execute(sql`DELETE FROM accounts WHERE id = ${otherAccount.id}`);
+    await db.execute(sql`DELETE FROM users WHERE id = ${otherUser.id}`);
+  });
+
+  it("notAdjustment helper filters adjustment rows from spend queries", async () => {
+    const accountId = await seedAccount(100_000);
+    await adjustAccountBalance({ accountId, declaredBalanceCents: 11_500_000 });
+
+    // All user txns
+    const all = await db.select().from(transactions).where(eq(transactions.userId, TEST_USER_ID));
+    const hasAdjustment = all.some((t) => t.isAdjustment);
+    expect(hasAdjustment).toBe(true);
+
+    // Spend query shape: exclude adjustments
+    const spendOnly = await db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.userId, TEST_USER_ID), notAdjustment(transactions.isAdjustment)));
+    const hasAdjustmentInSpend = spendOnly.some((t) => t.isAdjustment);
+    expect(hasAdjustmentInSpend).toBe(false);
   });
 });

@@ -176,6 +176,13 @@
       "when": 1776629905539,
       "tag": "0024_parched_namora",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1776632072094,
+      "tag": "0025_amusing_winter_soldier",
+      "breakpoints": true
     }
   ]
 }

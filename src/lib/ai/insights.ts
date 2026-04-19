@@ -8,7 +8,7 @@ import {
   recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
-import { notDeleted } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 import type { Currency } from "@/lib/types";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
@@ -111,6 +111,7 @@ export async function buildInsightsSummary(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, cur.start),
             lte(transactions.occurredAt, cur.end),
+            notAdjustment(transactions.isAdjustment),
           ),
         )
         .groupBy(transactions.currency),
@@ -126,6 +127,7 @@ export async function buildInsightsSummary(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, prev.start),
             lte(transactions.occurredAt, prev.end),
+            notAdjustment(transactions.isAdjustment),
           ),
         )
         .groupBy(transactions.currency),
@@ -149,6 +151,7 @@ export async function buildInsightsSummary(
               eq(transactions.userId, userId),
               gte(transactions.occurredAt, cur.start),
               lte(transactions.occurredAt, cur.end),
+              notAdjustment(transactions.isAdjustment),
             ),
           )
           .groupBy(rootSlug, root.name, transactions.currency);
@@ -169,6 +172,7 @@ export async function buildInsightsSummary(
               eq(transactions.userId, userId),
               gte(transactions.occurredAt, prev.start),
               lte(transactions.occurredAt, prev.end),
+              notAdjustment(transactions.isAdjustment),
             ),
           )
           .groupBy(rootSlug, transactions.currency);
@@ -188,6 +192,7 @@ export async function buildInsightsSummary(
             lte(transactions.occurredAt, cur.end),
             sql`${transactions.merchant} IS NOT NULL`,
             sql`${transactions.amountCents} < 0`,
+            notAdjustment(transactions.isAdjustment),
           ),
         )
         .groupBy(transactions.merchant, transactions.currency)

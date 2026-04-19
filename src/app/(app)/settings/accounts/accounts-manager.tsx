@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { LinkIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { LinkIcon, PencilIcon, PlusIcon, Trash2Icon, WrenchIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,7 +18,13 @@ import { formatMoney } from "@/lib/money";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { AccountMetadata } from "@/lib/db/schema";
-import { archiveAccount, toggleAccountActive, upsertAccount } from "./actions";
+import {
+  adjustAccountBalance,
+  archiveAccount,
+  toggleAccountActive,
+  upsertAccount,
+} from "./actions";
+import { BalanceAdjustDialog } from "./balance-adjust-dialog";
 
 type AccountType = "savings" | "credit_card" | "loan";
 
@@ -43,9 +49,11 @@ const TYPE_LABEL: Record<AccountType, string> = {
 const TYPE_ORDER: AccountType[] = ["savings", "credit_card", "loan"];
 
 type EditorState = { open: boolean; editing: AccountRow | null };
+type AdjustState = { open: boolean; target: AccountRow | null };
 
 export function AccountsManager({ items }: { items: AccountRow[] }) {
   const [editor, setEditor] = useState<EditorState>({ open: false, editing: null });
+  const [adjust, setAdjust] = useState<AdjustState>({ open: false, target: null });
   const [pending, startTransition] = useTransition();
 
   const grouped = useMemo(() => {
@@ -178,6 +186,16 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
                                   <Button
                                     variant="ghost"
                                     size="sm"
+                                    onClick={() => setAdjust({ open: true, target: r })}
+                                    disabled={pending}
+                                    aria-label="Adjust balance"
+                                    title="Ajustar saldo (reconciliación)"
+                                  >
+                                    <WrenchIcon className="size-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
                                     onClick={() => openEdit(r)}
                                     disabled={pending}
                                     aria-label="Edit"
@@ -213,6 +231,29 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
         open={editor.open}
         editing={editor.editing}
         onClose={close}
+      />
+      <BalanceAdjustDialog
+        key={adjust.target?.id ?? "adjust-closed"}
+        open={adjust.open}
+        target={adjust.target}
+        onClose={() => setAdjust({ open: false, target: null })}
+        onConfirm={async (declaredBalanceCents, reason) => {
+          if (!adjust.target) return;
+          const result = await adjustAccountBalance({
+            accountId: adjust.target.id,
+            declaredBalanceCents,
+            reason,
+          });
+          if (result.status === "ok") {
+            toast.success("Saldo ajustado — transacción creada.");
+            setAdjust({ open: false, target: null });
+          } else if (result.status === "noop") {
+            toast.info("El saldo declarado coincide con el actual — no hubo cambio.");
+            setAdjust({ open: false, target: null });
+          } else {
+            toast.error(result.message);
+          }
+        }}
       />
     </div>
   );

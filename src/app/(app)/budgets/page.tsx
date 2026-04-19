@@ -1,7 +1,7 @@
 import { aliasedTable, and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { budgets, categories, transactions } from "@/lib/db/schema";
-import { notDeleted } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { BudgetsManager } from "./budgets-manager";
 
@@ -70,7 +70,13 @@ export default async function BudgetsPage({
         })
         .from(transactions)
         .leftJoin(txCategory, eq(txCategory.slug, transactions.categorySlug))
-        .where(and(gte(transactions.occurredAt, start), lte(transactions.occurredAt, end)))
+        .where(
+          and(
+            gte(transactions.occurredAt, start),
+            lte(transactions.occurredAt, end),
+            notAdjustment(transactions.isAdjustment),
+          ),
+        )
         .groupBy(rootSlug);
     })(),
   ]);

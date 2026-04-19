@@ -90,6 +90,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
       categorySlug: transactions.categorySlug,
       classificationMethod: transactions.classificationMethod,
       source: transactions.source,
+      isAdjustment: transactions.isAdjustment,
       accountId: transactions.accountId,
       accountName: accounts.name,
       cpId: counterparties.id,
@@ -129,6 +130,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
     categorySlug: r.categorySlug,
     classificationMethod: r.classificationMethod,
     source: r.source,
+    isAdjustment: r.isAdjustment,
     accountId: r.accountId,
     accountName: r.accountName,
     counterparty: r.cpId

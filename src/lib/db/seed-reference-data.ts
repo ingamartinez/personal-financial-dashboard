@@ -102,6 +102,16 @@ export const categorySeedRows: CategorySeed[] = [
   { slug: "ingresos", name: "Ingresos", icon: "wallet", color: "#16a34a", sortOrder: 150 },
   { slug: "salario", name: "Salario", parentSlug: "ingresos" },
   { slug: "otros", name: "Otros", icon: "ellipsis", color: "#6b7280", sortOrder: 999 },
+  // Reserved for reconciliation balance adjustments — excluded from spend/insights
+  // queries via transactions.is_adjustment. Sort-ordered last so it sinks to the
+  // bottom of the category picker.
+  {
+    slug: "adjustments",
+    name: "Ajustes de saldo",
+    icon: "wrench",
+    color: "#475569",
+    sortOrder: 1000,
+  },
 ];
 
 // QR payments carry no merchant signal — the SMS only has an opaque "llave"

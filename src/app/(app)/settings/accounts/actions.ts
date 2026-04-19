@@ -5,9 +5,11 @@ import { revalidatePath } from "next/cache";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { accounts, type AccountMetadata } from "@/lib/db/schema";
+import { accounts, categories, transactions, type AccountMetadata } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
+
+const ADJUSTMENT_CATEGORY_SLUG = "adjustments";
 
 const metadataSchema = z
   .object({
@@ -147,4 +149,115 @@ export async function toggleAccountActive(id: number, active: boolean) {
       ),
     );
   revalidate();
+}
+
+const adjustSchema = z.object({
+  accountId: z.coerce.number().int().positive(),
+  declaredBalanceCents: z.coerce.number().int(),
+  reason: z.string().max(500).optional(),
+});
+
+export type AdjustBalanceResult =
+  | { status: "ok"; diffCents: string; txId: number }
+  | { status: "noop" }
+  | { status: "error"; message: string };
+
+/**
+ * Reconciliation balance adjustment (YNAB pattern). Inserts a transaction for
+ * (declared - current) into the account with `is_adjustment=true`, then
+ * updates `accounts.balance_cents` to the declared value. Both happen atomically.
+ *
+ * The adjustment tx is categorized as `adjustments` — spend/insights queries
+ * filter these out via `is_adjustment = false`; balance/net-worth queries
+ * include them.
+ */
+export async function adjustAccountBalance(
+  input: z.input<typeof adjustSchema>,
+): Promise<AdjustBalanceResult> {
+  const session = await getSessionUser();
+  const parsed = adjustSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Input inválido." };
+  }
+
+  return db.transaction(async (tx) => {
+    const [account] = await tx
+      .select({
+        id: accounts.id,
+        currency: accounts.currency,
+        balanceCents: accounts.balanceCents,
+      })
+      .from(accounts)
+      .where(
+        and(
+          eq(accounts.userId, session.id),
+          eq(accounts.id, parsed.data.accountId),
+          notDeleted(accounts.deletedAt),
+        ),
+      );
+
+    if (!account) {
+      return { status: "error", message: "Cuenta no encontrada." };
+    }
+
+    const declared = BigInt(parsed.data.declaredBalanceCents);
+    const diff = declared - account.balanceCents;
+
+    if (diff === BigInt(0)) {
+      return { status: "noop" };
+    }
+
+    // Ensure the per-user "adjustments" category exists — self-heal for users
+    // that signed up before the seed was added (or archived it by mistake).
+    await tx
+      .insert(categories)
+      .values({
+        userId: session.id,
+        slug: ADJUSTMENT_CATEGORY_SLUG,
+        name: "Ajustes de saldo",
+        icon: "wrench",
+        color: "#475569",
+        sortOrder: 1000,
+      })
+      .onConflictDoNothing({ target: [categories.userId, categories.slug] });
+
+    // Undo soft-delete if the user archived this category previously.
+    await tx
+      .update(categories)
+      .set({ deletedAt: null, updatedAt: new Date() })
+      .where(and(eq(categories.userId, session.id), eq(categories.slug, ADJUSTMENT_CATEGORY_SLUG)));
+
+    const today = new Date();
+    const ymd = today.toISOString().slice(0, 10);
+
+    const [inserted] = await tx
+      .insert(transactions)
+      .values({
+        userId: session.id,
+        accountId: account.id,
+        occurredAt: today,
+        amountCents: diff,
+        currency: account.currency,
+        descriptionRaw: `Ajuste de saldo (declarado ${ymd})`,
+        categorySlug: ADJUSTMENT_CATEGORY_SLUG,
+        classificationMethod: "manual",
+        source: "balance_adjustment",
+        channel: "manual",
+        isAdjustment: true,
+        rawData: {
+          reason: parsed.data.reason ?? null,
+          declaredBalanceCents: declared.toString(),
+          previousBalanceCents: account.balanceCents.toString(),
+        },
+      })
+      .returning({ id: transactions.id });
+
+    await tx
+      .update(accounts)
+      .set({ balanceCents: declared, updatedAt: today })
+      .where(eq(accounts.id, account.id));
+
+    revalidate();
+    return { status: "ok", diffCents: diff.toString(), txId: inserted.id };
+  });
 }
