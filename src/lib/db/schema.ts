@@ -452,8 +452,20 @@ export const ingestionLogs = pgTable(
     payload: jsonb("payload"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    // Resolution surface for the Ingestion Inbox (#261). A row is "unresolved" when
+    // status='error' AND resolved_at IS NULL. Retry/dismiss actions set all three.
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedTxnId: integer("resolved_txn_id").references((): AnyPgColumn => transactions.id, {
+      onDelete: "set null",
+    }),
+    resolution: varchar("resolution", { length: 20 }), // 'retried_success' | 'retried_failed' | 'dismissed'
   },
-  (t) => [index("ingestion_logs_user_started_idx").on(t.userId, t.startedAt)],
+  (t) => [
+    index("ingestion_logs_user_started_idx").on(t.userId, t.startedAt),
+    index("ingestion_logs_user_unresolved_idx")
+      .on(t.userId, t.startedAt)
+      .where(sql`${t.status} = 'error' AND ${t.resolvedAt} IS NULL`),
+  ],
 );
 
 export const insightsReports = pgTable(

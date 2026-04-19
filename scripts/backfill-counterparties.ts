@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "../src/lib/db";
-import { resolveCounterparty } from "../src/app/api/ingest/sms/route";
+import { resolveCounterparty } from "../src/lib/ingestion/sms-pipeline";
 import { parseSmsBancolombia } from "../src/lib/ingestion/sms-bancolombia";
 
 // Backfills counterparty_id on historical tx that were ingested before the

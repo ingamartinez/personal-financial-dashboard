@@ -33,6 +33,12 @@ const LINKS = [
       "Salud de la ingestión por SMS: últimos 30 días, detección de drift y regla activa.",
   },
   {
+    href: "/settings/inbox",
+    title: "Ingestion inbox",
+    description:
+      "SMS que fallaron al rutear. Reintentalos con la cuenta correcta o descartalos — nada se pierde en silencio.",
+  },
+  {
     href: "/settings/webhooks",
     title: "Webhook tokens",
     description:
