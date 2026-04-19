@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { canIngest, paywallResponse } from "@/lib/auth/can-ingest";
 import { db } from "@/lib/db";
 import { ingestionLogs } from "@/lib/db/schema";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
@@ -20,6 +21,9 @@ export async function POST(req: Request) {
   if (!auth) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const gate = await canIngest(auth.userId);
+  if (!gate.allowed) return paywallResponse(gate.reason);
 
   const rawBody = await req.text();
   if (rawBody.length > MAX_BODY_BYTES) {

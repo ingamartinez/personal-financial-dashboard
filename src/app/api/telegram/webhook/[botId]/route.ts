@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
+import { canIngest, paywallResponse } from "@/lib/auth/can-ingest";
 import { db } from "@/lib/db";
 import { telegramBots } from "@/lib/db/schema";
 import { decrypt } from "@/lib/crypto/symmetric";
@@ -42,6 +43,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ botId: 
   if (!provided || !constantTimeEquals(provided, bot.webhookSecret)) {
     return unauthorized();
   }
+
+  const gate = await canIngest(bot.userId);
+  if (!gate.allowed) return paywallResponse(gate.reason);
 
   let update: TelegramUpdate;
   try {
