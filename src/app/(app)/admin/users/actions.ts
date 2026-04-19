@@ -23,7 +23,7 @@ export async function setUserActiveAction(formData: FormData): Promise<UserActio
   if (outcome === "last-admin") {
     return { status: "error", message: "No se puede desactivar al último admin activo." };
   }
-  revalidatePath("/settings/users");
+  revalidatePath("/admin/users");
   return { status: "ok" };
 }
 
@@ -43,6 +43,6 @@ export async function setUserRoleAction(formData: FormData): Promise<UserActionR
   if (outcome === "last-admin") {
     return { status: "error", message: "No se puede demotar al último admin activo." };
   }
-  revalidatePath("/settings/users");
+  revalidatePath("/admin/users");
   return { status: "ok" };
 }

@@ -18,7 +18,7 @@ type ErrorState = {
 const ERRORS: Record<string, ErrorState> = {
   missing: {
     title: "Necesitás un link de invitación",
-    body: "El registro en Findash es cerrado. Pedile a quien ya usa la app que te genere un código desde /settings/invites.",
+    body: "El registro en Findash es cerrado. Pedile a quien ya usa la app que te genere un código desde /admin/invites.",
   },
   unknown: {
     title: "Código inválido",

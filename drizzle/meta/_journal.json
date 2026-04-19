@@ -148,6 +148,13 @@
       "when": 1776620189201,
       "tag": "0020_eager_micromax",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1776622313931,
+      "tag": "0021_smooth_doctor_octopus",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ import {
   categories,
   counterparties,
   counterpartyType,
+  ingestionLogs,
   transactions,
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
@@ -92,6 +93,7 @@ export async function createManualExpense(input: {
   notes: string | null;
 }) {
   const session = await getSessionUser();
+  const startedAt = new Date();
   // Server actions serialize errors to the client — ZodError.message is a
   // JSON blob. Flatten to the first issue so the form can toast it cleanly.
   const result = expenseSchema.safeParse(input);
@@ -145,6 +147,24 @@ export async function createManualExpense(input: {
     .returning({ id: transactions.id });
 
   await autoLinkTransaction(session.id, inserted.id);
+
+  await db.insert(ingestionLogs).values({
+    userId: session.id,
+    source: "manual",
+    status: "inserted",
+    itemsReceived: 1,
+    itemsInserted: 1,
+    itemsDuplicated: 0,
+    errorMessage: null,
+    payload: {
+      kind: "manual-create",
+      accountId: account.id,
+      amountCents: parsed.amount.toString(),
+      categorySlug: parsed.categorySlug,
+    },
+    startedAt,
+    finishedAt: new Date(),
+  });
 
   revalidatePath("/");
   revalidatePath("/transactions");
