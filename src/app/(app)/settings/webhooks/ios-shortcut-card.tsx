@@ -44,6 +44,11 @@ export function IosShortcutCard() {
           are forwarded to <code className="font-mono">/api/ingest/sms</code>. One-time setup: mint
           an <em>SMS ingest</em> token above, then paste it into the shortcut after install.
         </p>
+        <p className="text-body text-muted-foreground">
+          <strong>Heads up:</strong> the parser currently only understands{" "}
+          <strong>Bancolombia</strong> SMS. Other senders will reach the webhook but won&apos;t
+          produce transactions yet — more banks coming.
+        </p>
 
         <div>
           <Button asChild>
@@ -70,9 +75,9 @@ export function IosShortcutCard() {
           <li>
             Create a Personal Automation so the shortcut runs when bank SMS arrive: Shortcuts app →{" "}
             <strong>Automation</strong> tab → <strong>+</strong> → <strong>Message</strong>. Leave{" "}
-            <em>Sender</em> as any, then add a <strong>Message contains</strong> filter with your
-            bank&apos;s keyword (e.g. <code className="font-mono">Bancolombia</code>). Enable{" "}
-            <strong>Run Immediately</strong> and pick <em>Findash SMS Prod</em> as the action.
+            <strong>Sender</strong> as <em>Any Sender</em>, tap <strong>Message Contains</strong>{" "}
+            and type <code className="font-mono">Bancolombia</code>. Pick{" "}
+            <strong>Run Immediately</strong> and choose <em>Findash SMS Prod</em> as the action.
           </li>
         </ol>
 
