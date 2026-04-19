@@ -5,6 +5,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { accounts, ingestionLogs, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { classifyByRule } from "@/lib/classification/rules";
 import { parseBancolombiaXlsx, type ParsedRow } from "@/lib/ingestion/xlsx-bancolombia";
@@ -39,7 +40,13 @@ export async function previewBancolombiaXlsx(formData: FormData): Promise<Previe
   const [account] = await db
     .select({ id: accounts.id })
     .from(accounts)
-    .where(and(eq(accounts.userId, session.id), eq(accounts.id, accountId)))
+    .where(
+      and(
+        eq(accounts.userId, session.id),
+        eq(accounts.id, accountId),
+        notDeleted(accounts.deletedAt),
+      ),
+    )
     .limit(1);
   if (!account) throw new Error("Account not found");
 
@@ -105,7 +112,13 @@ export async function confirmBancolombiaImport(input: ConfirmInput): Promise<Con
   const [account] = await db
     .select({ id: accounts.id, currency: accounts.currency })
     .from(accounts)
-    .where(and(eq(accounts.userId, session.id), eq(accounts.id, parsed.accountId)))
+    .where(
+      and(
+        eq(accounts.userId, session.id),
+        eq(accounts.id, parsed.accountId),
+        notDeleted(accounts.deletedAt),
+      ),
+    )
     .limit(1);
   if (!account) throw new Error("Account not found");
 
@@ -200,7 +213,13 @@ export async function previewScreenshotOcr(formData: FormData): Promise<OcrPrevi
   const [account] = await db
     .select({ id: accounts.id })
     .from(accounts)
-    .where(and(eq(accounts.userId, session.id), eq(accounts.id, accountId)))
+    .where(
+      and(
+        eq(accounts.userId, session.id),
+        eq(accounts.id, accountId),
+        notDeleted(accounts.deletedAt),
+      ),
+    )
     .limit(1);
   if (!account) throw new Error("Account not found");
 
@@ -269,7 +288,13 @@ export async function confirmOcrImport(input: ConfirmOcrInput): Promise<ConfirmR
   const [account] = await db
     .select({ id: accounts.id, currency: accounts.currency })
     .from(accounts)
-    .where(and(eq(accounts.userId, session.id), eq(accounts.id, parsed.accountId)))
+    .where(
+      and(
+        eq(accounts.userId, session.id),
+        eq(accounts.id, parsed.accountId),
+        notDeleted(accounts.deletedAt),
+      ),
+    )
     .limit(1);
   if (!account) throw new Error("Account not found");
 

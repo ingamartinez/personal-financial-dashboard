@@ -4,6 +4,12 @@ import { getSessionUser } from "@/lib/auth/session";
 
 const LINKS = [
   {
+    href: "/settings/accounts",
+    title: "Accounts",
+    description:
+      "Create and manage savings, credit cards, and loans. Required before any transaction can land.",
+  },
+  {
     href: "/settings/import",
     title: "Import",
     description: "Bulk-import from XLSX or drop a screenshot for OCR.",

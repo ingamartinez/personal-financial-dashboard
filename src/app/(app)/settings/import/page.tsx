@@ -1,6 +1,7 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { ScreenshotUpload } from "@/components/import/screenshot-upload";
 import { ImportForm } from "./import-form";
 
@@ -10,7 +11,7 @@ export default async function ImportPage() {
   const accs = await db
     .select({ id: accounts.id, name: accounts.name, currency: accounts.currency })
     .from(accounts)
-    .where(eq(accounts.active, true))
+    .where(and(eq(accounts.active, true), notDeleted(accounts.deletedAt)))
     .orderBy(asc(accounts.name));
 
   return (

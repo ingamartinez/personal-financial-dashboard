@@ -1,6 +1,7 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, type AccountMetadata } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import type { AccountType, Currency } from "@/lib/types";
 
 export type AccountDetail = {
@@ -27,6 +28,6 @@ export async function listAccountsDetailed(userId: number): Promise<AccountDetai
       metadata: accounts.metadata,
     })
     .from(accounts)
-    .where(eq(accounts.userId, userId))
+    .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)))
     .orderBy(asc(accounts.type), asc(accounts.institution), asc(accounts.name));
 }

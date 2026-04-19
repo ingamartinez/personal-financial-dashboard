@@ -1,6 +1,7 @@
 import { aliasedTable, and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import type { AccountType, CounterpartyType, Currency } from "@/lib/types";
 
@@ -30,7 +31,9 @@ export async function getAccountStatuses(userId: number): Promise<AccountStatus[
       balanceCents: accounts.balanceCents,
     })
     .from(accounts)
-    .where(and(eq(accounts.userId, userId), eq(accounts.active, true)))
+    .where(
+      and(eq(accounts.userId, userId), eq(accounts.active, true), notDeleted(accounts.deletedAt)),
+    )
     .orderBy(asc(accounts.name));
 }
 
