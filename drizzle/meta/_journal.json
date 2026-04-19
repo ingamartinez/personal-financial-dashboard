@@ -169,6 +169,13 @@
       "when": 1776624708313,
       "tag": "0023_gray_caretaker",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1776629905539,
+      "tag": "0024_parched_namora",
+      "breakpoints": true
     }
   ]
 }

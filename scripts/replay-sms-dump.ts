@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { db } from "../src/lib/db";
-import { ingestParsed } from "../src/app/api/ingest/sms/route";
+import { ingestParsed } from "../src/lib/ingestion/sms-pipeline";
 import { parseSmsBancolombia } from "../src/lib/ingestion/sms-bancolombia";
 
 // imessage-exporter txt block layout (blank-line separated):

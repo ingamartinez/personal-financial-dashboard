@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { AlertTriangleIcon } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -23,11 +24,21 @@ export function SmsHealthCard({ snapshot }: { snapshot: SmsHealthSnapshot }) {
   const avgLabel = sevenDayAvgInserted > 0 ? sevenDayAvgInserted.toFixed(1) : "—";
   const lastLabel = lastSmsAt ? timeFmt.format(lastSmsAt) : "sin SMS hoy";
 
-  const extras: string[] = [];
+  const extras: Array<string | React.ReactNode> = [];
   if (todayDuplicated > 0)
     extras.push(`${todayDuplicated} duplicado${todayDuplicated === 1 ? "" : "s"}`);
   if (todaySkipped > 0) extras.push(`${todaySkipped} descartado${todaySkipped === 1 ? "" : "s"}`);
-  if (todayError > 0) extras.push(`${todayError} con error`);
+  if (todayError > 0) {
+    extras.push(
+      <Link
+        key="error-link"
+        href="/settings/inbox"
+        className="text-destructive underline-offset-4 hover:underline"
+      >
+        {todayError} con error →
+      </Link>,
+    );
+  }
 
   return (
     <Card
@@ -54,7 +65,14 @@ export function SmsHealthCard({ snapshot }: { snapshot: SmsHealthSnapshot }) {
           <span className="text-foreground tabular-nums">{avgLabel}/día</span>
         </div>
         {extras.length > 0 ? (
-          <div className="text-muted-foreground">{extras.join(" · ")}</div>
+          <div className="text-muted-foreground flex flex-wrap items-center gap-x-1">
+            {extras.map((e, i) => (
+              <span key={i} className="inline-flex items-center gap-1">
+                {i > 0 ? <span aria-hidden>·</span> : null}
+                {e}
+              </span>
+            ))}
+          </div>
         ) : null}
         {isDrift ? (
           <div className="text-amber-800 dark:text-amber-200">
