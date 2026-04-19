@@ -1,11 +1,15 @@
 import { sql } from "drizzle-orm";
-import { db as defaultDb, type DB } from "@/lib/db";
+// Relative imports (not `@/lib/...` aliases) are required because this file
+// is copied verbatim into the prod release by deploy.yml and executed there
+// by bun, which has no tsconfig to resolve path aliases. Keeping these
+// relative makes the same file work in dev and on the droplet.
+import { db as defaultDb, type DB } from "../db";
 import {
   categories,
   categorySeeds,
   classificationRuleSeeds,
   classificationRules,
-} from "@/lib/db/schema";
+} from "../db/schema";
 
 /**
  * Copy every row from `category_seeds` into `categories` with the new user's
