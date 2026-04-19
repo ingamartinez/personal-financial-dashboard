@@ -434,3 +434,4 @@ personal-financial-dashboard/
 
 - **[docs/multi-user-plan.md](./docs/multi-user-plan.md)** — migration plan from single-user to multi-tenant (NextAuth + Google OAuth + invite codes + `user_id` on every tenant table). Canonical design reference for issue #179 and everything it unblocks.
 - **[docs/telegram-bot.md](./docs/telegram-bot.md)** — Telegram ingestion channel setup and usage.
+- **[docs/events-bus-listen-notify.md](./docs/events-bus-listen-notify.md)** — migration plan from in-memory `EventEmitter` to Postgres `LISTEN/NOTIFY` for the SSE event bus. Decision record for issue #151; do not implement until multi-process is required.
