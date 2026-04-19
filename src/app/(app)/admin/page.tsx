@@ -22,6 +22,12 @@ const LINKS = [
     description:
       "Telemetría diaria: último SMS, último capture, fuentes activas, tasa de éxito del parser y señales de churn.",
   },
+  {
+    href: "/admin/slos",
+    title: "SLOs del parser",
+    description:
+      "6 métricas agregadas cross-user (parse success, clasificación, dedup, onboarding, data loss, detection lag). Gatean Phase 8.",
+  },
 ];
 
 export default async function AdminPage() {
