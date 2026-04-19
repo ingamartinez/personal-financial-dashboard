@@ -21,9 +21,9 @@ const SCREENSHOTS: Screenshot[] = [
     caption: "Step 3 — Replace PASTE-TOKEN in the Authorization header",
   },
   {
-    src: "/ios-shortcut/automation.jpeg",
-    alt: "Personal Automation with Run Immediately enabled and the shortcut as the action",
-    caption: "Step 4 — Message contains + Run Immediately",
+    src: "/ios-shortcut/set-sender.jpeg",
+    alt: "Any Sender + Message Contains 'Bancolombia' + Run Immediately",
+    caption: "Step 4 — Any Sender, Message Contains keyword, Run Immediately",
   },
 ];
 
