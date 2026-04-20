@@ -16,8 +16,13 @@ vi.mock("@/lib/auth/session", () => ({
   getSessionUser: vi.fn().mockResolvedValue({ id: 1, email: "test@test.local", name: "Test" }),
 }));
 
-const { upsertAccount, archiveAccount, toggleAccountActive, adjustAccountBalance } =
-  await import("./actions");
+const {
+  upsertAccount,
+  archiveAccount,
+  toggleAccountActive,
+  adjustAccountBalance,
+  updatePhysicalCard,
+} = await import("./actions");
 
 const TEST_USER_ID = 1;
 const MARKER = "__test_accounts_ui";
@@ -175,6 +180,69 @@ describe("accounts actions: multi-currency credit card", () => {
     expect(rows[1].metadata.creditLimitCents).toBeUndefined();
     expect(rows[0].metadata.cutoffDay).toBeUndefined();
     expect(rows[1].metadata.cutoffDay).toBeUndefined();
+  });
+
+  it("updatePhysicalCard updates shared cupo and attributes", async () => {
+    await upsertAccount({
+      name: `${MARKER}-update`,
+      institution: "Bancolombia",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+      secondary: { currency: "USD", balance: 0 },
+      physicalCard: { creditLimitCents: 10_000_000_00, cutoffDay: 10, network: "mastercard" },
+    });
+    const rows = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-update`)));
+    const pcId = rows[0].physicalCardId!;
+
+    const result = await updatePhysicalCard({
+      id: pcId,
+      creditLimitCents: 25_000_000_00,
+      statementCutoffDay: 15,
+      last4: "7291",
+      network: "mastercard",
+    });
+    expect(result.ok).toBe(true);
+    const [pc] = await db.select().from(physicalCards).where(eq(physicalCards.id, pcId));
+    expect(pc.creditLimitCents).toBe(BigInt(25_000_000_00));
+    expect(pc.statementCutoffDay).toBe(15);
+    expect(pc.last4).toBe("7291");
+    // Sub-accounts are untouched.
+    const [refreshed] = await db.select().from(accounts).where(eq(accounts.id, rows[0].id));
+    expect(refreshed.balanceCents).toBe(BigInt(0));
+    expect(refreshed.metadata.creditLimitCents).toBeUndefined();
+  });
+
+  it("updatePhysicalCard rejects when the uuid belongs to another user (tenancy guard)", async () => {
+    // Create a physical card under OTHER_USER_ID directly via the DB (bypassing
+    // the upsert helper which uses the mocked session user).
+    const [otherUser] = await db
+      .insert(users)
+      .values({ email: `${MARKER}-cross-tenant@test.local`, name: "Other" })
+      .returning({ id: users.id });
+    const { randomUUID } = await import("node:crypto");
+    const pcId = randomUUID();
+    await db.insert(physicalCards).values({
+      id: pcId,
+      userId: otherUser.id,
+      institution: "Bancolombia",
+      creditLimitCents: BigInt(99_999),
+    });
+
+    const result = await updatePhysicalCard({
+      id: pcId,
+      creditLimitCents: 1_000_000_00,
+    });
+    expect(result.ok).toBe(false);
+    // Row is unchanged.
+    const [unchanged] = await db.select().from(physicalCards).where(eq(physicalCards.id, pcId));
+    expect(unchanged.creditLimitCents).toBe(BigInt(99_999));
+
+    // Cleanup.
+    await db.execute(sql`DELETE FROM physical_cards WHERE id = ${pcId}`);
+    await db.execute(sql`DELETE FROM users WHERE email = ${MARKER + "-cross-tenant@test.local"}`);
   });
 
   it("rejects physicalCard without secondary (single-currency CCs use metadata)", async () => {

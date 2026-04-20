@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   ArrowLeftRightIcon,
+  CreditCardIcon,
   LinkIcon,
   PencilIcon,
   PlusIcon,
@@ -31,11 +32,22 @@ import {
   adjustAccountBalance,
   archiveAccount,
   toggleAccountActive,
+  updatePhysicalCard,
   upsertAccount,
 } from "./actions";
 import { BalanceAdjustDialog } from "./balance-adjust-dialog";
 
 type AccountType = "savings" | "credit_card" | "loan";
+
+export type AccountRowPhysicalCard = {
+  id: string;
+  // Stringified bigint; same convention as balanceCents to stay serialization-safe
+  // when this type crosses the RSC → client boundary.
+  creditLimitCents: string;
+  statementCutoffDay: number | null;
+  last4: string | null;
+  network: string | null;
+};
 
 export type AccountRow = {
   id: number;
@@ -47,6 +59,7 @@ export type AccountRow = {
   active: boolean;
   metadata: AccountMetadata;
   physicalCardId: string | null;
+  physicalCard: AccountRowPhysicalCard | null;
 };
 
 const TYPE_LABEL: Record<AccountType, string> = {
@@ -59,10 +72,12 @@ const TYPE_ORDER: AccountType[] = ["savings", "credit_card", "loan"];
 
 type EditorState = { open: boolean; editing: AccountRow | null };
 type AdjustState = { open: boolean; target: AccountRow | null };
+type PhysicalCardState = { open: boolean; target: AccountRow | null };
 
 export function AccountsManager({ items }: { items: AccountRow[] }) {
   const [editor, setEditor] = useState<EditorState>({ open: false, editing: null });
   const [adjust, setAdjust] = useState<AdjustState>({ open: false, target: null });
+  const [pcard, setPcard] = useState<PhysicalCardState>({ open: false, target: null });
   const [pending, startTransition] = useTransition();
 
   const grouped = useMemo(() => {
@@ -204,6 +219,18 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
                                       <ArrowLeftRightIcon className="size-4" />
                                     </Link>
                                   </Button>
+                                  {r.physicalCard ? (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => setPcard({ open: true, target: r })}
+                                      disabled={pending}
+                                      aria-label="Editar tarjeta física"
+                                      title="Editar cupo compartido de la tarjeta física"
+                                    >
+                                      <CreditCardIcon className="size-4" />
+                                    </Button>
+                                  ) : null}
                                   <Button
                                     variant="ghost"
                                     size="sm"
@@ -252,6 +279,12 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
         open={editor.open}
         editing={editor.editing}
         onClose={close}
+      />
+      <PhysicalCardEditor
+        key={pcard.target?.physicalCard?.id ?? "pcard-closed"}
+        open={pcard.open}
+        target={pcard.target}
+        onClose={() => setPcard({ open: false, target: null })}
       />
       <BalanceAdjustDialog
         key={adjust.target?.id ?? "adjust-closed"}
@@ -763,6 +796,151 @@ function AccountEditor({
             </Button>
             <Button type="submit" disabled={pending}>
               {pending ? "Saving…" : isEdit ? "Save" : "Create"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PhysicalCardEditor({
+  open,
+  target,
+  onClose,
+}: {
+  open: boolean;
+  target: AccountRow | null;
+  onClose: () => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  const pc = target?.physicalCard ?? null;
+  const [creditLimit, setCreditLimit] = useState(
+    pc ? (Number(BigInt(pc.creditLimitCents)) / 100).toString() : "",
+  );
+  const [statementCutoffDay, setStatementCutoffDay] = useState(
+    pc?.statementCutoffDay?.toString() ?? "",
+  );
+  const [last4, setLast4] = useState(pc?.last4 ?? "");
+  const [network, setNetwork] = useState(pc?.network ?? "");
+
+  function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pc) return;
+    const limitNum = Number(creditLimit);
+    if (!Number.isFinite(limitNum) || limitNum < 0) {
+      toast.error("El cupo debe ser un número positivo (o 0).");
+      return;
+    }
+    const cutoffNum = statementCutoffDay === "" ? null : Number(statementCutoffDay);
+    if (cutoffNum !== null && (!Number.isInteger(cutoffNum) || cutoffNum < 1 || cutoffNum > 31)) {
+      toast.error("Cutoff day debe ser 1-31.");
+      return;
+    }
+    const last4Clean = last4.trim();
+    if (last4Clean && !/^\d{4}$/.test(last4Clean)) {
+      toast.error("Last4 deben ser exactamente 4 dígitos.");
+      return;
+    }
+
+    startTransition(async () => {
+      const result = await updatePhysicalCard({
+        id: pc.id,
+        creditLimitCents: Math.round(limitNum * 100),
+        statementCutoffDay: cutoffNum,
+        last4: last4Clean === "" ? null : last4Clean,
+        network: network === "" ? null : (network as "visa" | "mastercard" | "amex"),
+      });
+      if (result.ok) {
+        toast.success("Tarjeta física actualizada.");
+        onClose();
+      } else {
+        toast.error(result.message);
+      }
+    });
+  }
+
+  if (!target || !pc) return null;
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Editar tarjeta física</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="flex flex-col gap-3">
+          <p className="text-muted-foreground text-xs">
+            Estos valores afectan a <strong>todas las sub-cuentas</strong> que comparten este
+            plástico ({target.name}). El cupo se mide en COP — las compras en USD consumen este cupo
+            a la TRM del día.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="pc-limit">Cupo total (COP)</Label>
+            <Input
+              id="pc-limit"
+              type="number"
+              inputMode="decimal"
+              step="1"
+              value={creditLimit}
+              onChange={(e) => setCreditLimit(e.target.value)}
+              required
+              className="tabular-nums"
+              autoFocus
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="pc-cutoff">Cutoff day</Label>
+              <Input
+                id="pc-cutoff"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={31}
+                value={statementCutoffDay}
+                onChange={(e) => setStatementCutoffDay(e.target.value)}
+                placeholder="1-31"
+                className="tabular-nums"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="pc-network">Network</Label>
+              <select
+                id="pc-network"
+                value={network ?? ""}
+                onChange={(e) => setNetwork(e.target.value)}
+                className="bg-background h-9 rounded-md border px-2 text-sm"
+              >
+                <option value="">—</option>
+                <option value="visa">Visa</option>
+                <option value="mastercard">Mastercard</option>
+                <option value="amex">Amex</option>
+              </select>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="pc-last4">Last 4 digits</Label>
+            <Input
+              id="pc-last4"
+              value={last4 ?? ""}
+              onChange={(e) => setLast4(e.target.value)}
+              placeholder="e.g. 7291"
+              inputMode="numeric"
+              maxLength={4}
+              className="tabular-nums"
+            />
+          </div>
+          <DialogFooter className="mt-2">
+            <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>
         </form>
