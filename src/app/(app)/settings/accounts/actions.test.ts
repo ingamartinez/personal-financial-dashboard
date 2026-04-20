@@ -170,6 +170,37 @@ describe("accounts actions: multi-currency credit card", () => {
     expect(currencies).toEqual(["COP", "USD"]);
   });
 
+  it("persists nextPaymentDate to physical_cards on multi-currency creation (#360)", async () => {
+    await upsertAccount({
+      name: `${MARKER}-mc-next-pay`,
+      institution: "Bancolombia",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+      secondary: { currency: "USD", balance: 0 },
+      physicalCard: {
+        creditLimitCents: 15_000_000_00,
+        cutoffDay: 10,
+        nextPaymentDate: "2026-05-20",
+        last4: "7291",
+        network: "mastercard",
+      },
+    });
+    const rows = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-mc-next-pay`)));
+    expect(rows).toHaveLength(2);
+    const [pc] = await db
+      .select()
+      .from(physicalCards)
+      .where(eq(physicalCards.id, rows[0].physicalCardId!));
+    expect(pc.nextPaymentDate).toBe("2026-05-20");
+    // Must NOT leak into sub-account metadata — physical_cards is the single
+    // source of truth for shared-cupo cards.
+    expect(rows[0].metadata.nextPaymentDate).toBeUndefined();
+    expect(rows[1].metadata.nextPaymentDate).toBeUndefined();
+  });
+
   it("creates a physical_cards row with the shared cupo when physicalCard is passed", async () => {
     await upsertAccount({
       name: `${MARKER}-shared`,

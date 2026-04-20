@@ -479,9 +479,14 @@ function AccountEditor({
       // shared COP cupo; no per-side limit. Submit via top-level `physicalCard`
       // so it lands in `physical_cards` — NOT in either sub-account's metadata.
       const sharedLimitCents = creditLimit !== "" ? Math.round(Number(creditLimit) * 100) : 0;
+      const nextPaymentClean = nextPaymentDate.trim();
       physicalCard = {
         creditLimitCents: Number.isFinite(sharedLimitCents) ? sharedLimitCents : 0,
         cutoffDay: cutoffDay !== "" ? Number(cutoffDay) : undefined,
+        nextPaymentDate:
+          nextPaymentClean && /^\d{4}-\d{2}-\d{2}$/.test(nextPaymentClean)
+            ? nextPaymentClean
+            : undefined,
         last4: last4.split(/\s+/)[0]?.match(/^\d{4}$/)?.[0],
         network: network ? (network as "visa" | "mastercard" | "amex") : undefined,
       };
@@ -765,9 +770,6 @@ function AccountEditor({
                       />
                       <p className="text-muted-foreground text-xs">
                         Fecha puntual del próximo pago (se muestra en el widget).
-                        {multiCurrencyAllowed && multiCurrency
-                          ? " Para tarjetas multi-moneda, edítalo después desde la tarjeta física."
-                          : ""}
                       </p>
                     </div>
                   )}

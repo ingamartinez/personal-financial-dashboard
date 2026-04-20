@@ -57,6 +57,10 @@ const physicalCardInputSchema = z
   .object({
     creditLimitCents: z.number().int().nonnegative().optional(),
     cutoffDay: z.number().int().min(1).max(31).optional(),
+    nextPaymentDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
     last4: z
       .string()
       .regex(/^\d{4}$/)
@@ -152,6 +156,11 @@ export async function upsertAccount(input: AccountUpsertInput) {
       Math.max(primaryMeta.creditLimitCents ?? 0, secondaryMeta.creditLimitCents ?? 0);
     const cutoffDay =
       parsed.physicalCard?.cutoffDay ?? primaryMeta.cutoffDay ?? secondaryMeta.cutoffDay;
+    const nextPaymentDate =
+      parsed.physicalCard?.nextPaymentDate ??
+      primaryMeta.nextPaymentDate ??
+      secondaryMeta.nextPaymentDate ??
+      null;
     const network = parsed.physicalCard?.network ?? primaryMeta.network ?? secondaryMeta.network;
     const last4 =
       parsed.physicalCard?.last4 ?? primaryMeta.last4s?.[0] ?? secondaryMeta.last4s?.[0];
@@ -164,6 +173,7 @@ export async function upsertAccount(input: AccountUpsertInput) {
         last4,
         creditLimitCents: BigInt(creditLimitCents),
         statementCutoffDay: cutoffDay,
+        nextPaymentDate,
       });
       await trx.insert(accounts).values([
         { ...base, ...sideToValues(parsed.primary), physicalCardId },
