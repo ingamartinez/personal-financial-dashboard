@@ -1,0 +1,1 @@
+ALTER TYPE "public"."classification_method" ADD VALUE 'manual_confirmed' BEFORE 'unclassified';

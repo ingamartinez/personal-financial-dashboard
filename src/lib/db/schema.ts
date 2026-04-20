@@ -146,6 +146,7 @@ export const classificationMethod = pgEnum("classification_method", [
   "rule",
   "ai",
   "manual",
+  "manual_confirmed",
   "unclassified",
 ]);
 

@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
@@ -108,6 +108,50 @@ export async function updateTransactionCategory(input: {
   });
 
   revalidatePath("/transactions");
+}
+
+const confirmSchema = z.object({
+  txId: z.coerce.number().int().positive(),
+});
+
+/**
+ * Confirm an auto-classification from the review inbox. Bumps confidence to
+ * 100 and flips the method to `manual_confirmed` so the row stops being
+ * flagged as low-confidence. Does NOT log to classification_corrections — a
+ * confirm is user agreement with the existing category, not a correction.
+ * Only fires when the tx is currently rule/ai with confidence < 60 so the
+ * action can't be abused to bypass corrections tracking.
+ */
+export async function confirmClassification(input: {
+  txId: number;
+}): Promise<{ status: "ok" } | { status: "error"; message: string }> {
+  const session = await getSessionUser();
+  const parsed = confirmSchema.safeParse(input);
+  if (!parsed.success) return { status: "error", message: "Input inválido." };
+
+  const result = await db
+    .update(transactions)
+    .set({
+      classificationMethod: "manual_confirmed",
+      classificationConfidence: 100,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.id, parsed.data.txId),
+        inArray(transactions.classificationMethod, ["rule", "ai"]),
+      ),
+    )
+    .returning({ id: transactions.id });
+
+  if (result.length === 0) {
+    return { status: "error", message: "Transacción no está pendiente de revisión." };
+  }
+
+  revalidatePath("/transactions");
+  revalidatePath("/settings/inbox");
+  return { status: "ok" };
 }
 
 // Amount arrives as a decimal STRING so we can parse to bigint cents via
