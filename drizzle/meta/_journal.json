@@ -246,6 +246,13 @@
       "when": 1776654360067,
       "tag": "0034_spicy_virginia_dare",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1776655289031,
+      "tag": "0035_handy_slapstick",
+      "breakpoints": true
     }
   ]
 }

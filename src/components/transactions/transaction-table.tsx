@@ -42,6 +42,7 @@ const methodVariant: Record<
   "default" | "secondary" | "outline" | "destructive"
 > = {
   rule: "default",
+  rule_retroactive: "default",
   ai: "secondary",
   manual: "outline",
   manual_confirmed: "outline",

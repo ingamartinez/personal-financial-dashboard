@@ -144,6 +144,7 @@ export const reconciliationStatus = pgEnum("reconciliation_status", [
 
 export const classificationMethod = pgEnum("classification_method", [
   "rule",
+  "rule_retroactive",
   "ai",
   "manual",
   "manual_confirmed",
@@ -334,6 +335,10 @@ export const transactions = pgTable(
     classificationConfidence: smallint("classification_confidence"),
     classificationReason: varchar("classification_reason", { length: 200 }),
     previousCategorySlug: varchar("previous_category_slug", { length: 60 }),
+    retroactiveRuleId: integer("retroactive_rule_id").references(
+      (): AnyPgColumn => classificationRules.id,
+      { onDelete: "set null" },
+    ),
     source: txSource("source").notNull(),
     channel: txChannel("channel").notNull().default("bank"),
     isAdjustment: boolean("is_adjustment").notNull().default(false),

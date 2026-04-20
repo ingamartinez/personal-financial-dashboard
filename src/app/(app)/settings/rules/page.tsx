@@ -1,6 +1,6 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { categories, classificationRules, ruleProposals } from "@/lib/db/schema";
+import { categories, classificationRules, ruleProposals, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { RulesManager } from "./rules-manager";
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function RulesPage() {
   const session = await getSessionUser();
-  const [cats, rules, proposals] = await Promise.all([
+  const [cats, rules, proposals, retroCounts] = await Promise.all([
     db
       .select({
         slug: categories.slug,
@@ -46,10 +46,23 @@ export default async function RulesPage() {
       .from(ruleProposals)
       .where(and(eq(ruleProposals.userId, session.id), eq(ruleProposals.status, "pending")))
       .orderBy(asc(ruleProposals.createdAt)),
+    db
+      .select({
+        ruleId: transactions.retroactiveRuleId,
+        n: sql<number>`count(*)::int`,
+      })
+      .from(transactions)
+      .where(and(eq(transactions.userId, session.id), isNotNull(transactions.retroactiveRuleId)))
+      .groupBy(transactions.retroactiveRuleId),
   ]);
+
+  const retroMap = new Map<number, number>(
+    retroCounts.map((r) => [r.ruleId as number, Number(r.n)]),
+  );
 
   const rows = rules.map((r) => ({
     ...r,
+    retroactiveMatchCount: retroMap.get(r.id) ?? 0,
     lastHitAt: r.lastHitAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
   }));
