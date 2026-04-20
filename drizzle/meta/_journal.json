@@ -281,6 +281,20 @@
       "when": 1776664320454,
       "tag": "0039_grey_shinobi_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1776670472594,
+      "tag": "0040_dazzling_mattie_franklin",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1776670483700,
+      "tag": "0041_coalesce_physical_card_limits",
+      "breakpoints": true
     }
   ]
 }
