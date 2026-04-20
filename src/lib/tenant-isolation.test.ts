@@ -312,9 +312,22 @@ describe("#183 tenant isolation", () => {
 
     const catA = await getCategoryBreakdown(userA, 4000, new Date("2026-04-15"));
     expect(catA.every((c) => c.amountCopCents >= BigInt(0))).toBe(true);
+    // #336: categories is per-user, but getCategoryBreakdown joined it only
+    // by slug — every user sharing the "otros" slug compounded the fanout
+    // (and rootCategories doubled it). Exact-sum assertion is what catches
+    // the bug; the correct value is userA's two expenses combined
+    // (-1000 + -2000 → 3000 positive), regardless of how many other users
+    // exist in the DB.
+    const otrosA = catA.find((c) => c.slug === "otros");
+    expect(otrosA?.amountCopCents).toBe(BigInt(3000));
+    const totalCatA = catA.reduce((s, c) => s + c.amountCopCents, BigInt(0));
+    expect(totalCatA).toBe(BigInt(3000));
 
     const topA = await getTopExpenses(userA, 4000, new Date("2026-04-15"), 10);
     expect(topA.every((t) => t.descriptionRaw.includes(`${TAG}-A`))).toBe(true);
+    // #336: the categories slug join fanout also duplicates rows in top
+    // expenses — userA has exactly 2 fixture transactions, not 4.
+    expect(topA).toHaveLength(2);
   });
 
   it("classifyByRule only sees the calling user's rules", async () => {

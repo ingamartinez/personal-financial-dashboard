@@ -124,8 +124,17 @@ export async function getCategoryBreakdown(
       sumCents: sql<string>`SUM(-${transactions.amountCents})`,
     })
     .from(transactions)
-    .leftJoin(categories, eq(categories.slug, transactions.categorySlug))
-    .leftJoin(rootCategories, eq(rootCategories.slug, rootSlug))
+    .leftJoin(
+      categories,
+      and(
+        eq(categories.slug, transactions.categorySlug),
+        eq(categories.userId, transactions.userId),
+      ),
+    )
+    .leftJoin(
+      rootCategories,
+      and(eq(rootCategories.slug, rootSlug), eq(rootCategories.userId, transactions.userId)),
+    )
     .where(
       and(
         eq(transactions.userId, userId),
@@ -195,7 +204,13 @@ export async function getTopExpenses(
     })
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
-    .leftJoin(categories, eq(categories.slug, transactions.categorySlug))
+    .leftJoin(
+      categories,
+      and(
+        eq(categories.slug, transactions.categorySlug),
+        eq(categories.userId, transactions.userId),
+      ),
+    )
     .leftJoin(counterparties, eq(counterparties.id, transactions.counterpartyId))
     .where(
       and(

@@ -112,7 +112,13 @@ export async function getOpenGaps(userId: number, database: DB = defaultDb): Pro
     .from(recurringGaps)
     .innerJoin(recurringTransactions, eq(recurringTransactions.id, recurringGaps.recurringId))
     .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
-    .leftJoin(categories, eq(categories.slug, recurringTransactions.categorySlug))
+    .leftJoin(
+      categories,
+      and(
+        eq(categories.slug, recurringTransactions.categorySlug),
+        eq(categories.userId, recurringTransactions.userId),
+      ),
+    )
     .where(eq(recurringGaps.userId, userId))
     .orderBy(asc(recurringGaps.yearMonth), asc(recurringTransactions.dayOfMonth));
 
