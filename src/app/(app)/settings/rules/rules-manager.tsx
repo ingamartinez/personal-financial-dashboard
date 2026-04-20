@@ -294,6 +294,7 @@ export function RulesManager({
                 <thead className="bg-muted/50 text-muted-foreground text-xs uppercase">
                   <tr>
                     <th className="w-8 p-2"></th>
+                    <th className="w-12 p-2 text-left">#</th>
                     <th className="p-2 text-left">Patrón</th>
                     <th className="p-2 text-left">Categoría</th>
                     <th className="p-2 text-right">Prioridad</th>
@@ -313,7 +314,16 @@ export function RulesManager({
                       <Fragment key={r.id}>
                         <tr
                           id={`rule-${r.id}`}
-                          className={cn("scroll-mt-20 border-t", !r.active && "opacity-50")}
+                          className={cn(
+                            "scroll-mt-20 border-t transition-colors",
+                            // #334: when the URL hash matches this row's id
+                            // (e.g. navigating from the "¿Por qué?" modal's
+                            // "Ver Regla #N" link), flash a visible highlight
+                            // so the user can tell which row is the one they
+                            // were sent to. Pure CSS — no JS, no state.
+                            "target:bg-amber-100 target:ring-2 target:ring-amber-400 target:ring-inset dark:target:bg-amber-900/40",
+                            !r.active && "opacity-50",
+                          )}
                           data-testid={`rule-row-${r.id}`}
                         >
                           <td className="p-2 text-center">
@@ -331,6 +341,9 @@ export function RulesManager({
                                 )}
                               </button>
                             ) : null}
+                          </td>
+                          <td className="text-muted-foreground p-2 font-mono text-xs tabular-nums">
+                            {r.id}
                           </td>
                           <td className="p-2 font-mono text-xs">{r.pattern}</td>
                           <td className="p-2">
@@ -422,7 +435,7 @@ export function RulesManager({
                         {isExpanded && canExpand ? (
                           <tr className="bg-muted/30">
                             <td></td>
-                            <td colSpan={8} className="text-muted-foreground p-2 text-xs">
+                            <td colSpan={9} className="text-muted-foreground p-2 text-xs">
                               <span className="font-medium">Generada por correcciones:</span>{" "}
                               {corrections.map((txId, i) => (
                                 <span key={txId}>
