@@ -18,15 +18,34 @@ export interface ExistingTxnForMatch {
   reconciliationStatus: "unreconciled" | "matched" | "flagged" | "imported_from_statement";
 }
 
-export type MatchAction = "match" | "insert_new";
-export type MatchReason = "amount_date_exact" | "amount_date_fuzzy_merchant" | "no_match";
+export type MatchAction = "match" | "insert_new" | "near_match";
+export type MatchReason =
+  | "amount_date_exact"
+  | "amount_date_fuzzy_merchant"
+  | "near_match_fuzzy_amount"
+  | "no_match";
 
 export interface MatchDecision {
   statementRowIndex: number;
   action: MatchAction;
+  /**
+   * For action='match': the consumed existing txn id.
+   * For action='near_match': the candidate existing txn id (NOT consumed —
+   *   candidate still flows to flaggedExisting post-Apply; the user resolves
+   *   via the merge-into action from #301).
+   * For action='insert_new': null.
+   */
   matchedTxnId: number | null;
   matchScore: number;
   matchReason: MatchReason;
+  /**
+   * Populated only for near-match decisions so the preview UI can annotate
+   * the diff without re-deriving it from candidate + parsed row. Serialized
+   * as string since MatchingPlan crosses the RSC boundary intact.
+   */
+  amountDiffCents?: string;
+  dateDiffDays?: number;
+  descriptionSimilarity?: number;
 }
 
 export interface FlaggedExistingTxn {
@@ -40,6 +59,7 @@ export interface MatchingPlan {
   summary: {
     matched: number;
     newInserts: number;
+    nearMatches: number;
     flaggedExisting: number;
   };
 }
@@ -47,6 +67,18 @@ export interface MatchingPlan {
 export interface MatchingConfig {
   dateToleranceDays?: number;
   merchantFuzzThreshold?: number;
+  /**
+   * Tunable thresholds for the near-match fallback pass. The amount
+   * threshold is max(absoluteCopFloorCents | absoluteUsdFloorCents,
+   * amount × percentTolerance).
+   */
+  nearMatch?: {
+    dateToleranceDays?: number;
+    descriptionSimilarityMin?: number;
+    amountFloorCopCents?: bigint;
+    amountFloorUsdCents?: bigint;
+    amountPercentTolerance?: number;
+  };
 }
 
 export interface MatchingInput {
