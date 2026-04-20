@@ -9,7 +9,14 @@ const MS_PER_DAY = 86_400_000;
 // stronger date + description signal to confidently propose a merge.
 const NEAR_MATCH_DEFAULTS = {
   dateToleranceDays: 2,
+  // Overlap-coefficient threshold. 0.5 means at least half of the smaller
+  // set must be in the larger — strict enough that pairs need real shared
+  // content, lenient enough to ignore bank prefix noise.
   descriptionSimilarityMin: 0.5,
+  // Minimum tokens in the SMALLER description after tokenize(). Below this
+  // the similarity signal is too noisy (a 1-token SMS scores 1.0 against
+  // anything containing that token).
+  minTokensInSmallerSet: 2,
   // $500 COP — smaller than this is noise; also the Bancolombia statement
   // FX-rounding amounts we've seen in real data (1–125 pesos) fit under it.
   amountFloorCopCents: BigInt(500_00),
@@ -121,7 +128,14 @@ export function matchStatement(input: MatchingInput): MatchingPlan {
       if (deltaMs > nearDateToleranceMs) continue;
 
       const candidateTokens = tokenize(`${candidate.descriptionRaw} ${candidate.merchant ?? ""}`);
-      const similarity = jaccard(parsedTokens, candidateTokens);
+      // Overlap coefficient (not jaccard) to ignore the asymmetry between
+      // bank-feed descriptions (long, with prefixes like "COMPRA INTL")
+      // vs SMS-captured descriptions (short, merchant-focused). Guard
+      // against tiny sets: a 1-token SMS like `{pago}` would score 1.0
+      // against any description containing "pago".
+      const smallerSetSize = Math.min(parsedTokens.size, candidateTokens.size);
+      if (smallerSetSize < nearMatchCfg.minTokensInSmallerSet) continue;
+      const similarity = overlapCoefficient(parsedTokens, candidateTokens);
       if (similarity < nearMatchCfg.descriptionSimilarityMin) continue;
 
       const score = scoreMatch(deltaMs, similarity);
@@ -225,6 +239,26 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
   for (const t of a) if (b.has(t)) intersectionSize++;
   const unionSize = a.size + b.size - intersectionSize;
   return unionSize === 0 ? 0 : intersectionSize / unionSize;
+}
+
+/**
+ * Overlap (Szymkiewicz–Simpson) coefficient: |A ∩ B| / min(|A|, |B|).
+ *
+ * Unlike jaccard, this ignores size asymmetry — ideal for comparing a short
+ * SMS description against a longer bank-feed description where the bank
+ * systematically prefixes extra tokens ("COMPRA INTL", "PAGO SUC VIRT").
+ * Near-match uses this instead of jaccard so bank prefix noise doesn't
+ * suppress legitimate merges.
+ *
+ * Callers can combine with a minimum-tokens guard on the smaller set to
+ * avoid 1-token SMS like `{pago}` scoring 1.0 against everything.
+ */
+export function overlapCoefficient(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersectionSize = 0;
+  for (const t of a) if (b.has(t)) intersectionSize++;
+  const smaller = Math.min(a.size, b.size);
+  return intersectionSize / smaller;
 }
 
 export type { ParsedStatementRow, ExistingTxnForMatch };

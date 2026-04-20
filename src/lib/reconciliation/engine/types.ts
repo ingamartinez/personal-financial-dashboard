@@ -70,11 +70,15 @@ export interface MatchingConfig {
   /**
    * Tunable thresholds for the near-match fallback pass. The amount
    * threshold is max(absoluteCopFloorCents | absoluteUsdFloorCents,
-   * amount × percentTolerance).
+   * amount × percentTolerance). `descriptionSimilarityMin` applies to the
+   * overlap coefficient (|A ∩ B| / min(|A|, |B|)) rather than jaccard —
+   * chosen so asymmetric bank-vs-SMS descriptions are not penalized for
+   * the bank's longer prefix.
    */
   nearMatch?: {
     dateToleranceDays?: number;
     descriptionSimilarityMin?: number;
+    minTokensInSmallerSet?: number;
     amountFloorCopCents?: bigint;
     amountFloorUsdCents?: bigint;
     amountPercentTolerance?: number;
