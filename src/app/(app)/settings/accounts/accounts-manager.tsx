@@ -74,7 +74,7 @@ type EditorState = { open: boolean; editing: AccountRow | null };
 type AdjustState = { open: boolean; target: AccountRow | null };
 type PhysicalCardState = { open: boolean; target: AccountRow | null };
 
-export function AccountsManager({ items }: { items: AccountRow[] }) {
+export function AccountsManager({ items, copPerUsd }: { items: AccountRow[]; copPerUsd: number }) {
   const [editor, setEditor] = useState<EditorState>({ open: false, editing: null });
   const [adjust, setAdjust] = useState<AdjustState>({ open: false, target: null });
   const [pcard, setPcard] = useState<PhysicalCardState>({ open: false, target: null });
@@ -290,6 +290,15 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
         key={adjust.target?.id ?? "adjust-closed"}
         open={adjust.open}
         target={adjust.target}
+        siblings={
+          adjust.target?.physicalCardId
+            ? items.filter(
+                (i) =>
+                  i.physicalCardId === adjust.target!.physicalCardId && i.id !== adjust.target!.id,
+              )
+            : []
+        }
+        copPerUsd={copPerUsd}
         onClose={() => setAdjust({ open: false, target: null })}
         onConfirm={async (declared, reason) => {
           if (!adjust.target) return;

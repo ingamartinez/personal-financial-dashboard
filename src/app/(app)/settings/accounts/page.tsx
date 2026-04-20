@@ -3,12 +3,14 @@ import { db } from "@/lib/db";
 import { accounts, physicalCards } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
+import { getCurrentFxRate } from "@/lib/fx/repo";
 import { AccountsManager, type AccountRow } from "./accounts-manager";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsAccountsPage() {
   const session = await getSessionUser();
+  const fx = await getCurrentFxRate();
   const rows = await db
     .select({
       id: accounts.id,
@@ -68,7 +70,7 @@ export default async function SettingsAccountsPage() {
           that your transactions are associated with.
         </p>
       </header>
-      <AccountsManager items={items} />
+      <AccountsManager items={items} copPerUsd={fx.rate} />
     </main>
   );
 }

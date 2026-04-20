@@ -593,4 +593,147 @@ describe("adjustAccountBalance", () => {
       expect(result.status).toBe("error");
     });
   });
+
+  describe("kind: sharedAvailableCop (#346 multi-currency)", () => {
+    // Seed a *7291-like pair with a known limit + balances. Returns COP sub id
+    // and USD sub id for the assertions.
+    async function seedPair(params: {
+      limitCents: number;
+      copBalanceCents: number;
+      usdBalanceCents: number;
+    }): Promise<{ copId: number; usdId: number; pcId: string }> {
+      await upsertAccount({
+        name: `${ADJ_MARKER}-pair`,
+        institution: "Bancolombia",
+        type: "credit_card",
+        primary: { currency: "COP", balance: params.copBalanceCents / 100 },
+        secondary: { currency: "USD", balance: params.usdBalanceCents / 100 },
+        physicalCard: { creditLimitCents: params.limitCents, network: "mastercard" },
+      });
+      const rows = await db
+        .select()
+        .from(accounts)
+        .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${ADJ_MARKER}-pair`)));
+      const cop = rows.find((r) => r.currency === "COP")!;
+      const usd = rows.find((r) => r.currency === "USD")!;
+      return { copId: cop.id, usdId: usd.id, pcId: cop.physicalCardId! };
+    }
+
+    async function stubFxRate(rate: number) {
+      // Direct upsert into fx_rates for today so getCurrentFxRate returns the
+      // deterministic rate for the test (keeps the math predictable).
+      await db.execute(sql`
+        INSERT INTO fx_rates (base, quote, rate_micros, as_of, source)
+        VALUES ('USD', 'COP', ${BigInt(Math.round(rate * 1_000_000))}, CURRENT_DATE, 'test')
+        ON CONFLICT (base, quote, as_of) DO UPDATE SET
+          rate_micros = EXCLUDED.rate_micros,
+          source = EXCLUDED.source,
+          fetched_at = NOW()
+      `);
+    }
+
+    afterEach(async () => {
+      await db.execute(sql`DELETE FROM fx_rates WHERE source = 'test'`);
+    });
+
+    it("AS-4: adjusts only the COP sub when the target is COP", async () => {
+      // Limit 20MM COP, COP balance -500k, USD balance -100 USD, TRM 4100.
+      // User enters cupo disponible = 18.5MM COP.
+      // Expected: total_debt = 1.5MM, sibling (USD) debt = 100 × 4100 = 410k,
+      // target COP debt = 1.5MM - 410k = 1.090MM → new COP balance = -1.090MM.
+      await stubFxRate(4100);
+      const { copId, usdId } = await seedPair({
+        limitCents: 20_000_000_00,
+        copBalanceCents: -500_000_00,
+        usdBalanceCents: -100_00,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: { kind: "sharedAvailableCop", availableCopCents: 18_500_000_00 },
+      });
+
+      expect(result.status).toBe("ok");
+      const [cop] = await db.select().from(accounts).where(eq(accounts.id, copId));
+      const [usd] = await db.select().from(accounts).where(eq(accounts.id, usdId));
+      expect(cop.balanceCents).toBe(BigInt(-1_090_000_00));
+      // USD sub is untouched.
+      expect(usd.balanceCents).toBe(BigInt(-100_00));
+    });
+
+    it("AS-5: adjusts only the USD sub when the target is USD (back-solve through TRM)", async () => {
+      // Limit 20MM, COP -500k, USD -100 USD, TRM 4100. User enters 19MM COP.
+      // Expected: total_debt = 1MM COP; sibling (COP) debt = 500k; remaining
+      // USD debt = 500k COP / 4100 = 121.95 USD → 12_195 USD cents → -12195.
+      await stubFxRate(4100);
+      const { copId, usdId } = await seedPair({
+        limitCents: 20_000_000_00,
+        copBalanceCents: -500_000_00,
+        usdBalanceCents: -100_00,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: usdId,
+        declared: { kind: "sharedAvailableCop", availableCopCents: 19_000_000_00 },
+      });
+
+      expect(result.status).toBe("ok");
+      const [usd] = await db.select().from(accounts).where(eq(accounts.id, usdId));
+      const [cop] = await db.select().from(accounts).where(eq(accounts.id, copId));
+      // 500_000_00 COP / 4100 = 12_195.12 → integer truncation = 12_195 cents USD.
+      expect(usd.balanceCents).toBe(BigInt(-12_195));
+      expect(cop.balanceCents).toBe(BigInt(-500_000_00));
+    });
+
+    it("rejects when the physical card has no limit configured", async () => {
+      await stubFxRate(4100);
+      const { copId } = await seedPair({
+        limitCents: 0,
+        copBalanceCents: 0,
+        usdBalanceCents: 0,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: { kind: "sharedAvailableCop", availableCopCents: 100_000 },
+      });
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.message).toMatch(/cupo/i);
+      }
+    });
+
+    it("rejects when availableCopCents exceeds the shared cupo", async () => {
+      await stubFxRate(4100);
+      const { copId } = await seedPair({
+        limitCents: 10_000_000_00,
+        copBalanceCents: 0,
+        usdBalanceCents: 0,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: { kind: "sharedAvailableCop", availableCopCents: 15_000_000_00 },
+      });
+      expect(result.status).toBe("error");
+    });
+
+    it("rejects kind=availableCredit on a paired sub-account (force shared path)", async () => {
+      await stubFxRate(4100);
+      const { copId } = await seedPair({
+        limitCents: 10_000_000_00,
+        copBalanceCents: 0,
+        usdBalanceCents: 0,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: { kind: "availableCredit", availableCreditCents: 5_000_000_00 },
+      });
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.message).toMatch(/multi-moneda|cupo compartido/i);
+      }
+    });
+  });
 });

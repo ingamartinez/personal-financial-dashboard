@@ -14,6 +14,8 @@ import {
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
+import { getCurrentFxRate } from "@/lib/fx/repo";
+import { convertCents } from "@/lib/money";
 
 const ADJUSTMENT_CATEGORY_SLUG = "adjustments";
 
@@ -262,6 +264,12 @@ const declaredSchema = z.discriminatedUnion("kind", [
     kind: z.literal("availableCredit"),
     availableCreditCents: z.coerce.number().int().nonnegative(),
   }),
+  z.object({
+    kind: z.literal("sharedAvailableCop"),
+    // Cupo disponible COP del plástico según el banco. El server back-solves
+    // la deuda del target a partir del sibling + TRM (#346 AS-4/AS-5).
+    availableCopCents: z.coerce.number().int().nonnegative(),
+  }),
 ]);
 
 const adjustSchema = z.object({
@@ -315,6 +323,7 @@ export async function adjustAccountBalance(
         currency: accounts.currency,
         balanceCents: accounts.balanceCents,
         metadata: accounts.metadata,
+        physicalCardId: accounts.physicalCardId,
       })
       .from(accounts)
       .where(
@@ -334,11 +343,21 @@ export async function adjustAccountBalance(
 
     if (parsed.data.declared.kind === "balance") {
       targetBalanceCents = BigInt(parsed.data.declared.balanceCents);
-    } else {
+    } else if (parsed.data.declared.kind === "availableCredit") {
       if (account.type !== "credit_card") {
         return {
           status: "error",
           message: "El cupo disponible solo aplica a tarjetas de crédito.",
+        };
+      }
+      // Multi-currency cards (#346) use sharedAvailableCop — the per-currency
+      // availableCredit path would only mutate half the pair and leave the
+      // shared cupo inconsistent. Force clients onto the new path.
+      if (account.physicalCardId) {
+        return {
+          status: "error",
+          message:
+            "Esta tarjeta es multi-moneda. Usá el flujo de cupo compartido (COP) para ajustar.",
         };
       }
       const limit = account.metadata.creditLimitCents;
@@ -359,6 +378,79 @@ export async function adjustAccountBalance(
       // negative (debt reduces net worth — see CreditMeter).
       targetBalanceCents = BigInt(available) - BigInt(limit);
       nextMetadata = { ...account.metadata, availableCreditCents: available };
+    } else {
+      // kind: "sharedAvailableCop" (#346). Back-solve the target sub-account's
+      // balance from: the shared cupo, the declared-available-COP, the sibling
+      // sub-accounts' balances, and the current TRM.
+      if (account.type !== "credit_card" || !account.physicalCardId) {
+        return {
+          status: "error",
+          message: "El cupo compartido solo aplica a tarjetas multi-moneda.",
+        };
+      }
+      const [pc] = await tx
+        .select({
+          id: physicalCards.id,
+          creditLimitCents: physicalCards.creditLimitCents,
+        })
+        .from(physicalCards)
+        .where(
+          and(eq(physicalCards.id, account.physicalCardId), eq(physicalCards.userId, session.id)),
+        );
+      if (!pc || pc.creditLimitCents <= BigInt(0)) {
+        return {
+          status: "error",
+          message:
+            "El plástico no tiene cupo configurado. Editá la tarjeta física y cargá el cupo primero.",
+        };
+      }
+      const availableCopCents = BigInt(parsed.data.declared.availableCopCents);
+      if (availableCopCents > pc.creditLimitCents) {
+        return {
+          status: "error",
+          message: "El cupo disponible no puede superar al cupo total del plástico.",
+        };
+      }
+      const siblings = await tx
+        .select({
+          id: accounts.id,
+          currency: accounts.currency,
+          balanceCents: accounts.balanceCents,
+        })
+        .from(accounts)
+        .where(
+          and(
+            eq(accounts.userId, session.id),
+            eq(accounts.physicalCardId, account.physicalCardId),
+            sql`${accounts.id} != ${account.id}`,
+            notDeleted(accounts.deletedAt),
+          ),
+        );
+
+      const fx = await getCurrentFxRate();
+      // Total debt (COP) across the pair = limit - declared available.
+      const totalDebtCop = pc.creditLimitCents - availableCopCents;
+      // Sibling debt expressed in COP. Balances are negative, so we negate.
+      let siblingDebtCop = BigInt(0);
+      for (const sib of siblings) {
+        const sibDebtNative = sib.balanceCents < BigInt(0) ? -sib.balanceCents : BigInt(0);
+        siblingDebtCop += convertCents(sibDebtNative, sib.currency, "COP", fx.rate);
+      }
+      // Remainder is what the target sub-account must carry as debt.
+      const targetDebtCop = totalDebtCop - siblingDebtCop;
+      // Convert COP-denominated target debt to the target's native currency.
+      const targetDebtNative =
+        targetDebtCop <= BigInt(0)
+          ? BigInt(0)
+          : convertCents(targetDebtCop, "COP", account.currency, fx.rate);
+      targetBalanceCents = -targetDebtNative;
+      // Strip metadata.availableCreditCents if present — single source of truth
+      // lives in physical_cards.credit_limit_cents + sub-account balances.
+      if (account.metadata.availableCreditCents !== undefined) {
+        const { availableCreditCents: _drop, ...rest } = account.metadata;
+        void _drop;
+        nextMetadata = rest;
+      }
     }
 
     const diff = targetBalanceCents - account.balanceCents;
