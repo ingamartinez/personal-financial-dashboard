@@ -19,6 +19,15 @@ type SnapshotSummary = {
   churnSignalFlag: boolean;
 };
 
+type RecurringAdjustmentInsight = {
+  kind: "recurring_same_direction_adjustments";
+  direction: "in" | "out";
+  count: number;
+  totalCents: string;
+  message: string;
+  windowDays: number;
+};
+
 type UserHealthRow = {
   userId: number;
   email: string;
@@ -28,6 +37,7 @@ type UserHealthRow = {
   active: boolean;
   latest: SnapshotSummary | null;
   weekAgo: SnapshotSummary | null;
+  insight?: RecurringAdjustmentInsight | null;
 };
 
 const PARSER_WARN_THRESHOLD = 0.9;
@@ -111,26 +121,37 @@ function UserRowCard({ row }: { row: UserHealthRow }) {
           )}
         </div>
       </CardHeader>
-      <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-        <Metric label="Último capture" value={formatRelative(latest?.lastCaptureAt)} />
-        <Metric label="Último SMS" value={formatRelative(latest?.lastSmsReceivedAt)} />
-        <Metric
-          label="Parser success 30d"
-          value={formatRate(latest?.parserSuccessRate30d)}
-          diff={diffRate(latest?.parserSuccessRate30d, weekAgo?.parserSuccessRate30d)}
-          warn={lowRate}
-        />
-        <Metric
-          label="Unreconciled"
-          value={formatCount(latest?.unreconciledTxnCount)}
-          warn={(latest?.unreconciledTxnCount ?? 0) >= UNRECONCILED_WARN}
-        />
-        <Metric
-          label="Divergence 30d"
-          value={formatCents(latest?.divergenceCents)}
-          warn={isDivergenceLarge(latest?.divergenceCents)}
-        />
-        <Metric label="Sources 30d" value={formatSources(latest?.captureSources30d)} subtle />
+      <CardContent className="flex flex-col gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+          <Metric label="Último capture" value={formatRelative(latest?.lastCaptureAt)} />
+          <Metric label="Último SMS" value={formatRelative(latest?.lastSmsReceivedAt)} />
+          <Metric
+            label="Parser success 30d"
+            value={formatRate(latest?.parserSuccessRate30d)}
+            diff={diffRate(latest?.parserSuccessRate30d, weekAgo?.parserSuccessRate30d)}
+            warn={lowRate}
+          />
+          <Metric
+            label="Unreconciled"
+            value={formatCount(latest?.unreconciledTxnCount)}
+            warn={(latest?.unreconciledTxnCount ?? 0) >= UNRECONCILED_WARN}
+          />
+          <Metric
+            label="Divergence 30d"
+            value={formatCents(latest?.divergenceCents)}
+            warn={isDivergenceLarge(latest?.divergenceCents)}
+          />
+          <Metric label="Sources 30d" value={formatSources(latest?.captureSources30d)} subtle />
+        </div>
+        {row.insight ? (
+          <div className="flex gap-2 rounded-md border border-amber-300 bg-amber-50/60 p-3 text-sm text-amber-900">
+            <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <div className="font-medium">Parser bug suspected</div>
+              <div className="text-xs">{row.insight.message}</div>
+            </div>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );
