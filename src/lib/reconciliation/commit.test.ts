@@ -457,3 +457,126 @@ describe("recordReconciliationDecision — integration", () => {
     ).rejects.toThrow(/mergedIntoTxnId/);
   });
 });
+
+describe("recordReconciliationDecision — merge_into path", () => {
+  let userId!: number;
+  let accountId!: number;
+
+  beforeAll(async () => {
+    userId = await createUser(`${TAG.toLowerCase()}.merge.${Date.now()}@test.local`);
+    accountId = await createAccount(userId);
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userId);
+  });
+
+  it("merges flagged into target: flagged survives with statement data, target is deleted", async () => {
+    // Set up: one flagged row (with its category) and one statement-imported target.
+    const flaggedDate = new Date("2026-04-10T05:00:00Z");
+    const [flaggedRow] = await db
+      .insert(transactions)
+      .values({
+        userId,
+        accountId,
+        occurredAt: flaggedDate,
+        amountCents: BigInt(-25_448_00),
+        currency: "COP",
+        descriptionRaw: `${TAG} sms-captured`,
+        source: "sms",
+        channel: "bank",
+        categorySlug: "mercado",
+        reconciliationStatus: "flagged",
+      })
+      .returning({ id: transactions.id });
+
+    const targetDate = new Date("2026-04-10T05:00:00Z");
+    const [imp] = await db
+      .insert(statementImports)
+      .values({
+        userId,
+        accountId,
+        fileHash: hashFileBuffer(Buffer.from(`${TAG}-merge`)),
+        periodStart: "2026-04-01",
+        periodEnd: "2026-04-18",
+        txnCount: 1,
+      })
+      .returning({ id: statementImports.id });
+
+    const [targetRow] = await db
+      .insert(transactions)
+      .values({
+        userId,
+        accountId,
+        occurredAt: targetDate,
+        amountCents: BigInt(-25_573_00), // ← different amount (FX rounding)
+        currency: "COP",
+        descriptionRaw: `${TAG} bank-description`,
+        source: "csv_reconcile",
+        channel: "bank",
+        statementImportId: imp.id,
+        reconciliationStatus: "imported_from_statement",
+      })
+      .returning({ id: transactions.id });
+
+    await recordReconciliationDecision({
+      userId,
+      txnId: flaggedRow.id,
+      action: "merged_into",
+      mergedIntoTxnId: targetRow.id,
+      note: "FX rounding on intl txn",
+    });
+
+    // Flagged row survived, adopted statement amount/description, status=matched, kept category.
+    const [survivor] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, flaggedRow.id));
+    expect(survivor).toBeDefined();
+    expect(survivor.amountCents).toBe(BigInt(-25_573_00));
+    expect(survivor.descriptionRaw).toBe(`${TAG} bank-description`);
+    expect(survivor.reconciliationStatus).toBe("matched");
+    expect(survivor.statementImportId).toBe(imp.id);
+    expect(survivor.categorySlug).toBe("mercado");
+
+    // Target was deleted.
+    const targetAfter = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, targetRow.id));
+    expect(targetAfter).toHaveLength(0);
+
+    // Decision row recorded. mergedIntoTxnId is now NULL because of ON DELETE SET NULL.
+    const [decision] = await db
+      .select()
+      .from(reconciliationDecisions)
+      .where(eq(reconciliationDecisions.txnId, flaggedRow.id));
+    expect(decision.action).toBe("merged_into");
+    expect(decision.mergedIntoTxnId).toBeNull();
+    expect(decision.note).toBe("FX rounding on intl txn");
+  });
+
+  it("rejects merge when target is not imported_from_statement", async () => {
+    const flagged = await createExistingTxn(userId, accountId, BigInt(-1000_00), new Date());
+    await db
+      .update(transactions)
+      .set({ reconciliationStatus: "flagged" })
+      .where(eq(transactions.id, flagged));
+
+    const nonImported = await createExistingTxn(userId, accountId, BigInt(-1000_00), new Date());
+    // default reconciliationStatus is 'unreconciled'
+
+    await expect(
+      recordReconciliationDecision({
+        userId,
+        txnId: flagged,
+        action: "merged_into",
+        mergedIntoTxnId: nonImported,
+      }),
+    ).rejects.toThrow(/merge_target_not_importable/);
+
+    // Flagged row unchanged
+    const [still] = await db.select().from(transactions).where(eq(transactions.id, flagged));
+    expect(still.reconciliationStatus).toBe("flagged");
+  });
+});
