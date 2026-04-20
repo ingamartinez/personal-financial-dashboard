@@ -38,6 +38,7 @@ const {
   createManualExpense,
   classifySingleWithAi,
   updateTransactionCategory,
+  confirmClassification,
 } = await import("./actions");
 const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
 const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
@@ -970,6 +971,93 @@ describe("updateTransactionCategory", () => {
       SELECT 1 FROM classification_corrections WHERE transaction_id = 9999999
     `);
     expect(corrections).toHaveLength(0);
+  });
+});
+
+describe("confirmClassification", () => {
+  async function seedAutoTx(args: {
+    externalId: string;
+    method: "rule" | "ai" | "manual";
+    categorySlug: string;
+    confidence: number;
+  }): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        merchant, category_slug, classification_method, classification_confidence, source, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${acc.id}, now(), -5000, 'COP', 'test',
+        'TEST-CONFIRM',
+        ${args.categorySlug},
+        ${args.method}::classification_method,
+        ${args.confidence},
+        'sms',
+        ${args.externalId}
+      )
+      RETURNING id
+    `);
+    return rows[0].id;
+  }
+
+  async function cleanupConfirmTxs() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE 'test-confirm:%'
+    `);
+  }
+
+  beforeEach(cleanupConfirmTxs);
+  afterEach(cleanupConfirmTxs);
+
+  it("promotes an ai classification to manual_confirmed with confidence 100", async () => {
+    const txId = await seedAutoTx({
+      externalId: "test-confirm:ai",
+      method: "ai",
+      categorySlug: "alimentacion",
+      confidence: 45,
+    });
+
+    const result = await confirmClassification({ txId });
+    expect(result).toEqual({ status: "ok" });
+
+    const [row] = await db.execute<{
+      classification_method: string;
+      classification_confidence: number;
+    }>(sql`
+      SELECT classification_method, classification_confidence FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.classification_method).toBe("manual_confirmed");
+    expect(row.classification_confidence).toBe(100);
+  });
+
+  it("refuses to confirm a manually-classified transaction", async () => {
+    const txId = await seedAutoTx({
+      externalId: "test-confirm:manual",
+      method: "manual",
+      categorySlug: "alimentacion",
+      confidence: 100,
+    });
+
+    const result = await confirmClassification({ txId });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
+
+    const [row] = await db.execute<{ classification_method: string }>(sql`
+      SELECT classification_method FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.classification_method).toBe("manual");
+  });
+
+  it("returns error when tx does not exist", async () => {
+    const result = await confirmClassification({ txId: 9_999_999 });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
   });
 });
 

@@ -19,6 +19,7 @@ import { useNewIds } from "@/lib/hooks/use-new-ids";
 import { hasSecondaryDescription, primaryDescription } from "@/lib/transactions/description";
 import type { CounterpartyBrief, TxRow } from "@/lib/transactions/queries";
 import { CategoryCell, type CategoryOption } from "./category-cell";
+import { ConfidenceBadge, confidenceBand } from "./confidence-badge";
 import { CounterpartyDialog } from "./counterparty-dialog";
 
 const ROW_CLASSES =
@@ -43,6 +44,7 @@ const methodVariant: Record<
   rule: "default",
   ai: "secondary",
   manual: "outline",
+  manual_confirmed: "outline",
   unclassified: "destructive",
 };
 
@@ -153,12 +155,18 @@ export function TransactionTable({
                 const isNew = newIds.has(tx.id);
                 const isHighlighted = tx.id === highlightId;
                 const isUnclassified = tx.classificationMethod === "unclassified";
+                const isLowConfidence =
+                  confidenceBand(tx.classificationMethod, tx.classificationConfidence) === "low";
                 return (
                   <motion.tr
                     key={tx.id}
                     data-slot="table-row"
                     data-highlight-row={isHighlighted ? tx.id : undefined}
-                    className={cn(ROW_CLASSES, (isNew || isHighlighted) && "tx-row-new")}
+                    className={cn(
+                      ROW_CLASSES,
+                      (isNew || isHighlighted) && "tx-row-new",
+                      isLowConfidence && "bg-rose-50/40 dark:bg-rose-950/15",
+                    )}
                     initial={enterInitial}
                     animate={enterAnimate}
                     transition={enterTransition}
@@ -206,7 +214,13 @@ export function TransactionTable({
                       </div>
                     </TableCell>
                     <TableCell className="px-4">
-                      <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
+                      <div className="flex flex-col gap-1">
+                        <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
+                        <ConfidenceBadge
+                          method={tx.classificationMethod}
+                          confidence={tx.classificationConfidence}
+                        />
+                      </div>
                     </TableCell>
                     <TableCell
                       className={cn(
@@ -288,7 +302,13 @@ export function TransactionTable({
                   </Badge>
                 </div>
 
-                <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
+                <div className="flex flex-col gap-1">
+                  <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
+                  <ConfidenceBadge
+                    method={tx.classificationMethod}
+                    confidence={tx.classificationConfidence}
+                  />
+                </div>
               </motion.li>
             );
           })}

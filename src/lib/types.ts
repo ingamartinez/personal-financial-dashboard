@@ -48,6 +48,7 @@ export type TxRow = {
   merchant: string | null;
   categorySlug: string | null;
   classificationMethod: ClassificationMethod;
+  classificationConfidence: number | null;
   source: TransactionSource;
   isAdjustment: boolean;
   accountId: number;
