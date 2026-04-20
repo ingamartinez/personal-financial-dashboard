@@ -151,6 +151,8 @@ export const classificationMethod = pgEnum("classification_method", [
 
 export const counterpartyType = pgEnum("counterparty_type", ["person", "merchant", "unknown"]);
 
+export const ruleProposalStatus = pgEnum("rule_proposal_status", ["pending", "approved", "denied"]);
+
 export const counterpartyKeyKind = pgEnum("counterparty_key_kind", [
   "qr",
   "breb",
@@ -470,6 +472,39 @@ export const classificationRuleSeeds = pgTable(
   },
   (t) => [
     uniqueIndex("classification_rule_seeds_pattern_category_unique").on(t.pattern, t.categorySlug),
+  ],
+);
+
+// Proposed auto-generated rules produced by the daily learning-loop cron when a
+// user has corrected the same merchant → category 3+ times within 30 days. The
+// partial unique index on (user_id, merchant, category_slug) filtered to
+// status='pending' prevents the cron from re-proposing while a pending proposal
+// is awaiting user decision. Denial suppresses re-proposal for 30d (enforced in
+// the cron WHERE clause, not the index, so historic rows are retained).
+export const ruleProposals = pgTable(
+  "rule_proposals",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    merchant: varchar("merchant", { length: 200 }).notNull(),
+    categorySlug: varchar("category_slug", { length: 60 }).notNull(),
+    correctionTxnIds: jsonb("correction_txn_ids").$type<number[]>().notNull(),
+    status: ruleProposalStatus("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("rule_proposals_user_merchant_category_pending_unique")
+      .on(t.userId, t.merchant, t.categorySlug)
+      .where(sql`${t.status} = 'pending'`),
+    index("rule_proposals_user_status_idx").on(t.userId, t.status, t.createdAt),
+    foreignKey({
+      columns: [t.userId, t.categorySlug],
+      foreignColumns: [categories.userId, categories.slug],
+      name: "rule_proposals_user_category_fk",
+    }).onDelete("cascade"),
   ],
 );
 

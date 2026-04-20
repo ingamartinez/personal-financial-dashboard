@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Currency } from "@/lib/types";
+import type { UserClassificationContextHint } from "@/lib/db/schema";
 
 export type AiClassifiable = {
   id: number;
@@ -13,6 +14,8 @@ export type AiCategoryOption = {
   name: string;
   parentSlug?: string | null;
 };
+
+export type AiUserHint = UserClassificationContextHint;
 
 export type AiClassification = {
   id: number;
@@ -40,7 +43,37 @@ const responseSchema = z.object({
   ),
 });
 
-function buildPrompt(txs: AiClassifiable[], cats: AiCategoryOption[]): string {
+// User hints are the soft-signal half of the learning loop: past corrections
+// this user has made on the same merchant. Hard signals (3+ same merchant →
+// same category in 30d) become rule proposals via the cron, not hints. Deduped
+// + truncated to the most recent LEARN_HINTS_IN_PROMPT per merchant for
+// prompt-length hygiene — oldest wins on tie so a merchant that changed
+// category shows both signals honestly.
+const LEARN_HINTS_IN_PROMPT = 3;
+
+function formatUserHints(hints: AiUserHint[]): string {
+  if (hints.length === 0) return "";
+  const byMerchant = new Map<string, AiUserHint[]>();
+  for (const h of hints) {
+    const key = h.merchant.toUpperCase();
+    const bucket = byMerchant.get(key) ?? [];
+    bucket.push(h);
+    byMerchant.set(key, bucket);
+  }
+  const lines: string[] = [];
+  for (const [merchant, bucket] of byMerchant) {
+    const recent = bucket.slice(-LEARN_HINTS_IN_PROMPT);
+    const cats = [...new Set(recent.map((h) => h.category))];
+    lines.push(`- ${merchant} → ${cats.join(" / ")}`);
+  }
+  return lines.join("\n");
+}
+
+function buildPrompt(
+  txs: AiClassifiable[],
+  cats: AiCategoryOption[],
+  userHints: AiUserHint[],
+): string {
   const categoryList = cats
     .map((c) =>
       c.parentSlug
@@ -55,6 +88,10 @@ function buildPrompt(txs: AiClassifiable[], cats: AiCategoryOption[]): string {
         `{ "id": ${t.id}, "description": ${JSON.stringify(t.description)}, "amount": ${(Number(t.amountCents) / 100).toFixed(2)}, "currency": "${t.currency}" }`,
     )
     .join(",\n  ");
+
+  const hintsBlock = userHints.length
+    ? `\n\nThis user has previously re-categorized these merchants. Treat as a STRONG preference signal for identical or similar merchant names, but categories above still constrain the final slug.\n${formatUserHints(userHints)}`
+    : "";
 
   return `You classify personal finance transactions for a Colombian user.
 
@@ -84,7 +121,7 @@ Return ONLY valid JSON (no prose, no markdown):
 Rules:
 - "categorySlug" MUST be one of the slugs above, or null if truly unclassifiable.
 - Include one entry per input transaction, same "id".
-- Keep "reason" under 80 chars.`;
+- Keep "reason" under 80 chars.${hintsBlock}`;
 }
 
 function extractJson(text: string): unknown {
@@ -103,6 +140,7 @@ export type AiSingleClassifyResult = {
 export async function classifySingleWithAi(opts: {
   transaction: AiClassifiable;
   categories: AiCategoryOption[];
+  userHints?: AiUserHint[];
   model?: string;
   apiKey?: string;
   fetchImpl?: typeof fetch;
@@ -110,6 +148,7 @@ export async function classifySingleWithAi(opts: {
   const batch = await classifyBatchWithAi({
     transactions: [opts.transaction],
     categories: opts.categories,
+    userHints: opts.userHints,
     model: opts.model,
     apiKey: opts.apiKey,
     fetchImpl: opts.fetchImpl,
@@ -121,6 +160,7 @@ export async function classifySingleWithAi(opts: {
 export async function classifyBatchWithAi(opts: {
   transactions: AiClassifiable[];
   categories: AiCategoryOption[];
+  userHints?: AiUserHint[];
   model?: string;
   apiKey?: string;
   fetchImpl?: typeof fetch;
@@ -138,7 +178,7 @@ export async function classifyBatchWithAi(opts: {
 
   const model = opts.model ?? DEFAULT_MODEL;
   const doFetch = opts.fetchImpl ?? fetch;
-  const prompt = buildPrompt(opts.transactions, opts.categories);
+  const prompt = buildPrompt(opts.transactions, opts.categories, opts.userHints ?? []);
 
   const res = await doFetch("https://api.anthropic.com/v1/messages", {
     method: "POST",

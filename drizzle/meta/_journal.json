@@ -232,6 +232,13 @@
       "when": 1776651933471,
       "tag": "0032_pale_night_nurse",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1776653447901,
+      "tag": "0033_wide_owl",
+      "breakpoints": true
     }
   ]
 }
