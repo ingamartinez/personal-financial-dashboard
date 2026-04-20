@@ -24,6 +24,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CategoryCombobox } from "@/components/transactions/category-combobox";
+import { Money } from "@/components/display/money";
 import { formatMoney } from "@/lib/money";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -125,9 +126,12 @@ export function BudgetsManager({
             <span className="text-muted-foreground">Total</span>
             <span className="tabular-nums">
               <span className={cn(totalSpent > totalBudget && "font-medium text-rose-600")}>
-                {formatMoney(totalSpent, "COP")}
+                <Money cents={totalSpent} currency="COP" />
               </span>
-              <span className="text-muted-foreground"> / {formatMoney(totalBudget, "COP")}</span>
+              <span className="text-muted-foreground">
+                {" "}
+                / <Money cents={totalBudget} currency="COP" />
+              </span>
             </span>
           </CardContent>
         </Card>
@@ -229,7 +233,8 @@ function BudgetCard({
         </div>
         <div className="flex items-center justify-between text-xs tabular-nums">
           <span className={cn(over ? "font-medium text-rose-600" : "text-muted-foreground")}>
-            {formatMoney(spent, row.currency)} / {formatMoney(amount, row.currency)}
+            <Money cents={spent} currency={row.currency} /> /{" "}
+            <Money cents={amount} currency={row.currency} />
           </span>
           <span className={cn("text-muted-foreground", over && "font-medium text-rose-600")}>
             {over

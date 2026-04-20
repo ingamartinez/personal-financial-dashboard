@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { AccountMetadata } from "@/lib/db/schema";
@@ -172,7 +172,7 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
                               <td className="text-muted-foreground p-2 text-xs">{r.institution}</td>
                               <td className="text-muted-foreground p-2 text-xs">{r.currency}</td>
                               <td className="p-2 text-right font-medium tabular-nums">
-                                {formatMoney(cents, r.currency)}
+                                <Money cents={cents} currency={r.currency} />
                               </td>
                               <td className="p-2 text-xs">
                                 <button

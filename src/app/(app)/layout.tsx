@@ -1,8 +1,10 @@
 import { Header } from "@/components/layout/header";
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
+import { MoneyModeProvider } from "@/components/display/money-mode-provider";
 import { QuickExpenseFab } from "@/components/transactions/quick-expense-fab";
 import { LiveRefresh } from "@/components/live-refresh";
 import { getSessionUserOrNull } from "@/lib/auth/session";
+import { DEFAULT_DISPLAY_CURRENCY_MODE } from "@/lib/db/schema";
 import { auth } from "@/auth";
 
 export default async function AppLayout({
@@ -20,13 +22,16 @@ export default async function AppLayout({
       }
     : null;
 
+  // Currency display toggle: mode + fxRate will be wired in a follow-up; for
+  // now the provider runs in `native` mode with no rate → conversion is a
+  // no-op and every Money render matches the pre-toggle behavior.
   return (
-    <>
+    <MoneyModeProvider mode={DEFAULT_DISPLAY_CURRENCY_MODE} fxRate={null}>
       <Header user={headerUser} />
       <Breadcrumbs />
       <div className="flex flex-1 flex-col">{children}</div>
       <QuickExpenseFab />
       <LiveRefresh />
-    </>
+    </MoneyModeProvider>
   );
 }

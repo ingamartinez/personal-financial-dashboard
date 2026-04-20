@@ -4,6 +4,7 @@ import { useEffect, useMemo } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ReceiptTextIcon, UserIcon, BuildingIcon, WrenchIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Money } from "@/components/display/money";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   Table,
@@ -80,16 +81,6 @@ function CounterpartyTypeBadge({ type }: { type: NonNullable<TxRow["counterparty
     );
   }
   return null;
-}
-
-function formatAmount(cents: bigint, currency: TxRow["currency"]) {
-  const n = Number(cents) / 100;
-  const formatter = new Intl.NumberFormat(currency === "USD" ? "en-US" : "es-CO", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: currency === "USD" ? 2 : 0,
-  });
-  return formatter.format(n);
 }
 
 function formatDate(d: Date) {
@@ -224,7 +215,7 @@ export function TransactionTable({
                       )}
                       suppressHydrationWarning
                     >
-                      {formatAmount(tx.amountCents, tx.currency)}
+                      <Money cents={tx.amountCents} currency={tx.currency} />
                     </TableCell>
                   </motion.tr>
                 );
@@ -280,7 +271,7 @@ export function TransactionTable({
                     }`}
                     suppressHydrationWarning
                   >
-                    {formatAmount(tx.amountCents, tx.currency)}
+                    <Money cents={tx.amountCents} currency={tx.currency} />
                   </span>
                 </div>
 

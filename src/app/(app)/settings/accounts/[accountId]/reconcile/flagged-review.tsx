@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Money } from "@/components/display/money";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { Currency } from "@/lib/types";
@@ -137,7 +138,7 @@ export function FlaggedReview({
                         cents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                       )}
                     >
-                      {formatMoney(cents, currency)}
+                      <Money cents={cents} currency={currency} />
                     </td>
                     <td className="p-2 text-right">
                       <div className="flex justify-end gap-1">
@@ -253,7 +254,7 @@ function MergePickerDialog({
                         cents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                       )}
                     >
-                      {formatMoney(cents, currency)}
+                      <Money cents={cents} currency={currency} />
                     </td>
                     <td className="p-2 text-right">
                       <Button

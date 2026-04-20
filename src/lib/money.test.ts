@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { decimalStringToCents, parseTolerantMoney } from "./money";
+import {
+  convertCents,
+  decimalStringToCents,
+  displayCurrencyFor,
+  parseTolerantMoney,
+  toCop,
+} from "./money";
 
 describe("decimalStringToCents", () => {
   it("parses single-digit cent values", () => {
@@ -82,5 +88,46 @@ describe("parseTolerantMoney", () => {
     expect(() => parseTolerantMoney("abc")).toThrow(/Invalid money/);
     expect(() => parseTolerantMoney("")).toThrow(/Empty money/);
     expect(() => parseTolerantMoney("1e5")).toThrow(/Invalid money/);
+  });
+});
+
+describe("displayCurrencyFor", () => {
+  it("returns source currency in native mode", () => {
+    expect(displayCurrencyFor("native", "COP")).toBe("COP");
+    expect(displayCurrencyFor("native", "USD")).toBe("USD");
+  });
+
+  it("forces target currency in all-cop / all-usd modes", () => {
+    expect(displayCurrencyFor("all-cop", "COP")).toBe("COP");
+    expect(displayCurrencyFor("all-cop", "USD")).toBe("COP");
+    expect(displayCurrencyFor("all-usd", "COP")).toBe("USD");
+    expect(displayCurrencyFor("all-usd", "USD")).toBe("USD");
+  });
+});
+
+describe("convertCents", () => {
+  it("returns input unchanged when currencies match", () => {
+    expect(convertCents(BigInt(12345), "USD", "USD", 4000)).toBe(BigInt(12345));
+    expect(convertCents(BigInt(12345), "COP", "COP", 4000)).toBe(BigInt(12345));
+  });
+
+  it("USD -> COP matches toCop semantics (100 USD_cents @ 4000 = 400_000 COP_cents)", () => {
+    expect(convertCents(BigInt(100), "USD", "COP", 4000)).toBe(BigInt(400_000));
+    expect(convertCents(BigInt(100), "USD", "COP", 4000)).toBe(toCop(BigInt(100), "USD", 4000));
+  });
+
+  it("COP -> USD is the inverse of USD -> COP", () => {
+    expect(convertCents(BigInt(400_000), "COP", "USD", 4000)).toBe(BigInt(100));
+  });
+
+  it("roundtrips USD -> COP -> USD within integer rounding", () => {
+    const startUsdCents = BigInt(1234);
+    const cop = convertCents(startUsdCents, "USD", "COP", 3990);
+    const back = convertCents(cop, "COP", "USD", 3990);
+    expect(back).toBe(startUsdCents);
+  });
+
+  it("uses micros precision for non-round rates", () => {
+    expect(convertCents(BigInt(100), "USD", "COP", 3990.5)).toBe(BigInt(399_050));
   });
 });

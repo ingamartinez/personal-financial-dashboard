@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import { cn } from "@/lib/utils";
 import { linkTxToRecurring } from "@/app/(app)/settings/recurring/actions";
 import type { LinkCandidate } from "@/lib/recurring/gap-queries";
@@ -73,7 +73,7 @@ export function RecurringGapLinkDialog({
         <DialogHeader>
           <DialogTitle>Asociar transacción — {label}</DialogTitle>
           <DialogDescription>
-            Mes {yearMonth} · esperado {formatMoney(expectedAmountCents, currency)}
+            Mes {yearMonth} · esperado <Money cents={expectedAmountCents} currency={currency} />
           </DialogDescription>
         </DialogHeader>
 
@@ -114,7 +114,7 @@ export function RecurringGapLinkDialog({
                       c.amountCents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                     )}
                   >
-                    {formatMoney(c.amountCents, currency)}
+                    <Money cents={c.amountCents} currency={currency} />
                   </div>
                 </button>
               );

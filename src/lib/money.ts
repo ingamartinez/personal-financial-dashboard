@@ -1,3 +1,4 @@
+import type { DisplayCurrencyMode } from "@/lib/db/schema";
 import type { Currency } from "@/lib/types";
 
 export const FALLBACK_COP_PER_USD = 4000;
@@ -26,6 +27,38 @@ export function toCop(amountCents: bigint, currency: Currency, copPerUsd: number
   if (currency === "COP") return amountCents;
   const micros = BigInt(Math.round(copPerUsd * 1_000_000));
   return (amountCents * micros) / BigInt(1_000_000);
+}
+
+/**
+ * Resolves the effective display currency for a given native currency under a
+ * display mode. `native` returns the source unchanged; `all-cop` / `all-usd`
+ * force the target regardless of source.
+ */
+export function displayCurrencyFor(mode: DisplayCurrencyMode, source: Currency): Currency {
+  if (mode === "native") return source;
+  return mode === "all-cop" ? "COP" : "USD";
+}
+
+/**
+ * Converts `amountCents` from `from` to `to` using the USD↔COP rate. Returns
+ * the input unchanged when currencies match. Uses micros-scaled integer math
+ * to avoid float drift. FX is USD↔COP only today; any other pair throws.
+ */
+export function convertCents(
+  amountCents: bigint,
+  from: Currency,
+  to: Currency,
+  copPerUsd: number,
+): bigint {
+  if (from === to) return amountCents;
+  const micros = BigInt(Math.round(copPerUsd * 1_000_000));
+  if (from === "USD" && to === "COP") {
+    return (amountCents * micros) / BigInt(1_000_000);
+  }
+  if (from === "COP" && to === "USD") {
+    return (amountCents * BigInt(1_000_000)) / micros;
+  }
+  throw new Error(`Unsupported currency conversion: ${from} -> ${to}`);
 }
 
 export function formatCop(amountCents: bigint): string {

@@ -6,7 +6,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { useNewIds } from "@/lib/hooks/use-new-ids";
-import { formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import { hasSecondaryDescription, primaryDescription } from "@/lib/transactions/description";
 import type { TopExpense } from "@/lib/dashboard/queries";
 
@@ -88,10 +88,12 @@ export function TopExpensesCard({
                       </div>
                       <div className="shrink-0 text-right font-medium text-rose-600 tabular-nums">
                         −
-                        {formatMoney(
-                          r.amountCents < BigInt(0) ? r.amountCents * BigInt(-1) : r.amountCents,
-                          r.currency,
-                        )}
+                        <Money
+                          cents={
+                            r.amountCents < BigInt(0) ? r.amountCents * BigInt(-1) : r.amountCents
+                          }
+                          currency={r.currency}
+                        />
                       </div>
                     </Link>
                   </motion.li>
