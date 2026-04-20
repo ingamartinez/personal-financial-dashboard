@@ -256,3 +256,39 @@ export async function recordParserEvent(params: {
     log.error({ err, event: "parser_event_insert_failed" }, "parser_events insert failed");
   }
 }
+
+// Telemetry for the regex happy path. Non-blocking — telemetry failure
+// must never break ingestion. Emitted BEFORE ingest so the SLO denominator
+// counts "SMS we could understand" independent of DB-insert outcome.
+export async function recordParseSuccess(params: {
+  userId: number;
+  regexOutcome: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    await db.insert(parserEvents).values({
+      userId: params.userId,
+      source: "sms",
+      eventKind: "parse_outcome_success",
+      regexOutcome: params.regexOutcome,
+      latencyMs: 0,
+    });
+  } catch (err) {
+    log.error({ err, event: "parser_event_insert_failed" }, "parser_events insert failed");
+  }
+}
+
+// Telemetry for the skip path (OTP, promo, failed-tx notifications).
+// Skips are excluded from the SLO denominator — not failures. Non-blocking.
+export async function recordParseSkip(params: { userId: number; reason: string }): Promise<void> {
+  try {
+    await db.insert(parserEvents).values({
+      userId: params.userId,
+      source: "sms",
+      eventKind: "parse_outcome_skip",
+      regexOutcome: { kind: "skip", reason: params.reason },
+      latencyMs: 0,
+    });
+  } catch (err) {
+    log.error({ err, event: "parser_event_insert_failed" }, "parser_events insert failed");
+  }
+}

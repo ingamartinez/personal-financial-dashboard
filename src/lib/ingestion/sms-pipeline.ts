@@ -14,6 +14,8 @@ import {
 import {
   aiFallbackParseSms,
   isAiFallbackEnabled,
+  recordParseSkip,
+  recordParseSuccess,
   recordParserEvent,
   type AiFallbackOutcome,
 } from "@/lib/ingestion/sms-ai-fallback";
@@ -47,6 +49,7 @@ export async function ingestParsed(
   opts?: { forceAccountId?: number; aiFallbackFetchImpl?: typeof fetch },
 ): Promise<IngestOutcome> {
   if (parsed.kind === "skip") {
+    await recordParseSkip({ userId, reason: parsed.reason });
     return { status: "skipped", reason: `parser: ${parsed.reason}` };
   }
 
@@ -57,6 +60,10 @@ export async function ingestParsed(
     return ingestNeedsReviewWithAiFallback(userId, parsed.raw, opts?.aiFallbackFetchImpl);
   }
 
+  // Regex happy path (#329 PR1). Emit telemetry BEFORE delegating so the SLO
+  // denominator counts "SMS we could understand" independent of whether the
+  // DB insert ultimately succeeds, is duplicated, or fails on routing.
+  await recordParseSuccess({ userId, regexOutcome: serializeParsed(parsed) });
   return ingestParsedSms(userId, parsed, opts?.forceAccountId);
 }
 
