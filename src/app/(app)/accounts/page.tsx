@@ -5,7 +5,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { EmptyState } from "@/components/ui/empty-state";
 import { getSessionUser } from "@/lib/auth/session";
 import { getNetWorth } from "@/lib/dashboard/queries";
-import { listAccountsDetailed, type AccountDetail } from "@/lib/accounts/queries";
+import {
+  listAccountsDetailed,
+  type AccountDetail,
+  type PhysicalCardSummary,
+} from "@/lib/accounts/queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { toCop } from "@/lib/money";
 import { Money } from "@/components/display/money";
@@ -91,7 +95,13 @@ export default async function AccountsPage() {
       ) : null}
 
       {grouped.map(({ type, items }) => (
-        <AccountTypeSection key={type} type={type} items={items} copPerUsd={fx.rate} />
+        <AccountTypeSection
+          key={type}
+          type={type}
+          items={items}
+          copPerUsd={fx.rate}
+          fxFallback={fx.source === "fallback"}
+        />
       ))}
 
       {inactive.length > 0 ? (
@@ -133,14 +143,34 @@ function AccountTypeSection({
   type,
   items,
   copPerUsd,
+  fxFallback,
 }: {
   type: AccountDetail["type"];
   items: AccountDetail[];
   copPerUsd: number;
+  fxFallback: boolean;
 }) {
   const Icon =
     type === "credit_card" ? CreditCardIcon : type === "loan" ? LandmarkIcon : PiggyBankIcon;
   const subtotal = sumBalanceCopCents(items, copPerUsd);
+
+  // Multi-currency credit cards (sharing a physicalCardId) render as one grouped
+  // tile with the shared cupo; remaining single-currency cards render as before.
+  const pairs = new Map<string, AccountDetail[]>();
+  const singles: AccountDetail[] = [];
+  if (type === "credit_card") {
+    for (const a of items) {
+      if (a.physicalCardId && a.physicalCard) {
+        const arr = pairs.get(a.physicalCardId) ?? [];
+        arr.push(a);
+        pairs.set(a.physicalCardId, arr);
+      } else {
+        singles.push(a);
+      }
+    }
+  } else {
+    singles.push(...items);
+  }
 
   return (
     <section className="flex flex-col gap-3">
@@ -154,11 +184,127 @@ function AccountTypeSection({
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((a) => (
+        {Array.from(pairs.values()).map((subs) => (
+          <PhysicalCardGroup
+            key={subs[0].physicalCardId!}
+            subs={subs}
+            copPerUsd={copPerUsd}
+            fxFallback={fxFallback}
+          />
+        ))}
+        {singles.map((a) => (
           <AccountCard key={a.id} account={a} />
         ))}
       </div>
     </section>
+  );
+}
+
+function PhysicalCardGroup({
+  subs,
+  copPerUsd,
+  fxFallback,
+}: {
+  subs: AccountDetail[];
+  copPerUsd: number;
+  fxFallback: boolean;
+}) {
+  const pc = subs[0].physicalCard as PhysicalCardSummary;
+  // available = limit + COP debts + USD debts × rate (balances are negative).
+  let copDebt = BigInt(0);
+  let usdDebt = BigInt(0);
+  for (const s of subs) {
+    if (s.currency === "COP") copDebt += s.balanceCents;
+    else usdDebt += s.balanceCents;
+  }
+  const availableCop = pc.creditLimitCents + copDebt + toCop(usdDebt, "USD", copPerUsd);
+  const institution = subs[0].institution;
+  const label = pc.network ? `${institution} ${pc.network.toUpperCase()}` : institution;
+  const last4 = pc.last4 ? `*${pc.last4}` : null;
+
+  return (
+    <Card size="sm" className="sm:col-span-2 lg:col-span-3">
+      <CardHeader>
+        <CardDescription className="flex items-center justify-between gap-2">
+          <span className="truncate">{label}</span>
+          <span className="shrink-0 text-[10px] tracking-wide uppercase">Shared cupo</span>
+        </CardDescription>
+        <CardTitle className="truncate text-base">
+          Multi-currency card{last4 ? ` ${last4}` : ""}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <SharedCupoMeter
+          limitCents={pc.creditLimitCents}
+          availableCents={availableCop}
+          fxFallback={fxFallback}
+        />
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {subs.map((s) => (
+            <SubAccountTile key={s.id} account={s} />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SubAccountTile({ account }: { account: AccountDetail }) {
+  const negative = account.balanceCents < BigInt(0);
+  return (
+    <div className="bg-muted/30 flex flex-col gap-0.5 rounded-md p-2">
+      <div className="text-muted-foreground flex items-center justify-between text-[10px] tracking-wide uppercase">
+        <span>{account.currency}</span>
+      </div>
+      <div
+        className={cn(
+          "text-lg font-semibold tabular-nums",
+          negative ? "text-rose-600" : "text-foreground",
+        )}
+      >
+        <Money cents={account.balanceCents} currency={account.currency} />
+      </div>
+    </div>
+  );
+}
+
+function SharedCupoMeter({
+  limitCents,
+  availableCents,
+  fxFallback,
+}: {
+  limitCents: bigint;
+  availableCents: bigint;
+  fxFallback: boolean;
+}) {
+  const used = limitCents > availableCents ? limitCents - availableCents : BigInt(0);
+  const pct =
+    limitCents > BigInt(0) ? Math.min(100, Number((used * BigInt(10000)) / limitCents) / 100) : 0;
+  const high = pct >= 80;
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="bg-muted h-1.5 overflow-hidden rounded-full">
+        <div
+          className={cn("h-full transition-all", high ? "bg-rose-600" : "bg-emerald-600")}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="text-muted-foreground flex items-center justify-between text-xs tabular-nums">
+        <span>
+          <Money cents={used} currency="COP" /> used
+        </span>
+        <span>
+          <Money cents={limitCents} currency="COP" /> limit
+        </span>
+      </div>
+      <div className="text-muted-foreground flex items-center justify-between text-[10px]">
+        <span>
+          Disponible: <Money cents={availableCents} currency="COP" />
+          {fxFallback ? " · cupo estimado (TRM fallback)" : ""}
+        </span>
+      </div>
+    </div>
   );
 }
 
