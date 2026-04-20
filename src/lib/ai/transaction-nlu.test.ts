@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import Anthropic from "@anthropic-ai/sdk";
 import {
   parseTransactionMessage,
   type NluAccountOption,
@@ -277,12 +278,26 @@ describe("parseTransactionMessage", () => {
     expect(result.draft.confidence).toBe(10);
   });
 
-  it("throws on invalid JSON from model", async () => {
+  it("throws on invalid JSON from model (SDK structured-output parse error)", async () => {
+    // The centralized client uses messages.parse() with output_config.format,
+    // so the SDK's own parser rejects non-JSON before we see it. The error
+    // message comes from the SDK, not our code.
     const fetchImpl: typeof fetch = async () =>
       new Response(
         JSON.stringify({
+          id: "msg_test",
+          type: "message",
+          role: "assistant",
+          model: "claude-haiku-4-5",
           content: [{ type: "text", text: "not-json-at-all" }],
-          usage: { input_tokens: 10, output_tokens: 0 },
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: {
+            input_tokens: 10,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -294,11 +309,18 @@ describe("parseTransactionMessage", () => {
         apiKey: "test-key",
         fetchImpl,
       }),
-    ).rejects.toThrow("invalid JSON");
+    ).rejects.toThrow(/parse|JSON/i);
   });
 
-  it("throws on API error", async () => {
-    const fetchImpl: typeof fetch = async () => new Response("rate limit", { status: 429 });
+  it("rethrows typed Anthropic.RateLimitError on 429", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "rate_limit_error", message: "rate limit" },
+        }),
+        { status: 429, headers: { "content-type": "application/json" } },
+      );
 
     await expect(
       parseTransactionMessage({
@@ -307,6 +329,6 @@ describe("parseTransactionMessage", () => {
         apiKey: "test-key",
         fetchImpl,
       }),
-    ).rejects.toThrow("Anthropic API error 429");
+    ).rejects.toBeInstanceOf(Anthropic.RateLimitError);
   });
 });
