@@ -83,6 +83,32 @@ export async function listAccountsDetailed(userId: number): Promise<AccountDetai
 }
 
 /**
+ * Groups credit_card AccountDetail rows by physical_card — shared-cupo cards
+ * (2+ sub-accounts sharing one physical_cards row) end up in the same group;
+ * single-currency cards are single-member groups. Used by the /accounts page
+ * and the dashboard Credit cards summary widget (#364).
+ */
+export function groupCreditCards(items: AccountDetail[]): AccountDetail[][] {
+  const groups: AccountDetail[][] = [];
+  const byPcId = new Map<string, AccountDetail[]>();
+  for (const a of items) {
+    if (a.physicalCardId && a.physicalCard) {
+      const existing = byPcId.get(a.physicalCardId);
+      if (existing) {
+        existing.push(a);
+      } else {
+        const arr = [a];
+        byPcId.set(a.physicalCardId, arr);
+        groups.push(arr);
+      }
+    } else {
+      groups.push([a]);
+    }
+  }
+  return groups;
+}
+
+/**
  * Returns the available credit (in COP cents) for a physical card with a shared
  * COP cupo spanning multiple sub-accounts (#346). USD balances are converted to
  * COP at `copPerUsd`. Credit-card balances are stored as negative debt, so the

@@ -6,6 +6,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { getSessionUser } from "@/lib/auth/session";
 import { getNetWorth } from "@/lib/dashboard/queries";
 import {
+  groupCreditCards,
   listAccountsDetailed,
   type AccountDetail,
   type PhysicalCardSummary,
@@ -220,7 +221,12 @@ function AccountTypeSection({
           <Money cents={subtotal} currency="COP" />
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div
+        className={cn(
+          "grid grid-cols-1 gap-3 sm:grid-cols-2",
+          type !== "credit_card" && "lg:grid-cols-3",
+        )}
+      >
         {creditCardGroups
           ? creditCardGroups.map((g) => (
               <CreditCardTile
@@ -234,26 +240,6 @@ function AccountTypeSection({
       </div>
     </section>
   );
-}
-
-function groupCreditCards(items: AccountDetail[]): AccountDetail[][] {
-  const groups: AccountDetail[][] = [];
-  const byPcId = new Map<string, AccountDetail[]>();
-  for (const a of items) {
-    if (a.physicalCardId && a.physicalCard) {
-      const existing = byPcId.get(a.physicalCardId);
-      if (existing) {
-        existing.push(a);
-      } else {
-        const arr = [a];
-        byPcId.set(a.physicalCardId, arr);
-        groups.push(arr);
-      }
-    } else {
-      groups.push([a]);
-    }
-  }
-  return groups;
 }
 
 function CreditCardTile({
@@ -330,6 +316,7 @@ function CreditCardTile({
             {orderedSubs.map((s) => (
               <DebtRow key={s.id} account={s} />
             ))}
+            {orderedSubs.length < 2 ? <DebtRowPlaceholder /> : null}
           </div>
         </div>
         <CreditMeter
@@ -364,6 +351,15 @@ function DebtRow({ account }: { account: AccountDetail }) {
       >
         <Money cents={account.balanceCents} currency={account.currency} />
       </span>
+    </div>
+  );
+}
+
+function DebtRowPlaceholder() {
+  return (
+    <div aria-hidden className="invisible flex items-baseline justify-between gap-2">
+      <span className="text-[10px] tracking-wide uppercase">—</span>
+      <span className="text-lg font-semibold tabular-nums">—</span>
     </div>
   );
 }
@@ -433,12 +429,13 @@ function FooterMeta({
           {nextPaymentDate ? formatNextPayment(nextPaymentDate) : "—"}
         </span>
       </div>
-      {showTRM ? (
-        <div className="flex items-center justify-between">
-          <span>TRM{fxFallback ? " (fallback)" : ""}</span>
-          <span className="tabular-nums">$ {RATE_FMT.format(trmRate)}</span>
-        </div>
-      ) : null}
+      <div
+        aria-hidden={!showTRM}
+        className={cn("flex items-center justify-between", !showTRM && "invisible")}
+      >
+        <span>TRM{fxFallback ? " (fallback)" : ""}</span>
+        <span className="tabular-nums">$ {RATE_FMT.format(trmRate)}</span>
+      </div>
     </div>
   );
 }
