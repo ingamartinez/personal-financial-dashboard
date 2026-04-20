@@ -183,13 +183,17 @@ async function main() {
     if (result.kind === "skip") {
       const k = `skip:${result.reason}`;
       byKind.set(k, (byKind.get(k) ?? 0) + 1);
-      if (result.reason === "unknown") {
-        const n = normalize(body);
-        const b = unknownPatterns.get(n) ?? { count: 0, samples: [] };
-        b.count++;
-        if (b.samples.length < 2) b.samples.push(body);
-        unknownPatterns.set(n, b);
-      }
+      continue;
+    }
+
+    if (result.kind === "needs_review") {
+      const k = `needs_review:${result.reason}`;
+      byKind.set(k, (byKind.get(k) ?? 0) + 1);
+      const n = normalize(body);
+      const b = unknownPatterns.get(n) ?? { count: 0, samples: [] };
+      b.count++;
+      if (b.samples.length < 2) b.samples.push(body);
+      unknownPatterns.set(n, b);
       continue;
     }
 

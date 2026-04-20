@@ -52,7 +52,10 @@ async function main() {
 
   for (const body of bodies) {
     const parsed = parseSmsBancolombia(body);
-    const kind = parsed.kind === "skip" ? `skip:${parsed.reason}` : parsed.kind;
+    const kind =
+      parsed.kind === "skip" || parsed.kind === "needs_review"
+        ? `${parsed.kind}:${parsed.reason}`
+        : parsed.kind;
     byKind[kind] = (byKind[kind] ?? 0) + 1;
 
     // Replay script scopes to user 1 (bootstrap).

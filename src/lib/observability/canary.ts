@@ -25,7 +25,7 @@ export function sampleForCanary(smsBody: string): boolean {
 }
 
 export function projectFromRegex(parsed: ParseResult): CanaryProjection {
-  if (parsed.kind === "skip") {
+  if (parsed.kind === "skip" || parsed.kind === "needs_review") {
     return { amountCents: null, currency: null, merchant: null, occurredOn: null };
   }
   return {
@@ -36,7 +36,9 @@ export function projectFromRegex(parsed: ParseResult): CanaryProjection {
   };
 }
 
-function merchantFromParsed(parsed: Exclude<ParseResult, { kind: "skip" }>): string | null {
+function merchantFromParsed(
+  parsed: Exclude<ParseResult, { kind: "skip" | "needs_review" }>,
+): string | null {
   switch (parsed.kind) {
     case "purchase":
       return parsed.merchant;

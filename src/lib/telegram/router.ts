@@ -398,9 +398,10 @@ async function handleText(
 
   // Forwarded Bancolombia SMS branch: deterministic parser first, NLU fallback.
   // Calling the parser unconditionally is safe — its regexes are tight enough
-  // that normal freeform text returns skip:"unknown" and falls through.
+  // that normal freeform text returns needs_review:"unknown_pattern" and falls
+  // through to the NLU path below.
   const smsParsed = parseSmsBancolombia(text);
-  if (smsParsed.kind !== "skip") {
+  if (smsParsed.kind !== "skip" && smsParsed.kind !== "needs_review") {
     const { draft, externalId } = buildDraftFromParsedSms(smsParsed, accountsFull);
     const categories = await deps.listCategories();
     const state: TelegramSessionState = {

@@ -48,7 +48,9 @@ const ACCOUNTS: AccountDetail[] = [
 
 function parseOrThrow(body: string): ParsedSms {
   const parsed = parseSmsBancolombia(body);
-  if (parsed.kind === "skip") throw new Error(`expected parse, got skip: ${parsed.reason}`);
+  if (parsed.kind === "skip" || parsed.kind === "needs_review") {
+    throw new Error(`expected parse, got ${parsed.kind}: ${parsed.reason}`);
+  }
   return parsed;
 }
 

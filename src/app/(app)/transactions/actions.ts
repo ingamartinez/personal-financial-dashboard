@@ -728,7 +728,7 @@ export async function splitCounterparty(
     if (!smsBody) continue;
 
     const parseResult = parseSmsBancolombia(smsBody);
-    if (parseResult.kind === "skip") continue;
+    if (parseResult.kind === "skip" || parseResult.kind === "needs_review") continue;
 
     const key = keyForParsed(parseResult);
     if (!key) continue;

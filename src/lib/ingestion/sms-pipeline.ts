@@ -40,6 +40,13 @@ export async function ingestParsed(
     return { status: "skipped", reason: `parser: ${parsed.reason}` };
   }
 
+  // needs_review: parser could not match any known shape. AI fallback hooks
+  // here in #257. Until then, treat as an ingest error so it surfaces in
+  // /settings/inbox for manual triage.
+  if (parsed.kind === "needs_review") {
+    return { status: "error", reason: `parser: ${parsed.reason}` };
+  }
+
   const allAccounts = (await db
     .select({
       id: accounts.id,
@@ -324,7 +331,9 @@ function buildTxFields(parsed: ParsedSms): {
 }
 
 export function serializeParsed(parsed: ParseResult): Record<string, unknown> {
-  if (parsed.kind === "skip") return { kind: "skip", reason: parsed.reason };
+  if (parsed.kind === "skip" || parsed.kind === "needs_review") {
+    return { kind: parsed.kind, reason: parsed.reason };
+  }
   return {
     ...parsed,
     amountCents: parsed.amountCents.toString(),
