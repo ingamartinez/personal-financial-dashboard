@@ -44,7 +44,7 @@ export function ReconcileForm({
         const result = await previewReconcile(formData);
         setPreview(result);
         toast.success(
-          `Preview ready · ${result.plan.summary.matched} matched, ${result.plan.summary.newInserts} new, ${result.plan.summary.flaggedExisting} flagged`,
+          `Preview ready · ${result.plan.summary.matched} matched, ${result.plan.summary.newInserts} new${result.plan.summary.nearMatches > 0 ? `, ${result.plan.summary.nearMatches} near-match` : ""}, ${result.plan.summary.flaggedExisting} flagged`,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Parse failed";
@@ -130,8 +130,11 @@ export function ReconcileForm({
         <Card>
           <CardHeader>
             <CardTitle>
-              Preview · {preview.plan.summary.matched + preview.plan.summary.newInserts} statement
-              rows
+              Preview ·{" "}
+              {preview.plan.summary.matched +
+                preview.plan.summary.newInserts +
+                preview.plan.summary.nearMatches}{" "}
+              statement rows
             </CardTitle>
             <CardDescription>
               Format: <code>{preview.parsed.format}</code> · Period{" "}
@@ -147,6 +150,11 @@ export function ReconcileForm({
               <Badge variant="outline" className="bg-sky-50 text-sky-900">
                 {preview.plan.summary.newInserts} new
               </Badge>
+              {preview.plan.summary.nearMatches > 0 ? (
+                <Badge variant="outline" className="bg-amber-50 text-amber-900">
+                  {preview.plan.summary.nearMatches} near-match
+                </Badge>
+              ) : null}
               <Badge variant="outline" className="bg-amber-50 text-amber-900">
                 {preview.plan.summary.flaggedExisting} flagged (not in statement)
               </Badge>
@@ -188,6 +196,17 @@ export function ReconcileForm({
                               title={`score ${decision.matchScore} (${decision.matchReason})`}
                             >
                               match · #{decision.matchedTxnId}
+                            </span>
+                          ) : decision?.action === "near_match" ? (
+                            <span
+                              className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-900"
+                              title={`score ${decision.matchScore} (${decision.matchReason})`}
+                            >
+                              near-match ·{" "}
+                              {decision.amountDiffCents !== undefined
+                                ? formatMoney(BigInt(decision.amountDiffCents), row.currency)
+                                : "?"}{" "}
+                              off · merge with #{decision.matchedTxnId} post-Apply
                             </span>
                           ) : (
                             <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-900">
@@ -241,7 +260,7 @@ export function ReconcileForm({
               <Button onClick={onApply} disabled={applying}>
                 {applying
                   ? "Applying…"
-                  : `Apply (${preview.plan.summary.matched} match + ${preview.plan.summary.newInserts} new + ${preview.plan.summary.flaggedExisting} flag)`}
+                  : `Apply (${preview.plan.summary.matched} match + ${preview.plan.summary.newInserts} new${preview.plan.summary.nearMatches > 0 ? ` + ${preview.plan.summary.nearMatches} near` : ""} + ${preview.plan.summary.flaggedExisting} flag)`}
               </Button>
             </div>
           </CardContent>

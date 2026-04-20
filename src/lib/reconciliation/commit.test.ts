@@ -128,7 +128,7 @@ describe("commitReconciliation — integration against findash_test", () => {
         },
       ],
       flaggedExisting: [],
-      summary: { matched: 0, newInserts: 1, flaggedExisting: 0 },
+      summary: { matched: 0, newInserts: 1, nearMatches: 0, flaggedExisting: 0 },
     };
     const result = await commitReconciliation({
       userId,
@@ -185,7 +185,7 @@ describe("commitReconciliation — integration against findash_test", () => {
         },
       ],
       flaggedExisting: [],
-      summary: { matched: 1, newInserts: 0, flaggedExisting: 0 },
+      summary: { matched: 1, newInserts: 0, nearMatches: 0, flaggedExisting: 0 },
     };
     const result = await commitReconciliation({
       userId,
@@ -229,7 +229,7 @@ describe("commitReconciliation — integration against findash_test", () => {
         },
       ],
       flaggedExisting: [{ txnId: orphanId, reason: "no_statement_match" }],
-      summary: { matched: 0, newInserts: 1, flaggedExisting: 1 },
+      summary: { matched: 0, newInserts: 1, nearMatches: 0, flaggedExisting: 1 },
     };
     const result = await commitReconciliation({
       userId,
@@ -269,7 +269,7 @@ describe("commitReconciliation — integration against findash_test", () => {
         },
       ],
       flaggedExisting: [],
-      summary: { matched: 0, newInserts: 1, flaggedExisting: 0 },
+      summary: { matched: 0, newInserts: 1, nearMatches: 0, flaggedExisting: 0 },
     };
     const hash = hashFileBuffer(Buffer.from(`${TAG}-idempotency`));
     const first = await commitReconciliation({
@@ -328,7 +328,7 @@ describe("commitReconciliation — integration against findash_test", () => {
         },
       ],
       flaggedExisting: [],
-      summary: { matched: 0, newInserts: 1, flaggedExisting: 0 },
+      summary: { matched: 0, newInserts: 1, nearMatches: 0, flaggedExisting: 0 },
     };
 
     const withUserBalance = await commitReconciliation({
@@ -400,7 +400,7 @@ describe("commitReconciliation — integration against findash_test", () => {
         },
       ],
       flaggedExisting: [],
-      summary: { matched: 0, newInserts: 2, flaggedExisting: 0 },
+      summary: { matched: 0, newInserts: 2, nearMatches: 0, flaggedExisting: 0 },
     };
     const result = await commitReconciliation({
       userId,
