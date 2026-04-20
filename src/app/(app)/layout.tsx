@@ -4,6 +4,8 @@ import { MoneyModeProvider } from "@/components/display/money-mode-provider";
 import { QuickExpenseFab } from "@/components/transactions/quick-expense-fab";
 import { LiveRefresh } from "@/components/live-refresh";
 import { getSessionUserOrNull } from "@/lib/auth/session";
+import { getCurrentFxRate } from "@/lib/fx/repo";
+import { getUiPreferences } from "@/lib/preferences/repo";
 import { DEFAULT_DISPLAY_CURRENCY_MODE } from "@/lib/db/schema";
 import { auth } from "@/auth";
 
@@ -22,11 +24,18 @@ export default async function AppLayout({
       }
     : null;
 
-  // Currency display toggle: mode + fxRate will be wired in a follow-up; for
-  // now the provider runs in `native` mode with no rate → conversion is a
-  // no-op and every Money render matches the pre-toggle behavior.
+  // MoneyModeProvider feeds every `<Money>` / `<AnimatedMoney>` in the tree.
+  // When the user is unauthenticated we fall back to native mode with no rate
+  // so the toggle renders a no-op until login.
+  const [prefs, fx] = sessionUser
+    ? await Promise.all([getUiPreferences(sessionUser.id), getCurrentFxRate()])
+    : [{ displayCurrencyMode: DEFAULT_DISPLAY_CURRENCY_MODE }, null];
+
   return (
-    <MoneyModeProvider mode={DEFAULT_DISPLAY_CURRENCY_MODE} fxRate={null}>
+    <MoneyModeProvider
+      mode={prefs.displayCurrencyMode}
+      fxRate={fx ? { rate: fx.rate, source: fx.source } : null}
+    >
       <Header user={headerUser} />
       <Breadcrumbs />
       <div className="flex flex-1 flex-col">{children}</div>

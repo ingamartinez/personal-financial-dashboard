@@ -5,6 +5,7 @@ import Link from "next/link";
 import { MenuIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { CurrencyModeToggle } from "./currency-mode-toggle";
 import { Nav } from "./nav";
 import { ThemeToggle } from "./theme-toggle";
 import { UserMenu } from "./user-menu";
@@ -33,6 +34,7 @@ export function Header({ user }: HeaderProps) {
         </div>
 
         <div className="ml-auto flex items-center gap-1">
+          {user ? <CurrencyModeToggle /> : null}
           <ThemeToggle />
           {user ? <UserMenu user={user} /> : null}
           <div className="md:hidden">
