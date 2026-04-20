@@ -30,6 +30,10 @@ const metadataSchema = z
     availableCreditCents: z.number().int().nonnegative().optional(),
     cutoffDay: z.number().int().min(1).max(31).optional(),
     paymentDueDay: z.number().int().min(1).max(31).optional(),
+    nextPaymentDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
     interestRateMonthly: z.number().nonnegative().optional(),
     termMonths: z.number().int().positive().optional(),
     loanOriginalCents: z.number().int().nonnegative().optional(),

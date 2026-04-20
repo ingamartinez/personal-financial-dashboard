@@ -34,6 +34,8 @@ function formatNextPayment(isoDate: string): string {
   return NEXT_PAYMENT_FMT.format(new Date(`${isoDate}T12:00:00Z`));
 }
 
+const currencyRank: Record<Currency, number> = { COP: 0, USD: 1 };
+
 export const dynamic = "force-dynamic";
 
 const TYPE_LABEL: Record<AccountDetail["type"], string> = {
@@ -117,16 +119,49 @@ export default async function AccountsPage() {
       ))}
 
       {inactive.length > 0 ? (
-        <section className="flex flex-col gap-3">
-          <h2 className="text-h2 text-muted-foreground">Inactive</h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {inactive.map((a) => (
-              <AccountCard key={a.id} account={a} muted />
-            ))}
-          </div>
-        </section>
+        <InactiveSection
+          items={inactive}
+          copPerUsd={fx.rate}
+          fxFallback={fx.source === "fallback"}
+        />
       ) : null}
     </main>
+  );
+}
+
+function InactiveSection({
+  items,
+  copPerUsd,
+  fxFallback,
+}: {
+  items: AccountDetail[];
+  copPerUsd: number;
+  fxFallback: boolean;
+}) {
+  // Keep credit_card rows grouped by physical_card so shared-cupo pairs still
+  // render as one CreditCardTile (muted). Others render as muted AccountCard.
+  const creditCards = items.filter((a) => a.type === "credit_card");
+  const others = items.filter((a) => a.type !== "credit_card");
+  const creditGroups = groupCreditCards(creditCards);
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="text-h2 text-muted-foreground">Inactive</h2>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {creditGroups.map((g) => (
+          <CreditCardTile
+            key={g[0].physicalCardId ?? `acct-${g[0].id}`}
+            subs={g}
+            copPerUsd={copPerUsd}
+            fxFallback={fxFallback}
+            muted
+          />
+        ))}
+        {others.map((a) => (
+          <AccountCard key={a.id} account={a} muted />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -166,23 +201,12 @@ function AccountTypeSection({
     type === "credit_card" ? CreditCardIcon : type === "loan" ? LandmarkIcon : PiggyBankIcon;
   const subtotal = sumBalanceCopCents(items, copPerUsd);
 
-  // Multi-currency credit cards (sharing a physicalCardId) render as one grouped
-  // tile with the shared cupo; remaining single-currency cards render as before.
-  const pairs = new Map<string, AccountDetail[]>();
-  const singles: AccountDetail[] = [];
-  if (type === "credit_card") {
-    for (const a of items) {
-      if (a.physicalCardId && a.physicalCard) {
-        const arr = pairs.get(a.physicalCardId) ?? [];
-        arr.push(a);
-        pairs.set(a.physicalCardId, arr);
-      } else {
-        singles.push(a);
-      }
-    }
-  } else {
-    singles.push(...items);
-  }
+  // credit_card items get grouped by physical_card — shared-cupo pairs share one
+  // tile, single-currency cards end up as single-member groups. Grid layout is
+  // the same as savings/loan: no col-span overrides, so every tile has the same
+  // width for consistent UX across card types.
+  const creditCardGroups: AccountDetail[][] | null =
+    type === "credit_card" ? groupCreditCards(items) : null;
 
   return (
     <section className="flex flex-col gap-3">
@@ -196,60 +220,105 @@ function AccountTypeSection({
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from(pairs.values()).map((subs) => (
-          <PhysicalCardGroup
-            key={subs[0].physicalCardId!}
-            subs={subs}
-            copPerUsd={copPerUsd}
-            fxFallback={fxFallback}
-          />
-        ))}
-        {singles.map((a) => (
-          <AccountCard key={a.id} account={a} />
-        ))}
+        {creditCardGroups
+          ? creditCardGroups.map((g) => (
+              <CreditCardTile
+                key={g[0].physicalCardId ?? `acct-${g[0].id}`}
+                subs={g}
+                copPerUsd={copPerUsd}
+                fxFallback={fxFallback}
+              />
+            ))
+          : items.map((a) => <AccountCard key={a.id} account={a} />)}
       </div>
     </section>
   );
 }
 
-function PhysicalCardGroup({
+function groupCreditCards(items: AccountDetail[]): AccountDetail[][] {
+  const groups: AccountDetail[][] = [];
+  const byPcId = new Map<string, AccountDetail[]>();
+  for (const a of items) {
+    if (a.physicalCardId && a.physicalCard) {
+      const existing = byPcId.get(a.physicalCardId);
+      if (existing) {
+        existing.push(a);
+      } else {
+        const arr = [a];
+        byPcId.set(a.physicalCardId, arr);
+        groups.push(arr);
+      }
+    } else {
+      groups.push([a]);
+    }
+  }
+  return groups;
+}
+
+function CreditCardTile({
   subs,
   copPerUsd,
   fxFallback,
+  muted,
 }: {
   subs: AccountDetail[];
   copPerUsd: number;
   fxFallback: boolean;
+  muted?: boolean;
 }) {
-  const pc = subs[0].physicalCard as PhysicalCardSummary;
-  // available = limit + COP debts + USD debts × rate (balances are negative).
-  let copDebt = BigInt(0);
-  let usdDebt = BigInt(0);
-  for (const s of subs) {
-    if (s.currency === "COP") copDebt += s.balanceCents;
-    else usdDebt += s.balanceCents;
-  }
-  const availableCop = pc.creditLimitCents + copDebt + toCop(usdDebt, "USD", copPerUsd);
+  const isShared = subs.length > 1 || Boolean(subs[0].physicalCard);
+  const pc: PhysicalCardSummary | null = isShared ? subs[0].physicalCard : null;
+  const primary = subs[0];
   const hasUsd = subs.some((s) => s.currency === "USD");
-  // Bancolombia shows COP first, USD below; mirror that regardless of insert order.
-  const currencyRank: Record<Currency, number> = { COP: 0, USD: 1 };
   const orderedSubs = [...subs].sort((a, b) => currencyRank[a.currency] - currencyRank[b.currency]);
-  const name = subs[0].name;
-  const institution = subs[0].institution;
-  const meta: string[] = [];
-  if (pc.network) meta.push(pc.network.toUpperCase());
-  if (pc.last4) meta.push(`*${pc.last4}`);
+
+  // Meter data: shared cards use physical_cards (limit always COP); single
+  // cards use metadata in their native currency.
+  let limitCents: bigint | null = null;
+  let availableCents: bigint | null = null;
+  let meterCurrency: Currency = "COP";
+  if (isShared && pc) {
+    limitCents = pc.creditLimitCents;
+    let copDebt = BigInt(0);
+    let usdDebt = BigInt(0);
+    for (const s of subs) {
+      if (s.currency === "COP") copDebt += s.balanceCents;
+      else usdDebt += s.balanceCents;
+    }
+    availableCents = limitCents + copDebt + toCop(usdDebt, "USD", copPerUsd);
+    meterCurrency = "COP";
+  } else {
+    const limit = primary.metadata.creditLimitCents;
+    if (limit !== undefined && limit > 0) {
+      limitCents = BigInt(limit);
+      availableCents =
+        primary.metadata.availableCreditCents !== undefined
+          ? BigInt(primary.metadata.availableCreditCents)
+          : limitCents + primary.balanceCents;
+    }
+    meterCurrency = primary.currency;
+  }
+
+  const nextPaymentDate =
+    isShared && pc ? pc.nextPaymentDate : (primary.metadata.nextPaymentDate ?? null);
+
+  const badge = isShared ? "Cupo compartido" : primary.currency;
+  const network = isShared && pc ? pc.network : (primary.metadata.network ?? null);
+  const last4 = isShared && pc ? pc.last4 : (primary.metadata.last4s?.[0] ?? null);
+  const metaParts: string[] = [];
+  if (network) metaParts.push(network.toUpperCase());
+  if (last4) metaParts.push(`*${last4}`);
 
   return (
-    <Card size="sm" className="sm:col-span-2 lg:col-span-3">
+    <Card size="sm" className={cn(muted && "opacity-60")}>
       <CardHeader>
         <CardDescription className="flex items-center justify-between gap-2">
-          <span className="truncate">{institution}</span>
-          <span className="shrink-0 text-[10px] tracking-wide uppercase">Cupo compartido</span>
+          <span className="truncate">{primary.institution}</span>
+          <span className="shrink-0 text-[10px] tracking-wide uppercase">{badge}</span>
         </CardDescription>
-        <CardTitle className="truncate text-base">{name}</CardTitle>
-        {meta.length > 0 ? (
-          <div className="text-muted-foreground text-xs">{meta.join(" · ")}</div>
+        <CardTitle className="truncate text-base">{primary.name}</CardTitle>
+        {metaParts.length > 0 ? (
+          <div className="text-muted-foreground text-xs">{metaParts.join(" · ")}</div>
         ) : null}
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -261,27 +330,18 @@ function PhysicalCardGroup({
             ))}
           </div>
         </div>
-        <SharedCupoMeter
-          limitCents={pc.creditLimitCents}
-          availableCents={availableCop}
-          fxFallback={fxFallback && hasUsd}
+        <CreditMeter
+          limitCents={limitCents}
+          availableCents={availableCents}
+          currency={meterCurrency}
+          fxFallback={isShared && fxFallback && hasUsd}
         />
-        {pc.nextPaymentDate || hasUsd ? (
-          <div className="text-muted-foreground flex flex-col gap-0.5 text-xs">
-            {pc.nextPaymentDate ? (
-              <div className="flex items-center justify-between">
-                <span>Próximo pago</span>
-                <span className="tabular-nums">{formatNextPayment(pc.nextPaymentDate)}</span>
-              </div>
-            ) : null}
-            {hasUsd ? (
-              <div className="flex items-center justify-between">
-                <span>TRM{fxFallback ? " (fallback)" : ""}</span>
-                <span className="tabular-nums">$ {RATE_FMT.format(copPerUsd)}</span>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+        <FooterMeta
+          nextPaymentDate={nextPaymentDate}
+          showTRM={isShared && hasUsd}
+          trmRate={copPerUsd}
+          fxFallback={fxFallback}
+        />
       </CardContent>
     </Card>
   );
@@ -306,20 +366,31 @@ function DebtRow({ account }: { account: AccountDetail }) {
   );
 }
 
-function SharedCupoMeter({
+function CreditMeter({
   limitCents,
   availableCents,
+  currency,
   fxFallback,
 }: {
-  limitCents: bigint;
-  availableCents: bigint;
+  limitCents: bigint | null;
+  availableCents: bigint | null;
+  currency: Currency;
   fxFallback: boolean;
 }) {
+  if (limitCents === null || availableCents === null || limitCents === BigInt(0)) {
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="bg-muted h-1.5 overflow-hidden rounded-full" />
+        <div className="text-muted-foreground flex items-center justify-between text-xs tabular-nums">
+          <span>Cupo disponible: —</span>
+          <span>Total: —</span>
+        </div>
+      </div>
+    );
+  }
   const used = limitCents > availableCents ? limitCents - availableCents : BigInt(0);
-  const pct =
-    limitCents > BigInt(0) ? Math.min(100, Number((used * BigInt(10000)) / limitCents) / 100) : 0;
+  const pct = Math.min(100, Number((used * BigInt(10000)) / limitCents) / 100);
   const high = pct >= 80;
-
   return (
     <div className="flex flex-col gap-1">
       <div className="bg-muted h-1.5 overflow-hidden rounded-full">
@@ -330,13 +401,42 @@ function SharedCupoMeter({
       </div>
       <div className="text-muted-foreground flex items-center justify-between text-xs tabular-nums">
         <span>
-          Cupo disponible: <Money cents={availableCents} currency="COP" />
+          Cupo disponible: <Money cents={availableCents} currency={currency} />
           {fxFallback ? " (TRM fallback)" : ""}
         </span>
         <span>
-          Total: <Money cents={limitCents} currency="COP" />
+          Total: <Money cents={limitCents} currency={currency} />
         </span>
       </div>
+    </div>
+  );
+}
+
+function FooterMeta({
+  nextPaymentDate,
+  showTRM,
+  trmRate,
+  fxFallback,
+}: {
+  nextPaymentDate: string | null;
+  showTRM: boolean;
+  trmRate: number;
+  fxFallback: boolean;
+}) {
+  return (
+    <div className="text-muted-foreground flex flex-col gap-0.5 text-xs">
+      <div className="flex items-center justify-between">
+        <span>Próximo pago</span>
+        <span className="tabular-nums">
+          {nextPaymentDate ? formatNextPayment(nextPaymentDate) : "—"}
+        </span>
+      </div>
+      {showTRM ? (
+        <div className="flex items-center justify-between">
+          <span>TRM{fxFallback ? " (fallback)" : ""}</span>
+          <span className="tabular-nums">$ {RATE_FMT.format(trmRate)}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -349,8 +449,6 @@ function AccountCard({ account, muted }: { account: AccountDetail; muted?: boole
   if (metadata.network) meta.push(metadata.network.toUpperCase());
   if (last4) meta.push(`*${last4}`);
 
-  const creditLimit = metadata.creditLimitCents;
-  const availableCredit = metadata.availableCreditCents;
   const loanRemaining = metadata.loanRemainingCents;
   const nextPayment = metadata.nextPaymentDate;
 
@@ -375,14 +473,6 @@ function AccountCard({ account, muted }: { account: AccountDetail; muted?: boole
         >
           <Money cents={account.balanceCents} currency={account.currency} />
         </div>
-        {account.type === "credit_card" && creditLimit ? (
-          <CreditMeter
-            currency={account.currency}
-            limitCents={BigInt(creditLimit)}
-            availableCents={availableCredit !== undefined ? BigInt(availableCredit) : null}
-            balanceCents={account.balanceCents}
-          />
-        ) : null}
         {account.type === "loan" && loanRemaining ? (
           <div className="text-muted-foreground text-xs">
             Remaining: <Money cents={BigInt(loanRemaining)} currency={account.currency} />
@@ -391,46 +481,5 @@ function AccountCard({ account, muted }: { account: AccountDetail; muted?: boole
         ) : null}
       </CardContent>
     </Card>
-  );
-}
-
-function CreditMeter({
-  currency,
-  limitCents,
-  availableCents,
-  balanceCents,
-}: {
-  currency: Currency;
-  limitCents: bigint;
-  availableCents: bigint | null;
-  balanceCents: bigint;
-}) {
-  const used =
-    availableCents !== null
-      ? limitCents - availableCents
-      : balanceCents < BigInt(0)
-        ? -balanceCents
-        : BigInt(0);
-  const pct =
-    limitCents > BigInt(0) ? Math.min(100, Number((used * BigInt(10000)) / limitCents) / 100) : 0;
-  const high = pct >= 80;
-
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="bg-muted h-1.5 overflow-hidden rounded-full">
-        <div
-          className={cn("h-full transition-all", high ? "bg-rose-600" : "bg-emerald-600")}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <div className="text-muted-foreground flex items-center justify-between text-xs tabular-nums">
-        <span>
-          <Money cents={used} currency={currency} /> used
-        </span>
-        <span>
-          <Money cents={limitCents} currency={currency} /> limit
-        </span>
-      </div>
-    </div>
   );
 }

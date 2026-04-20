@@ -116,6 +116,27 @@ describe("accounts actions: single-currency", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("persists nextPaymentDate in metadata for single-currency credit_card (#358)", async () => {
+    await upsertAccount({
+      name: `${MARKER}-cc-next-pay`,
+      institution: "Bancolombia",
+      type: "credit_card",
+      primary: {
+        currency: "COP",
+        balance: -100_000,
+        metadata: { creditLimitCents: 5_000_000_00, nextPaymentDate: "2026-05-15" },
+      },
+    });
+    const [row] = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-cc-next-pay`)));
+    expect(row).toBeDefined();
+    expect(row.physicalCardId).toBeNull();
+    expect(row.metadata.nextPaymentDate).toBe("2026-05-15");
+    expect(row.metadata.creditLimitCents).toBe(5_000_000_00);
+  });
 });
 
 describe("accounts actions: multi-currency credit card", () => {
