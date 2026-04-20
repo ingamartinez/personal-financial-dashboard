@@ -29,6 +29,16 @@ export type UiPreferences = {
   displayCurrencyMode?: DisplayCurrencyMode;
 };
 
+// Per-user feature toggles. Default for every flag is "inherit from process
+// env" — per-feature env vars act as the global default and each user can
+// override explicitly via the `/settings` UI (future work). Prefer adding
+// new fields here over new columns.
+export type UserFeatureFlags = {
+  // AI fallback for SMS needs_review path (#257). If unset, uses
+  // AI_FALLBACK_ENABLED env var. If set, user's preference wins.
+  aiFallbackEnabled?: boolean;
+};
+
 export type UserClassificationContextHint = {
   merchant: string;
   category: string;
@@ -50,6 +60,7 @@ export const users = pgTable(
     role: varchar("role", { length: 20 }).notNull().default("user"),
     active: boolean("active").notNull().default(true),
     uiPreferences: jsonb("ui_preferences").$type<UiPreferences>().notNull().default({}),
+    featureFlags: jsonb("feature_flags").$type<UserFeatureFlags>().notNull().default({}),
     classificationContext: jsonb("classification_context")
       .$type<UserClassificationContext>()
       .notNull()

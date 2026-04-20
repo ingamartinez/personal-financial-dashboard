@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "feature_flags" jsonb DEFAULT '{}'::jsonb NOT NULL;
