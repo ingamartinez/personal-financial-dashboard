@@ -12,10 +12,17 @@
 //    materialized via the same signup hooks new users hit on invite-code
 //    registration, so there's exactly one code path.
 
-import { eq, inArray } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, eq, inArray } from "drizzle-orm";
 import { createLogger } from "@/lib/logger";
 import { db } from "./index";
-import { accounts, classificationRules, users, type AccountMetadata } from "./schema";
+import {
+  accounts,
+  classificationRules,
+  physicalCards,
+  users,
+  type AccountMetadata,
+} from "./schema";
 import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "@/lib/auth/signup";
 import { seedReferenceData } from "./seed-reference-data";
 import type { AccountType, Currency } from "@/lib/types";
@@ -24,6 +31,9 @@ const log = createLogger({ module: "seed" });
 
 type InstitutionSlug = (typeof accounts.$inferInsert)["institutionSlug"];
 
+// Sub-accounts sharing a `physicalCardGroup` value are multi-currency cards
+// (#346): runSeed creates one row in `physical_cards` per group and links
+// every matching account's `physical_card_id` to it.
 const seedAccounts: Array<{
   name: string;
   institution: string;
@@ -31,6 +41,7 @@ const seedAccounts: Array<{
   type: AccountType;
   currency: Currency;
   metadata?: AccountMetadata;
+  physicalCardGroup?: string;
 }> = [
   {
     name: "Bancolombia Ahorros",
@@ -77,6 +88,7 @@ const seedAccounts: Array<{
     type: "credit_card",
     currency: "COP",
     metadata: { last4s: ["7291"], network: "mastercard" },
+    physicalCardGroup: "bancolombia-mc-7291",
   },
   {
     name: "Bancolombia Mastercard *7291",
@@ -85,6 +97,7 @@ const seedAccounts: Array<{
     type: "credit_card",
     currency: "USD",
     metadata: { last4s: ["7291"], network: "mastercard" },
+    physicalCardGroup: "bancolombia-mc-7291",
   },
 ];
 
@@ -138,19 +151,75 @@ export async function runSeed() {
   );
 
   log.info({ userId: bootstrapUserId, event: "seed_accounts_start" }, "seeding accounts");
+  // Match on (userId, name, currency) so we don't re-seed the COP + USD halves
+  // of a multi-currency pair as a single-row duplicate (both share a name).
   const existing = await db
-    .select({ name: accounts.name })
+    .select({ name: accounts.name, currency: accounts.currency })
     .from(accounts)
     .where(
-      inArray(
-        accounts.name,
-        seedAccounts.map((a) => a.name),
+      and(
+        eq(accounts.userId, bootstrapUserId),
+        inArray(
+          accounts.name,
+          seedAccounts.map((a) => a.name),
+        ),
       ),
     );
-  const existingNames = new Set(existing.map((e) => e.name));
-  const toInsert = seedAccounts.filter((a) => !existingNames.has(a.name));
+  const existingKeys = new Set(existing.map((e) => `${e.name}|${e.currency}`));
+  const toInsert = seedAccounts.filter((a) => !existingKeys.has(`${a.name}|${a.currency}`));
+
+  // Assign (or reuse) a physical_card row per `physicalCardGroup`. Groups with
+  // no pre-existing sub-accounts get a fresh uuid + physical_cards insert; if
+  // the first half already exists, we reuse its physicalCardId so re-seeding
+  // the remaining half doesn't create a second orphaned parent row.
+  const groupToPhysicalCardId = new Map<string, string>();
+  const newPhysicalCardRows: Array<typeof physicalCards.$inferInsert> = [];
+  for (const acc of seedAccounts) {
+    if (!acc.physicalCardGroup || groupToPhysicalCardId.has(acc.physicalCardGroup)) continue;
+    const [liveSibling] = await db
+      .select({ id: accounts.physicalCardId })
+      .from(accounts)
+      .where(
+        and(
+          eq(accounts.userId, bootstrapUserId),
+          eq(accounts.name, acc.name),
+          eq(accounts.currency, acc.currency),
+        ),
+      );
+    if (liveSibling?.id) {
+      groupToPhysicalCardId.set(acc.physicalCardGroup, liveSibling.id);
+      continue;
+    }
+    const id = randomUUID();
+    groupToPhysicalCardId.set(acc.physicalCardGroup, id);
+    newPhysicalCardRows.push({
+      id,
+      userId: bootstrapUserId,
+      institution: acc.institution,
+      institutionSlug: acc.institutionSlug,
+      network: acc.metadata?.network,
+      last4: acc.metadata?.last4s?.[0],
+      creditLimitCents: BigInt(0),
+    });
+  }
+  if (newPhysicalCardRows.length > 0) {
+    await db.insert(physicalCards).values(newPhysicalCardRows).onConflictDoNothing();
+    log.info(
+      { count: newPhysicalCardRows.length, event: "seed_physical_cards_inserted" },
+      `inserted ${newPhysicalCardRows.length} physical_cards rows (cupo=0, user edits via UI)`,
+    );
+  }
+
   if (toInsert.length > 0) {
-    await db.insert(accounts).values(toInsert.map((a) => ({ ...a, userId: bootstrapUserId })));
+    await db.insert(accounts).values(
+      toInsert.map((a) => ({
+        ...a,
+        userId: bootstrapUserId,
+        physicalCardId: a.physicalCardGroup
+          ? (groupToPhysicalCardId.get(a.physicalCardGroup) ?? null)
+          : null,
+      })),
+    );
     log.info(
       { count: toInsert.length, event: "seed_accounts_inserted" },
       `inserted ${toInsert.length} new accounts`,
