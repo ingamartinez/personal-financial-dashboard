@@ -22,20 +22,21 @@ export type SystemPromptBlock = {
   // When true, adds cache_control: { type: "ephemeral" } to this block. Use
   // for stable content (category list, few-shots, task instructions). Cache
   // only takes effect once the prefix exceeds the model minimum (Haiku 4.5:
-  // 4096 tokens); shorter prefixes silently won't cache but the marker is
-  // harmless. See shared/prompt-caching.md.
+  // 4096 tokens, Sonnet 4.6: 2048 tokens); shorter prefixes silently won't
+  // cache but the marker is harmless. See shared/prompt-caching.md.
   cacheControl?: boolean;
 };
 
-export type CallClaudeOpts<T> = {
-  // Stable, cacheable content — instructions, categories, few-shots.
-  // String for simple cases; array of blocks when you want selective caching.
+export type ClaudeUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+};
+
+type BaseCallOpts = {
   system?: string | SystemPromptBlock[];
-  // Volatile per-request content — the transaction list, the SMS body.
   userPrompt: string;
-  // Zod schema for the model's JSON response. Enforced server-side via
-  // output_config.format — rejects hallucinations before they reach us.
-  schema: ZodType<T>;
   model?: string;
   maxTokens?: number;
   apiKey?: string;
@@ -46,36 +47,38 @@ export type CallClaudeOpts<T> = {
   fetchImpl?: typeof fetch;
 };
 
+export type CallClaudeOpts<T> = BaseCallOpts & {
+  // Zod schema for the model's JSON response. Enforced server-side via
+  // output_config.format — rejects hallucinations before they reach us.
+  schema: ZodType<T>;
+};
+
 export type CallClaudeResult<T> = {
   data: T;
   model: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-  };
+  usage: ClaudeUsage;
 };
 
+export type CallClaudeTextResult = {
+  text: string;
+  model: string;
+  usage: ClaudeUsage;
+};
+
+/**
+ * Structured call — use for any response that should be validated against a
+ * Zod schema. Uses messages.parse() + output_config.format so the server
+ * rejects hallucinated shapes before we touch the payload.
+ */
 export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<CallClaudeResult<T>> {
-  const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-
+  const client = buildClient(opts);
   const model = opts.model ?? DEFAULT_MODEL;
-  const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
 
-  const clientOpts: { apiKey: string; fetch?: typeof fetch; timeout?: number } = { apiKey };
-  if (opts.fetchImpl) clientOpts.fetch = opts.fetchImpl;
-  if (opts.timeoutMs !== undefined) clientOpts.timeout = opts.timeoutMs;
-  const client = new Anthropic(clientOpts);
-
-  const systemBlocks = buildSystemBlocks(opts.system);
-
-  try {
+  return runWithErrorHandling(model, async () => {
     const response = await client.messages.parse({
       model,
-      max_tokens: maxTokens,
-      ...(systemBlocks && { system: systemBlocks }),
+      max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      ...systemField(opts.system),
       messages: [{ role: "user", content: opts.userPrompt }],
       output_config: { format: zodOutputFormat(opts.schema) },
     });
@@ -89,26 +92,68 @@ export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<CallClaude
     return {
       data: response.parsed_output,
       model: response.model,
-      usage: {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
-        cacheCreationTokens: response.usage.cache_creation_input_tokens ?? 0,
-      },
+      usage: extractUsage(response.usage),
     };
-  } catch (err) {
-    if (err instanceof Anthropic.RateLimitError) {
-      log.warn({ err, model, event: "ai_rate_limited" }, "anthropic rate limited");
-    } else if (err instanceof Anthropic.APIError) {
-      log.error({ err, model, status: err.status, event: "ai_api_error" }, "anthropic api error");
-    }
-    throw err;
-  }
+  });
 }
 
-function buildSystemBlocks(
-  system: CallClaudeOpts<unknown>["system"],
-): Anthropic.TextBlockParam[] | undefined {
+/**
+ * Prose call — use when the response is free-form text (markdown, long
+ * analysis). No schema means no server-side format constraint; the caller
+ * is responsible for any downstream validation.
+ */
+export async function callClaudeText(opts: BaseCallOpts): Promise<CallClaudeTextResult> {
+  const client = buildClient(opts);
+  const model = opts.model ?? DEFAULT_MODEL;
+
+  return runWithErrorHandling(model, async () => {
+    const response = await client.messages.create({
+      model,
+      max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      ...systemField(opts.system),
+      messages: [{ role: "user", content: opts.userPrompt }],
+    });
+
+    const text = response.content
+      .flatMap((block) => (block.type === "text" ? [block.text] : []))
+      .join("")
+      .trim();
+    if (!text) {
+      throw new Error(
+        `Claude returned empty text (stop_reason=${response.stop_reason}, blocks=${response.content.length})`,
+      );
+    }
+
+    return {
+      text,
+      model: response.model,
+      usage: extractUsage(response.usage),
+    };
+  });
+}
+
+function buildClient(opts: {
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Anthropic {
+  const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+
+  const clientOpts: { apiKey: string; fetch?: typeof fetch; timeout?: number } = { apiKey };
+  if (opts.fetchImpl) clientOpts.fetch = opts.fetchImpl;
+  if (opts.timeoutMs !== undefined) clientOpts.timeout = opts.timeoutMs;
+  return new Anthropic(clientOpts);
+}
+
+function systemField(
+  system: BaseCallOpts["system"],
+): { system: Anthropic.TextBlockParam[] } | Record<string, never> {
+  const blocks = buildSystemBlocks(system);
+  return blocks ? { system: blocks } : {};
+}
+
+function buildSystemBlocks(system: BaseCallOpts["system"]): Anthropic.TextBlockParam[] | undefined {
   if (!system) return undefined;
   if (typeof system === "string") {
     return [{ type: "text", text: system }];
@@ -118,4 +163,26 @@ function buildSystemBlocks(
       ? { type: "text", text: block.text, cache_control: { type: "ephemeral" } }
       : { type: "text", text: block.text },
   );
+}
+
+function extractUsage(usage: Anthropic.Usage): ClaudeUsage {
+  return {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+    cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+  };
+}
+
+async function runWithErrorHandling<T>(model: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof Anthropic.RateLimitError) {
+      log.warn({ err, model, event: "ai_rate_limited" }, "anthropic rate limited");
+    } else if (err instanceof Anthropic.APIError) {
+      log.error({ err, model, status: err.status, event: "ai_api_error" }, "anthropic api error");
+    }
+    throw err;
+  }
 }

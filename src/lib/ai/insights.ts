@@ -10,6 +10,7 @@ import {
 } from "@/lib/db/schema";
 import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 import type { Currency } from "@/lib/types";
+import { callClaudeText } from "@/lib/ai/anthropic-client";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 export const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -346,12 +347,11 @@ export function hashSummary(summary: InsightsSummary): string {
   return createHash("sha256").update(JSON.stringify(summary)).digest("hex");
 }
 
-function buildPrompt(summary: InsightsSummary): string {
-  return `Sos un asesor financiero personal para un usuario colombiano. Analizás sus finanzas mensuales y das recomendaciones PRÁCTICAS y LOCALES.
-
-Datos del mes ${summary.yearMonth} (montos en COP, valor absoluto):
-
-${JSON.stringify(summary, null, 2)}
+// Stable across all users and months — task framing, output structure, and
+// the formatting rules. Gets cache_control so Sonnet 4.6 can amortize it
+// across requests (cache threshold is 2048 tokens; this + the stable
+// investment advisory block combine to comfortably exceed that).
+const INSIGHTS_SYSTEM_PROMPT = `Sos un asesor financiero personal para un usuario colombiano. Analizás sus finanzas mensuales y das recomendaciones PRÁCTICAS y LOCALES.
 
 Generá un reporte en MARKDOWN con estas secciones (usá headings H2):
 
@@ -390,6 +390,11 @@ Reglas:
 - Si no hay datos para una sección, decilo brevemente y seguí.
 
 Devolvé SOLO el markdown del reporte, sin prefacio.`;
+
+function buildUserPrompt(summary: InsightsSummary): string {
+  return `Datos del mes ${summary.yearMonth} (montos en COP, valor absoluto):
+
+${JSON.stringify(summary, null, 2)}`;
 }
 
 export async function generateInsightsReport(opts: {
@@ -402,47 +407,19 @@ export async function generateInsightsReport(opts: {
   model: string;
   usage: { inputTokens: number; outputTokens: number };
 }> {
-  const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-
-  const model = opts.model ?? DEFAULT_MODEL;
-  const doFetch = opts.fetchImpl ?? fetch;
-  const prompt = buildPrompt(opts.summary);
-
-  const res = await doFetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 3000,
-      messages: [{ role: "user", content: prompt }],
-    }),
+  const result = await callClaudeText({
+    system: [{ text: INSIGHTS_SYSTEM_PROMPT, cacheControl: true }],
+    userPrompt: buildUserPrompt(opts.summary),
+    model: opts.model ?? DEFAULT_MODEL,
+    maxTokens: 3000,
+    apiKey: opts.apiKey,
+    fetchImpl: opts.fetchImpl,
   });
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Anthropic API error ${res.status}: ${body.slice(0, 300)}`);
-  }
-
-  const payload = (await res.json()) as {
-    content: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens: number; output_tokens: number };
-  };
-
-  const markdown = (payload.content?.find((c) => c.type === "text")?.text ?? "").trim();
-  if (!markdown) throw new Error("Model returned empty response");
-
   return {
-    markdown,
-    model,
-    usage: {
-      inputTokens: payload.usage?.input_tokens ?? 0,
-      outputTokens: payload.usage?.output_tokens ?? 0,
-    },
+    markdown: result.text,
+    model: result.model,
+    usage: { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens },
   };
 }
 
