@@ -194,6 +194,11 @@ const updatePhysicalCardSchema = z
     id: z.string().uuid(),
     creditLimitCents: z.coerce.number().int().nonnegative(),
     statementCutoffDay: z.coerce.number().int().min(1).max(31).nullable().optional(),
+    nextPaymentDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
     last4: z
       .string()
       .regex(/^\d{4}$/)
@@ -225,6 +230,7 @@ export async function updatePhysicalCard(
     .set({
       creditLimitCents: BigInt(parsed.data.creditLimitCents),
       statementCutoffDay: parsed.data.statementCutoffDay ?? null,
+      nextPaymentDate: parsed.data.nextPaymentDate ?? null,
       last4: parsed.data.last4 ?? null,
       network: parsed.data.network ?? null,
       updatedAt: new Date(),

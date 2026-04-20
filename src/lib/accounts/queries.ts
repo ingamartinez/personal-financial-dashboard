@@ -9,6 +9,7 @@ export type PhysicalCardSummary = {
   id: string;
   creditLimitCents: bigint;
   statementCutoffDay: number | null;
+  nextPaymentDate: string | null;
   network: string | null;
   last4: string | null;
 };
@@ -41,6 +42,7 @@ export async function listAccountsDetailed(userId: number): Promise<AccountDetai
       pcId: physicalCards.id,
       pcCreditLimitCents: physicalCards.creditLimitCents,
       pcStatementCutoffDay: physicalCards.statementCutoffDay,
+      pcNextPaymentDate: physicalCards.nextPaymentDate,
       pcNetwork: physicalCards.network,
       pcLast4: physicalCards.last4,
     })
@@ -72,6 +74,7 @@ export async function listAccountsDetailed(userId: number): Promise<AccountDetai
           id: r.pcId,
           creditLimitCents: r.pcCreditLimitCents!,
           statementCutoffDay: r.pcStatementCutoffDay,
+          nextPaymentDate: r.pcNextPaymentDate,
           network: r.pcNetwork,
           last4: r.pcLast4,
         }

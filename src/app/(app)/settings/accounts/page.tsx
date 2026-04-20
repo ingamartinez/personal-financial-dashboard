@@ -24,6 +24,7 @@ export default async function SettingsAccountsPage() {
       physicalCardId: accounts.physicalCardId,
       pcCreditLimitCents: physicalCards.creditLimitCents,
       pcStatementCutoffDay: physicalCards.statementCutoffDay,
+      pcNextPaymentDate: physicalCards.nextPaymentDate,
       pcLast4: physicalCards.last4,
       pcNetwork: physicalCards.network,
     })
@@ -55,6 +56,7 @@ export default async function SettingsAccountsPage() {
           id: r.physicalCardId,
           creditLimitCents: r.pcCreditLimitCents!.toString(),
           statementCutoffDay: r.pcStatementCutoffDay,
+          nextPaymentDate: r.pcNextPaymentDate,
           last4: r.pcLast4,
           network: r.pcNetwork,
         }

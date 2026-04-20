@@ -45,6 +45,7 @@ export type AccountRowPhysicalCard = {
   // when this type crosses the RSC → client boundary.
   creditLimitCents: string;
   statementCutoffDay: number | null;
+  nextPaymentDate: string | null;
   last4: string | null;
   network: string | null;
 };
@@ -830,6 +831,7 @@ function PhysicalCardEditor({
   const [statementCutoffDay, setStatementCutoffDay] = useState(
     pc?.statementCutoffDay?.toString() ?? "",
   );
+  const [nextPaymentDate, setNextPaymentDate] = useState(pc?.nextPaymentDate ?? "");
   const [last4, setLast4] = useState(pc?.last4 ?? "");
   const [network, setNetwork] = useState(pc?.network ?? "");
 
@@ -846,6 +848,11 @@ function PhysicalCardEditor({
       toast.error("Cutoff day debe ser 1-31.");
       return;
     }
+    const nextPaymentClean = nextPaymentDate.trim();
+    if (nextPaymentClean && !/^\d{4}-\d{2}-\d{2}$/.test(nextPaymentClean)) {
+      toast.error("Próximo pago debe tener formato YYYY-MM-DD.");
+      return;
+    }
     const last4Clean = last4.trim();
     if (last4Clean && !/^\d{4}$/.test(last4Clean)) {
       toast.error("Last4 deben ser exactamente 4 dígitos.");
@@ -857,6 +864,7 @@ function PhysicalCardEditor({
         id: pc.id,
         creditLimitCents: Math.round(limitNum * 100),
         statementCutoffDay: cutoffNum,
+        nextPaymentDate: nextPaymentClean === "" ? null : nextPaymentClean,
         last4: last4Clean === "" ? null : last4Clean,
         network: network === "" ? null : (network as "visa" | "mastercard" | "amex"),
       });
@@ -931,6 +939,16 @@ function PhysicalCardEditor({
                 <option value="amex">Amex</option>
               </select>
             </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="pc-next-payment">Próximo pago</Label>
+            <Input
+              id="pc-next-payment"
+              type="date"
+              value={nextPaymentDate}
+              onChange={(e) => setNextPaymentDate(e.target.value)}
+              className="tabular-nums"
+            />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="pc-last4">Last 4 digits</Label>
