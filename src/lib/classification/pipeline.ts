@@ -138,6 +138,7 @@ export async function classifyUnclassifiedBatch(
         categorySlug: hit.categorySlug,
         classificationMethod: "ai",
         classificationConfidence: hit.confidence,
+        classificationReason: hit.reason?.slice(0, 200) ?? null,
         updatedAt: new Date(),
       })
       .where(

@@ -129,23 +129,46 @@ export async function confirmClassification(input: {
   const parsed = confirmSchema.safeParse(input);
   if (!parsed.success) return { status: "error", message: "Input inválido." };
 
-  const result = await db
-    .update(transactions)
-    .set({
-      classificationMethod: "manual_confirmed",
-      classificationConfidence: 100,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(transactions.userId, session.id),
-        eq(transactions.id, parsed.data.txId),
-        inArray(transactions.classificationMethod, ["rule", "ai"]),
-      ),
-    )
-    .returning({ id: transactions.id });
+  const updated = await db.transaction(async (trx) => {
+    const [current] = await trx
+      .select({
+        method: transactions.classificationMethod,
+        confidence: transactions.classificationConfidence,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, parsed.data.txId),
+          inArray(transactions.classificationMethod, ["rule", "ai"]),
+        ),
+      )
+      .limit(1);
 
-  if (result.length === 0) {
+    if (!current) return [];
+
+    // Snapshot the prior method + confidence into classification_reason as a
+    // JSON blob so the explainability endpoint can surface "confirmed from AI
+    // classification at 45% confidence" without extra columns. VARCHAR(200) has
+    // plenty of room for this shape.
+    const reason = JSON.stringify({
+      confirmed_from: current.method,
+      confidence: current.confidence,
+    });
+
+    return trx
+      .update(transactions)
+      .set({
+        classificationMethod: "manual_confirmed",
+        classificationConfidence: 100,
+        classificationReason: reason,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.userId, session.id), eq(transactions.id, parsed.data.txId)))
+      .returning({ id: transactions.id });
+  });
+
+  if (updated.length === 0) {
     return { status: "error", message: "Transacción no está pendiente de revisión." };
   }
 

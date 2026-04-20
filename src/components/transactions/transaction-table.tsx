@@ -19,6 +19,7 @@ import { useNewIds } from "@/lib/hooks/use-new-ids";
 import { hasSecondaryDescription, primaryDescription } from "@/lib/transactions/description";
 import type { CounterpartyBrief, TxRow } from "@/lib/transactions/queries";
 import { CategoryCell, type CategoryOption } from "./category-cell";
+import { ClassificationReasonDialog } from "./classification-reason-dialog";
 import { ConfidenceBadge, confidenceBand } from "./confidence-badge";
 import { CounterpartyDialog } from "./counterparty-dialog";
 
@@ -217,10 +218,16 @@ export function TransactionTable({
                     <TableCell className="px-4">
                       <div className="flex flex-col gap-1">
                         <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
-                        <ConfidenceBadge
-                          method={tx.classificationMethod}
-                          confidence={tx.classificationConfidence}
-                        />
+                        <div className="flex flex-wrap items-center gap-1">
+                          <ConfidenceBadge
+                            method={tx.classificationMethod}
+                            confidence={tx.classificationConfidence}
+                          />
+                          <ClassificationReasonDialog
+                            txId={tx.id}
+                            method={tx.classificationMethod}
+                          />
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell
@@ -305,10 +312,13 @@ export function TransactionTable({
 
                 <div className="flex flex-col gap-1">
                   <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
-                  <ConfidenceBadge
-                    method={tx.classificationMethod}
-                    confidence={tx.classificationConfidence}
-                  />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <ConfidenceBadge
+                      method={tx.classificationMethod}
+                      confidence={tx.classificationConfidence}
+                    />
+                    <ClassificationReasonDialog txId={tx.id} method={tx.classificationMethod} />
+                  </div>
                 </div>
               </motion.li>
             );
