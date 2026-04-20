@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, ingestionLogs, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  ingestionLogs,
+  parserEvents,
+  type ParserEventKind,
+  transactions,
+} from "@/lib/db/schema";
 import {
   sloClassificationRate,
   sloDataLoss,
@@ -23,6 +29,7 @@ const ago = (days: number, hours = 0) =>
 async function cleanup() {
   await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__slos_test_tx__%'`);
   await db.execute(sql`DELETE FROM ingestion_logs WHERE user_id = ${TEST_USER_ID}`);
+  await db.execute(sql`DELETE FROM parser_events WHERE user_id = ${TEST_USER_ID}`);
   await db.execute(sql`DELETE FROM accounts WHERE name = ${TEST_ACCOUNT}`);
 }
 
@@ -60,6 +67,21 @@ async function seedTx(opts: {
   });
 }
 
+async function seedParserEvent(opts: {
+  eventKind: ParserEventKind;
+  createdAt: Date;
+  source?: "sms" | "apple_pay" | "other";
+}): Promise<void> {
+  await db.insert(parserEvents).values({
+    userId: TEST_USER_ID,
+    source: opts.source ?? "sms",
+    eventKind: opts.eventKind,
+    regexOutcome: { kind: "slo-test", raw: "slo-test-sms" },
+    latencyMs: 0,
+    createdAt: opts.createdAt,
+  });
+}
+
 async function seedLog(opts: {
   source: "sms" | "csv" | "apple_pay" | "manual" | "telegram";
   status: "inserted" | "duplicated" | "error" | "skipped";
@@ -83,40 +105,66 @@ async function seedLog(opts: {
   return row.id;
 }
 
-describe("sloParseSuccess", () => {
+describe("sloParseSuccess — from parser_events (#329 PR2)", () => {
   beforeEach(cleanup);
   afterEach(cleanup);
 
-  it("green when success rate ≥ 95%", async () => {
-    for (let i = 0; i < 19; i++)
-      await seedLog({ source: "sms", status: "inserted", startedAt: ago(1) });
-    await seedLog({ source: "sms", status: "error", startedAt: ago(1) });
+  it("green when (regex_success + ai_fallback_success) / total ≥ 95%", async () => {
+    for (let i = 0; i < 18; i++)
+      await seedParserEvent({ eventKind: "parse_outcome_success", createdAt: ago(1) });
+    await seedParserEvent({ eventKind: "ai_fallback_success", createdAt: ago(1) });
+    await seedParserEvent({ eventKind: "ai_fallback_error", createdAt: ago(1) });
 
     const r = await sloParseSuccess(30, NOW);
     expect(r.raw).toBeCloseTo(0.95, 5);
     expect(r.status).toBe("green");
-    expect(r.drilldown).toBe("/settings/inbox");
+    expect(r.drilldown).toBe("/admin/slos/events?kind=failures");
   });
 
-  it("red when success rate <95% by more than 5%", async () => {
+  it("red when more than 5% below target", async () => {
     for (let i = 0; i < 5; i++)
-      await seedLog({ source: "sms", status: "error", startedAt: ago(1) });
+      await seedParserEvent({ eventKind: "parse_needs_review", createdAt: ago(1) });
     for (let i = 0; i < 5; i++)
-      await seedLog({ source: "sms", status: "inserted", startedAt: ago(1) });
+      await seedParserEvent({ eventKind: "parse_outcome_success", createdAt: ago(1) });
 
     const r = await sloParseSuccess(30, NOW);
     expect(r.raw).toBeCloseTo(0.5, 5);
     expect(r.status).toBe("red");
   });
 
-  it("excludes ai-classify and debug-capture rows", async () => {
-    await seedLog({ source: "sms", status: "inserted", startedAt: ago(1) });
-    await seedLog({ source: "manual", status: "inserted", startedAt: ago(1), kind: "ai-classify" });
-    await seedLog({
+  it("excludes parse_outcome_skip from denominator — skips are not failures", async () => {
+    await seedParserEvent({ eventKind: "parse_outcome_success", createdAt: ago(1) });
+    for (let i = 0; i < 10; i++)
+      await seedParserEvent({ eventKind: "parse_outcome_skip", createdAt: ago(1) });
+
+    const r = await sloParseSuccess(30, NOW);
+    // 1/1, not 1/11 — the 10 skips never enter the denominator.
+    expect(r.raw).toBe(1);
+  });
+
+  it("AI fallback success counts as parse success", async () => {
+    await seedParserEvent({ eventKind: "ai_fallback_success", createdAt: ago(1) });
+    await seedParserEvent({ eventKind: "parse_needs_review", createdAt: ago(1) });
+
+    const r = await sloParseSuccess(30, NOW);
+    expect(r.raw).toBe(0.5);
+  });
+
+  it("AI fallback low-confidence and error count as failures", async () => {
+    await seedParserEvent({ eventKind: "parse_outcome_success", createdAt: ago(1) });
+    await seedParserEvent({ eventKind: "ai_fallback_low_confidence", createdAt: ago(1) });
+    await seedParserEvent({ eventKind: "ai_fallback_error", createdAt: ago(1) });
+
+    const r = await sloParseSuccess(30, NOW);
+    expect(r.raw).toBeCloseTo(1 / 3, 5);
+  });
+
+  it("filters by source=sms — apple_pay events do not pollute the SMS SLO", async () => {
+    await seedParserEvent({ eventKind: "parse_outcome_success", createdAt: ago(1) });
+    await seedParserEvent({
+      eventKind: "parse_needs_review",
+      createdAt: ago(1),
       source: "apple_pay",
-      status: "error",
-      startedAt: ago(1),
-      kind: "debug-capture",
     });
 
     const r = await sloParseSuccess(30, NOW);
@@ -131,9 +179,22 @@ describe("sloParseSuccess", () => {
   });
 
   it("trend has one point per day in the window", async () => {
-    await seedLog({ source: "sms", status: "inserted", startedAt: ago(1) });
+    await seedParserEvent({ eventKind: "parse_outcome_success", createdAt: ago(1) });
     const r = await sloParseSuccess(7, NOW);
     expect(r.trend).toHaveLength(7);
+  });
+
+  it("description surfaces the regex/AI/failure breakdown", async () => {
+    for (let i = 0; i < 8; i++)
+      await seedParserEvent({ eventKind: "parse_outcome_success", createdAt: ago(1) });
+    await seedParserEvent({ eventKind: "ai_fallback_success", createdAt: ago(1) });
+    await seedParserEvent({ eventKind: "parse_needs_review", createdAt: ago(1) });
+
+    const r = await sloParseSuccess(30, NOW);
+    expect(r.description).toMatch(/regex 8/);
+    expect(r.description).toMatch(/AI 1/);
+    expect(r.description).toMatch(/fallos 1/);
+    expect(r.description).toMatch(/10 intentos/);
   });
 });
 

@@ -110,6 +110,9 @@ describe("ingestParsed — needs_review + AI fallback", () => {
     expect(events).toHaveLength(1);
     expect(events[0].eventKind).toBe("parse_needs_review");
     expect(events[0].aiModel).toBeNull();
+    // Raw SMS is persisted for drill-down debugging (#329 PR2).
+    const regex = events[0].regexOutcome as Record<string, unknown>;
+    expect(regex.raw).toBe(rawSms);
   });
 
   it("creates tx + records ai_fallback_success on high-confidence AI output", async () => {
@@ -218,6 +221,8 @@ describe("ingestParsed — parse outcome telemetry (#329 PR1)", () => {
     const regex = events[0].regexOutcome as Record<string, unknown>;
     expect(regex.kind).toBe("skip");
     expect(regex.reason).toBe("non_transactional");
+    // Raw SMS is persisted for drill-down debugging (#329 PR2).
+    expect(regex.raw).toBe(skipInput.raw);
   });
 
   it("records parse_outcome_success for the regex happy path and inserts the tx", async () => {

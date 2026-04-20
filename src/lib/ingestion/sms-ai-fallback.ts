@@ -279,13 +279,17 @@ export async function recordParseSuccess(params: {
 
 // Telemetry for the skip path (OTP, promo, failed-tx notifications).
 // Skips are excluded from the SLO denominator — not failures. Non-blocking.
-export async function recordParseSkip(params: { userId: number; reason: string }): Promise<void> {
+export async function recordParseSkip(params: {
+  userId: number;
+  reason: string;
+  raw: string;
+}): Promise<void> {
   try {
     await db.insert(parserEvents).values({
       userId: params.userId,
       source: "sms",
       eventKind: "parse_outcome_skip",
-      regexOutcome: { kind: "skip", reason: params.reason },
+      regexOutcome: { kind: "skip", reason: params.reason, raw: params.raw },
       latencyMs: 0,
     });
   } catch (err) {
