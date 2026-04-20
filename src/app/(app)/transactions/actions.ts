@@ -12,11 +12,14 @@ import {
   counterpartyType,
   ingestionLogs,
   transactions,
+  users,
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { classifySingleWithAi as classifySingleWithAiLib } from "@/lib/classification/ai";
+import { MERCHANT_HINTS_MAX } from "@/lib/classification/context";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
+import type { UserClassificationContext } from "@/lib/db/schema";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
@@ -73,6 +76,34 @@ export async function updateTransactionCategory(input: {
         previousCategorySlug: prior,
         newCategorySlug: categorySlug,
       });
+
+      // Soft learning signal — merchant hint fed to the AI prompt on future
+      // classifications. Rolling FIFO (newest wins). SELECT FOR UPDATE on the
+      // users row serializes concurrent corrections so no hint is lost to an
+      // interleaved read/modify/write on the same jsonb blob.
+      if (current.merchant) {
+        const [userRow] = await trx
+          .select({ context: users.classificationContext })
+          .from(users)
+          .where(eq(users.id, session.id))
+          .for("update");
+        const ctx: UserClassificationContext = userRow?.context ?? {};
+        const nextHints = [
+          ...(ctx.merchant_hints ?? []),
+          {
+            merchant: current.merchant,
+            category: categorySlug,
+            corrected_at: new Date().toISOString(),
+          },
+        ].slice(-MERCHANT_HINTS_MAX);
+        await trx
+          .update(users)
+          .set({
+            classificationContext: { ...ctx, merchant_hints: nextHints },
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, session.id));
+      }
     }
   });
 
@@ -259,14 +290,21 @@ export async function classifySingleWithAi(
     throw new Error("Transaction is already classified");
   }
 
-  const cats = await db
-    .select({
-      slug: categories.slug,
-      name: categories.name,
-      parentSlug: categories.parentSlug,
-    })
-    .from(categories)
-    .where(and(eq(categories.userId, session.id), notDeleted(categories.deletedAt)));
+  const [cats, userRow] = await Promise.all([
+    db
+      .select({
+        slug: categories.slug,
+        name: categories.name,
+        parentSlug: categories.parentSlug,
+      })
+      .from(categories)
+      .where(and(eq(categories.userId, session.id), notDeleted(categories.deletedAt))),
+    db
+      .select({ context: users.classificationContext })
+      .from(users)
+      .where(eq(users.id, session.id))
+      .limit(1),
+  ]);
 
   const result = await classifySingleWithAiLib({
     transaction: {
@@ -276,6 +314,7 @@ export async function classifySingleWithAi(
       currency: tx.currency,
     },
     categories: cats,
+    userHints: userRow[0]?.context?.merchant_hints ?? [],
   });
 
   const hit = result.classification;

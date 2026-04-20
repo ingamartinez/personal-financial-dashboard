@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { categories, classificationRules } from "@/lib/db/schema";
+import { categories, classificationRules, ruleProposals } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { RulesManager } from "./rules-manager";
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function RulesPage() {
   const session = await getSessionUser();
-  const [cats, rules] = await Promise.all([
+  const [cats, rules, proposals] = await Promise.all([
     db
       .select({
         slug: categories.slug,
@@ -35,12 +35,28 @@ export default async function RulesPage() {
       .from(classificationRules)
       .where(eq(classificationRules.userId, session.id))
       .orderBy(asc(classificationRules.priority), asc(classificationRules.id)),
+    db
+      .select({
+        id: ruleProposals.id,
+        merchant: ruleProposals.merchant,
+        categorySlug: ruleProposals.categorySlug,
+        correctionTxnIds: ruleProposals.correctionTxnIds,
+        createdAt: ruleProposals.createdAt,
+      })
+      .from(ruleProposals)
+      .where(and(eq(ruleProposals.userId, session.id), eq(ruleProposals.status, "pending")))
+      .orderBy(asc(ruleProposals.createdAt)),
   ]);
 
   const rows = rules.map((r) => ({
     ...r,
     lastHitAt: r.lastHitAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
+  }));
+
+  const pending = proposals.map((p) => ({
+    ...p,
+    createdAt: p.createdAt.toISOString(),
   }));
 
   return (
@@ -53,7 +69,7 @@ export default async function RulesPage() {
           desactivarlas, editarlas o convertirlas a manuales si querés hacerlas tuyas.
         </p>
       </header>
-      <RulesManager categories={cats} rules={rows} />
+      <RulesManager categories={cats} rules={rows} proposals={pending} />
     </main>
   );
 }

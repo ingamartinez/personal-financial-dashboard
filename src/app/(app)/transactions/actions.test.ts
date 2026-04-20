@@ -782,6 +782,9 @@ describe("updateTransactionCategory", () => {
     await db.execute(sql`
       DELETE FROM transactions WHERE external_id LIKE 'test-update-cat:%'
     `);
+    await db.execute(sql`
+      UPDATE users SET classification_context = '{}'::jsonb WHERE id = ${TEST_USER_ID}
+    `);
   }
 
   beforeEach(cleanupUpdateCategoryTxs);
@@ -906,6 +909,56 @@ describe("updateTransactionCategory", () => {
       SELECT 1 FROM classification_corrections WHERE transaction_id = ${txId}
     `);
     expect(corrections).toHaveLength(0);
+  });
+
+  it("appends a rolling merchant hint on correction and trims to the most recent 50", async () => {
+    const txId = await seedTxWithMerchant({
+      externalId: "test-update-cat:hint",
+      merchant: "CARULLA",
+    });
+
+    // Pre-seed classification_context with 50 hints so the 51st correction
+    // triggers the rolling FIFO trim. Hints older than slot 1 should drop.
+    const hints = Array.from({ length: 50 }, (_, i) => ({
+      merchant: `OLD-${i}`,
+      category: "alimentacion",
+      corrected_at: new Date(Date.now() - (50 - i) * 60_000).toISOString(),
+    }));
+    await db.execute(sql`
+      UPDATE users
+      SET classification_context = ${JSON.stringify({ merchant_hints: hints })}::jsonb
+      WHERE id = ${TEST_USER_ID}
+    `);
+
+    await updateTransactionCategory({ txId, categorySlug: "alimentacion" });
+
+    const [row] = await db.execute<{
+      classification_context: { merchant_hints?: Array<{ merchant: string; category: string }> };
+    }>(sql`
+      SELECT classification_context FROM users WHERE id = ${TEST_USER_ID}
+    `);
+    const storedHints = row.classification_context.merchant_hints ?? [];
+    expect(storedHints).toHaveLength(50);
+    // Oldest hint (OLD-0) dropped; newest is the CARULLA we just wrote.
+    expect(storedHints[0]?.merchant).toBe("OLD-1");
+    expect(storedHints[49]?.merchant).toBe("CARULLA");
+    expect(storedHints[49]?.category).toBe("alimentacion");
+  });
+
+  it("skips the merchant hint when merchant is null", async () => {
+    const txId = await seedTxWithMerchant({
+      externalId: "test-update-cat:nomerchant",
+      merchant: null,
+    });
+
+    await updateTransactionCategory({ txId, categorySlug: "alimentacion" });
+
+    const [row] = await db.execute<{
+      classification_context: { merchant_hints?: unknown[] };
+    }>(sql`
+      SELECT classification_context FROM users WHERE id = ${TEST_USER_ID}
+    `);
+    expect(row.classification_context.merchant_hints ?? []).toHaveLength(0);
   });
 
   it("silently no-ops when txId does not exist (no correction, no throw)", async () => {

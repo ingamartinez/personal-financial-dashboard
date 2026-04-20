@@ -1,8 +1,8 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
-import { categories, ingestionLogs, transactions } from "@/lib/db/schema";
+import { categories, ingestionLogs, transactions, users } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
-import { classifyBatchWithAi, type AiCategoryOption } from "./ai";
+import { classifyBatchWithAi, type AiCategoryOption, type AiUserHint } from "./ai";
 import { classifyByRule } from "./rules";
 
 export const AI_BATCH_SIZE = 20;
@@ -53,15 +53,23 @@ export async function classifyUnclassifiedBatch(
     };
   }
 
-  const cats = await database
-    .select({
-      slug: categories.slug,
-      name: categories.name,
-      parentSlug: categories.parentSlug,
-    })
-    .from(categories)
-    .where(and(eq(categories.userId, userId), notDeleted(categories.deletedAt)));
+  const [cats, userRow] = await Promise.all([
+    database
+      .select({
+        slug: categories.slug,
+        name: categories.name,
+        parentSlug: categories.parentSlug,
+      })
+      .from(categories)
+      .where(and(eq(categories.userId, userId), notDeleted(categories.deletedAt))),
+    database
+      .select({ context: users.classificationContext })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1),
+  ]);
   const catOptions: AiCategoryOption[] = cats;
+  const userHints: AiUserHint[] = userRow[0]?.context?.merchant_hints ?? [];
 
   let ruleClassified = 0;
   const stillPending: typeof pending = [];
@@ -110,6 +118,7 @@ export async function classifyUnclassifiedBatch(
       currency: t.currency,
     })),
     categories: catOptions,
+    userHints,
   });
 
   const byId = new Map(aiResult.classifications.map((c) => [c.id, c]));
