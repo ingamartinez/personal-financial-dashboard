@@ -901,6 +901,29 @@ export const canaryAlerts = pgTable(
   ],
 );
 
+// Sustained-threshold alerts for the SLO dashboard (#329 PR3). Same dedup
+// shape as canary_alerts: at most one unresolved row per sloKey at any time.
+// Rate/target stored as 4-decimal numeric for auditability; raw rolls up from
+// whatever sourced it (parser_events, transactions, etc).
+export const sloAlerts = pgTable(
+  "slo_alerts",
+  {
+    id: serial("id").primaryKey(),
+    sloKey: varchar("slo_key", { length: 40 }).notNull(),
+    rate: numeric("rate", { precision: 5, scale: 4 }).notNull(),
+    target: numeric("target", { precision: 5, scale: 4 }).notNull(),
+    samples: integer("samples").notNull(),
+    notificationStatus: varchar("notification_status", { length: 40 }).notNull(),
+    firedAt: timestamp("fired_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("slo_alerts_open_idx")
+      .on(t.sloKey, t.firedAt)
+      .where(sql`${t.resolvedAt} IS NULL`),
+  ],
+);
+
 export const userHealthSnapshots = pgTable(
   "user_health_snapshots",
   {

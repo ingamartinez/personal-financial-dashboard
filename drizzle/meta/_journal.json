@@ -274,6 +274,13 @@
       "when": 1776660801407,
       "tag": "0038_chilly_madame_web",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1776664320454,
+      "tag": "0039_grey_shinobi_shaw",
+      "breakpoints": true
     }
   ]
 }

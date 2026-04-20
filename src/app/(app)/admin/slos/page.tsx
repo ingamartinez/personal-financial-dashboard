@@ -29,13 +29,14 @@ function parseWindow(value: string | undefined): SloWindow {
 export default async function AdminSlosPage({
   searchParams,
 }: {
-  searchParams: Promise<{ window?: string }>;
+  searchParams: Promise<{ window?: string; focus?: string }>;
 }) {
   const session = await getSessionUser();
   if (session.role !== "admin") notFound();
 
   const params = await searchParams;
   const windowDays = parseWindow(params.window);
+  const focus = params.focus;
   const [slos, canaryStats, canaryTrend] = await Promise.all([
     computeAllSlos(windowDays),
     computeAgreementRate24h(),
@@ -56,7 +57,7 @@ export default async function AdminSlosPage({
       </header>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {slos.map((slo) => (
-          <SloCard key={slo.key} slo={slo} />
+          <SloCard key={slo.key} slo={slo} focused={focus === slo.key} />
         ))}
       </div>
       <section className="flex flex-col gap-2">
@@ -182,10 +183,13 @@ const STATUS_STYLES: Record<SloStatus, { label: string; className: string; dot: 
   },
 };
 
-function SloCard({ slo }: { slo: SloResult }) {
+function SloCard({ slo, focused }: { slo: SloResult; focused: boolean }) {
   const style = STATUS_STYLES[slo.status];
+  // Focused cards get a subtle ring so operators landing from a Telegram alert
+  // deep link (/admin/slos?focus=parse_success) can spot the flagged SLO.
+  const focusClass = focused ? "ring-2 ring-offset-2 ring-amber-500" : "";
   return (
-    <Card className={style.className}>
+    <Card className={`${style.className} ${focusClass}`}>
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-col gap-0.5">
