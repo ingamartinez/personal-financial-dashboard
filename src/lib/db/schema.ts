@@ -793,6 +793,55 @@ export type CanaryProjection = {
   occurredOn: string | null;
 };
 
+// Per-SMS audit row for the AI fallback pipeline (#257) and the eventual
+// /admin/slos dashboard (#329 — continuation of closed #249). Append-only.
+// Today we only emit rows on the needs_review path (regex failed → maybe
+// AI fallback); the dashboard issue later extends this to log all parse
+// outcomes for SLO cards.
+//
+// `source` is the ingest channel (today just "sms"). `eventKind` is the
+// lifecycle terminal state for this SMS — exactly one row per ingest
+// attempt. `regex_outcome` is the serialized ParseResult; `ai_outcome`
+// captures the AI response shape (+ error detail in the failure kinds).
+export const PARSER_EVENT_KINDS = [
+  "parse_needs_review", // regex failed, AI fallback not invoked (kill-switch / disabled)
+  "ai_fallback_success", // AI parsed, confidence ≥ threshold → ingested
+  "ai_fallback_low_confidence", // AI parsed, below threshold → inbox
+  "ai_fallback_error", // AI timeout / API error / schema rejected
+] as const;
+export type ParserEventKind = (typeof PARSER_EVENT_KINDS)[number];
+
+export const PARSER_EVENT_SOURCES = ["sms", "apple_pay", "other"] as const;
+export type ParserEventSource = (typeof PARSER_EVENT_SOURCES)[number];
+
+export const parserEvents = pgTable(
+  "parser_events",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+    source: varchar("source", { length: 20 }).$type<ParserEventSource>().notNull(),
+    eventKind: varchar("event_kind", { length: 40 }).$type<ParserEventKind>().notNull(),
+    regexOutcome: jsonb("regex_outcome").$type<Record<string, unknown>>(),
+    aiOutcome: jsonb("ai_outcome").$type<Record<string, unknown>>(),
+    aiConfidence: numeric("ai_confidence", { precision: 4, scale: 3 }),
+    aiModel: varchar("ai_model", { length: 50 }),
+    aiInputTokens: integer("ai_input_tokens"),
+    aiOutputTokens: integer("ai_output_tokens"),
+    latencyMs: integer("latency_ms"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("parser_events_created_idx").on(t.createdAt),
+    index("parser_events_kind_idx").on(t.eventKind, t.createdAt),
+    // Partial index for dashboard drill-down: "show me recent AI fallback
+    // outcomes" is the most common ad-hoc query and avoids scanning the
+    // table once parse-outcome logging is also added in #329.
+    index("parser_events_ai_fallback_idx")
+      .on(t.createdAt)
+      .where(sql`${t.eventKind} LIKE 'ai_fallback_%'`),
+  ],
+);
+
 export const parserCanaryEvents = pgTable(
   "parser_canary_events",
   {
