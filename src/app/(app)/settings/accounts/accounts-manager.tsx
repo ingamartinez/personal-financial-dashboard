@@ -330,6 +330,7 @@ type SideMetadataKeys = Pick<
   | "creditLimitCents"
   | "cutoffDay"
   | "paymentDueDay"
+  | "nextPaymentDate"
   | "interestRateMonthly"
   | "termMonths"
   | "loanOriginalCents"
@@ -342,6 +343,7 @@ function metadataFromForm(values: {
   creditLimit: string;
   cutoffDay: string;
   paymentDueDay: string;
+  nextPaymentDate: string;
   interestRateMonthly: string;
   termMonths: string;
   loanOriginal: string;
@@ -367,6 +369,10 @@ function metadataFromForm(values: {
   if (values.paymentDueDay) {
     const n = Number(values.paymentDueDay);
     if (Number.isInteger(n) && n >= 1 && n <= 31) md.paymentDueDay = n;
+  }
+  const nextPaymentClean = values.nextPaymentDate.trim();
+  if (nextPaymentClean && /^\d{4}-\d{2}-\d{2}$/.test(nextPaymentClean)) {
+    md.nextPaymentDate = nextPaymentClean;
   }
   if (values.interestRateMonthly) {
     const n = Number(values.interestRateMonthly);
@@ -415,6 +421,7 @@ function AccountEditor({
   );
   const [cutoffDay, setCutoffDay] = useState(initialMeta.cutoffDay?.toString() ?? "");
   const [paymentDueDay, setPaymentDueDay] = useState(initialMeta.paymentDueDay?.toString() ?? "");
+  const [nextPaymentDate, setNextPaymentDate] = useState<string>(initialMeta.nextPaymentDate ?? "");
   const [interestRateMonthly, setInterestRateMonthly] = useState(
     initialMeta.interestRateMonthly?.toString() ?? "",
   );
@@ -449,6 +456,7 @@ function AccountEditor({
       creditLimit,
       cutoffDay,
       paymentDueDay,
+      nextPaymentDate,
       interestRateMonthly,
       termMonths,
       loanOriginal,
@@ -479,9 +487,15 @@ function AccountEditor({
       };
       // Strip the shared-cupo keys from both sub-account metadata payloads —
       // they belong to physical_cards now, not accounts.
-      const { creditLimitCents: _pLimit, cutoffDay: _pCutoff, ...primaryMdNoLimit } = primaryMd;
+      const {
+        creditLimitCents: _pLimit,
+        cutoffDay: _pCutoff,
+        nextPaymentDate: _pNext,
+        ...primaryMdNoLimit
+      } = primaryMd;
       void _pLimit;
       void _pCutoff;
+      void _pNext;
       secondary = {
         currency: secondaryCurrency,
         balance: secBal,
@@ -491,6 +505,7 @@ function AccountEditor({
           creditLimit: "", // lives in physical_cards now
           cutoffDay: "", // lives in physical_cards now
           paymentDueDay,
+          nextPaymentDate: "", // lives in physical_cards now
           interestRateMonthly: "",
           termMonths: "",
           loanOriginal: "",
@@ -501,6 +516,7 @@ function AccountEditor({
       Object.assign(primaryMd, primaryMdNoLimit);
       delete primaryMd.creditLimitCents;
       delete primaryMd.cutoffDay;
+      delete primaryMd.nextPaymentDate;
     }
 
     startTransition(async () => {
@@ -708,34 +724,54 @@ function AccountEditor({
               )}
 
               {type === "credit_card" ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="acc-cutoff">Cutoff day</Label>
-                    <Input
-                      id="acc-cutoff"
-                      type="number"
-                      min="1"
-                      max="31"
-                      value={cutoffDay}
-                      onChange={(e) => setCutoffDay(e.target.value)}
-                      placeholder="Optional"
-                      className="tabular-nums"
-                    />
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="acc-cutoff">Cutoff day</Label>
+                      <Input
+                        id="acc-cutoff"
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={cutoffDay}
+                        onChange={(e) => setCutoffDay(e.target.value)}
+                        placeholder="Optional"
+                        className="tabular-nums"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="acc-due">Payment due day</Label>
+                      <Input
+                        id="acc-due"
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={paymentDueDay}
+                        onChange={(e) => setPaymentDueDay(e.target.value)}
+                        placeholder="Optional"
+                        className="tabular-nums"
+                      />
+                    </div>
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="acc-due">Payment due day</Label>
-                    <Input
-                      id="acc-due"
-                      type="number"
-                      min="1"
-                      max="31"
-                      value={paymentDueDay}
-                      onChange={(e) => setPaymentDueDay(e.target.value)}
-                      placeholder="Optional"
-                      className="tabular-nums"
-                    />
-                  </div>
-                </div>
+                  {editing?.physicalCardId ? null : (
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="acc-next-payment">Próximo pago</Label>
+                      <Input
+                        id="acc-next-payment"
+                        type="date"
+                        value={nextPaymentDate}
+                        onChange={(e) => setNextPaymentDate(e.target.value)}
+                        className="tabular-nums"
+                      />
+                      <p className="text-muted-foreground text-xs">
+                        Fecha puntual del próximo pago (se muestra en el widget).
+                        {multiCurrencyAllowed && multiCurrency
+                          ? " Para tarjetas multi-moneda, edítalo después desde la tarjeta física."
+                          : ""}
+                      </p>
+                    </div>
+                  )}
+                </>
               ) : null}
 
               {type === "loan" ? (
