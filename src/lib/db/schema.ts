@@ -190,7 +190,9 @@ export const accounts = pgTable(
       .default(sql`0`),
     active: boolean("active").notNull().default(true),
     metadata: jsonb("metadata").$type<AccountMetadata>().notNull().default({}),
-    physicalCardId: uuid("physical_card_id"),
+    physicalCardId: uuid("physical_card_id").references((): AnyPgColumn => physicalCards.id, {
+      onDelete: "set null",
+    }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -227,6 +229,41 @@ export type AccountMetadata = {
   // were used as a pre-helper hack to disambiguate multi-currency cards.
   legacyNameSuffix?: string;
 };
+
+// One row per physical plastic for multi-currency credit cards where the bank
+// shares a single COP cupo across COP+USD balances (e.g. Bancolombia Mastercard
+// Internacional, Amex). Linked `accounts` rows carry the per-currency balance
+// and per-currency statement attributes; this table owns the shared cupo.
+// Single-currency credit cards stay on `accounts.metadata.creditLimitCents`
+// for now — they are intentionally NOT migrated here (#346).
+export type PhysicalCardMetadata = {
+  coalescedFrom?: number[];
+};
+
+export const physicalCards = pgTable(
+  "physical_cards",
+  {
+    id: uuid("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    institution: varchar("institution", { length: 50 }).notNull(),
+    institutionSlug: institutionSlug("institution_slug").notNull().default("other"),
+    network: varchar("network", { length: 20 }),
+    last4: varchar("last4", { length: 4 }),
+    creditLimitCents: bigint("credit_limit_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    statementCutoffDay: smallint("statement_cutoff_day"),
+    metadata: jsonb("metadata").$type<PhysicalCardMetadata>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("physical_cards_user_idx").on(t.userId),
+    index("physical_cards_user_institution_idx").on(t.userId, t.institutionSlug),
+  ],
+);
 
 // Global immutable template for categories. Populated by `seedReferenceData()`
 // on every deploy. Serves as the source for `copyCategorySeedsToUser(userId)`

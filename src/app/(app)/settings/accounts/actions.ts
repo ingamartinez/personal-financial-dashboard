@@ -5,7 +5,13 @@ import { revalidatePath } from "next/cache";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { accounts, categories, transactions, type AccountMetadata } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  physicalCards,
+  transactions,
+  type AccountMetadata,
+} from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 
@@ -105,8 +111,28 @@ export async function upsertAccount(input: AccountUpsertInput) {
   }
 
   if (parsed.secondary) {
+    // Multi-currency credit cards have a shared COP cupo owned by `physical_cards`
+    // (#346). Insert the parent row first so the FK on accounts.physical_card_id
+    // resolves within the same transaction. Cupo initializes to 0 — Task 5
+    // (issue #346) will add a top-level creditLimit input to the create form;
+    // for now the user edits it via the future "Editar tarjeta física" modal.
     const physicalCardId = randomUUID();
+    const primaryMeta = parsed.primary.metadata ?? {};
+    const secondaryMeta = parsed.secondary.metadata ?? {};
+    const coalescedLimit = Math.max(
+      primaryMeta.creditLimitCents ?? 0,
+      secondaryMeta.creditLimitCents ?? 0,
+    );
     await db.transaction(async (trx) => {
+      await trx.insert(physicalCards).values({
+        id: physicalCardId,
+        userId: session.id,
+        institution: parsed.institution,
+        network: primaryMeta.network ?? secondaryMeta.network,
+        last4: primaryMeta.last4s?.[0] ?? secondaryMeta.last4s?.[0],
+        creditLimitCents: BigInt(coalescedLimit),
+        statementCutoffDay: primaryMeta.cutoffDay ?? secondaryMeta.cutoffDay,
+      });
       await trx.insert(accounts).values([
         { ...base, ...sideToValues(parsed.primary), physicalCardId },
         { ...base, ...sideToValues(parsed.secondary!), physicalCardId },
