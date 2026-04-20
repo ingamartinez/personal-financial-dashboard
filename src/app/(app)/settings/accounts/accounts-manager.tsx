@@ -390,7 +390,6 @@ function AccountEditor({
     currency === "COP" ? "USD" : "COP",
   );
   const [secondaryBalance, setSecondaryBalance] = useState("0");
-  const [secondaryCreditLimit, setSecondaryCreditLimit] = useState("");
 
   const multiCurrencyAllowed = !isEdit && type === "credit_card";
 
@@ -414,6 +413,7 @@ function AccountEditor({
     });
 
     let secondary: Parameters<typeof upsertAccount>[0]["secondary"];
+    let physicalCard: Parameters<typeof upsertAccount>[0]["physicalCard"];
     if (multiCurrencyAllowed && multiCurrency) {
       if (secondaryCurrency === currency) {
         toast.error("Secondary currency must differ from primary");
@@ -424,14 +424,29 @@ function AccountEditor({
         toast.error("Secondary balance must be a number");
         return;
       }
+      // Multi-currency credit cards: the primary `creditLimit` input is the
+      // shared COP cupo; no per-side limit. Submit via top-level `physicalCard`
+      // so it lands in `physical_cards` — NOT in either sub-account's metadata.
+      const sharedLimitCents = creditLimit !== "" ? Math.round(Number(creditLimit) * 100) : 0;
+      physicalCard = {
+        creditLimitCents: Number.isFinite(sharedLimitCents) ? sharedLimitCents : 0,
+        cutoffDay: cutoffDay !== "" ? Number(cutoffDay) : undefined,
+        last4: last4.split(/\s+/)[0]?.match(/^\d{4}$/)?.[0],
+        network: network ? (network as "visa" | "mastercard" | "amex") : undefined,
+      };
+      // Strip the shared-cupo keys from both sub-account metadata payloads —
+      // they belong to physical_cards now, not accounts.
+      const { creditLimitCents: _pLimit, cutoffDay: _pCutoff, ...primaryMdNoLimit } = primaryMd;
+      void _pLimit;
+      void _pCutoff;
       secondary = {
         currency: secondaryCurrency,
         balance: secBal,
         metadata: metadataFromForm({
           network,
           last4,
-          creditLimit: secondaryCreditLimit,
-          cutoffDay,
+          creditLimit: "", // lives in physical_cards now
+          cutoffDay: "", // lives in physical_cards now
           paymentDueDay,
           interestRateMonthly: "",
           termMonths: "",
@@ -439,6 +454,10 @@ function AccountEditor({
           monthlyPayment: "",
         }),
       };
+      // Apply the strip to primary metadata too (avoid duplicating the cupo).
+      Object.assign(primaryMd, primaryMdNoLimit);
+      delete primaryMd.creditLimitCents;
+      delete primaryMd.cutoffDay;
     }
 
     startTransition(async () => {
@@ -450,6 +469,7 @@ function AccountEditor({
           type,
           primary: { currency, balance: balNum, metadata: primaryMd },
           secondary,
+          physicalCard,
         });
         toast.success(isEdit ? "Updated" : "Created");
         onClose();
@@ -561,6 +581,10 @@ function AccountEditor({
           {multiCurrencyAllowed && multiCurrency ? (
             <div className="bg-muted/30 flex flex-col gap-3 rounded-md border p-3">
               <p className="text-xs font-medium">Secondary currency side</p>
+              <p className="text-muted-foreground text-xs">
+                El cupo es compartido en COP — usá &quot;Credit limit&quot; en Advanced abajo para
+                el cupo total. Esta sección sólo pide el saldo actual de la otra moneda.
+              </p>
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="acc-currency-2">Currency</Label>
@@ -587,19 +611,6 @@ function AccountEditor({
                   />
                 </div>
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="acc-limit-2">Credit limit ({secondaryCurrency})</Label>
-                <Input
-                  id="acc-limit-2"
-                  type="number"
-                  inputMode="decimal"
-                  step={secondaryCurrency === "USD" ? "0.01" : "1"}
-                  value={secondaryCreditLimit}
-                  onChange={(e) => setSecondaryCreditLimit(e.target.value)}
-                  placeholder="Optional"
-                  className="tabular-nums"
-                />
-              </div>
             </div>
           ) : null}
 
@@ -623,15 +634,17 @@ function AccountEditor({
                     </select>
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="acc-limit">Credit limit ({currency})</Label>
+                    <Label htmlFor="acc-limit">
+                      {multiCurrency ? "Shared cupo (COP)" : `Credit limit (${currency})`}
+                    </Label>
                     <Input
                       id="acc-limit"
                       type="number"
                       inputMode="decimal"
-                      step={currency === "USD" ? "0.01" : "1"}
+                      step={multiCurrency || currency === "COP" ? "1" : "0.01"}
                       value={creditLimit}
                       onChange={(e) => setCreditLimit(e.target.value)}
-                      placeholder="Optional"
+                      placeholder={multiCurrency ? "e.g. 20000000" : "Optional"}
                       className="tabular-nums"
                     />
                   </div>
