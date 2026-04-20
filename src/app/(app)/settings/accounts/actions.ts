@@ -42,6 +42,23 @@ const sideSchema = z.object({
   metadata: metadataSchema.optional(),
 });
 
+// When creating a multi-currency credit card, the top-level `physicalCard`
+// carries the shared-cupo attributes (#346). Replaces the old per-side
+// `metadata.creditLimitCents` duplication. Optional — if omitted, the server
+// falls back to `MAX(primary.metadata.creditLimitCents, secondary.metadata.creditLimitCents)`
+// for backwards compat with the pre-Task-5 form payload.
+const physicalCardInputSchema = z
+  .object({
+    creditLimitCents: z.number().int().nonnegative().optional(),
+    cutoffDay: z.number().int().min(1).max(31).optional(),
+    last4: z
+      .string()
+      .regex(/^\d{4}$/)
+      .optional(),
+    network: z.enum(["visa", "mastercard", "amex"]).optional(),
+  })
+  .strict();
+
 const upsertSchema = z
   .object({
     id: z.coerce.number().int().positive().optional(),
@@ -51,6 +68,7 @@ const upsertSchema = z
     active: z.coerce.boolean().default(true),
     primary: sideSchema,
     secondary: sideSchema.optional(),
+    physicalCard: physicalCardInputSchema.optional(),
   })
   .refine((v) => !v.secondary || v.type === "credit_card", {
     message: "Multi-currency only supported for credit_card",
@@ -63,6 +81,10 @@ const upsertSchema = z
   .refine((v) => !v.secondary || !v.id, {
     message: "Multi-currency can only be set on create",
     path: ["secondary"],
+  })
+  .refine((v) => !v.physicalCard || v.secondary, {
+    message: "physicalCard requires a secondary side (multi-currency only)",
+    path: ["physicalCard"],
   });
 
 export type AccountUpsertInput = z.input<typeof upsertSchema>;
@@ -113,25 +135,29 @@ export async function upsertAccount(input: AccountUpsertInput) {
   if (parsed.secondary) {
     // Multi-currency credit cards have a shared COP cupo owned by `physical_cards`
     // (#346). Insert the parent row first so the FK on accounts.physical_card_id
-    // resolves within the same transaction. Cupo initializes to 0 — Task 5
-    // (issue #346) will add a top-level creditLimit input to the create form;
-    // for now the user edits it via the future "Editar tarjeta física" modal.
+    // resolves within the same transaction.
     const physicalCardId = randomUUID();
     const primaryMeta = parsed.primary.metadata ?? {};
     const secondaryMeta = parsed.secondary.metadata ?? {};
-    const coalescedLimit = Math.max(
-      primaryMeta.creditLimitCents ?? 0,
-      secondaryMeta.creditLimitCents ?? 0,
-    );
+    // Prefer the explicit top-level physicalCard payload (Task 5 form). Fall
+    // back to MAX of per-side metadata for pre-Task-5 callers and tests.
+    const creditLimitCents =
+      parsed.physicalCard?.creditLimitCents ??
+      Math.max(primaryMeta.creditLimitCents ?? 0, secondaryMeta.creditLimitCents ?? 0);
+    const cutoffDay =
+      parsed.physicalCard?.cutoffDay ?? primaryMeta.cutoffDay ?? secondaryMeta.cutoffDay;
+    const network = parsed.physicalCard?.network ?? primaryMeta.network ?? secondaryMeta.network;
+    const last4 =
+      parsed.physicalCard?.last4 ?? primaryMeta.last4s?.[0] ?? secondaryMeta.last4s?.[0];
     await db.transaction(async (trx) => {
       await trx.insert(physicalCards).values({
         id: physicalCardId,
         userId: session.id,
         institution: parsed.institution,
-        network: primaryMeta.network ?? secondaryMeta.network,
-        last4: primaryMeta.last4s?.[0] ?? secondaryMeta.last4s?.[0],
-        creditLimitCents: BigInt(coalescedLimit),
-        statementCutoffDay: primaryMeta.cutoffDay ?? secondaryMeta.cutoffDay,
+        network,
+        last4,
+        creditLimitCents: BigInt(creditLimitCents),
+        statementCutoffDay: cutoffDay,
       });
       await trx.insert(accounts).values([
         { ...base, ...sideToValues(parsed.primary), physicalCardId },

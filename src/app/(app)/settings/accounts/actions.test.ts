@@ -1,7 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, categories, transactions, users, type AccountMetadata } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  physicalCards,
+  transactions,
+  users,
+  type AccountMetadata,
+} from "@/lib/db/schema";
 import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -135,6 +142,51 @@ describe("accounts actions: multi-currency credit card", () => {
     expect(rows[0].physicalCardId).toBe(rows[1].physicalCardId);
     const currencies = rows.map((r) => r.currency).sort();
     expect(currencies).toEqual(["COP", "USD"]);
+  });
+
+  it("creates a physical_cards row with the shared cupo when physicalCard is passed", async () => {
+    await upsertAccount({
+      name: `${MARKER}-shared`,
+      institution: "Bancolombia",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+      secondary: { currency: "USD", balance: 0 },
+      physicalCard: {
+        creditLimitCents: 20_000_000_00,
+        cutoffDay: 15,
+        last4: "7291",
+        network: "mastercard",
+      },
+    });
+    const rows = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-shared`)));
+    expect(rows).toHaveLength(2);
+    const pcId = rows[0].physicalCardId!;
+    const [pc] = await db.select().from(physicalCards).where(eq(physicalCards.id, pcId));
+    expect(pc).toBeDefined();
+    expect(pc.creditLimitCents).toBe(BigInt(20_000_000_00));
+    expect(pc.statementCutoffDay).toBe(15);
+    expect(pc.last4).toBe("7291");
+    expect(pc.network).toBe("mastercard");
+    // Sub-accounts MUST NOT carry the shared-cupo keys — single source of truth.
+    expect(rows[0].metadata.creditLimitCents).toBeUndefined();
+    expect(rows[1].metadata.creditLimitCents).toBeUndefined();
+    expect(rows[0].metadata.cutoffDay).toBeUndefined();
+    expect(rows[1].metadata.cutoffDay).toBeUndefined();
+  });
+
+  it("rejects physicalCard without secondary (single-currency CCs use metadata)", async () => {
+    await expect(
+      upsertAccount({
+        name: `${MARKER}-bad`,
+        institution: "Bancolombia",
+        type: "credit_card",
+        primary: { currency: "COP", balance: 0 },
+        physicalCard: { creditLimitCents: 100_000 },
+      }),
+    ).rejects.toThrow();
   });
 
   it("archives each linked row independently (no cascade)", async () => {
