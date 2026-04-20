@@ -516,7 +516,11 @@ describe("POST /api/ingest/sms", () => {
     expect(json.reason).toContain("non_transactional");
   });
 
-  it("skips unknown SMS formats", async () => {
+  it("surfaces unknown SMS formats as needs_review errors (AI fallback off)", async () => {
+    // After #257 the parser returns `kind: "needs_review"` for formats it
+    // can't match. With AI fallback disabled (default in tests) this flows
+    // through the pipeline as an error so the SMS shows up in the inbox
+    // rather than being silently dropped as "skipped".
     const body = "Bancolombia: algo completamente desconocido que no matchea ningun patron";
     const res = await POST(
       makeRequest({
@@ -525,8 +529,8 @@ describe("POST /api/ingest/sms", () => {
       }),
     );
     const json = (await res.json()) as { status: string; reason?: string };
-    expect(json.status).toBe("skipped");
-    expect(json.reason).toContain("unknown");
+    expect(json.status).toBe("error");
+    expect(json.reason).toContain("unknown_pattern");
   });
 
   // ---------------------------------------------------------------------------

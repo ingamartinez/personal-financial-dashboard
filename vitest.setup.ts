@@ -30,3 +30,11 @@ if (process.env.PGDATABASE !== TEST_DB_NAME) {
 // 32 zero bytes, base64-encoded. Deterministic so tampering tests are stable;
 // trivially insecure — do NOT reuse anywhere outside the test runtime.
 process.env.TELEGRAM_TOKEN_ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+// Anthropic SDK requires ANTHROPIC_API_KEY at client-init time, even when
+// the caller injects a mock fetch. Vitest isolates env so .env.local is
+// NOT loaded here — set a dummy key so AI tests that rely on env-default
+// credential resolution don't blow up before reaching the mock.
+if (!process.env.ANTHROPIC_API_KEY) {
+  process.env.ANTHROPIC_API_KEY = "sk-ant-test-dummy-for-vitest-do-not-use";
+}

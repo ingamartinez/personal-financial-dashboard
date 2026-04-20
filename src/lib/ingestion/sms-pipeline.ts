@@ -88,7 +88,7 @@ async function ingestNeedsReviewWithAiFallback(
     const detail =
       outcome.status === "low_confidence"
         ? `confidence=${outcome.confidence.toFixed(2)}`
-        : outcome.reason;
+        : `${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ""}`;
     return { status: "error", reason: `ai_fallback: ${outcome.status} (${detail})` };
   }
 

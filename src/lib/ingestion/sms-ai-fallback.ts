@@ -216,10 +216,16 @@ export async function recordParserEvent(params: {
       return;
     }
     if (outcome.status === "success") {
+      // jsonb serialization chokes on bigint — convert amountCents to string
+      // the same way sms-pipeline.ts:serializeParsed does.
+      const aiOutcome: Record<string, unknown> = {
+        ...outcome.parsed,
+        amountCents: outcome.parsed.amountCents.toString(),
+      };
       await db.insert(parserEvents).values({
         ...base,
         eventKind: "ai_fallback_success",
-        aiOutcome: outcome.parsed as unknown as Record<string, unknown>,
+        aiOutcome,
         aiConfidence: outcome.confidence.toFixed(3),
         aiModel: outcome.ai.model,
         aiInputTokens: outcome.ai.tokensIn,
