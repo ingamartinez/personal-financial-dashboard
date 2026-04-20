@@ -1,7 +1,6 @@
-import { asc } from "drizzle-orm";
-import { and, eq } from "drizzle-orm";
+import { asc, and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts } from "@/lib/db/schema";
+import { accounts, physicalCards } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { AccountsManager, type AccountRow } from "./accounts-manager";
@@ -21,14 +20,43 @@ export default async function SettingsAccountsPage() {
       active: accounts.active,
       metadata: accounts.metadata,
       physicalCardId: accounts.physicalCardId,
+      pcCreditLimitCents: physicalCards.creditLimitCents,
+      pcStatementCutoffDay: physicalCards.statementCutoffDay,
+      pcLast4: physicalCards.last4,
+      pcNetwork: physicalCards.network,
     })
     .from(accounts)
+    .leftJoin(
+      physicalCards,
+      and(
+        eq(physicalCards.id, accounts.physicalCardId),
+        // Tenancy guard on the join — never surface another user's physical card
+        // even if a FK were ever corrupted (see per-user-table-join-tenant-safety).
+        eq(physicalCards.userId, accounts.userId),
+      ),
+    )
     .where(and(eq(accounts.userId, session.id), notDeleted(accounts.deletedAt)))
     .orderBy(asc(accounts.type), asc(accounts.name));
 
   const items: AccountRow[] = rows.map((r) => ({
-    ...r,
+    id: r.id,
+    name: r.name,
+    institution: r.institution,
+    type: r.type,
+    currency: r.currency,
     balanceCents: r.balanceCents.toString(),
+    active: r.active,
+    metadata: r.metadata,
+    physicalCardId: r.physicalCardId,
+    physicalCard: r.physicalCardId
+      ? {
+          id: r.physicalCardId,
+          creditLimitCents: r.pcCreditLimitCents!.toString(),
+          statementCutoffDay: r.pcStatementCutoffDay,
+          last4: r.pcLast4,
+          network: r.pcNetwork,
+        }
+      : null,
   }));
 
   return (

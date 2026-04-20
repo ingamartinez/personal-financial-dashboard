@@ -187,6 +187,56 @@ export async function archiveAccount(id: number) {
   revalidate();
 }
 
+const updatePhysicalCardSchema = z
+  .object({
+    id: z.string().uuid(),
+    creditLimitCents: z.coerce.number().int().nonnegative(),
+    statementCutoffDay: z.coerce.number().int().min(1).max(31).nullable().optional(),
+    last4: z
+      .string()
+      .regex(/^\d{4}$/)
+      .nullable()
+      .optional(),
+    network: z.enum(["visa", "mastercard", "amex"]).nullable().optional(),
+  })
+  .strict();
+
+export type UpdatePhysicalCardInput = z.input<typeof updatePhysicalCardSchema>;
+
+/**
+ * Updates a multi-currency credit card's shared attributes (#346). Scoped by
+ * `user_id = session.id` so one user can never mutate another's card even if
+ * they obtain the uuid. Returns `{ ok: true }` on success, `{ ok: false }`
+ * when the card isn't found for the session user.
+ */
+export async function updatePhysicalCard(
+  input: UpdatePhysicalCardInput,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const session = await getSessionUser();
+  const parsed = updatePhysicalCardSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, message: parsed.error.issues[0]?.message ?? "Input inválido." };
+  }
+
+  const result = await db
+    .update(physicalCards)
+    .set({
+      creditLimitCents: BigInt(parsed.data.creditLimitCents),
+      statementCutoffDay: parsed.data.statementCutoffDay ?? null,
+      last4: parsed.data.last4 ?? null,
+      network: parsed.data.network ?? null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(physicalCards.id, parsed.data.id), eq(physicalCards.userId, session.id)))
+    .returning({ id: physicalCards.id });
+
+  if (result.length === 0) {
+    return { ok: false, message: "Tarjeta física no encontrada." };
+  }
+  revalidate();
+  return { ok: true };
+}
+
 export async function toggleAccountActive(id: number, active: boolean) {
   const session = await getSessionUser();
   const parsedId = z.coerce.number().int().positive().parse(id);
