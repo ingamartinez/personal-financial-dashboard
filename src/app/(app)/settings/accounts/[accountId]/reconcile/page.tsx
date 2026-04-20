@@ -28,6 +28,7 @@ export default async function ReconcilePage({
       institutionSlug: accounts.institutionSlug,
       currency: accounts.currency,
       type: accounts.type,
+      balanceCents: accounts.balanceCents,
     })
     .from(accounts)
     .where(
@@ -97,6 +98,7 @@ export default async function ReconcilePage({
           accountId={account.id}
           accountCurrency={account.currency}
           accountInstitutionSlug={account.institutionSlug}
+          accountBalanceCents={account.balanceCents.toString()}
         />
       )}
 

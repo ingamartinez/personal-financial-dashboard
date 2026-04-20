@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decimalStringToCents } from "./money";
+import { decimalStringToCents, parseTolerantMoney } from "./money";
 
 describe("decimalStringToCents", () => {
   it("parses single-digit cent values", () => {
@@ -44,5 +44,43 @@ describe("decimalStringToCents", () => {
   it("rejects thousand separators and scientific notation", () => {
     expect(() => decimalStringToCents("1,000")).toThrow(/Invalid decimal/);
     expect(() => decimalStringToCents("1e5")).toThrow(/Invalid decimal/);
+  });
+});
+
+describe("parseTolerantMoney", () => {
+  it("parses plain integers", () => {
+    expect(parseTolerantMoney("1234567")).toBe(BigInt(123456700));
+    expect(parseTolerantMoney("0")).toBe(BigInt(0));
+  });
+
+  it("parses es-CO grouping ('.' thousand, ',' decimal)", () => {
+    expect(parseTolerantMoney("1.234.567,89")).toBe(BigInt(123456789));
+    expect(parseTolerantMoney("1.234.567")).toBe(BigInt(123456700));
+  });
+
+  it("parses en-US grouping (',' thousand, '.' decimal)", () => {
+    expect(parseTolerantMoney("1,234,567.89")).toBe(BigInt(123456789));
+    expect(parseTolerantMoney("1,234.56")).toBe(BigInt(123456));
+  });
+
+  it("handles negatives (credit card balances)", () => {
+    expect(parseTolerantMoney("-4.500.000")).toBe(BigInt(-450000000));
+    expect(parseTolerantMoney("-1234.56")).toBe(BigInt(-123456));
+  });
+
+  it("strips whitespace and currency symbols", () => {
+    expect(parseTolerantMoney("  $ 1.000 ")).toBe(BigInt(100000));
+    expect(parseTolerantMoney("$1,000.50")).toBe(BigInt(100050));
+  });
+
+  it("accepts single-cent decimals", () => {
+    expect(parseTolerantMoney("100,5")).toBe(BigInt(10050));
+    expect(parseTolerantMoney("100.5")).toBe(BigInt(10050));
+  });
+
+  it("rejects garbage input", () => {
+    expect(() => parseTolerantMoney("abc")).toThrow(/Invalid money/);
+    expect(() => parseTolerantMoney("")).toThrow(/Empty money/);
+    expect(() => parseTolerantMoney("1e5")).toThrow(/Invalid money/);
   });
 });

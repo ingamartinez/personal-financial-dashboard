@@ -26,6 +26,13 @@ export interface CommitInput {
   parsed: ParsedStatement;
   plan: MatchingPlan;
   fileHash: string;
+  /**
+   * Optional user-provided closing balance. When present, overrides whatever
+   * `parsed.balanceAtEndCents` held (parsers for most banks can't extract
+   * this — see #302 / #304). Null = no balance captured for this import;
+   * divergence stays blank on /admin/health.
+   */
+  userBalanceAtEndCents?: bigint | null;
 }
 
 /**
@@ -63,6 +70,10 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
       };
     }
 
+    const balanceAtEndCents =
+      input.userBalanceAtEndCents !== undefined && input.userBalanceAtEndCents !== null
+        ? input.userBalanceAtEndCents
+        : input.parsed.balanceAtEndCents;
     const [imp] = await tx
       .insert(statementImports)
       .values({
@@ -72,7 +83,7 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
         periodStart: toIsoDate(input.parsed.periodStart),
         periodEnd: toIsoDate(input.parsed.periodEnd),
         txnCount: 0,
-        balanceAtEndCents: input.parsed.balanceAtEndCents,
+        balanceAtEndCents,
       })
       .returning({ id: statementImports.id });
 

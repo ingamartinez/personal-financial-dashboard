@@ -1,0 +1,1 @@
+ALTER TABLE "user_health_snapshots" ADD COLUMN "statement_divergence_cents" bigint;

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { formatMoney } from "@/lib/money";
+import { formatMoney, parseTolerantMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { applyReconcile, previewReconcile, type ReconcilePreview } from "./actions";
 
@@ -16,6 +16,7 @@ type Props = {
   accountId: number;
   accountCurrency: "COP" | "USD";
   accountInstitutionSlug: string;
+  accountBalanceCents: string;
 };
 
 const dateFmt = new Intl.DateTimeFormat("es-CO", {
@@ -23,11 +24,18 @@ const dateFmt = new Intl.DateTimeFormat("es-CO", {
   month: "short",
 });
 
-export function ReconcileForm({ accountId, accountCurrency, accountInstitutionSlug }: Props) {
+export function ReconcileForm({
+  accountId,
+  accountCurrency,
+  accountInstitutionSlug,
+  accountBalanceCents,
+}: Props) {
   const router = useRouter();
   const [parsing, startParsing] = useTransition();
   const [applying, startApplying] = useTransition();
   const [preview, setPreview] = useState<ReconcilePreview | null>(null);
+  const [balanceInput, setBalanceInput] = useState("");
+  const currentFindashBalance = BigInt(accountBalanceCents);
 
   async function onUpload(formData: FormData) {
     formData.set("accountId", String(accountId));
@@ -53,6 +61,15 @@ export function ReconcileForm({ accountId, accountCurrency, accountInstitutionSl
 
   function onApply() {
     if (!preview) return;
+    let userBalanceAtEndCents: string | null = null;
+    if (balanceInput.trim() !== "") {
+      try {
+        userBalanceAtEndCents = parseTolerantMoney(balanceInput).toString();
+      } catch {
+        toast.error("Couldn't parse the balance. Try plain digits, e.g. 1234567 or -4500000.");
+        return;
+      }
+    }
     startApplying(async () => {
       try {
         const result = await applyReconcile({
@@ -60,6 +77,7 @@ export function ReconcileForm({ accountId, accountCurrency, accountInstitutionSl
           fileHash: preview.fileHash,
           parsed: preview.parsed,
           plan: preview.plan,
+          userBalanceAtEndCents,
         });
         if (result.status === "already_imported") {
           toast.info("This statement was already imported — nothing changed.");
@@ -69,6 +87,7 @@ export function ReconcileForm({ accountId, accountCurrency, accountInstitutionSl
           );
         }
         setPreview(null);
+        setBalanceInput("");
         router.refresh();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Apply failed");
@@ -192,6 +211,28 @@ export function ReconcileForm({ accountId, accountCurrency, accountInstitutionSl
               dual-currency card, upload separate statements for COP and USD against the linked
               accounts.
             </p>
+
+            <div className="flex flex-col gap-1.5 rounded-md border border-dashed p-3">
+              <Label htmlFor="recon-balance">Balance al cierre según el banco (opcional)</Label>
+              <Input
+                id="recon-balance"
+                name="balanceAtEnd"
+                type="text"
+                inputMode="decimal"
+                placeholder={accountCurrency === "USD" ? "1234.56" : "1234567"}
+                value={balanceInput}
+                onChange={(e) => setBalanceInput(e.target.value)}
+                disabled={applying}
+              />
+              <p className="text-muted-foreground text-xs">
+                Copialo del app del banco. Si lo ingresás, habilitamos la métrica de divergencia en{" "}
+                <code>/admin/health</code>. Findash actual:{" "}
+                <span className="tabular-nums">
+                  {formatMoney(currentFindashBalance, accountCurrency)}
+                </span>
+                .
+              </p>
+            </div>
 
             <div className="flex items-center justify-end gap-2">
               <Button variant="outline" onClick={() => setPreview(null)} disabled={applying}>

@@ -1,12 +1,15 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
+  accounts,
   ingestionLogs,
+  statementImports,
   transactions,
   userHealthSnapshots,
   users,
   type CaptureSources30d,
 } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 
 const MS_PER_DAY = 86_400_000;
 const THIRTY_DAYS_MS = 30 * MS_PER_DAY;
@@ -22,6 +25,7 @@ export type UserHealthSnapshotData = {
   parserSuccessRate30d: number | null;
   unreconciledTxnCount: number;
   divergenceCents: bigint | null;
+  statementDivergenceCents: bigint | null;
   churnSignalFlag: boolean;
 };
 
@@ -115,6 +119,8 @@ export async function computeUserHealthSnapshot(
   const divergenceCents =
     divergenceRow.count === 0 || divergenceRow.sum === null ? null : BigInt(divergenceRow.sum);
 
+  const statementDivergenceCents = await computeStatementDivergence(userId, thirtyDaysAgo);
+
   return {
     lastSmsReceivedAt: smsRow.last ? new Date(smsRow.last) : null,
     lastCaptureAt,
@@ -122,8 +128,60 @@ export async function computeUserHealthSnapshot(
     parserSuccessRate30d,
     unreconciledTxnCount: unreconciledRow.count,
     divergenceCents,
+    statementDivergenceCents,
     churnSignalFlag,
   };
+}
+
+/**
+ * For each account with a statement import in the last 30 days that carries
+ * a user-provided balance, compares findash's stored balance against the
+ * most recent statement balance and sums the signed deltas. Null when no
+ * account has a qualifying statement — the column stays blank rather than
+ * showing a misleading zero.
+ */
+async function computeStatementDivergence(
+  userId: number,
+  thirtyDaysAgo: Date,
+): Promise<bigint | null> {
+  const windowStart = thirtyDaysAgo.toISOString().slice(0, 10);
+  const imports = await db
+    .select({
+      accountId: statementImports.accountId,
+      balanceAtEndCents: statementImports.balanceAtEndCents,
+    })
+    .from(statementImports)
+    .where(
+      and(
+        eq(statementImports.userId, userId),
+        gte(statementImports.periodEnd, windowStart),
+        isNotNull(statementImports.balanceAtEndCents),
+      ),
+    )
+    .orderBy(desc(statementImports.periodEnd));
+
+  const latestPerAccount = new Map<number, bigint>();
+  for (const imp of imports) {
+    if (imp.balanceAtEndCents === null) continue;
+    if (!latestPerAccount.has(imp.accountId)) {
+      latestPerAccount.set(imp.accountId, imp.balanceAtEndCents);
+    }
+  }
+  if (latestPerAccount.size === 0) return null;
+
+  const accountRows = await db
+    .select({ id: accounts.id, balanceCents: accounts.balanceCents })
+    .from(accounts)
+    .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)));
+
+  let total = BigInt(0);
+  for (const acc of accountRows) {
+    const stmtBalance = latestPerAccount.get(acc.id);
+    if (stmtBalance !== undefined) {
+      total += acc.balanceCents - stmtBalance;
+    }
+  }
+  return total;
 }
 
 export async function saveUserHealthSnapshot(
@@ -141,6 +199,7 @@ export async function saveUserHealthSnapshot(
       data.parserSuccessRate30d === null ? null : data.parserSuccessRate30d.toFixed(4),
     unreconciledTxnCount: data.unreconciledTxnCount,
     divergenceCents: data.divergenceCents,
+    statementDivergenceCents: data.statementDivergenceCents,
     churnSignalFlag: data.churnSignalFlag,
   });
 }

@@ -19,10 +19,12 @@ export default async function AdminHealthPage() {
         latest: row.latest && {
           ...row.latest,
           divergenceCents: row.latest.divergenceCents?.toString() ?? null,
+          statementDivergenceCents: row.latest.statementDivergenceCents?.toString() ?? null,
         },
         weekAgo: row.weekAgo && {
           ...row.weekAgo,
           divergenceCents: row.weekAgo.divergenceCents?.toString() ?? null,
+          statementDivergenceCents: row.weekAgo.statementDivergenceCents?.toString() ?? null,
         },
         insight: insight && {
           kind: insight.kind,
