@@ -145,8 +145,11 @@ export async function buildInsightsSummary(
             txCount: sql<number>`COUNT(*)::int`,
           })
           .from(transactions)
-          .leftJoin(leaf, eq(leaf.slug, transactions.categorySlug))
-          .leftJoin(root, eq(root.slug, rootSlug))
+          .leftJoin(
+            leaf,
+            and(eq(leaf.slug, transactions.categorySlug), eq(leaf.userId, transactions.userId)),
+          )
+          .leftJoin(root, and(eq(root.slug, rootSlug), eq(root.userId, transactions.userId)))
           .where(
             and(
               eq(transactions.userId, userId),
@@ -167,7 +170,10 @@ export async function buildInsightsSummary(
             spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
           })
           .from(transactions)
-          .leftJoin(leaf, eq(leaf.slug, transactions.categorySlug))
+          .leftJoin(
+            leaf,
+            and(eq(leaf.slug, transactions.categorySlug), eq(leaf.userId, transactions.userId)),
+          )
           .where(
             and(
               eq(transactions.userId, userId),

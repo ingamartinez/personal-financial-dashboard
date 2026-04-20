@@ -89,7 +89,13 @@ export async function getUpcomingForMonth(
     })
     .from(recurringTransactions)
     .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
-    .leftJoin(categories, eq(categories.slug, recurringTransactions.categorySlug))
+    .leftJoin(
+      categories,
+      and(
+        eq(categories.slug, recurringTransactions.categorySlug),
+        eq(categories.userId, recurringTransactions.userId),
+      ),
+    )
     .where(
       and(
         eq(recurringTransactions.userId, userId),
