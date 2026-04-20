@@ -21,6 +21,14 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
+export const DISPLAY_CURRENCY_MODES = ["native", "all-cop", "all-usd"] as const;
+export type DisplayCurrencyMode = (typeof DISPLAY_CURRENCY_MODES)[number];
+export const DEFAULT_DISPLAY_CURRENCY_MODE: DisplayCurrencyMode = "native";
+
+export type UiPreferences = {
+  displayCurrencyMode?: DisplayCurrencyMode;
+};
+
 export const users = pgTable(
   "users",
   {
@@ -31,6 +39,7 @@ export const users = pgTable(
     pictureUrl: text("picture_url"),
     role: varchar("role", { length: 20 }).notNull().default("user"),
     active: boolean("active").notNull().default(true),
+    uiPreferences: jsonb("ui_preferences").$type<UiPreferences>().notNull().default({}),
     // Phase 7 (SaaS productization) seam — all nullable, no defaults. Enforcement
     // lives in canIngest(userId) and is a no-op in v1. See PLAN.md § Business Model.
     subscriptionStatus: varchar("subscription_status", { length: 20 }),
