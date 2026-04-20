@@ -1,6 +1,7 @@
 "use client";
 
 import NumberFlow from "@number-flow/react";
+import { StaleFxIcon } from "@/components/display/money";
 import { useMoneyMode } from "@/components/display/money-mode-provider";
 import { convertCents, displayCurrencyFor, formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -46,12 +47,14 @@ export function AnimatedMoney({
 
   if (active.currency === currency) return number;
 
+  const stale = fxRate !== null && fxRate.source === "fallback";
   return (
     <span className="inline-flex items-baseline">
       {number}
       <span className={cn("text-muted-foreground ml-1 text-xs font-normal", footnoteClassName)}>
         ≈ {formatMoney(cents, currency)}
       </span>
+      {stale ? <StaleFxIcon /> : null}
     </span>
   );
 }

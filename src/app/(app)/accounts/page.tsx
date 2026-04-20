@@ -59,8 +59,8 @@ export default async function AccountsPage() {
       <header>
         <h1 className="text-h1">Accounts</h1>
         <p className="text-body text-muted-foreground">
-          Saldos por cuenta agrupados por tipo. El patrimonio neto convierte USD a COP a{" "}
-          {RATE_FMT.format(fx.rate)} COP/USD
+          Saldos por cuenta agrupados por tipo. Las conversiones usan {RATE_FMT.format(fx.rate)}{" "}
+          COP/USD
           {fx.source === "fallback" ? " (fallback)" : ` (TRM ${fx.asOf})`}.
         </p>
       </header>
