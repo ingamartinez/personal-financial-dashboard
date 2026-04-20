@@ -1,0 +1,3 @@
+ALTER TYPE "public"."classification_method" ADD VALUE 'rule_retroactive' BEFORE 'ai';--> statement-breakpoint
+ALTER TABLE "transactions" ADD COLUMN "retroactive_rule_id" integer;--> statement-breakpoint
+ALTER TABLE "transactions" ADD CONSTRAINT "transactions_retroactive_rule_id_classification_rules_id_fk" FOREIGN KEY ("retroactive_rule_id") REFERENCES "public"."classification_rules"("id") ON DELETE set null ON UPDATE no action;
