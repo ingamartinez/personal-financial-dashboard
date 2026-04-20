@@ -16,6 +16,12 @@ const LINKS = [
       "Tu taxonomía personal: agregá, renombrá o archivá categorías. Cada usuario tiene la suya.",
   },
   {
+    href: "/settings/rules",
+    title: "Reglas de clasificación",
+    description:
+      "Patrones ILIKE que auto-categorizan transacciones antes del fallback con IA. Manuales y auto-generadas por el learning loop.",
+  },
+  {
     href: "/settings/import",
     title: "Import",
     description: "Bulk-import from XLSX or drop a screenshot for OCR.",
