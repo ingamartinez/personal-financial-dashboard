@@ -6,7 +6,7 @@ import { accounts, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { ReconcileForm } from "./reconcile-form";
-import { FlaggedReview, type FlaggedRow } from "./flagged-review";
+import { FlaggedReview, type FlaggedRow, type MergeCandidate } from "./flagged-review";
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +70,36 @@ export default async function ReconcilePage({
     merchant: r.merchant,
   }));
 
+  const mergeCandidateRows =
+    flagged.length > 0
+      ? await db
+          .select({
+            id: transactions.id,
+            occurredAt: transactions.occurredAt,
+            amountCents: transactions.amountCents,
+            currency: transactions.currency,
+            descriptionRaw: transactions.descriptionRaw,
+          })
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.userId, session.id),
+              eq(transactions.accountId, accountId),
+              eq(transactions.reconciliationStatus, "imported_from_statement"),
+            ),
+          )
+          .orderBy(desc(transactions.occurredAt))
+          .limit(500)
+      : [];
+
+  const mergeCandidates: MergeCandidate[] = mergeCandidateRows.map((r) => ({
+    id: r.id,
+    occurredAt: r.occurredAt.toISOString(),
+    amountCents: r.amountCents.toString(),
+    currency: r.currency,
+    descriptionRaw: r.descriptionRaw,
+  }));
+
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header className="flex items-center justify-between gap-2">
@@ -102,7 +132,13 @@ export default async function ReconcilePage({
         />
       )}
 
-      {flagged.length > 0 ? <FlaggedReview rows={flagged} currency={account.currency} /> : null}
+      {flagged.length > 0 ? (
+        <FlaggedReview
+          rows={flagged}
+          currency={account.currency}
+          mergeCandidates={mergeCandidates}
+        />
+      ) : null}
     </main>
   );
 }

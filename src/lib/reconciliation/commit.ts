@@ -171,6 +171,64 @@ export async function recordReconciliationDecision(input: ReviewInput): Promise<
     throw new Error("merged_into action requires mergedIntoTxnId");
   }
   await db.transaction(async (tx) => {
+    if (input.action === "merged_into") {
+      const targetId = input.mergedIntoTxnId!;
+      const [target] = await tx
+        .select({
+          id: transactions.id,
+          occurredAt: transactions.occurredAt,
+          amountCents: transactions.amountCents,
+          currency: transactions.currency,
+          descriptionRaw: transactions.descriptionRaw,
+          statementImportId: transactions.statementImportId,
+          rawData: transactions.rawData,
+          reconciliationStatus: transactions.reconciliationStatus,
+        })
+        .from(transactions)
+        .where(and(eq(transactions.id, targetId), eq(transactions.userId, input.userId)))
+        .limit(1);
+      if (!target) throw new Error("merge_target_not_found");
+      if (target.reconciliationStatus !== "imported_from_statement") {
+        throw new Error("merge_target_not_importable");
+      }
+
+      // The flagged row survives (keeps category_slug / counterparty / notes
+      // from prior classification) and adopts the bank-authoritative fields
+      // from the statement-imported target.
+      const updated = await tx
+        .update(transactions)
+        .set({
+          occurredAt: target.occurredAt,
+          amountCents: target.amountCents,
+          currency: target.currency,
+          descriptionRaw: target.descriptionRaw,
+          statementImportId: target.statementImportId,
+          rawData: target.rawData,
+          reconciliationStatus: "matched",
+          reconciledAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(transactions.id, input.txnId), eq(transactions.userId, input.userId)))
+        .returning({ id: transactions.id });
+      if (updated.length === 0) throw new Error("flagged_txn_not_found");
+
+      // Record the decision before deleting the target so the FK is populated.
+      // mergedIntoTxnId has ON DELETE SET NULL — acceptable loss of detail on
+      // the audit row in exchange for no duplicate txn in balance queries.
+      await tx.insert(reconciliationDecisions).values({
+        userId: input.userId,
+        txnId: input.txnId,
+        action: input.action,
+        mergedIntoTxnId: targetId,
+        note: input.note ?? null,
+      });
+
+      await tx
+        .delete(transactions)
+        .where(and(eq(transactions.id, targetId), eq(transactions.userId, input.userId)));
+      return;
+    }
+
     await tx.insert(reconciliationDecisions).values({
       userId: input.userId,
       txnId: input.txnId,
