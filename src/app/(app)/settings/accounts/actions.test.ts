@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, categories, transactions, users } from "@/lib/db/schema";
+import { accounts, categories, transactions, users, type AccountMetadata } from "@/lib/db/schema";
 import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -275,7 +275,7 @@ describe("adjustAccountBalance", () => {
     const accountId = await seedAccount(100_000); // balance 10_000_000 cents
     const result = await adjustAccountBalance({
       accountId,
-      declaredBalanceCents: 12_000_000,
+      declared: { kind: "balance", balanceCents: 12_000_000 },
       reason: "Transferencia que no llegó por SMS",
     });
 
@@ -297,7 +297,10 @@ describe("adjustAccountBalance", () => {
 
   it("negative diff: creates adjustment tx for the shortfall", async () => {
     const accountId = await seedAccount(100_000);
-    const result = await adjustAccountBalance({ accountId, declaredBalanceCents: 8_000_000 });
+    const result = await adjustAccountBalance({
+      accountId,
+      declared: { kind: "balance", balanceCents: 8_000_000 },
+    });
     expect(result.status).toBe("ok");
     if (result.status === "ok") {
       expect(result.diffCents).toBe("-2000000");
@@ -306,7 +309,10 @@ describe("adjustAccountBalance", () => {
 
   it("no-op when declared matches current", async () => {
     const accountId = await seedAccount(100_000);
-    const result = await adjustAccountBalance({ accountId, declaredBalanceCents: 10_000_000 });
+    const result = await adjustAccountBalance({
+      accountId,
+      declared: { kind: "balance", balanceCents: 10_000_000 },
+    });
     expect(result.status).toBe("noop");
 
     const txs = await db.select().from(transactions).where(eq(transactions.accountId, accountId));
@@ -320,7 +326,10 @@ describe("adjustAccountBalance", () => {
       .set({ deletedAt: new Date() })
       .where(and(eq(categories.userId, TEST_USER_ID), eq(categories.slug, "adjustments")));
 
-    const result = await adjustAccountBalance({ accountId, declaredBalanceCents: 11_000_000 });
+    const result = await adjustAccountBalance({
+      accountId,
+      declared: { kind: "balance", balanceCents: 11_000_000 },
+    });
     expect(result.status).toBe("ok");
 
     const [cat] = await db
@@ -350,7 +359,7 @@ describe("adjustAccountBalance", () => {
 
     const result = await adjustAccountBalance({
       accountId: otherAccount.id,
-      declaredBalanceCents: 200_000_00,
+      declared: { kind: "balance", balanceCents: 200_000_00 },
     });
     expect(result.status).toBe("error");
 
@@ -360,7 +369,10 @@ describe("adjustAccountBalance", () => {
 
   it("notAdjustment helper filters adjustment rows from spend queries", async () => {
     const accountId = await seedAccount(100_000);
-    await adjustAccountBalance({ accountId, declaredBalanceCents: 11_500_000 });
+    await adjustAccountBalance({
+      accountId,
+      declared: { kind: "balance", balanceCents: 11_500_000 },
+    });
 
     // All user txns
     const all = await db.select().from(transactions).where(eq(transactions.userId, TEST_USER_ID));
@@ -374,5 +386,91 @@ describe("adjustAccountBalance", () => {
       .where(and(eq(transactions.userId, TEST_USER_ID), notAdjustment(transactions.isAdjustment)));
     const hasAdjustmentInSpend = spendOnly.some((t) => t.isAdjustment);
     expect(hasAdjustmentInSpend).toBe(false);
+  });
+
+  // #328: credit card balance tracks DEBT as a negative number. The bank
+  // app never shows debt directly — it shows the available limit ("cupo"),
+  // so the user declares that and the server derives the debt.
+  describe("credit_card adjustBalance via availableCredit", () => {
+    async function seedCreditCard(opts: {
+      creditLimit?: number;
+      balanceCents?: number;
+      availableCredit?: number;
+    }): Promise<number> {
+      const metadata: AccountMetadata = {};
+      if (opts.creditLimit !== undefined) metadata.creditLimitCents = opts.creditLimit;
+      if (opts.availableCredit !== undefined) metadata.availableCreditCents = opts.availableCredit;
+      const [row] = await db
+        .insert(accounts)
+        .values({
+          userId: TEST_USER_ID,
+          name: `${ADJ_MARKER}-cc`,
+          institution: "Bancolombia",
+          type: "credit_card",
+          currency: "COP",
+          balanceCents: BigInt(opts.balanceCents ?? 0),
+          metadata,
+        })
+        .returning({ id: accounts.id });
+      return row.id;
+    }
+
+    it("derives debt from cupo and stores balance as negative", async () => {
+      const accountId = await seedCreditCard({ creditLimit: 5_000_000, balanceCents: 0 });
+
+      const result = await adjustAccountBalance({
+        accountId,
+        declared: { kind: "availableCredit", availableCreditCents: 3_200_000 },
+        reason: "cupo según app del banco",
+      });
+
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        // debt = limit - available = 1_800_000 → balance_cents = -1_800_000
+        // diff = -1_800_000 - 0 = -1_800_000
+        expect(result.diffCents).toBe("-1800000");
+      }
+
+      const [after] = await db.select().from(accounts).where(eq(accounts.id, accountId));
+      expect(after.balanceCents).toBe(BigInt(-1_800_000));
+      expect(after.metadata.availableCreditCents).toBe(3_200_000);
+      expect(after.metadata.creditLimitCents).toBe(5_000_000);
+    });
+
+    it("refuses when the account has no creditLimitCents in metadata", async () => {
+      const accountId = await seedCreditCard({ balanceCents: 0 });
+
+      const result = await adjustAccountBalance({
+        accountId,
+        declared: { kind: "availableCredit", availableCreditCents: 3_200_000 },
+      });
+
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.message).toMatch(/límite|creditLimit|cupo/i);
+      }
+    });
+
+    it("refuses availableCredit larger than the limit (sanity check)", async () => {
+      const accountId = await seedCreditCard({ creditLimit: 5_000_000, balanceCents: 0 });
+
+      const result = await adjustAccountBalance({
+        accountId,
+        declared: { kind: "availableCredit", availableCreditCents: 6_000_000 },
+      });
+
+      expect(result.status).toBe("error");
+    });
+
+    it("refuses kind=availableCredit on a non-credit_card account", async () => {
+      const accountId = await seedAccount(100_000); // savings
+
+      const result = await adjustAccountBalance({
+        accountId,
+        declared: { kind: "availableCredit", availableCreditCents: 1_000_000 },
+      });
+
+      expect(result.status).toBe("error");
+    });
   });
 });
