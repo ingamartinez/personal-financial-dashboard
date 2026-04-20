@@ -39,15 +39,22 @@ async function seedTx(opts: {
   accountId: number;
   source: "sms" | "apple_pay" | "telegram" | "manual" | "csv";
   createdAt: Date;
+  channel?: "bank" | "manual" | "transfer";
+  isAdjustment?: boolean;
+  amountCents?: bigint;
+  reconciliationStatus?: "unreconciled" | "matched" | "flagged" | "imported_from_statement";
 }): Promise<void> {
   await db.insert(transactions).values({
     userId: TEST_USER_ID,
     accountId: opts.accountId,
     occurredAt: opts.createdAt,
-    amountCents: BigInt(-10000),
+    amountCents: opts.amountCents ?? BigInt(-10000),
     currency: "COP",
     descriptionRaw: `${TEST_TX_TAG}-${opts.source}`,
     source: opts.source,
+    channel: opts.channel ?? "bank",
+    isAdjustment: opts.isAdjustment ?? false,
+    reconciliationStatus: opts.reconciliationStatus ?? "unreconciled",
     createdAt: opts.createdAt,
     updatedAt: opts.createdAt,
   });
@@ -172,6 +179,88 @@ describe("computeUserHealthSnapshot", () => {
     const snap = await computeUserHealthSnapshot(TEST_USER_ID, NOW);
     expect(snap.churnSignalFlag).toBe(false);
   });
+
+  it("counts only unreconciled bank-channel non-adjustment txns as unreconciled", async () => {
+    const accountId = await seedAccount();
+    // 2 unreconciled bank rows → should be counted
+    await seedTx({
+      accountId,
+      source: "sms",
+      createdAt: ago(1),
+      reconciliationStatus: "unreconciled",
+    });
+    await seedTx({
+      accountId,
+      source: "sms",
+      createdAt: ago(2),
+      reconciliationStatus: "unreconciled",
+    });
+    // matched → excluded
+    await seedTx({
+      accountId,
+      source: "sms",
+      createdAt: ago(3),
+      reconciliationStatus: "matched",
+    });
+    // manual channel → excluded even when unreconciled
+    await seedTx({
+      accountId,
+      source: "manual",
+      createdAt: ago(4),
+      channel: "manual",
+      reconciliationStatus: "unreconciled",
+    });
+    // is_adjustment → excluded
+    await seedTx({
+      accountId,
+      source: "manual",
+      createdAt: ago(5),
+      isAdjustment: true,
+      reconciliationStatus: "unreconciled",
+    });
+
+    const snap = await computeUserHealthSnapshot(TEST_USER_ID, NOW);
+    expect(snap.unreconciledTxnCount).toBe(2);
+  });
+
+  it("sums is_adjustment txn amounts in the last 30 days for divergenceCents (signed)", async () => {
+    const accountId = await seedAccount();
+    // +50000 adjustment (findash was UNDER)
+    await seedTx({
+      accountId,
+      source: "manual",
+      createdAt: ago(1),
+      isAdjustment: true,
+      amountCents: BigInt(50_000_00),
+    });
+    // −10000 adjustment (findash was slightly OVER)
+    await seedTx({
+      accountId,
+      source: "manual",
+      createdAt: ago(5),
+      isAdjustment: true,
+      amountCents: BigInt(-10_000_00),
+    });
+    // outside the window → excluded
+    await seedTx({
+      accountId,
+      source: "manual",
+      createdAt: ago(40),
+      isAdjustment: true,
+      amountCents: BigInt(999_999_00),
+    });
+
+    const snap = await computeUserHealthSnapshot(TEST_USER_ID, NOW);
+    expect(snap.divergenceCents).toBe(BigInt(40_000_00));
+  });
+
+  it("returns divergenceCents=null when there are zero adjustments in the window", async () => {
+    const accountId = await seedAccount();
+    await seedTx({ accountId, source: "sms", createdAt: ago(1) });
+
+    const snap = await computeUserHealthSnapshot(TEST_USER_ID, NOW);
+    expect(snap.divergenceCents).toBeNull();
+  });
 });
 
 describe("saveUserHealthSnapshot + snapshotAllActiveUsers", () => {
@@ -193,7 +282,8 @@ describe("saveUserHealthSnapshot + snapshotAllActiveUsers", () => {
     expect(row.capturedAt.toISOString()).toBe(NOW.toISOString());
     expect(row.captureSources30d).toEqual({ sms: 1 });
     expect(row.parserSuccessRate30d).toBe("1.0000");
-    expect(row.unreconciledTxnCount).toBe(0);
+    // The seeded txn defaults to bank channel + unreconciled status, so it counts.
+    expect(row.unreconciledTxnCount).toBe(1);
     expect(row.divergenceCents).toBeNull();
     expect(row.churnSignalFlag).toBe(false);
   });

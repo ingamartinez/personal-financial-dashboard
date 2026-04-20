@@ -86,14 +86,42 @@ export async function computeUserHealthSnapshot(
     now.getTime() - lastCaptureAt.getTime() > SEVEN_DAYS_MS &&
     now.getTime() - firstCaptureAt.getTime() > FOURTEEN_DAYS_MS;
 
+  const [unreconciledRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.channel, "bank"),
+        eq(transactions.isAdjustment, false),
+        eq(transactions.reconciliationStatus, "unreconciled"),
+      ),
+    );
+
+  const [divergenceRow] = await db
+    .select({
+      count: sql<number>`count(*)::int`,
+      sum: sql<string | null>`sum(${transactions.amountCents})::text`,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.isAdjustment, true),
+        gte(transactions.occurredAt, thirtyDaysAgo),
+      ),
+    );
+
+  const divergenceCents =
+    divergenceRow.count === 0 || divergenceRow.sum === null ? null : BigInt(divergenceRow.sum);
+
   return {
     lastSmsReceivedAt: smsRow.last ? new Date(smsRow.last) : null,
     lastCaptureAt,
     captureSources30d,
     parserSuccessRate30d,
-    // Both populated once Epic R (bank reconciliation) ships.
-    unreconciledTxnCount: 0,
-    divergenceCents: null,
+    unreconciledTxnCount: unreconciledRow.count,
+    divergenceCents,
     churnSignalFlag,
   };
 }

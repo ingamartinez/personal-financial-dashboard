@@ -31,6 +31,10 @@ type UserHealthRow = {
 };
 
 const PARSER_WARN_THRESHOLD = 0.9;
+const UNRECONCILED_WARN = 20;
+// 50k COP — large enough that a consistently-same-direction drift is worth
+// investigating as a parser bug rather than dismissed as noise.
+const DIVERGENCE_WARN_CENTS = BigInt(50_000_00);
 
 export function HealthTable({ rows }: { rows: UserHealthRow[] }) {
   const [pending, startTransition] = useTransition();
@@ -107,7 +111,7 @@ function UserRowCard({ row }: { row: UserHealthRow }) {
           )}
         </div>
       </CardHeader>
-      <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <Metric label="Último capture" value={formatRelative(latest?.lastCaptureAt)} />
         <Metric label="Último SMS" value={formatRelative(latest?.lastSmsReceivedAt)} />
         <Metric
@@ -115,6 +119,16 @@ function UserRowCard({ row }: { row: UserHealthRow }) {
           value={formatRate(latest?.parserSuccessRate30d)}
           diff={diffRate(latest?.parserSuccessRate30d, weekAgo?.parserSuccessRate30d)}
           warn={lowRate}
+        />
+        <Metric
+          label="Unreconciled"
+          value={formatCount(latest?.unreconciledTxnCount)}
+          warn={(latest?.unreconciledTxnCount ?? 0) >= UNRECONCILED_WARN}
+        />
+        <Metric
+          label="Divergence 30d"
+          value={formatCents(latest?.divergenceCents)}
+          warn={isDivergenceLarge(latest?.divergenceCents)}
         />
         <Metric label="Sources 30d" value={formatSources(latest?.captureSources30d)} subtle />
       </CardContent>
@@ -170,6 +184,29 @@ function diffRate(now: number | null | undefined, prev: number | null | undefine
   if (Math.abs(delta) < 0.001) return "estable vs semana anterior";
   const sign = delta > 0 ? "+" : "";
   return `${sign}${(delta * 100).toFixed(1)}pp vs semana anterior`;
+}
+
+function formatCount(n: number | undefined): string {
+  if (n === undefined) return "—";
+  return String(n);
+}
+
+function formatCents(cents: string | null | undefined): string {
+  if (cents === null || cents === undefined) return "—";
+  const n = BigInt(cents);
+  const abs = n < BigInt(0) ? -n : n;
+  const major = abs / BigInt(100);
+  const sign = n < BigInt(0) ? "-" : "+";
+  // Format with thousands separators in Spanish-style
+  const grouped = major.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${sign}$${grouped}`;
+}
+
+function isDivergenceLarge(cents: string | null | undefined): boolean {
+  if (cents === null || cents === undefined) return false;
+  const n = BigInt(cents);
+  const abs = n < BigInt(0) ? -n : n;
+  return abs >= DIVERGENCE_WARN_CENTS;
 }
 
 function formatSources(sources: Record<string, number | undefined> | undefined): string {
