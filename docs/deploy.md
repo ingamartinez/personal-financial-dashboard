@@ -106,6 +106,8 @@ Ordered steps matching what was actually done:
    #   AUTH_TRUST_HOST=true
    #   ANTHROPIC_API_KEY, GROQ_API_KEY, TELEGRAM_TOKEN_ENCRYPTION_KEY
    #   FX_REFRESH_TOKEN, BOOTSTRAP_USER_EMAIL, BOOTSTRAP_USER_NAME
+   # Optional:
+   #   AI_FALLBACK_ENABLED=true  (SMS AI fallback kill-switch; default off, #257)
    ```
 
 7. **Add deploy SSH key** to the `deploy` user:

@@ -65,13 +65,26 @@ export type ParsedSms =
       recipientName: string;
     });
 
+// Intentional skip: the SMS matched a known non-ingest pattern (failed tx,
+// non-transactional notification). These are NOT parse failures — the parser
+// recognized them and decided not to ingest.
 export type SkippedSms = {
   kind: "skip";
-  reason: "failed" | "non_transactional" | "unknown";
+  reason: "failed" | "non_transactional";
   raw: string;
 };
 
-export type ParseResult = ParsedSms | SkippedSms;
+// Parse failure: no regex variant matched. The body came through as SMS but
+// the parser could not extract structured fields. This is the trigger for AI
+// fallback (#257) — semantically distinct from SkippedSms, which is "I saw
+// this and chose to skip." NeedsReviewSms is "I don't know what this is."
+export type NeedsReviewSms = {
+  kind: "needs_review";
+  reason: "unknown_pattern";
+  raw: string;
+};
+
+export type ParseResult = ParsedSms | SkippedSms | NeedsReviewSms;
 
 // -----------------------------------------------------------------------------
 // Amount parsing
@@ -679,7 +692,7 @@ export function parseSmsBancolombia(body: string): ParseResult {
     }
   }
 
-  return { kind: "skip", reason: "unknown", raw };
+  return { kind: "needs_review", reason: "unknown_pattern", raw };
 }
 
 // -----------------------------------------------------------------------------

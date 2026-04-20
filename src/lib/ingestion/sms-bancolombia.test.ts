@@ -651,12 +651,16 @@ describe("parseSmsBancolombia — skip reasons", () => {
     }
   });
 
-  it("skips unknown formats as 'unknown'", () => {
+  it("flags unrecognized formats as needs_review, not skip", () => {
+    // A body that doesn't match any regex AND doesn't match any known skip
+    // pattern surfaces as needs_review — semantically distinct from an
+    // intentional skip (failed tx, non-transactional notification). This is
+    // the trigger for AI fallback (#257).
     const body = "Bancolombia: mensaje totalmente desconocido que no matchea nada";
     const r = parseSmsBancolombia(body);
-    expect(r.kind).toBe("skip");
-    if (r.kind !== "skip") throw new Error("type guard");
-    expect(r.reason).toBe("unknown");
+    expect(r.kind).toBe("needs_review");
+    if (r.kind !== "needs_review") throw new Error("type guard");
+    expect(r.reason).toBe("unknown_pattern");
   });
 });
 
@@ -707,7 +711,9 @@ describe("parseSmsBancolombia — idempotency", () => {
       "Bancolombia: Compraste COP35.450,00 en DLO*DiDi Food CO Pay con tu T.Cred *2575, el 15/04/2026 a las 20:34. Si tienes dudas, encuentranos aqui: 6045109095 o 018000931987. Estamos cerca.";
     const a = parseSmsBancolombia(body);
     const b = parseSmsBancolombia(body);
-    if (a.kind === "skip" || b.kind === "skip") throw new Error("unexpected skip");
+    if (a.kind !== "purchase" || b.kind !== "purchase") {
+      throw new Error(`expected purchase, got ${a.kind} / ${b.kind}`);
+    }
     expect(a.externalId).toBe(b.externalId);
   });
 
@@ -718,7 +724,9 @@ describe("parseSmsBancolombia — idempotency", () => {
       "Bancolombia: Compraste COP36.290,00 en DLO*DiDi Food CO Pay con tu T.Cred *2575, el 15/04/2026 a las 20:34. Si tienes dudas, encuentranos aqui: 6045109095 o 018000931987. Estamos cerca.";
     const a = parseSmsBancolombia(bodyA);
     const b = parseSmsBancolombia(bodyB);
-    if (a.kind === "skip" || b.kind === "skip") throw new Error("unexpected skip");
+    if (a.kind !== "purchase" || b.kind !== "purchase") {
+      throw new Error(`expected purchase, got ${a.kind} / ${b.kind}`);
+    }
     expect(a.externalId).not.toBe(b.externalId);
   });
 });

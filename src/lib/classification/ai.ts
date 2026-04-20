@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Currency } from "@/lib/types";
 import type { UserClassificationContextHint } from "@/lib/db/schema";
+import { callClaude, DEFAULT_MODEL } from "@/lib/ai/anthropic-client";
 
 export type AiClassifiable = {
   id: number;
@@ -29,8 +30,6 @@ export type AiClassifyResult = {
   model: string;
   usage: { inputTokens: number; outputTokens: number };
 };
-
-const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 
 const responseSchema = z.object({
   classifications: z.array(
@@ -69,11 +68,7 @@ function formatUserHints(hints: AiUserHint[]): string {
   return lines.join("\n");
 }
 
-function buildPrompt(
-  txs: AiClassifiable[],
-  cats: AiCategoryOption[],
-  userHints: AiUserHint[],
-): string {
+function buildSystemPrompt(cats: AiCategoryOption[]): string {
   const categoryList = cats
     .map((c) =>
       c.parentSlug
@@ -82,6 +77,26 @@ function buildPrompt(
     )
     .join("\n");
 
+  return `You classify personal finance transactions for a Colombian user.
+
+Available categories (use the slug, exactly as written):
+${categoryList}
+
+For each transaction, pick the MOST specific category slug that fits. Prefer subcategories (e.g. "restaurantes" over "alimentacion"). If you genuinely cannot tell, return null.
+
+Confidence scale:
+- 90-100: obvious match (e.g. "NETFLIX" → "suscripciones")
+- 70-89: strong signal
+- 50-69: educated guess
+- 0-49: unsure — consider null
+
+Rules:
+- "categorySlug" MUST be one of the slugs above, or null if truly unclassifiable.
+- Include one entry per input transaction, same "id".
+- Keep "reason" under 80 chars.`;
+}
+
+function buildUserPrompt(txs: AiClassifiable[], userHints: AiUserHint[]): string {
   const txList = txs
     .map(
       (t) =>
@@ -93,42 +108,10 @@ function buildPrompt(
     ? `\n\nThis user has previously re-categorized these merchants. Treat as a STRONG preference signal for identical or similar merchant names, but categories above still constrain the final slug.\n${formatUserHints(userHints)}`
     : "";
 
-  return `You classify personal finance transactions for a Colombian user.
-
-Available categories (use the slug, exactly as written):
-${categoryList}
-
-Transactions to classify:
+  return `Transactions to classify:
 [
   ${txList}
-]
-
-For each transaction, pick the MOST specific category slug that fits. Prefer subcategories (e.g. "restaurantes" over "alimentacion"). If you genuinely cannot tell, return "otros".
-
-Confidence scale:
-- 90-100: obvious match (e.g. "NETFLIX" → "suscripciones")
-- 70-89: strong signal
-- 50-69: educated guess
-- 0-49: unsure — consider "otros"
-
-Return ONLY valid JSON (no prose, no markdown):
-{
-  "classifications": [
-    { "id": <number>, "categorySlug": "<slug-or-null>", "confidence": <0-100>, "reason": "<short phrase>" }
-  ]
-}
-
-Rules:
-- "categorySlug" MUST be one of the slugs above, or null if truly unclassifiable.
-- Include one entry per input transaction, same "id".
-- Keep "reason" under 80 chars.${hintsBlock}`;
-}
-
-function extractJson(text: string): unknown {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : trimmed;
-  return JSON.parse(candidate);
+]${hintsBlock}`;
 }
 
 export type AiSingleClassifyResult = {
@@ -173,58 +156,30 @@ export async function classifyBatchWithAi(opts: {
     };
   }
 
-  const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-
-  const model = opts.model ?? DEFAULT_MODEL;
-  const doFetch = opts.fetchImpl ?? fetch;
-  const prompt = buildPrompt(opts.transactions, opts.categories, opts.userHints ?? []);
-
-  const res = await doFetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 2048,
-      messages: [{ role: "user", content: prompt }],
-    }),
+  // cache_control on the system prompt — the categoryList + instructions are
+  // stable across every batch for this user. With output_config.format the
+  // model can't hallucinate a shape, so the slug-validation below only needs
+  // to reject slugs outside the user's current category set (edge case:
+  // categories deleted between requests).
+  const result = await callClaude({
+    system: [{ text: buildSystemPrompt(opts.categories), cacheControl: true }],
+    userPrompt: buildUserPrompt(opts.transactions, opts.userHints ?? []),
+    schema: responseSchema,
+    maxTokens: 2048,
+    model: opts.model,
+    apiKey: opts.apiKey,
+    fetchImpl: opts.fetchImpl,
   });
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Anthropic API error ${res.status}: ${body.slice(0, 300)}`);
-  }
-
-  const payload = (await res.json()) as {
-    content: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens: number; output_tokens: number };
-  };
-
-  const textBlock = payload.content?.find((c) => c.type === "text")?.text ?? "";
-  let parsedJson: unknown;
-  try {
-    parsedJson = extractJson(textBlock);
-  } catch {
-    throw new Error("Model returned invalid JSON");
-  }
-
-  const parsed = responseSchema.parse(parsedJson);
   const validSlugs = new Set(opts.categories.map((c) => c.slug));
-  const classifications = parsed.classifications.map((c) => ({
+  const classifications = result.data.classifications.map((c) => ({
     ...c,
     categorySlug: c.categorySlug && validSlugs.has(c.categorySlug) ? c.categorySlug : null,
   }));
 
   return {
     classifications,
-    model,
-    usage: {
-      inputTokens: payload.usage?.input_tokens ?? 0,
-      outputTokens: payload.usage?.output_tokens ?? 0,
-    },
+    model: result.model,
+    usage: { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens },
   };
 }

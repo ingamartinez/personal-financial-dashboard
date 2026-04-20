@@ -38,10 +38,15 @@ async function main() {
       continue;
     }
     const parsed = parseSmsBancolombia(rawSms);
-    if (parsed.kind === "skip") {
+    if (parsed.kind === "skip" || parsed.kind === "needs_review") {
       log.warn(
-        { txId: row.id, reason: parsed.reason, event: "backfill_counterparties_skip_parsed" },
-        "parser returned skip — skipped",
+        {
+          txId: row.id,
+          kind: parsed.kind,
+          reason: parsed.reason,
+          event: "backfill_counterparties_skip_parsed",
+        },
+        "parser returned non-ingest result — skipped",
       );
       continue;
     }

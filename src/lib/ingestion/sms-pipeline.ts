@@ -11,6 +11,12 @@ import {
   type ParsedSms,
   type RoutableAccount,
 } from "@/lib/ingestion/sms-bancolombia";
+import {
+  aiFallbackParseSms,
+  isAiFallbackEnabled,
+  recordParserEvent,
+  type AiFallbackOutcome,
+} from "@/lib/ingestion/sms-ai-fallback";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
 import type { ClassificationMethod } from "@/lib/types";
 
@@ -18,7 +24,7 @@ import type { ClassificationMethod } from "@/lib/types";
 const COP_TIMEZONE_OFFSET = "-05:00";
 
 export type IngestOutcome =
-  | { status: "inserted"; txId: number }
+  | { status: "inserted"; txId: number; via?: "regex" | "ai_fallback" }
   | { status: "duplicated" }
   | { status: "skipped"; reason: string }
   | { status: "error"; reason: string };
@@ -30,16 +36,78 @@ export type IngestOutcome =
  * `opts.forceAccountId` is used by the retry path (#261): bypass last4/currency
  * routing and use the account the user picked in the inbox. Currency is still
  * enforced so a wrong-currency account never gets a mismatched amount.
+ *
+ * `opts.aiFallbackFetchImpl` is a test seam — the SMS AI fallback path uses
+ * the Anthropic SDK, and tests inject a mock fetch. Production callers leave
+ * it undefined so the SDK uses its real transport.
  */
 export async function ingestParsed(
   userId: number,
   parsed: ParseResult,
-  opts?: { forceAccountId?: number },
+  opts?: { forceAccountId?: number; aiFallbackFetchImpl?: typeof fetch },
 ): Promise<IngestOutcome> {
   if (parsed.kind === "skip") {
     return { status: "skipped", reason: `parser: ${parsed.reason}` };
   }
 
+  // needs_review: the regex parser could not match any known shape. Either
+  // invoke the AI fallback (#257) or surface to the inbox. Either path emits
+  // exactly one parser_events row for the SLO dashboard (#329).
+  if (parsed.kind === "needs_review") {
+    return ingestNeedsReviewWithAiFallback(userId, parsed.raw, opts?.aiFallbackFetchImpl);
+  }
+
+  return ingestParsedSms(userId, parsed, opts?.forceAccountId);
+}
+
+async function ingestNeedsReviewWithAiFallback(
+  userId: number,
+  rawBody: string,
+  fetchImpl: typeof fetch | undefined,
+): Promise<IngestOutcome> {
+  const regexOutcome = { kind: "needs_review" as const, reason: "unknown_pattern" as const };
+  const enabled = await isAiFallbackEnabled(userId);
+
+  if (!enabled) {
+    await recordParserEvent({
+      userId,
+      outcome: { status: "disabled" },
+      regexOutcome,
+      latencyMs: 0,
+    });
+    return { status: "error", reason: "parser: unknown_pattern (ai fallback disabled)" };
+  }
+
+  const startedAt = Date.now();
+  const outcome: AiFallbackOutcome = await aiFallbackParseSms(rawBody, { fetchImpl });
+  const latencyMs = Date.now() - startedAt;
+
+  await recordParserEvent({ userId, outcome, regexOutcome, latencyMs });
+
+  if (outcome.status !== "success") {
+    const detail =
+      outcome.status === "low_confidence"
+        ? `confidence=${outcome.confidence.toFixed(2)}`
+        : `${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ""}`;
+    return { status: "error", reason: `ai_fallback: ${outcome.status} (${detail})` };
+  }
+
+  const result = await ingestParsedSms(userId, outcome.parsed, undefined, {
+    parsedByAiFallback: true,
+    aiConfidence: outcome.confidence,
+  });
+  // Tag successful AI-fallback inserts so callers (and the SMS route log) can
+  // distinguish them from the regex path.
+  if (result.status === "inserted") return { ...result, via: "ai_fallback" };
+  return result;
+}
+
+async function ingestParsedSms(
+  userId: number,
+  parsed: ParsedSms,
+  forceAccountId: number | undefined,
+  aiFallbackMeta?: { parsedByAiFallback: boolean; aiConfidence: number },
+): Promise<IngestOutcome> {
   const allAccounts = (await db
     .select({
       id: accounts.id,
@@ -54,10 +122,10 @@ export async function ingestParsed(
   >;
 
   let account: RoutableAccount | null;
-  if (opts?.forceAccountId !== undefined) {
-    const forced = allAccounts.find((a) => a.id === opts.forceAccountId);
+  if (forceAccountId !== undefined) {
+    const forced = allAccounts.find((a) => a.id === forceAccountId);
     if (!forced) {
-      return { status: "error", reason: `account ${opts.forceAccountId} not found for user` };
+      return { status: "error", reason: `account ${forceAccountId} not found for user` };
     }
     if (forced.currency !== parsed.currency) {
       return {
@@ -124,6 +192,10 @@ export async function ingestParsed(
         rawData: {
           kind: parsed.kind,
           sms: parsed.raw,
+          ...(aiFallbackMeta && {
+            parsedBy: "ai_fallback",
+            aiConfidence: aiFallbackMeta.aiConfidence,
+          }),
         },
       })
       .onConflictDoNothing({
@@ -324,7 +396,9 @@ function buildTxFields(parsed: ParsedSms): {
 }
 
 export function serializeParsed(parsed: ParseResult): Record<string, unknown> {
-  if (parsed.kind === "skip") return { kind: "skip", reason: parsed.reason };
+  if (parsed.kind === "skip" || parsed.kind === "needs_review") {
+    return { kind: parsed.kind, reason: parsed.reason };
+  }
   return {
     ...parsed,
     amountCents: parsed.amountCents.toString(),

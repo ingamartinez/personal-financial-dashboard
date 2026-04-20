@@ -1,11 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  compareProjections,
-  hashSmsBody,
-  parseProjectionJson,
-  projectFromRegex,
-  sampleForCanary,
-} from "./canary";
+import { compareProjections, hashSmsBody, projectFromRegex, sampleForCanary } from "./canary";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 
 describe("sampleForCanary", () => {
@@ -107,30 +101,9 @@ describe("compareProjections", () => {
   });
 });
 
-describe("parseProjectionJson", () => {
-  it("extracts the JSON object even with prose wrapping", () => {
-    const text = `Sure, here's the extraction:
-{"amountCents": "5000000", "currency": "COP", "merchant": "EXITO", "occurredOn": "2026-04-15"}
-Hope that helps!`;
-    const p = parseProjectionJson(text);
-    expect(p.amountCents).toBe("5000000");
-    expect(p.currency).toBe("COP");
-    expect(p.merchant).toBe("EXITO");
-  });
-
-  it("coerces nulls + unknown currency to null", () => {
-    const p = parseProjectionJson(
-      `{"amountCents": null, "currency": "BRL", "merchant": "", "occurredOn": null}`,
-    );
-    expect(p).toEqual({
-      amountCents: null,
-      currency: null,
-      merchant: null,
-      occurredOn: null,
-    });
-  });
-
-  it("throws when there is no JSON object in the response", () => {
-    expect(() => parseProjectionJson("I cannot parse this SMS.")).toThrow();
-  });
-});
+// NOTE: the former parseProjectionJson + its tests were removed. Response
+// parsing is now handled by the SDK via output_config.format (structured
+// outputs), which constrains the model server-side — unknown currencies
+// and prose-wrapped JSON are impossible at the wire level. The Zod schema
+// in canary.ts still guards amount/merchant/date coercion client-side;
+// those paths are exercised via shadowParseSms integration tests.

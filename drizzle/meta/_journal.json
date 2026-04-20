@@ -260,6 +260,20 @@
       "when": 1776658496155,
       "tag": "0036_strip_account_currency_suffix",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1776660720954,
+      "tag": "0037_quiet_ultimatum",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1776660801407,
+      "tag": "0038_chilly_madame_web",
+      "breakpoints": true
     }
   ]
 }
