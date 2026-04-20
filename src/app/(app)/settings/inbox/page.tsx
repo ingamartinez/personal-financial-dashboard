@@ -3,6 +3,7 @@ import { InboxIcon } from "lucide-react";
 import { db } from "@/lib/db";
 import { accounts, categories, ingestionLogs, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import { getSessionUser } from "@/lib/auth/session";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CONFIDENCE_LOW_THRESHOLD } from "@/components/transactions/confidence-badge";
@@ -96,7 +97,7 @@ export default async function SettingsInboxPage() {
 
   const accountOptions: InboxAccountOption[] = accountRows.map((a) => ({
     id: a.id,
-    label: `${a.institution} · ${a.name} (${a.currency})`,
+    label: formatAccountLabel(a, { withInstitution: true }),
     currency: a.currency,
   }));
 

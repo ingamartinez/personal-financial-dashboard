@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Money } from "@/components/display/money";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { archiveRecurring, toggleRecurringActive, upsertRecurring } from "./actions";
@@ -358,7 +359,7 @@ function RecurringEditor({
               >
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name} ({a.currency})
+                    {formatAccountLabel(a)}
                   </option>
                 ))}
               </select>

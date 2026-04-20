@@ -1,5 +1,6 @@
 import type { TelegramBatchItem, TelegramDraft } from "@/lib/db/schema";
 import type { NluAccountOption, NluCategoryOption } from "@/lib/ai/transaction-nlu";
+import { formatAccountLabel } from "@/lib/accounts/format";
 
 function formatAmount(amountCentsStr: string, currency: "COP" | "USD"): string {
   const cents = BigInt(amountCentsStr);
@@ -42,7 +43,9 @@ export function renderConfirmCard(opts: {
   }
 
   const account = accounts.find((a) => a.id === draft.accountId);
-  lines.push(`💳 ${account ? `${account.name} (${account.institution})` : "⚠️ Falta cuenta"}`);
+  lines.push(
+    `💳 ${account ? formatAccountLabel(account, { withInstitution: true, withLast4: true }) : "⚠️ Falta cuenta"}`,
+  );
 
   if (draft.occurredOn) {
     lines.push(`📅 ${draft.occurredOn}`);

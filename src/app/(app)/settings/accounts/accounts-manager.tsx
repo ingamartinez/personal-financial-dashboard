@@ -23,6 +23,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Money } from "@/components/display/money";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { AccountMetadata } from "@/lib/db/schema";
@@ -96,7 +97,8 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
   }
 
   function onArchive(row: AccountRow) {
-    if (!confirm(`Archive account "${row.name}"? This hides it from all views.`)) return;
+    if (!confirm(`Archive account "${formatAccountLabel(row)}"? This hides it from all views.`))
+      return;
     startTransition(async () => {
       try {
         await archiveAccount(row.id);
@@ -153,7 +155,7 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
                             <tr key={r.id} className={cn("border-t", !r.active && "opacity-50")}>
                               <td className="p-2">
                                 <div className="flex items-center gap-1.5 font-medium">
-                                  {r.name}
+                                  {formatAccountLabel(r)}
                                   {r.physicalCardId ? (
                                     <span
                                       title="Linked to a multi-currency physical card"
@@ -466,7 +468,9 @@ function AccountEditor({
     >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{isEdit ? `Edit: ${editing.name}` : "New account"}</DialogTitle>
+          <DialogTitle>
+            {isEdit ? `Edit: ${formatAccountLabel(editing)}` : "New account"}
+          </DialogTitle>
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
