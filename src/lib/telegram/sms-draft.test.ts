@@ -13,6 +13,8 @@ const ACCOUNTS: AccountDetail[] = [
     balanceCents: BigInt(0),
     active: true,
     metadata: { last4s: ["1234"] },
+    physicalCardId: null,
+    physicalCard: null,
   },
   {
     id: 2,
@@ -23,6 +25,8 @@ const ACCOUNTS: AccountDetail[] = [
     balanceCents: BigInt(0),
     active: true,
     metadata: { last4s: ["2575"] },
+    physicalCardId: null,
+    physicalCard: null,
   },
   {
     id: 3,
@@ -33,6 +37,8 @@ const ACCOUNTS: AccountDetail[] = [
     balanceCents: BigInt(0),
     active: true,
     metadata: { last4s: ["2575"] },
+    physicalCardId: null,
+    physicalCard: null,
   },
   {
     id: 4,
@@ -43,6 +49,8 @@ const ACCOUNTS: AccountDetail[] = [
     balanceCents: BigInt(0),
     active: false,
     metadata: { last4s: ["9999"] },
+    physicalCardId: null,
+    physicalCard: null,
   },
 ];
 

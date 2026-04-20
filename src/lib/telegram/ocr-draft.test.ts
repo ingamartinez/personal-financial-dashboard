@@ -12,6 +12,8 @@ const ACCOUNT: AccountDetail = {
   balanceCents: BigInt(0),
   active: true,
   metadata: {},
+  physicalCardId: null,
+  physicalCard: null,
 };
 
 function row(overrides: Partial<OcrParsedRow> = {}): OcrParsedRow {
