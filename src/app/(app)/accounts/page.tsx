@@ -22,6 +22,18 @@ const RATE_FMT = new Intl.NumberFormat("es-CO", {
   maximumFractionDigits: 2,
 });
 
+const NEXT_PAYMENT_FMT = new Intl.DateTimeFormat("es-CO", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+});
+
+function formatNextPayment(isoDate: string): string {
+  // Parse YYYY-MM-DD as UTC noon so the local-time conversion can't slip into
+  // the previous day for negative-offset timezones (COT is UTC-5).
+  return NEXT_PAYMENT_FMT.format(new Date(`${isoDate}T12:00:00Z`));
+}
+
 export const dynamic = "force-dynamic";
 
 const TYPE_LABEL: Record<AccountDetail["type"], string> = {
@@ -218,52 +230,78 @@ function PhysicalCardGroup({
     else usdDebt += s.balanceCents;
   }
   const availableCop = pc.creditLimitCents + copDebt + toCop(usdDebt, "USD", copPerUsd);
+  const hasUsd = subs.some((s) => s.currency === "USD");
+  // Bancolombia shows COP first, USD below; mirror that regardless of insert order.
+  const currencyRank: Record<Currency, number> = { COP: 0, USD: 1 };
+  const orderedSubs = [...subs].sort((a, b) => currencyRank[a.currency] - currencyRank[b.currency]);
+  const name = subs[0].name;
   const institution = subs[0].institution;
-  const label = pc.network ? `${institution} ${pc.network.toUpperCase()}` : institution;
-  const last4 = pc.last4 ? `*${pc.last4}` : null;
+  const meta: string[] = [];
+  if (pc.network) meta.push(pc.network.toUpperCase());
+  if (pc.last4) meta.push(`*${pc.last4}`);
 
   return (
     <Card size="sm" className="sm:col-span-2 lg:col-span-3">
       <CardHeader>
         <CardDescription className="flex items-center justify-between gap-2">
-          <span className="truncate">{label}</span>
-          <span className="shrink-0 text-[10px] tracking-wide uppercase">Shared cupo</span>
+          <span className="truncate">{institution}</span>
+          <span className="shrink-0 text-[10px] tracking-wide uppercase">Cupo compartido</span>
         </CardDescription>
-        <CardTitle className="truncate text-base">
-          Multi-currency card{last4 ? ` ${last4}` : ""}
-        </CardTitle>
+        <CardTitle className="truncate text-base">{name}</CardTitle>
+        {meta.length > 0 ? (
+          <div className="text-muted-foreground text-xs">{meta.join(" · ")}</div>
+        ) : null}
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        <div className="flex flex-col gap-1.5">
+          <div className="text-muted-foreground text-xs">Deuda a la fecha</div>
+          <div className="flex flex-col gap-1">
+            {orderedSubs.map((s) => (
+              <DebtRow key={s.id} account={s} />
+            ))}
+          </div>
+        </div>
         <SharedCupoMeter
           limitCents={pc.creditLimitCents}
           availableCents={availableCop}
-          fxFallback={fxFallback}
+          fxFallback={fxFallback && hasUsd}
         />
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {subs.map((s) => (
-            <SubAccountTile key={s.id} account={s} />
-          ))}
-        </div>
+        {pc.nextPaymentDate || hasUsd ? (
+          <div className="text-muted-foreground flex flex-col gap-0.5 text-xs">
+            {pc.nextPaymentDate ? (
+              <div className="flex items-center justify-between">
+                <span>Próximo pago</span>
+                <span className="tabular-nums">{formatNextPayment(pc.nextPaymentDate)}</span>
+              </div>
+            ) : null}
+            {hasUsd ? (
+              <div className="flex items-center justify-between">
+                <span>TRM{fxFallback ? " (fallback)" : ""}</span>
+                <span className="tabular-nums">$ {RATE_FMT.format(copPerUsd)}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );
 }
 
-function SubAccountTile({ account }: { account: AccountDetail }) {
+function DebtRow({ account }: { account: AccountDetail }) {
   const negative = account.balanceCents < BigInt(0);
   return (
-    <div className="bg-muted/30 flex flex-col gap-0.5 rounded-md p-2">
-      <div className="text-muted-foreground flex items-center justify-between text-[10px] tracking-wide uppercase">
-        <span>{account.currency}</span>
-      </div>
-      <div
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="text-muted-foreground text-[10px] tracking-wide uppercase">
+        {account.currency}
+      </span>
+      <span
         className={cn(
           "text-lg font-semibold tabular-nums",
           negative ? "text-rose-600" : "text-foreground",
         )}
       >
         <Money cents={account.balanceCents} currency={account.currency} />
-      </div>
+      </span>
     </div>
   );
 }
@@ -292,16 +330,11 @@ function SharedCupoMeter({
       </div>
       <div className="text-muted-foreground flex items-center justify-between text-xs tabular-nums">
         <span>
-          <Money cents={used} currency="COP" /> used
+          Cupo disponible: <Money cents={availableCents} currency="COP" />
+          {fxFallback ? " (TRM fallback)" : ""}
         </span>
         <span>
-          <Money cents={limitCents} currency="COP" /> limit
-        </span>
-      </div>
-      <div className="text-muted-foreground flex items-center justify-between text-[10px]">
-        <span>
-          Disponible: <Money cents={availableCents} currency="COP" />
-          {fxFallback ? " · cupo estimado (TRM fallback)" : ""}
+          Total: <Money cents={limitCents} currency="COP" />
         </span>
       </div>
     </div>

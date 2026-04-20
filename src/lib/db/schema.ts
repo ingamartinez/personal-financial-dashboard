@@ -255,6 +255,7 @@ export const physicalCards = pgTable(
       .notNull()
       .default(sql`0`),
     statementCutoffDay: smallint("statement_cutoff_day"),
+    nextPaymentDate: date("next_payment_date"),
     metadata: jsonb("metadata").$type<PhysicalCardMetadata>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

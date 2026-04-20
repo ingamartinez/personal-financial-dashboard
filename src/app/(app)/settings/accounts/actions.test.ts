@@ -201,6 +201,7 @@ describe("accounts actions: multi-currency credit card", () => {
       id: pcId,
       creditLimitCents: 25_000_000_00,
       statementCutoffDay: 15,
+      nextPaymentDate: "2026-04-16",
       last4: "7291",
       network: "mastercard",
     });
@@ -208,11 +209,65 @@ describe("accounts actions: multi-currency credit card", () => {
     const [pc] = await db.select().from(physicalCards).where(eq(physicalCards.id, pcId));
     expect(pc.creditLimitCents).toBe(BigInt(25_000_000_00));
     expect(pc.statementCutoffDay).toBe(15);
+    expect(pc.nextPaymentDate).toBe("2026-04-16");
     expect(pc.last4).toBe("7291");
     // Sub-accounts are untouched.
     const [refreshed] = await db.select().from(accounts).where(eq(accounts.id, rows[0].id));
     expect(refreshed.balanceCents).toBe(BigInt(0));
     expect(refreshed.metadata.creditLimitCents).toBeUndefined();
+  });
+
+  it("updatePhysicalCard clears nextPaymentDate when null is passed", async () => {
+    await upsertAccount({
+      name: `${MARKER}-clear-date`,
+      institution: "Bancolombia",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+      secondary: { currency: "USD", balance: 0 },
+      physicalCard: { creditLimitCents: 10_000_000_00, cutoffDay: 10, network: "mastercard" },
+    });
+    const rows = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-clear-date`)));
+    const pcId = rows[0].physicalCardId!;
+
+    // Seed a date, then clear it.
+    await updatePhysicalCard({
+      id: pcId,
+      creditLimitCents: 10_000_000_00,
+      nextPaymentDate: "2026-04-16",
+    });
+    await updatePhysicalCard({
+      id: pcId,
+      creditLimitCents: 10_000_000_00,
+      nextPaymentDate: null,
+    });
+    const [pc] = await db.select().from(physicalCards).where(eq(physicalCards.id, pcId));
+    expect(pc.nextPaymentDate).toBeNull();
+  });
+
+  it("updatePhysicalCard rejects malformed nextPaymentDate", async () => {
+    await upsertAccount({
+      name: `${MARKER}-bad-date`,
+      institution: "Bancolombia",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+      secondary: { currency: "USD", balance: 0 },
+      physicalCard: { creditLimitCents: 10_000_000_00, cutoffDay: 10, network: "mastercard" },
+    });
+    const rows = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-bad-date`)));
+    const pcId = rows[0].physicalCardId!;
+
+    const result = await updatePhysicalCard({
+      id: pcId,
+      creditLimitCents: 10_000_000_00,
+      nextPaymentDate: "16/04/2026",
+    });
+    expect(result.ok).toBe(false);
   });
 
   it("updatePhysicalCard rejects when the uuid belongs to another user (tenancy guard)", async () => {

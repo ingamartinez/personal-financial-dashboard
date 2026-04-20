@@ -159,6 +159,7 @@ describe("listAccountsDetailed: physical card join", () => {
       last4: "7291",
       creditLimitCents: BigInt(15_000_000_00),
       statementCutoffDay: 15,
+      nextPaymentDate: "2026-04-16",
     });
     await db.insert(accounts).values({
       userId: USER_A,
@@ -177,6 +178,7 @@ describe("listAccountsDetailed: physical card join", () => {
     expect(linked!.physicalCard).not.toBeNull();
     expect(linked!.physicalCard!.creditLimitCents).toBe(BigInt(15_000_000_00));
     expect(linked!.physicalCard!.statementCutoffDay).toBe(15);
+    expect(linked!.physicalCard!.nextPaymentDate).toBe("2026-04-16");
     expect(linked!.physicalCard!.network).toBe("mastercard");
     expect(linked!.physicalCard!.last4).toBe("7291");
   });
