@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { archiveRecurring, toggleRecurringActive, upsertRecurring } from "./actions";
@@ -151,7 +151,7 @@ export function RecurringManager({
                             cents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                           )}
                         >
-                          {formatMoney(cents, r.currency)}
+                          <Money cents={cents} currency={r.currency} />
                         </td>
                         <td className="p-2 text-xs">
                           <button

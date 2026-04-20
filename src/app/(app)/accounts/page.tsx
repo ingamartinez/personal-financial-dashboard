@@ -8,6 +8,7 @@ import { getNetWorth } from "@/lib/dashboard/queries";
 import { listAccountsDetailed, type AccountDetail } from "@/lib/accounts/queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { toCop, formatCop, formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -188,7 +189,7 @@ function AccountCard({ account, muted }: { account: AccountDetail; muted?: boole
             negative ? "text-rose-600" : "text-foreground",
           )}
         >
-          {formatMoney(account.balanceCents, account.currency)}
+          <Money cents={account.balanceCents} currency={account.currency} />
         </div>
         {account.type === "credit_card" && creditLimit ? (
           <CreditMeter
@@ -200,7 +201,7 @@ function AccountCard({ account, muted }: { account: AccountDetail; muted?: boole
         ) : null}
         {account.type === "loan" && loanRemaining ? (
           <div className="text-muted-foreground text-xs">
-            Remaining: {formatMoney(BigInt(loanRemaining), account.currency)}
+            Remaining: <Money cents={BigInt(loanRemaining)} currency={account.currency} />
             {nextPayment ? ` · next ${nextPayment}` : ""}
           </div>
         ) : null}
@@ -239,8 +240,12 @@ function CreditMeter({
         />
       </div>
       <div className="text-muted-foreground flex items-center justify-between text-xs tabular-nums">
-        <span>{formatMoney(used, currency)} used</span>
-        <span>{formatMoney(limitCents, currency)} limit</span>
+        <span>
+          <Money cents={used} currency={currency} /> used
+        </span>
+        <span>
+          <Money cents={limitCents} currency={currency} /> limit
+        </span>
       </div>
     </div>
   );

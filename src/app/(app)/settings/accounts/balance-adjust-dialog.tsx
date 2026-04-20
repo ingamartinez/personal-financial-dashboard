@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import type { AccountRow } from "./accounts-manager";
 
 export function BalanceAdjustDialog({
@@ -66,7 +66,7 @@ export function BalanceAdjustDialog({
               Saldo actual según Findash
             </Label>
             <div className="bg-muted/40 rounded-md border px-3 py-2 text-base font-semibold tabular-nums">
-              {target ? formatMoney(currentCents, target.currency) : "—"}
+              {target ? <Money cents={currentCents} currency={target.currency} /> : "—"}
             </div>
           </div>
 
@@ -93,7 +93,7 @@ export function BalanceAdjustDialog({
               Se creará una transacción de{" "}
               <span className="font-semibold tabular-nums">
                 {diffCents > BigInt(0) ? "+" : ""}
-                {target ? formatMoney(diffCents, target.currency) : ""}
+                {target ? <Money cents={diffCents} currency={target.currency} /> : ""}
               </span>{" "}
               marcada como <strong>Ajuste</strong>. Queda fuera de spend / insights / budgets.
             </div>

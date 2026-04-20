@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import { cn } from "@/lib/utils";
 import {
   dismissUpcoming,
@@ -156,7 +156,7 @@ export function RecurringInboxCard({ gaps }: { gaps: RecurringGapItem[] }) {
                         cents < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                       )}
                     >
-                      {formatMoney(cents, item.currency)}
+                      <Money cents={cents} currency={item.currency} />
                     </div>
                   </div>
                   {isOpen ? (

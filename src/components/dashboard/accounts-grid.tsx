@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import type { AccountStatus } from "@/lib/dashboard/queries";
 
 const TYPE_LABEL: Record<AccountStatus["type"], string> = {
@@ -37,7 +37,7 @@ export function AccountsGrid({ accounts }: { accounts: AccountStatus[] }) {
                   negative ? "text-rose-600" : "text-foreground",
                 )}
               >
-                {formatMoney(a.balanceCents, a.currency)}
+                <Money cents={a.balanceCents} currency={a.currency} />
               </div>
             </CardContent>
           </Card>

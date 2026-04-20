@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { formatMoney, parseTolerantMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
+import { parseTolerantMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { applyReconcile, previewReconcile, type ReconcilePreview } from "./actions";
 
@@ -187,7 +188,7 @@ export function ReconcileForm({
                             signed < BigInt(0) ? "text-rose-600" : "text-emerald-600",
                           )}
                         >
-                          {formatMoney(signed, row.currency)}
+                          <Money cents={signed} currency={row.currency} />
                         </td>
                         <td className="p-2 text-xs">
                           {decision?.action === "match" ? (
@@ -203,9 +204,14 @@ export function ReconcileForm({
                               title={`score ${decision.matchScore} (${decision.matchReason})`}
                             >
                               near-match ·{" "}
-                              {decision.amountDiffCents !== undefined
-                                ? formatMoney(BigInt(decision.amountDiffCents), row.currency)
-                                : "?"}{" "}
+                              {decision.amountDiffCents !== undefined ? (
+                                <Money
+                                  cents={BigInt(decision.amountDiffCents)}
+                                  currency={row.currency}
+                                />
+                              ) : (
+                                "?"
+                              )}{" "}
                               off · merge with #{decision.matchedTxnId} post-Apply
                             </span>
                           ) : (
@@ -247,7 +253,7 @@ export function ReconcileForm({
                 Copialo del app del banco. Si lo ingresás, habilitamos la métrica de divergencia en{" "}
                 <code>/admin/health</code>. Findash actual:{" "}
                 <span className="tabular-nums">
-                  {formatMoney(currentFindashBalance, accountCurrency)}
+                  <Money cents={currentFindashBalance} currency={accountCurrency} />
                 </span>
                 .
               </p>

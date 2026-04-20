@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { formatMoney } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import { cn } from "@/lib/utils";
 import {
   confirmOcrImport,
@@ -335,7 +335,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
                             )}
                           />
                           <div className="text-muted-foreground text-xs tabular-nums">
-                            {formatMoney(r.amountCents, currency)}
+                            <Money cents={r.amountCents} currency={currency} />
                           </div>
                           <div className="text-muted-foreground text-[10px]">
                             {dateFmt.format(new Date(`${r.occurredOn}T12:00:00Z`))}
