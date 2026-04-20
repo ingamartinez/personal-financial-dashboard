@@ -117,24 +117,24 @@ describe("accounts actions: single-currency", () => {
     ).rejects.toThrow();
   });
 
-  it("persists nextPaymentDate in metadata for single-currency credit_card (#358)", async () => {
+  it("persists cutoffDay + creditLimit in metadata for single-currency credit_card", async () => {
     await upsertAccount({
-      name: `${MARKER}-cc-next-pay`,
+      name: `${MARKER}-cc-cutoff`,
       institution: "Bancolombia",
       type: "credit_card",
       primary: {
         currency: "COP",
         balance: -100_000,
-        metadata: { creditLimitCents: 5_000_000_00, nextPaymentDate: "2026-05-15" },
+        metadata: { creditLimitCents: 5_000_000_00, cutoffDay: 10 },
       },
     });
     const [row] = await db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-cc-next-pay`)));
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-cc-cutoff`)));
     expect(row).toBeDefined();
     expect(row.physicalCardId).toBeNull();
-    expect(row.metadata.nextPaymentDate).toBe("2026-05-15");
+    expect(row.metadata.cutoffDay).toBe(10);
     expect(row.metadata.creditLimitCents).toBe(5_000_000_00);
   });
 });
@@ -170,9 +170,9 @@ describe("accounts actions: multi-currency credit card", () => {
     expect(currencies).toEqual(["COP", "USD"]);
   });
 
-  it("persists nextPaymentDate to physical_cards on multi-currency creation (#360)", async () => {
+  it("persists name to physical_cards on multi-currency creation (#362)", async () => {
     await upsertAccount({
-      name: `${MARKER}-mc-next-pay`,
+      name: `${MARKER}-mc-name`,
       institution: "Bancolombia",
       type: "credit_card",
       primary: { currency: "COP", balance: 0 },
@@ -180,7 +180,6 @@ describe("accounts actions: multi-currency credit card", () => {
       physicalCard: {
         creditLimitCents: 15_000_000_00,
         cutoffDay: 10,
-        nextPaymentDate: "2026-05-20",
         last4: "7291",
         network: "mastercard",
       },
@@ -188,17 +187,14 @@ describe("accounts actions: multi-currency credit card", () => {
     const rows = await db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-mc-next-pay`)));
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-mc-name`)));
     expect(rows).toHaveLength(2);
     const [pc] = await db
       .select()
       .from(physicalCards)
       .where(eq(physicalCards.id, rows[0].physicalCardId!));
-    expect(pc.nextPaymentDate).toBe("2026-05-20");
-    // Must NOT leak into sub-account metadata — physical_cards is the single
-    // source of truth for shared-cupo cards.
-    expect(rows[0].metadata.nextPaymentDate).toBeUndefined();
-    expect(rows[1].metadata.nextPaymentDate).toBeUndefined();
+    // name defaults to the account name when physicalCard.name is not passed.
+    expect(pc.name).toBe(`${MARKER}-mc-name`);
   });
 
   it("creates a physical_cards row with the shared cupo when physicalCard is passed", async () => {
@@ -253,7 +249,6 @@ describe("accounts actions: multi-currency credit card", () => {
       id: pcId,
       creditLimitCents: 25_000_000_00,
       statementCutoffDay: 15,
-      nextPaymentDate: "2026-04-16",
       last4: "7291",
       network: "mastercard",
     });
@@ -261,7 +256,6 @@ describe("accounts actions: multi-currency credit card", () => {
     const [pc] = await db.select().from(physicalCards).where(eq(physicalCards.id, pcId));
     expect(pc.creditLimitCents).toBe(BigInt(25_000_000_00));
     expect(pc.statementCutoffDay).toBe(15);
-    expect(pc.nextPaymentDate).toBe("2026-04-16");
     expect(pc.last4).toBe("7291");
     // Sub-accounts are untouched.
     const [refreshed] = await db.select().from(accounts).where(eq(accounts.id, rows[0].id));
@@ -269,57 +263,56 @@ describe("accounts actions: multi-currency credit card", () => {
     expect(refreshed.metadata.creditLimitCents).toBeUndefined();
   });
 
-  it("updatePhysicalCard clears nextPaymentDate when null is passed", async () => {
+  it("updatePhysicalCard applies partial updates — undefined leaves fields untouched (#362)", async () => {
     await upsertAccount({
-      name: `${MARKER}-clear-date`,
+      name: `${MARKER}-partial`,
       institution: "Bancolombia",
       type: "credit_card",
       primary: { currency: "COP", balance: 0 },
       secondary: { currency: "USD", balance: 0 },
-      physicalCard: { creditLimitCents: 10_000_000_00, cutoffDay: 10, network: "mastercard" },
+      physicalCard: {
+        name: "Initial Name",
+        creditLimitCents: 10_000_000_00,
+        cutoffDay: 10,
+        last4: "7291",
+        network: "mastercard",
+      },
     });
     const rows = await db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-clear-date`)));
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-partial`)));
     const pcId = rows[0].physicalCardId!;
 
-    // Seed a date, then clear it.
+    // 🎫 path: only touches cupo + network. cutoff / last4 / name stay intact.
     await updatePhysicalCard({
       id: pcId,
-      creditLimitCents: 10_000_000_00,
-      nextPaymentDate: "2026-04-16",
+      creditLimitCents: 20_000_000_00,
+      network: "visa",
     });
-    await updatePhysicalCard({
-      id: pcId,
-      creditLimitCents: 10_000_000_00,
-      nextPaymentDate: null,
-    });
-    const [pc] = await db.select().from(physicalCards).where(eq(physicalCards.id, pcId));
-    expect(pc.nextPaymentDate).toBeNull();
-  });
-
-  it("updatePhysicalCard rejects malformed nextPaymentDate", async () => {
-    await upsertAccount({
-      name: `${MARKER}-bad-date`,
-      institution: "Bancolombia",
-      type: "credit_card",
-      primary: { currency: "COP", balance: 0 },
-      secondary: { currency: "USD", balance: 0 },
-      physicalCard: { creditLimitCents: 10_000_000_00, cutoffDay: 10, network: "mastercard" },
-    });
-    const rows = await db
+    const [pcAfterMinimal] = await db
       .select()
-      .from(accounts)
-      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${MARKER}-bad-date`)));
-    const pcId = rows[0].physicalCardId!;
+      .from(physicalCards)
+      .where(eq(physicalCards.id, pcId));
+    expect(pcAfterMinimal.creditLimitCents).toBe(BigInt(20_000_000_00));
+    expect(pcAfterMinimal.network).toBe("visa");
+    expect(pcAfterMinimal.statementCutoffDay).toBe(10); // untouched
+    expect(pcAfterMinimal.last4).toBe("7291"); // untouched
+    expect(pcAfterMinimal.name).toBe("Initial Name"); // untouched
 
-    const result = await updatePhysicalCard({
+    // ✏️ path: only name / cutoff / last4; cupo + network untouched.
+    await updatePhysicalCard({
       id: pcId,
-      creditLimitCents: 10_000_000_00,
-      nextPaymentDate: "16/04/2026",
+      name: "Renamed Card",
+      statementCutoffDay: 22,
+      last4: "1234",
     });
-    expect(result.ok).toBe(false);
+    const [pcAfterEdit] = await db.select().from(physicalCards).where(eq(physicalCards.id, pcId));
+    expect(pcAfterEdit.name).toBe("Renamed Card");
+    expect(pcAfterEdit.statementCutoffDay).toBe(22);
+    expect(pcAfterEdit.last4).toBe("1234");
+    expect(pcAfterEdit.creditLimitCents).toBe(BigInt(20_000_000_00)); // untouched
+    expect(pcAfterEdit.network).toBe("visa"); // untouched
   });
 
   it("updatePhysicalCard rejects when the uuid belongs to another user (tenancy guard)", async () => {

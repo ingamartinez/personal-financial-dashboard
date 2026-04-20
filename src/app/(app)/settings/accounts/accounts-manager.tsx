@@ -41,11 +41,11 @@ type AccountType = "savings" | "credit_card" | "loan";
 
 export type AccountRowPhysicalCard = {
   id: string;
+  name: string | null;
   // Stringified bigint; same convention as balanceCents to stay serialization-safe
   // when this type crosses the RSC → client boundary.
   creditLimitCents: string;
   statementCutoffDay: number | null;
-  nextPaymentDate: string | null;
   last4: string | null;
   network: string | null;
 };
@@ -74,6 +74,253 @@ const TYPE_ORDER: AccountType[] = ["savings", "credit_card", "loan"];
 type EditorState = { open: boolean; editing: AccountRow | null };
 type AdjustState = { open: boolean; target: AccountRow | null };
 type PhysicalCardState = { open: boolean; target: AccountRow | null };
+
+type RowActions = {
+  onToggle: (r: AccountRow) => void;
+  onArchive: (r: AccountRow) => void;
+  onArchivePlastic?: (subs: AccountRow[]) => void;
+  setAdjust: (s: { open: boolean; target: AccountRow | null }) => void;
+  setPcard: (s: { open: boolean; target: AccountRow | null }) => void;
+  openEdit: (r: AccountRow) => void;
+  pending: boolean;
+};
+
+type RenderSpec = { kind: "single"; row: AccountRow } | { kind: "plastic"; subs: AccountRow[] };
+
+function groupRowsForRender(rows: AccountRow[]): RenderSpec[] {
+  const specs: RenderSpec[] = [];
+  const byPcId = new Map<string, AccountRow[]>();
+  for (const r of rows) {
+    if (r.physicalCardId && r.physicalCard) {
+      const existing = byPcId.get(r.physicalCardId);
+      if (existing) {
+        existing.push(r);
+      } else {
+        const arr = [r];
+        byPcId.set(r.physicalCardId, arr);
+        specs.push({ kind: "plastic", subs: arr });
+      }
+    } else {
+      specs.push({ kind: "single", row: r });
+    }
+  }
+  return specs;
+}
+
+function renderSingleRow(r: AccountRow, a: RowActions) {
+  const cents = BigInt(r.balanceCents);
+  return (
+    <tr key={r.id} className={cn("border-t", !r.active && "opacity-50")}>
+      <td className="p-2">
+        <div className="flex items-center gap-1.5 font-medium">{formatAccountLabel(r)}</div>
+        {r.metadata.last4s && r.metadata.last4s.length > 0 ? (
+          <div className="text-muted-foreground text-xs tabular-nums">
+            •••• {r.metadata.last4s.join(" / ")}
+          </div>
+        ) : null}
+      </td>
+      <td className="text-muted-foreground p-2 text-xs">{r.institution}</td>
+      <td className="text-muted-foreground p-2 text-xs">{r.currency}</td>
+      <td className="p-2 text-right font-medium tabular-nums">
+        <Money cents={cents} currency={r.currency} />
+      </td>
+      <td className="p-2 text-xs">
+        <button
+          type="button"
+          onClick={() => a.onToggle(r)}
+          disabled={a.pending}
+          className={cn(
+            "rounded px-1.5 py-0.5",
+            r.active ? "bg-emerald-100 text-emerald-800" : "bg-muted text-muted-foreground",
+          )}
+        >
+          {r.active ? "active" : "paused"}
+        </button>
+      </td>
+      <td className="p-2 text-right">
+        <div className="flex justify-end gap-1">
+          <Button
+            asChild
+            variant="ghost"
+            size="sm"
+            aria-label="Reconcile from statement"
+            title="Conciliar con extracto bancario"
+          >
+            <Link href={`/settings/accounts/${r.id}/reconcile`}>
+              <ArrowLeftRightIcon className="size-4" />
+            </Link>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => a.setAdjust({ open: true, target: r })}
+            disabled={a.pending}
+            aria-label="Adjust balance"
+            title="Ajustar saldo (reconciliación)"
+          >
+            <WrenchIcon className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => a.openEdit(r)}
+            disabled={a.pending}
+            aria-label="Edit"
+          >
+            <PencilIcon className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => a.onArchive(r)}
+            disabled={a.pending}
+            aria-label="Archive"
+          >
+            <Trash2Icon className="size-4" />
+          </Button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Renders a linked pair as a "plastic" parent row (shared-cupo actions) plus
+ * one child row per currency sub-account (per-sub actions). The parent row uses
+ * the first sub as the target for ✏️ (edits route to physical_cards via that
+ * sub's account id and its physicalCardId) and 🎫 (shared cupo + network).
+ */
+function renderPlasticRows(subs: AccountRow[], a: RowActions) {
+  const primary = subs[0];
+  const pc = primary.physicalCard!;
+  const title = pc.name ?? primary.name;
+  const allInactive = subs.every((s) => !s.active);
+  const parent = (
+    <tr
+      key={`plastic-${pc.id}`}
+      className={cn("bg-muted/30 border-t", allInactive && "opacity-50")}
+    >
+      <td className="p-2">
+        <div className="flex items-center gap-1.5 font-medium">
+          <LinkIcon className="text-muted-foreground size-3 shrink-0" />
+          {title}
+        </div>
+        {pc.last4 ? (
+          <div className="text-muted-foreground text-xs tabular-nums">
+            •••• {pc.last4}
+            {pc.network ? ` · ${pc.network.toUpperCase()}` : ""}
+          </div>
+        ) : null}
+      </td>
+      <td className="text-muted-foreground p-2 text-xs">{primary.institution}</td>
+      <td className="text-muted-foreground p-2 text-xs">multi</td>
+      <td className="p-2 text-right font-medium tabular-nums">
+        <Money cents={BigInt(pc.creditLimitCents)} currency="COP" />
+        <div className="text-muted-foreground text-[10px]">cupo total</div>
+      </td>
+      <td className="text-muted-foreground p-2 text-xs">{allInactive ? "paused" : "active"}</td>
+      <td className="p-2 text-right">
+        <div className="flex justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => a.setPcard({ open: true, target: primary })}
+            disabled={a.pending}
+            aria-label="Editar tarjeta física"
+            title="Editar cupo total + network"
+          >
+            <CreditCardIcon className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => a.openEdit(primary)}
+            disabled={a.pending}
+            aria-label="Edit plastic"
+            title="Editar nombre / cutoff / last4"
+          >
+            <PencilIcon className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => a.onArchivePlastic?.(subs)}
+            disabled={a.pending}
+            aria-label="Archive plastic"
+            title="Archivar plástico (y sus sub-cuentas)"
+          >
+            <Trash2Icon className="size-4" />
+          </Button>
+        </div>
+      </td>
+    </tr>
+  );
+  const children = subs.map((s) => {
+    const cents = BigInt(s.balanceCents);
+    return (
+      <tr key={s.id} className={cn("border-t", !s.active && "opacity-50")}>
+        <td className="p-2 pl-8">
+          <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+            <span className="text-[10px] tracking-wide uppercase">{s.currency}</span>
+          </div>
+        </td>
+        <td className="text-muted-foreground p-2 text-xs">—</td>
+        <td className="text-muted-foreground p-2 text-xs">{s.currency}</td>
+        <td className="p-2 text-right font-medium tabular-nums">
+          <Money cents={cents} currency={s.currency} />
+        </td>
+        <td className="p-2 text-xs">
+          <button
+            type="button"
+            onClick={() => a.onToggle(s)}
+            disabled={a.pending}
+            className={cn(
+              "rounded px-1.5 py-0.5",
+              s.active ? "bg-emerald-100 text-emerald-800" : "bg-muted text-muted-foreground",
+            )}
+          >
+            {s.active ? "active" : "paused"}
+          </button>
+        </td>
+        <td className="p-2 text-right">
+          <div className="flex justify-end gap-1">
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              aria-label="Reconcile from statement"
+              title="Conciliar con extracto bancario"
+            >
+              <Link href={`/settings/accounts/${s.id}/reconcile`}>
+                <ArrowLeftRightIcon className="size-4" />
+              </Link>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => a.setAdjust({ open: true, target: s })}
+              disabled={a.pending}
+              aria-label="Adjust balance"
+              title="Ajustar saldo (reconciliación)"
+            >
+              <WrenchIcon className="size-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => a.onArchive(s)}
+              disabled={a.pending}
+              aria-label="Archive sub"
+            >
+              <Trash2Icon className="size-4" />
+            </Button>
+          </div>
+        </td>
+      </tr>
+    );
+  });
+  return [parent, ...children];
+}
 
 export function AccountsManager({ items, copPerUsd }: { items: AccountRow[]; copPerUsd: number }) {
   const [editor, setEditor] = useState<EditorState>({ open: false, editing: null });
@@ -125,6 +372,24 @@ export function AccountsManager({ items, copPerUsd }: { items: AccountRow[]; cop
     });
   }
 
+  function onArchivePlastic(subs: AccountRow[]) {
+    const label = subs[0].physicalCard?.name ?? subs[0].name;
+    if (
+      !confirm(
+        `Archive plastic "${label}" and both sub-accounts? This hides all ${subs.length} rows from every view.`,
+      )
+    )
+      return;
+    startTransition(async () => {
+      try {
+        await Promise.all(subs.map((s) => archiveAccount(s.id)));
+        toast.success("Archived");
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed");
+      }
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex justify-end">
@@ -165,106 +430,39 @@ export function AccountsManager({ items, copPerUsd }: { items: AccountRow[]; cop
                         </tr>
                       </thead>
                       <tbody>
-                        {grouped[t].map((r) => {
-                          const cents = BigInt(r.balanceCents);
-                          return (
-                            <tr key={r.id} className={cn("border-t", !r.active && "opacity-50")}>
-                              <td className="p-2">
-                                <div className="flex items-center gap-1.5 font-medium">
-                                  {formatAccountLabel(r)}
-                                  {r.physicalCardId ? (
-                                    <span
-                                      title="Linked to a multi-currency physical card"
-                                      aria-label="multi-currency"
-                                    >
-                                      <LinkIcon className="text-muted-foreground size-3" />
-                                    </span>
-                                  ) : null}
-                                </div>
-                                {r.metadata.last4s && r.metadata.last4s.length > 0 ? (
-                                  <div className="text-muted-foreground text-xs tabular-nums">
-                                    •••• {r.metadata.last4s.join(" / ")}
-                                  </div>
-                                ) : null}
-                              </td>
-                              <td className="text-muted-foreground p-2 text-xs">{r.institution}</td>
-                              <td className="text-muted-foreground p-2 text-xs">{r.currency}</td>
-                              <td className="p-2 text-right font-medium tabular-nums">
-                                <Money cents={cents} currency={r.currency} />
-                              </td>
-                              <td className="p-2 text-xs">
-                                <button
-                                  type="button"
-                                  onClick={() => onToggle(r)}
-                                  disabled={pending}
-                                  className={cn(
-                                    "rounded px-1.5 py-0.5",
-                                    r.active
-                                      ? "bg-emerald-100 text-emerald-800"
-                                      : "bg-muted text-muted-foreground",
-                                  )}
-                                >
-                                  {r.active ? "active" : "paused"}
-                                </button>
-                              </td>
-                              <td className="p-2 text-right">
-                                <div className="flex justify-end gap-1">
-                                  <Button
-                                    asChild
-                                    variant="ghost"
-                                    size="sm"
-                                    aria-label="Reconcile from statement"
-                                    title="Conciliar con extracto bancario"
-                                  >
-                                    <Link href={`/settings/accounts/${r.id}/reconcile`}>
-                                      <ArrowLeftRightIcon className="size-4" />
-                                    </Link>
-                                  </Button>
-                                  {r.physicalCard ? (
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => setPcard({ open: true, target: r })}
-                                      disabled={pending}
-                                      aria-label="Editar tarjeta física"
-                                      title="Editar cupo compartido de la tarjeta física"
-                                    >
-                                      <CreditCardIcon className="size-4" />
-                                    </Button>
-                                  ) : null}
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setAdjust({ open: true, target: r })}
-                                    disabled={pending}
-                                    aria-label="Adjust balance"
-                                    title="Ajustar saldo (reconciliación)"
-                                  >
-                                    <WrenchIcon className="size-4" />
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => openEdit(r)}
-                                    disabled={pending}
-                                    aria-label="Edit"
-                                  >
-                                    <PencilIcon className="size-4" />
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => onArchive(r)}
-                                    disabled={pending}
-                                    aria-label="Archive"
-                                  >
-                                    <Trash2Icon className="size-4" />
-                                  </Button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                        {t === "credit_card"
+                          ? groupRowsForRender(grouped[t]).flatMap((spec) =>
+                              spec.kind === "plastic"
+                                ? renderPlasticRows(spec.subs, {
+                                    onToggle,
+                                    onArchive,
+                                    onArchivePlastic,
+                                    setAdjust,
+                                    setPcard,
+                                    openEdit,
+                                    pending,
+                                  })
+                                : [
+                                    renderSingleRow(spec.row, {
+                                      onToggle,
+                                      onArchive,
+                                      setAdjust,
+                                      setPcard,
+                                      openEdit,
+                                      pending,
+                                    }),
+                                  ],
+                            )
+                          : grouped[t].map((r) =>
+                              renderSingleRow(r, {
+                                onToggle,
+                                onArchive,
+                                setAdjust,
+                                setPcard,
+                                openEdit,
+                                pending,
+                              }),
+                            )}
                       </tbody>
                     </table>
                   </div>
@@ -329,8 +527,6 @@ type SideMetadataKeys = Pick<
   | "network"
   | "creditLimitCents"
   | "cutoffDay"
-  | "paymentDueDay"
-  | "nextPaymentDate"
   | "interestRateMonthly"
   | "termMonths"
   | "loanOriginalCents"
@@ -342,8 +538,6 @@ function metadataFromForm(values: {
   last4: string;
   creditLimit: string;
   cutoffDay: string;
-  paymentDueDay: string;
-  nextPaymentDate: string;
   interestRateMonthly: string;
   termMonths: string;
   loanOriginal: string;
@@ -365,14 +559,6 @@ function metadataFromForm(values: {
   if (values.cutoffDay) {
     const n = Number(values.cutoffDay);
     if (Number.isInteger(n) && n >= 1 && n <= 31) md.cutoffDay = n;
-  }
-  if (values.paymentDueDay) {
-    const n = Number(values.paymentDueDay);
-    if (Number.isInteger(n) && n >= 1 && n <= 31) md.paymentDueDay = n;
-  }
-  const nextPaymentClean = values.nextPaymentDate.trim();
-  if (nextPaymentClean && /^\d{4}-\d{2}-\d{2}$/.test(nextPaymentClean)) {
-    md.nextPaymentDate = nextPaymentClean;
   }
   if (values.interestRateMonthly) {
     const n = Number(values.interestRateMonthly);
@@ -414,14 +600,23 @@ function AccountEditor({
   );
 
   const initialMeta = editing?.metadata ?? {};
-  const [network, setNetwork] = useState<string>(initialMeta.network ?? "");
-  const [last4, setLast4] = useState((initialMeta.last4s ?? []).join(" "));
-  const [creditLimit, setCreditLimit] = useState(
-    initialMeta.creditLimitCents != null ? (initialMeta.creditLimitCents / 100).toString() : "",
+  const linkedPc = editing?.physicalCard ?? null;
+  // For linked subs, prefer physical_cards values when hydrating — that is the
+  // canonical source for shared fields (cupo, cutoff, last4, network, name).
+  const [network, setNetwork] = useState<string>(linkedPc?.network ?? initialMeta.network ?? "");
+  const [last4, setLast4] = useState(linkedPc?.last4 ?? (initialMeta.last4s ?? []).join(" "));
+  const [creditLimit, setCreditLimit] = useState(() => {
+    if (linkedPc) {
+      const cents = BigInt(linkedPc.creditLimitCents);
+      return cents > BigInt(0) ? (Number(cents) / 100).toString() : "";
+    }
+    return initialMeta.creditLimitCents != null
+      ? (initialMeta.creditLimitCents / 100).toString()
+      : "";
+  });
+  const [cutoffDay, setCutoffDay] = useState(
+    (linkedPc?.statementCutoffDay ?? initialMeta.cutoffDay)?.toString() ?? "",
   );
-  const [cutoffDay, setCutoffDay] = useState(initialMeta.cutoffDay?.toString() ?? "");
-  const [paymentDueDay, setPaymentDueDay] = useState(initialMeta.paymentDueDay?.toString() ?? "");
-  const [nextPaymentDate, setNextPaymentDate] = useState<string>(initialMeta.nextPaymentDate ?? "");
   const [interestRateMonthly, setInterestRateMonthly] = useState(
     initialMeta.interestRateMonthly?.toString() ?? "",
   );
@@ -455,8 +650,6 @@ function AccountEditor({
       last4,
       creditLimit,
       cutoffDay,
-      paymentDueDay,
-      nextPaymentDate,
       interestRateMonthly,
       termMonths,
       loanOriginal,
@@ -479,49 +672,34 @@ function AccountEditor({
       // shared COP cupo; no per-side limit. Submit via top-level `physicalCard`
       // so it lands in `physical_cards` — NOT in either sub-account's metadata.
       const sharedLimitCents = creditLimit !== "" ? Math.round(Number(creditLimit) * 100) : 0;
-      const nextPaymentClean = nextPaymentDate.trim();
       physicalCard = {
+        name: name.trim() || undefined,
         creditLimitCents: Number.isFinite(sharedLimitCents) ? sharedLimitCents : 0,
         cutoffDay: cutoffDay !== "" ? Number(cutoffDay) : undefined,
-        nextPaymentDate:
-          nextPaymentClean && /^\d{4}-\d{2}-\d{2}$/.test(nextPaymentClean)
-            ? nextPaymentClean
-            : undefined,
         last4: last4.split(/\s+/)[0]?.match(/^\d{4}$/)?.[0],
         network: network ? (network as "visa" | "mastercard" | "amex") : undefined,
       };
-      // Strip the shared-cupo keys from both sub-account metadata payloads —
-      // they belong to physical_cards now, not accounts.
+      // Strip shared-cupo keys from both sub-account metadata — single source of
+      // truth is physical_cards.
       const {
         creditLimitCents: _pLimit,
         cutoffDay: _pCutoff,
-        nextPaymentDate: _pNext,
-        ...primaryMdNoLimit
+        network: _pNetwork,
+        last4s: _pLast4s,
+        ...primaryMdNoShared
       } = primaryMd;
       void _pLimit;
       void _pCutoff;
-      void _pNext;
+      void _pNetwork;
+      void _pLast4s;
       secondary = {
         currency: secondaryCurrency,
         balance: secBal,
-        metadata: metadataFromForm({
-          network,
-          last4,
-          creditLimit: "", // lives in physical_cards now
-          cutoffDay: "", // lives in physical_cards now
-          paymentDueDay,
-          nextPaymentDate: "", // lives in physical_cards now
-          interestRateMonthly: "",
-          termMonths: "",
-          loanOriginal: "",
-          monthlyPayment: "",
-        }),
+        metadata: {},
       };
-      // Apply the strip to primary metadata too (avoid duplicating the cupo).
-      Object.assign(primaryMd, primaryMdNoLimit);
-      delete primaryMd.creditLimitCents;
-      delete primaryMd.cutoffDay;
-      delete primaryMd.nextPaymentDate;
+      // Apply the strip to primary metadata (keep loan/interest etc if any).
+      for (const k of Object.keys(primaryMd)) delete (primaryMd as Record<string, unknown>)[k];
+      Object.assign(primaryMd, primaryMdNoShared);
     }
 
     startTransition(async () => {
@@ -535,6 +713,26 @@ function AccountEditor({
           secondary,
           physicalCard,
         });
+        // For edits of a linked sub, route shared-cupo attrs (name / cutoff /
+        // last4) to physical_cards. The 🎫 dialog handles cupo + network; these
+        // fields belong to the plastic but live nowhere else editable.
+        if (isEdit && linkedPc) {
+          const cutoffNum = cutoffDay === "" ? null : Number(cutoffDay);
+          const last4Clean = last4.trim().split(/\s+/)[0] ?? "";
+          const pcResult = await updatePhysicalCard({
+            id: linkedPc.id,
+            name: name.trim() || null,
+            statementCutoffDay:
+              cutoffNum !== null && Number.isInteger(cutoffNum) && cutoffNum >= 1 && cutoffNum <= 31
+                ? cutoffNum
+                : null,
+            last4: /^\d{4}$/.test(last4Clean) ? last4Clean : null,
+          });
+          if (!pcResult.ok) {
+            toast.error(pcResult.message);
+            return;
+          }
+        }
         toast.success(isEdit ? "Updated" : "Created");
         onClose();
       } catch (err) {
@@ -681,7 +879,7 @@ function AccountEditor({
           <details className="group rounded-md border px-3 py-2">
             <summary className="cursor-pointer text-sm font-medium">Advanced details</summary>
             <div className="mt-3 flex flex-col gap-3">
-              {type === "credit_card" ? (
+              {type === "credit_card" && !linkedPc ? (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="acc-network">Network</Label>
@@ -699,7 +897,7 @@ function AccountEditor({
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="acc-limit">
-                      {multiCurrency ? "Shared cupo (COP)" : `Credit limit (${currency})`}
+                      {multiCurrency ? "Cupo total (COP)" : `Cupo total (${currency})`}
                     </Label>
                     <Input
                       id="acc-limit"
@@ -713,6 +911,12 @@ function AccountEditor({
                     />
                   </div>
                 </div>
+              ) : null}
+              {type === "credit_card" && linkedPc ? (
+                <p className="text-muted-foreground rounded-md border border-dashed px-3 py-2 text-xs">
+                  Cupo y network se editan desde <strong>Editar tarjeta física</strong> (🎫) — son
+                  compartidos entre las sub-cuentas COP y USD.
+                </p>
               ) : null}
 
               {(type === "credit_card" || type === "savings") && (
@@ -729,51 +933,22 @@ function AccountEditor({
               )}
 
               {type === "credit_card" ? (
-                <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="acc-cutoff">Cutoff day</Label>
-                      <Input
-                        id="acc-cutoff"
-                        type="number"
-                        min="1"
-                        max="31"
-                        value={cutoffDay}
-                        onChange={(e) => setCutoffDay(e.target.value)}
-                        placeholder="Optional"
-                        className="tabular-nums"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="acc-due">Payment due day</Label>
-                      <Input
-                        id="acc-due"
-                        type="number"
-                        min="1"
-                        max="31"
-                        value={paymentDueDay}
-                        onChange={(e) => setPaymentDueDay(e.target.value)}
-                        placeholder="Optional"
-                        className="tabular-nums"
-                      />
-                    </div>
-                  </div>
-                  {editing?.physicalCardId ? null : (
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="acc-next-payment">Próximo pago</Label>
-                      <Input
-                        id="acc-next-payment"
-                        type="date"
-                        value={nextPaymentDate}
-                        onChange={(e) => setNextPaymentDate(e.target.value)}
-                        className="tabular-nums"
-                      />
-                      <p className="text-muted-foreground text-xs">
-                        Fecha puntual del próximo pago (se muestra en el widget).
-                      </p>
-                    </div>
-                  )}
-                </>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="acc-cutoff">Cutoff day</Label>
+                  <Input
+                    id="acc-cutoff"
+                    type="number"
+                    min="1"
+                    max="31"
+                    value={cutoffDay}
+                    onChange={(e) => setCutoffDay(e.target.value)}
+                    placeholder="Optional"
+                    className="tabular-nums"
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    El próximo pago se deriva como <code>cutoff + 15 días</code>.
+                  </p>
+                </div>
               ) : null}
 
               {type === "loan" ? (
@@ -866,11 +1041,6 @@ function PhysicalCardEditor({
   const [creditLimit, setCreditLimit] = useState(
     pc ? (Number(BigInt(pc.creditLimitCents)) / 100).toString() : "",
   );
-  const [statementCutoffDay, setStatementCutoffDay] = useState(
-    pc?.statementCutoffDay?.toString() ?? "",
-  );
-  const [nextPaymentDate, setNextPaymentDate] = useState(pc?.nextPaymentDate ?? "");
-  const [last4, setLast4] = useState(pc?.last4 ?? "");
   const [network, setNetwork] = useState(pc?.network ?? "");
 
   function onSubmit(e: React.FormEvent) {
@@ -881,29 +1051,11 @@ function PhysicalCardEditor({
       toast.error("El cupo debe ser un número positivo (o 0).");
       return;
     }
-    const cutoffNum = statementCutoffDay === "" ? null : Number(statementCutoffDay);
-    if (cutoffNum !== null && (!Number.isInteger(cutoffNum) || cutoffNum < 1 || cutoffNum > 31)) {
-      toast.error("Cutoff day debe ser 1-31.");
-      return;
-    }
-    const nextPaymentClean = nextPaymentDate.trim();
-    if (nextPaymentClean && !/^\d{4}-\d{2}-\d{2}$/.test(nextPaymentClean)) {
-      toast.error("Próximo pago debe tener formato YYYY-MM-DD.");
-      return;
-    }
-    const last4Clean = last4.trim();
-    if (last4Clean && !/^\d{4}$/.test(last4Clean)) {
-      toast.error("Last4 deben ser exactamente 4 dígitos.");
-      return;
-    }
 
     startTransition(async () => {
       const result = await updatePhysicalCard({
         id: pc.id,
         creditLimitCents: Math.round(limitNum * 100),
-        statementCutoffDay: cutoffNum,
-        nextPaymentDate: nextPaymentClean === "" ? null : nextPaymentClean,
-        last4: last4Clean === "" ? null : last4Clean,
         network: network === "" ? null : (network as "visa" | "mastercard" | "amex"),
       });
       if (result.ok) {
@@ -930,9 +1082,8 @@ function PhysicalCardEditor({
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           <p className="text-muted-foreground text-xs">
-            Estos valores afectan a <strong>todas las sub-cuentas</strong> que comparten este
-            plástico ({target.name}). El cupo se mide en COP — las compras en USD consumen este cupo
-            a la TRM del día.
+            Cupo compartido y network del plástico <strong>{pc.name ?? target.name}</strong>. El
+            resto (nombre, cutoff day, last4) se edita desde el ✏️ de cualquier sub-cuenta.
           </p>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="pc-limit">Cupo total (COP)</Label>
@@ -948,57 +1099,19 @@ function PhysicalCardEditor({
               autoFocus
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="pc-cutoff">Cutoff day</Label>
-              <Input
-                id="pc-cutoff"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={31}
-                value={statementCutoffDay}
-                onChange={(e) => setStatementCutoffDay(e.target.value)}
-                placeholder="1-31"
-                className="tabular-nums"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="pc-network">Network</Label>
-              <select
-                id="pc-network"
-                value={network ?? ""}
-                onChange={(e) => setNetwork(e.target.value)}
-                className="bg-background h-9 rounded-md border px-2 text-sm"
-              >
-                <option value="">—</option>
-                <option value="visa">Visa</option>
-                <option value="mastercard">Mastercard</option>
-                <option value="amex">Amex</option>
-              </select>
-            </div>
-          </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="pc-next-payment">Próximo pago</Label>
-            <Input
-              id="pc-next-payment"
-              type="date"
-              value={nextPaymentDate}
-              onChange={(e) => setNextPaymentDate(e.target.value)}
-              className="tabular-nums"
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="pc-last4">Last 4 digits</Label>
-            <Input
-              id="pc-last4"
-              value={last4 ?? ""}
-              onChange={(e) => setLast4(e.target.value)}
-              placeholder="e.g. 7291"
-              inputMode="numeric"
-              maxLength={4}
-              className="tabular-nums"
-            />
+            <Label htmlFor="pc-network">Network</Label>
+            <select
+              id="pc-network"
+              value={network ?? ""}
+              onChange={(e) => setNetwork(e.target.value)}
+              className="bg-background h-9 rounded-md border px-2 text-sm"
+            >
+              <option value="">—</option>
+              <option value="visa">Visa</option>
+              <option value="mastercard">Mastercard</option>
+              <option value="amex">Amex</option>
+            </select>
           </div>
           <DialogFooter className="mt-2">
             <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
