@@ -312,7 +312,8 @@ export function RulesManager({
                     return (
                       <Fragment key={r.id}>
                         <tr
-                          className={cn("border-t", !r.active && "opacity-50")}
+                          id={`rule-${r.id}`}
+                          className={cn("scroll-mt-20 border-t", !r.active && "opacity-50")}
                           data-testid={`rule-row-${r.id}`}
                         >
                           <td className="p-2 text-center">
