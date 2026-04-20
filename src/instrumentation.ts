@@ -25,6 +25,7 @@ export async function register() {
   const cron = (await import("node-cron")).default;
   const { closePreviousMonthForAllUsers } = await import("@/lib/recurring/gap-detector");
   const { snapshotAllActiveUsers } = await import("@/lib/telemetry/user-health");
+  const { checkAndAlertSlos } = await import("@/lib/observability/slo-alerts");
   const { createLogger } = await import("@/lib/logger");
   const log = createLogger({ module: "instrumentation" });
 
@@ -90,8 +91,31 @@ export async function register() {
     { timezone: "America/Bogota" },
   );
 
+  // Every 30 min — evaluate each SLO over a rolling 48h window and fire /
+  // resolve Telegram alerts (#329 PR3, #341 wiring). Finer granularity is
+  // wasteful: the 48h window swallows sub-half-hour deltas. Dedup is built
+  // into `slo_alerts` (at most one unresolved row per sloKey).
+  cron.schedule(
+    "*/30 * * * *",
+    async () => {
+      try {
+        const decisions = await checkAndAlertSlos();
+        const fired = decisions.filter((d) => d.action === "fire").length;
+        const resolved = decisions.filter((d) => d.action === "resolve").length;
+        const noops = decisions.filter((d) => d.action === "noop").length;
+        log.info(
+          { total: decisions.length, fired, resolved, noops, event: "slo_alerts_checked" },
+          "slo-alerts tick",
+        );
+      } catch (err) {
+        log.error({ err, event: "slo_alerts_check_failed" }, "slo-alerts check failed");
+      }
+    },
+    { timezone: "America/Bogota" },
+  );
+
   log.info(
     { event: "crons_registered" },
-    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *) America/Bogota",
+    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *), slo-alerts (*/30 * * * *) America/Bogota",
   );
 }
