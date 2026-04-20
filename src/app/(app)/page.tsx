@@ -1,6 +1,7 @@
 import {
   getAccountStatuses,
   getCategoryBreakdown,
+  getCreditCardsSummary,
   getMonthlyFlow,
   getNetWorth,
   getTopExpenses,
@@ -14,6 +15,7 @@ import { UpcomingCard } from "@/components/dashboard/upcoming-card";
 import { MonthSwitcher } from "@/components/dashboard/month-switcher";
 import { RecurringInboxCard } from "@/components/dashboard/recurring-inbox-card";
 import { SmsHealthCard } from "@/components/dashboard/sms-health-card";
+import { CreditCardsCard } from "@/components/dashboard/credit-cards-card";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
 import { getOpenGaps } from "@/lib/recurring/gap-queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
@@ -43,22 +45,24 @@ export default async function DashboardPage({
 
   const session = await getSessionUser();
   const fx = await getCurrentFxRate();
-  const [netWorth, flow, slices, top, accounts, upcoming, openGaps, smsHealth] = await Promise.all([
-    getNetWorth(session.id, fx.rate),
-    getMonthlyFlow(session.id, fx.rate, refDate),
-    getCategoryBreakdown(session.id, fx.rate, refDate),
-    getTopExpenses(session.id, fx.rate, refDate, 5),
-    getAccountStatuses(session.id),
-    getUpcomingForMonth({
-      userId: session.id,
-      year: refYear,
-      month: refMonth,
-      includeDismissed: true,
-      today: now,
-    }),
-    getOpenGaps(session.id),
-    getSmsHealthSnapshot(session.id, now),
-  ]);
+  const [netWorth, flow, slices, top, accounts, upcoming, openGaps, smsHealth, creditCards] =
+    await Promise.all([
+      getNetWorth(session.id, fx.rate),
+      getMonthlyFlow(session.id, fx.rate, refDate),
+      getCategoryBreakdown(session.id, fx.rate, refDate),
+      getTopExpenses(session.id, fx.rate, refDate, 5),
+      getAccountStatuses(session.id),
+      getUpcomingForMonth({
+        userId: session.id,
+        year: refYear,
+        month: refMonth,
+        includeDismissed: true,
+        today: now,
+      }),
+      getOpenGaps(session.id),
+      getSmsHealthSnapshot(session.id, now),
+      getCreditCardsSummary(session.id, fx.rate, now),
+    ]);
 
   const upcomingItems = upcoming.map((u) => ({
     ...u,
@@ -109,6 +113,12 @@ export default async function DashboardPage({
       {gapItems.length > 0 ? (
         <section>
           <RecurringInboxCard gaps={gapItems} />
+        </section>
+      ) : null}
+
+      {creditCards.cardCount > 0 ? (
+        <section>
+          <CreditCardsCard data={creditCards} />
         </section>
       ) : null}
 

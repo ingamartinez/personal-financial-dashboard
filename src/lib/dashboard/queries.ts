@@ -3,6 +3,8 @@ import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
+import { groupCreditCards, listAccountsDetailed } from "@/lib/accounts/queries";
+import { computeNextPayment } from "@/lib/accounts/next-payment";
 import type { AccountType, CounterpartyType, Currency } from "@/lib/types";
 
 export function currentMonthRange(now = new Date()): { start: Date; end: Date } {
@@ -239,4 +241,100 @@ export async function getTopExpenses(
     amountCopCents: toCop(BigInt(-1) * r.amountCents, r.currency, copPerUsd),
     accountName: r.accountName,
   }));
+}
+
+export type CreditCardsSummary = {
+  cardCount: number;
+  debtCopCents: bigint;
+  limitCopCents: bigint;
+  availableCopCents: bigint;
+  usedPct: number;
+  nextPayment: { date: string; daysUntil: number } | null;
+};
+
+/**
+ * Aggregates active credit_card accounts into a single dashboard summary
+ * (#364). Shared-cupo pairs are treated as one card; single-currency cards
+ * contribute their own limit/available from metadata. Returns COP-normalized
+ * totals and the nearest upcoming payment date across all cards.
+ */
+export async function getCreditCardsSummary(
+  userId: number,
+  copPerUsd: number,
+  now = new Date(),
+): Promise<CreditCardsSummary> {
+  const all = await listAccountsDetailed(userId);
+  const active = all.filter((a) => a.active && a.type === "credit_card");
+  const groups = groupCreditCards(active);
+
+  let debtCopCents = BigInt(0);
+  let limitCopCents = BigInt(0);
+  let availableCopCents = BigInt(0);
+  let nearest: { date: string; daysUntil: number } | null = null;
+
+  const toCopCents = (cents: bigint, currency: Currency): bigint =>
+    currency === "USD" ? toCop(cents, "USD", copPerUsd) : cents;
+
+  for (const group of groups) {
+    const primary = group[0];
+    const isShared = group.length > 1 || Boolean(primary.physicalCard);
+
+    // Debt — sum sub-account balances (always negative for credit cards),
+    // converting USD → COP.
+    for (const s of group) {
+      debtCopCents += toCopCents(s.balanceCents, s.currency);
+    }
+
+    // Limit + available — shared cards use physical_cards (COP limit);
+    // single cards read metadata and convert if USD-native.
+    if (isShared && primary.physicalCard) {
+      const limit = primary.physicalCard.creditLimitCents;
+      limitCopCents += limit;
+      let available = limit;
+      for (const s of group) {
+        available += toCopCents(s.balanceCents, s.currency);
+      }
+      availableCopCents += available;
+    } else {
+      const md = primary.metadata;
+      if (md.creditLimitCents && md.creditLimitCents > 0) {
+        const limitNative = BigInt(md.creditLimitCents);
+        const availNative =
+          md.availableCreditCents !== undefined
+            ? BigInt(md.availableCreditCents)
+            : limitNative + primary.balanceCents;
+        limitCopCents += toCopCents(limitNative, primary.currency);
+        availableCopCents += toCopCents(availNative, primary.currency);
+      }
+    }
+
+    // Next payment — same derivation as the /accounts tile.
+    const cutoffDay =
+      isShared && primary.physicalCard
+        ? primary.physicalCard.statementCutoffDay
+        : (primary.metadata.cutoffDay ?? null);
+    const nextDate = computeNextPayment(cutoffDay, now);
+    if (nextDate) {
+      const target = new Date(`${nextDate}T12:00:00Z`).getTime();
+      const daysUntil = Math.ceil((target - now.getTime()) / (24 * 60 * 60 * 1000));
+      if (!nearest || daysUntil < nearest.daysUntil) {
+        nearest = { date: nextDate, daysUntil };
+      }
+    }
+  }
+
+  const usedCents = limitCopCents - availableCopCents;
+  const usedPct =
+    limitCopCents > BigInt(0)
+      ? Math.min(100, Math.max(0, Number((usedCents * BigInt(10000)) / limitCopCents) / 100))
+      : 0;
+
+  return {
+    cardCount: groups.length,
+    debtCopCents,
+    limitCopCents,
+    availableCopCents,
+    usedPct,
+    nextPayment: nearest,
+  };
 }
