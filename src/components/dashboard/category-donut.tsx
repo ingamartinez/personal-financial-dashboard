@@ -3,7 +3,8 @@
 import { Cell, Pie, PieChart, Tooltip } from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Money } from "@/components/display/money";
-import { formatCop } from "@/lib/money";
+import { useMoneyMode } from "@/components/display/money-mode-provider";
+import { convertCents, displayCurrencyFor, formatMoney } from "@/lib/money";
 
 const PALETTE = [
   "var(--chart-1)",
@@ -30,6 +31,13 @@ export function CategoryDonut({
   isFuture?: boolean;
 }) {
   const total = slices.reduce((acc, s) => acc + s.value, 0);
+  const { mode, fxRate } = useMoneyMode();
+  const target = displayCurrencyFor(mode, "COP");
+  const tooltipFormatter = (value: unknown) => {
+    const copCents = BigInt(Math.round(Number(value) || 0));
+    if (target === "COP" || fxRate === null) return formatMoney(copCents, "COP");
+    return formatMoney(convertCents(copCents, "COP", target, fxRate.rate), target);
+  };
 
   return (
     <Card className="lg:col-span-2">
@@ -65,7 +73,7 @@ export function CategoryDonut({
                     />
                   ))}
                 </Pie>
-                <Tooltip formatter={(value) => formatCop(BigInt(Math.round(Number(value) || 0)))} />
+                <Tooltip formatter={tooltipFormatter} />
               </PieChart>
             </div>
             <ul className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-3 gap-y-1.5 text-sm">
