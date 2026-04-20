@@ -37,6 +37,7 @@ const {
   splitCounterparty,
   createManualExpense,
   classifySingleWithAi,
+  updateTransactionCategory,
 } = await import("./actions");
 const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
 const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
@@ -740,6 +741,182 @@ describe("createManualExpense", () => {
       WHERE description_raw = 'test-manual-expense large'
     `);
     expect(rows[0].amount_cents).toBe("-999999999");
+  });
+});
+
+describe("updateTransactionCategory", () => {
+  async function seedTxWithMerchant(args: {
+    externalId: string;
+    merchant: string | null;
+    categorySlug?: string | null;
+    method?: "unclassified" | "manual" | "rule" | "ai";
+  }): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        merchant, category_slug, classification_method, classification_confidence, source, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${acc.id}, now(), -5000, 'COP', 'test',
+        ${args.merchant},
+        ${args.categorySlug ?? null},
+        ${args.method ?? "unclassified"}::classification_method,
+        ${args.categorySlug ? 100 : null},
+        'sms',
+        ${args.externalId}
+      )
+      RETURNING id
+    `);
+    return rows[0].id;
+  }
+
+  async function cleanupUpdateCategoryTxs() {
+    await db.execute(sql`
+      DELETE FROM classification_corrections
+      WHERE transaction_id IN (
+        SELECT id FROM transactions WHERE external_id LIKE 'test-update-cat:%'
+      )
+    `);
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE 'test-update-cat:%'
+    `);
+  }
+
+  beforeEach(cleanupUpdateCategoryTxs);
+  afterEach(cleanupUpdateCategoryTxs);
+
+  it("records a correction row when user picks a new category on an unclassified tx", async () => {
+    const txId = await seedTxWithMerchant({
+      externalId: "test-update-cat:unclass",
+      merchant: "CARULLA",
+    });
+
+    await updateTransactionCategory({ txId, categorySlug: "alimentacion" });
+
+    const [row] = await db.execute<{
+      category_slug: string;
+      classification_method: string;
+      classification_confidence: number;
+      previous_category_slug: string | null;
+    }>(sql`
+      SELECT category_slug, classification_method, classification_confidence, previous_category_slug
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.category_slug).toBe("alimentacion");
+    expect(row.classification_method).toBe("manual");
+    expect(row.classification_confidence).toBe(100);
+    expect(row.previous_category_slug).toBeNull();
+
+    const corrections = await db.execute<{
+      merchant: string | null;
+      previous_category_slug: string | null;
+      new_category_slug: string;
+    }>(sql`
+      SELECT merchant, previous_category_slug, new_category_slug
+      FROM classification_corrections
+      WHERE transaction_id = ${txId}
+    `);
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0].merchant).toBe("CARULLA");
+    expect(corrections[0].previous_category_slug).toBeNull();
+    expect(corrections[0].new_category_slug).toBe("alimentacion");
+  });
+
+  it("preserves prior category in previous_category_slug when re-categorizing", async () => {
+    const txId = await seedTxWithMerchant({
+      externalId: "test-update-cat:recat",
+      merchant: "CARULLA",
+      categorySlug: "alimentacion",
+      method: "ai",
+    });
+
+    await updateTransactionCategory({ txId, categorySlug: "transferencias" });
+
+    const [row] = await db.execute<{
+      category_slug: string;
+      previous_category_slug: string | null;
+    }>(sql`
+      SELECT category_slug, previous_category_slug
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.category_slug).toBe("transferencias");
+    expect(row.previous_category_slug).toBe("alimentacion");
+
+    const corrections = await db.execute<{
+      previous_category_slug: string | null;
+      new_category_slug: string;
+    }>(sql`
+      SELECT previous_category_slug, new_category_slug
+      FROM classification_corrections
+      WHERE transaction_id = ${txId}
+    `);
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0].previous_category_slug).toBe("alimentacion");
+    expect(corrections[0].new_category_slug).toBe("transferencias");
+  });
+
+  it("does NOT log a correction when un-classifying to null", async () => {
+    const txId = await seedTxWithMerchant({
+      externalId: "test-update-cat:unset",
+      merchant: "CARULLA",
+      categorySlug: "alimentacion",
+      method: "manual",
+    });
+
+    await updateTransactionCategory({ txId, categorySlug: null });
+
+    const [row] = await db.execute<{
+      category_slug: string | null;
+      classification_method: string;
+      classification_confidence: number | null;
+      previous_category_slug: string | null;
+    }>(sql`
+      SELECT category_slug, classification_method, classification_confidence, previous_category_slug
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.category_slug).toBeNull();
+    expect(row.classification_method).toBe("unclassified");
+    expect(row.classification_confidence).toBeNull();
+    expect(row.previous_category_slug).toBe("alimentacion");
+
+    const corrections = await db.execute(sql`
+      SELECT 1 FROM classification_corrections WHERE transaction_id = ${txId}
+    `);
+    expect(corrections).toHaveLength(0);
+  });
+
+  it("is a no-op when the new slug matches the current slug", async () => {
+    const txId = await seedTxWithMerchant({
+      externalId: "test-update-cat:noop",
+      merchant: "CARULLA",
+      categorySlug: "alimentacion",
+      method: "manual",
+    });
+
+    await updateTransactionCategory({ txId, categorySlug: "alimentacion" });
+
+    const [row] = await db.execute<{ previous_category_slug: string | null }>(sql`
+      SELECT previous_category_slug FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.previous_category_slug).toBeNull();
+
+    const corrections = await db.execute(sql`
+      SELECT 1 FROM classification_corrections WHERE transaction_id = ${txId}
+    `);
+    expect(corrections).toHaveLength(0);
+  });
+
+  it("silently no-ops when txId does not exist (no correction, no throw)", async () => {
+    await expect(
+      updateTransactionCategory({ txId: 9_999_999, categorySlug: "alimentacion" }),
+    ).resolves.toBeUndefined();
+
+    const corrections = await db.execute(sql`
+      SELECT 1 FROM classification_corrections WHERE transaction_id = 9999999
+    `);
+    expect(corrections).toHaveLength(0);
   });
 });
 

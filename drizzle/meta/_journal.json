@@ -225,6 +225,13 @@
       "when": 1776648661281,
       "tag": "0031_first_khan",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1776651933471,
+      "tag": "0032_pale_night_nurse",
+      "breakpoints": true
     }
   ]
 }

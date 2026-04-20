@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import {
   accounts,
   categories,
+  classificationCorrections,
   counterparties,
   counterpartyType,
   ingestionLogs,
@@ -35,15 +36,45 @@ export async function updateTransactionCategory(input: {
   const session = await getSessionUser();
   const { txId, categorySlug } = updateSchema.parse(input);
 
-  await db
-    .update(transactions)
-    .set({
-      categorySlug,
-      classificationMethod: categorySlug ? "manual" : "unclassified",
-      classificationConfidence: categorySlug ? 100 : null,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+  await db.transaction(async (trx) => {
+    const [current] = await trx
+      .select({
+        categorySlug: transactions.categorySlug,
+        merchant: transactions.merchant,
+      })
+      .from(transactions)
+      .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)))
+      .limit(1);
+
+    if (!current) return;
+
+    const prior = current.categorySlug;
+    const isChange = prior !== categorySlug;
+
+    await trx
+      .update(transactions)
+      .set({
+        categorySlug,
+        classificationMethod: categorySlug ? "manual" : "unclassified",
+        classificationConfidence: categorySlug ? 100 : null,
+        ...(isChange ? { previousCategorySlug: prior } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+
+    // Log as a correction only when the user actively picks a new category.
+    // Un-classification (reset to null) is a "reset" signal, not training
+    // data for the learning loop — the 3x-in-30d cron groups by new slug.
+    if (isChange && categorySlug) {
+      await trx.insert(classificationCorrections).values({
+        userId: session.id,
+        transactionId: txId,
+        merchant: current.merchant,
+        previousCategorySlug: prior,
+        newCategorySlug: categorySlug,
+      });
+    }
+  });
 
   revalidatePath("/transactions");
 }
