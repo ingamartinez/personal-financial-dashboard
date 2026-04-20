@@ -303,6 +303,63 @@ describe("commitReconciliation — integration against findash_test", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("persists userBalanceAtEndCents when provided, falls back to parsed otherwise", async () => {
+    const date = new Date("2026-04-15T05:00:00Z");
+    const buildRun = (tag: string) =>
+      buildParsed([
+        {
+          occurredAt: date,
+          amountCents: BigInt(1_000_00),
+          currency: "COP",
+          direction: "in",
+          descriptionRaw: `${TAG} ${tag}`,
+          rawData: {},
+          isMetadata: false,
+        },
+      ]);
+    const plan: MatchingPlan = {
+      decisions: [
+        {
+          statementRowIndex: 0,
+          action: "insert_new",
+          matchedTxnId: null,
+          matchScore: 0,
+          matchReason: "no_match",
+        },
+      ],
+      flaggedExisting: [],
+      summary: { matched: 0, newInserts: 1, flaggedExisting: 0 },
+    };
+
+    const withUserBalance = await commitReconciliation({
+      userId,
+      account: { id: accountId, currency: "COP" },
+      parsed: buildRun("user-balance"),
+      plan,
+      fileHash: hashFileBuffer(Buffer.from(`${TAG}-user-balance`)),
+      userBalanceAtEndCents: BigInt(12_345_678_00),
+    });
+    const [impWithUser] = await db
+      .select()
+      .from(statementImports)
+      .where(eq(statementImports.id, withUserBalance.statementImportId));
+    expect(impWithUser.balanceAtEndCents).toBe(BigInt(12_345_678_00));
+
+    const noUserBalance = await commitReconciliation({
+      userId,
+      account: { id: accountId, currency: "COP" },
+      parsed: buildRun("no-user-balance"),
+      plan,
+      fileHash: hashFileBuffer(Buffer.from(`${TAG}-no-user-balance`)),
+      userBalanceAtEndCents: null,
+    });
+    const [impNoUser] = await db
+      .select()
+      .from(statementImports)
+      .where(eq(statementImports.id, noUserBalance.statementImportId));
+    expect(impNoUser.balanceAtEndCents).toBeNull();
+  });
+
   it("preserves sign at persistence: direction='in' → positive cents, 'out' → negative", async () => {
     const date = new Date("2026-04-14T05:00:00Z");
     const parsed = buildParsed([

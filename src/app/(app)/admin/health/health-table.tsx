@@ -16,6 +16,7 @@ type SnapshotSummary = {
   parserSuccessRate30d: number | null;
   unreconciledTxnCount: number;
   divergenceCents: string | null;
+  statementDivergenceCents: string | null;
   churnSignalFlag: boolean;
 };
 
@@ -122,7 +123,7 @@ function UserRowCard({ row }: { row: UserHealthRow }) {
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-7">
           <Metric label="Último capture" value={formatRelative(latest?.lastCaptureAt)} />
           <Metric label="Último SMS" value={formatRelative(latest?.lastSmsReceivedAt)} />
           <Metric
@@ -140,6 +141,11 @@ function UserRowCard({ row }: { row: UserHealthRow }) {
             label="Divergence 30d"
             value={formatCents(latest?.divergenceCents)}
             warn={isDivergenceLarge(latest?.divergenceCents)}
+          />
+          <Metric
+            label="Stmt divergence"
+            value={formatCents(latest?.statementDivergenceCents)}
+            warn={isDivergenceLarge(latest?.statementDivergenceCents)}
           />
           <Metric label="Sources 30d" value={formatSources(latest?.captureSources30d)} subtle />
         </div>

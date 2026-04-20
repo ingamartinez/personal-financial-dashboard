@@ -23,6 +23,7 @@ export type SnapshotSummary = {
   parserSuccessRate30d: number | null;
   unreconciledTxnCount: number;
   divergenceCents: bigint | null;
+  statementDivergenceCents: bigint | null;
   churnSignalFlag: boolean;
 };
 
@@ -36,6 +37,7 @@ function toSummary(row: typeof userHealthSnapshots.$inferSelect): SnapshotSummar
       row.parserSuccessRate30d === null ? null : Number(row.parserSuccessRate30d),
     unreconciledTxnCount: row.unreconciledTxnCount,
     divergenceCents: row.divergenceCents,
+    statementDivergenceCents: row.statementDivergenceCents,
     churnSignalFlag: row.churnSignalFlag,
   };
 }

@@ -198,13 +198,18 @@ const applySchema = z.object({
   fileHash: z.string().regex(/^[0-9a-f]{64}$/),
   parsed: z.any(),
   plan: z.any(),
+  userBalanceAtEndCents: z
+    .string()
+    .regex(/^-?\d+$/)
+    .nullable()
+    .optional(),
 });
 
 export type ApplyReconcileInput = z.infer<typeof applySchema>;
 
 export async function applyReconcile(input: ApplyReconcileInput) {
   const session = await getSessionUser();
-  const { accountId, fileHash, parsed, plan } = applySchema.parse(input);
+  const { accountId, fileHash, parsed, plan, userBalanceAtEndCents } = applySchema.parse(input);
   const account = await loadAccount(session.id, accountId);
 
   const parsedStatement = deserializeParsed(parsed as SerializedParsed);
@@ -214,6 +219,7 @@ export async function applyReconcile(input: ApplyReconcileInput) {
     parsed: parsedStatement,
     plan: plan as MatchingPlan,
     fileHash,
+    userBalanceAtEndCents: userBalanceAtEndCents ? BigInt(userBalanceAtEndCents) : null,
   });
 
   log.info(

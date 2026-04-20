@@ -757,8 +757,14 @@ export const userHealthSnapshots = pgTable(
     // painting green dashboards for dormant users.
     parserSuccessRate30d: numeric("parser_success_rate_30d", { precision: 5, scale: 4 }),
     unreconciledTxnCount: integer("unreconciled_txn_count").notNull().default(0),
-    // NULL until Epic R (bank reconciliation) lands.
+    // Sum of `is_adjustment = true` txn amounts in the last 30d — measures
+    // how much the user has corrected findash via balance adjustments.
     divergenceCents: bigint("divergence_cents", { mode: "bigint" }),
+    // Sum of (accounts.balance_cents − latest statement_imports.balance_at_end_cents)
+    // across accounts whose most recent 30d statement import carries a balance —
+    // measures the remaining gap between findash and reality per #304.
+    // NULL until a statement import with a user-provided balance lands.
+    statementDivergenceCents: bigint("statement_divergence_cents", { mode: "bigint" }),
     churnSignalFlag: boolean("churn_signal_flag").notNull().default(false),
   },
   (t) => [

@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, ingestionLogs, transactions, userHealthSnapshots } from "@/lib/db/schema";
+import {
+  accounts,
+  ingestionLogs,
+  statementImports,
+  transactions,
+  userHealthSnapshots,
+} from "@/lib/db/schema";
 import {
   computeUserHealthSnapshot,
   saveUserHealthSnapshot,
@@ -18,6 +24,7 @@ async function cleanup() {
   // Wipe all ingestion_logs for the test user — the test DB doesn't seed any
   // baseline logs, so this is safe and avoids cross-test pollution.
   await db.execute(sql`DELETE FROM ingestion_logs WHERE user_id = ${TEST_USER_ID}`);
+  await db.execute(sql`DELETE FROM statement_imports WHERE user_id = ${TEST_USER_ID}`);
   await db.execute(sql`DELETE FROM accounts WHERE name = ${TEST_ACCOUNT}`);
 }
 
@@ -95,6 +102,7 @@ describe("computeUserHealthSnapshot", () => {
     expect(snap.parserSuccessRate30d).toBeNull();
     expect(snap.unreconciledTxnCount).toBe(0);
     expect(snap.divergenceCents).toBeNull();
+    expect(snap.statementDivergenceCents).toBeNull();
     expect(snap.churnSignalFlag).toBe(false);
   });
 
@@ -261,6 +269,85 @@ describe("computeUserHealthSnapshot", () => {
     const snap = await computeUserHealthSnapshot(TEST_USER_ID, NOW);
     expect(snap.divergenceCents).toBeNull();
   });
+
+  it("statementDivergenceCents sums (findash − latest statement) per account in the 30d window", async () => {
+    const accountId = await seedAccount();
+    // Set findash's account balance.
+    await db
+      .update(accounts)
+      .set({ balanceCents: BigInt(1_200_000_00) })
+      .where(sql`${accounts.id} = ${accountId}`);
+
+    // Two imports for the same account — the later one should win.
+    const periodEndRecent = new Date(NOW.getTime() - 2 * 86_400_000).toISOString().slice(0, 10);
+    const periodEndOlder = new Date(NOW.getTime() - 15 * 86_400_000).toISOString().slice(0, 10);
+    await db.insert(statementImports).values({
+      userId: TEST_USER_ID,
+      accountId,
+      fileHash: "a".repeat(64),
+      periodStart: periodEndOlder,
+      periodEnd: periodEndOlder,
+      txnCount: 0,
+      balanceAtEndCents: BigInt(999_999_99),
+    });
+    await db.insert(statementImports).values({
+      userId: TEST_USER_ID,
+      accountId,
+      fileHash: "b".repeat(64),
+      periodStart: periodEndRecent,
+      periodEnd: periodEndRecent,
+      txnCount: 0,
+      balanceAtEndCents: BigInt(1_000_000_00),
+    });
+
+    const snap = await computeUserHealthSnapshot(TEST_USER_ID, NOW);
+    // findash 1_200_000.00 − latest stmt 1_000_000.00 = +200_000.00 (findash overstates)
+    expect(snap.statementDivergenceCents).toBe(BigInt(200_000_00));
+  });
+
+  it("statementDivergenceCents ignores imports older than 30 days", async () => {
+    const accountId = await seedAccount();
+    await db
+      .update(accounts)
+      .set({ balanceCents: BigInt(500_000_00) })
+      .where(sql`${accounts.id} = ${accountId}`);
+
+    const stale = new Date(NOW.getTime() - 40 * 86_400_000).toISOString().slice(0, 10);
+    await db.insert(statementImports).values({
+      userId: TEST_USER_ID,
+      accountId,
+      fileHash: "c".repeat(64),
+      periodStart: stale,
+      periodEnd: stale,
+      txnCount: 0,
+      balanceAtEndCents: BigInt(999_999_99),
+    });
+
+    const snap = await computeUserHealthSnapshot(TEST_USER_ID, NOW);
+    expect(snap.statementDivergenceCents).toBeNull();
+  });
+
+  it("statementDivergenceCents ignores imports whose balance_at_end is NULL", async () => {
+    const accountId = await seedAccount();
+    await db
+      .update(accounts)
+      .set({ balanceCents: BigInt(100_000_00) })
+      .where(sql`${accounts.id} = ${accountId}`);
+
+    const recent = new Date(NOW.getTime() - 2 * 86_400_000).toISOString().slice(0, 10);
+    await db.insert(statementImports).values({
+      userId: TEST_USER_ID,
+      accountId,
+      fileHash: "d".repeat(64),
+      periodStart: recent,
+      periodEnd: recent,
+      txnCount: 0,
+      balanceAtEndCents: null,
+    });
+
+    const snap = await computeUserHealthSnapshot(TEST_USER_ID, NOW);
+    expect(snap.statementDivergenceCents).toBeNull();
+  });
 });
 
 describe("saveUserHealthSnapshot + snapshotAllActiveUsers", () => {
@@ -285,6 +372,7 @@ describe("saveUserHealthSnapshot + snapshotAllActiveUsers", () => {
     // The seeded txn defaults to bank channel + unreconciled status, so it counts.
     expect(row.unreconciledTxnCount).toBe(1);
     expect(row.divergenceCents).toBeNull();
+    expect(row.statementDivergenceCents).toBeNull();
     expect(row.churnSignalFlag).toBe(false);
   });
 
