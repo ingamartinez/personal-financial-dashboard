@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Money } from "@/components/display/money";
 import { cn } from "@/lib/utils";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import {
   confirmOcrImport,
   previewScreenshotOcr,
@@ -204,7 +205,7 @@ export function ScreenshotUpload({ accounts }: { accounts: AccountOption[] }) {
             >
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name} ({a.currency})
+                  {formatAccountLabel(a)}
                 </option>
               ))}
             </select>

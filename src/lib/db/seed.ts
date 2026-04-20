@@ -71,7 +71,7 @@ const seedAccounts: Array<{
     metadata: { last4s: ["2575"], network: "visa" },
   },
   {
-    name: "Bancolombia Mastercard *7291 (COP)",
+    name: "Bancolombia Mastercard *7291",
     institution: "Bancolombia",
     institutionSlug: "bancolombia",
     type: "credit_card",
@@ -79,7 +79,7 @@ const seedAccounts: Array<{
     metadata: { last4s: ["7291"], network: "mastercard" },
   },
   {
-    name: "Bancolombia Mastercard *7291 (USD)",
+    name: "Bancolombia Mastercard *7291",
     institution: "Bancolombia",
     institutionSlug: "bancolombia",
     type: "credit_card",

@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { ChevronDownIcon, SlidersHorizontalIcon } from "lucide-react";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export type FiltersProps = {
-  accounts: Array<{ id: number; name: string }>;
+  accounts: Array<{ id: number; name: string; currency: string }>;
   categories: Array<{ slug: string; name: string; parentSlug: string | null }>;
   values: {
     from?: string;
@@ -79,7 +80,7 @@ export function Filters({ accounts, categories, values }: FiltersProps) {
             <option value="">All</option>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name}
+                {formatAccountLabel(a)}
               </option>
             ))}
           </select>

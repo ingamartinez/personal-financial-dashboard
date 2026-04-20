@@ -1,5 +1,6 @@
 import type { InlineKeyboardMarkup } from "@/lib/telegram/types";
 import type { NluAccountOption, NluCategoryOption } from "@/lib/ai/transaction-nlu";
+import { formatAccountLabel } from "@/lib/accounts/format";
 
 export const CALLBACK = {
   CONFIRM: "c",
@@ -30,13 +31,9 @@ export function confirmKeyboard(): InlineKeyboardMarkup {
 export function accountsKeyboard(accounts: NluAccountOption[]): InlineKeyboardMarkup {
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
   for (const a of accounts) {
-    // Only append the last4 if the account name doesn't already carry it
-    // (most accounts embed "*1234" in the name; avoid showing "Visa *1234 *1234").
-    const l4 = a.last4s?.[0];
-    const last4Part = l4 && !a.name.includes(`*${l4}`) ? ` *${l4}` : "";
     rows.push([
       {
-        text: `${a.name}${last4Part} (${a.currency})`,
+        text: formatAccountLabel(a, { withLast4: true }),
         callback_data: `${CALLBACK.ACCOUNT_PREFIX}${a.id}`,
       },
     ]);

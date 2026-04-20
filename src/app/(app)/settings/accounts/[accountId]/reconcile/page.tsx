@@ -4,6 +4,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import { getSessionUser } from "@/lib/auth/session";
 import { ReconcileForm } from "./reconcile-form";
 import { FlaggedReview, type FlaggedRow, type MergeCandidate } from "./flagged-review";
@@ -104,10 +105,10 @@ export default async function ReconcilePage({
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header className="flex items-center justify-between gap-2">
         <div>
-          <h1 className="text-h1">Reconcile · {account.name}</h1>
+          <h1 className="text-h1">Reconcile · {formatAccountLabel(account)}</h1>
           <p className="text-body text-muted-foreground">
-            {account.institution} · {account.currency}. Upload the Bancolombia XLSX export for this
-            account to reconcile against the bank statement.
+            {account.institution}. Upload the Bancolombia XLSX export for this account to reconcile
+            against the bank statement.
           </p>
         </div>
         <Link

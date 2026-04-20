@@ -230,12 +230,14 @@ describe("POST /api/ingest/sms", () => {
     expect(rows[0].currency).toBe("USD");
     expect(BigInt(rows[0].amount_cents)).toBe(BigInt(-19526));
 
-    // Verify the account is the USD Mastercard, not the COP one
+    // Verify the account is the USD Mastercard, not the COP one. Both rows
+    // share name + last4; currency is the disambiguator, which is exactly
+    // what this test covers.
     const accs = await db.execute<{ currency: string; name: string }>(sql`
       SELECT currency, name FROM accounts WHERE id = ${rows[0].account_id}
     `);
     expect(accs[0].currency).toBe("USD");
-    expect(accs[0].name).toMatch(/Mastercard.*7291.*USD/);
+    expect(accs[0].name).toMatch(/Mastercard.*7291/);
   });
 
   it("inserts a QR payment as expense from *6126 classified as transferencias via rule", async () => {

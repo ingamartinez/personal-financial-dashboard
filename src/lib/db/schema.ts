@@ -212,6 +212,9 @@ export type AccountMetadata = {
   interestPaidCents?: number;
   principalPaidCents?: number;
   nextPaymentDate?: string;
+  // Captured by migration 0036 when stripping ` (COP)` / ` (USD)` suffixes that
+  // were used as a pre-helper hack to disambiguate multi-currency cards.
+  legacyNameSuffix?: string;
 };
 
 // Global immutable template for categories. Populated by `seedReferenceData()`

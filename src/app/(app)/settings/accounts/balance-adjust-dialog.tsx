@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Money } from "@/components/display/money";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import type { AccountRow } from "./accounts-manager";
 
 export function BalanceAdjustDialog({
@@ -57,7 +58,7 @@ export function BalanceAdjustDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <WrenchIcon className="size-4" />
-            Ajustar saldo {target ? `· ${target.name}` : ""}
+            Ajustar saldo {target ? `· ${formatAccountLabel(target)}` : ""}
           </DialogTitle>
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-4">

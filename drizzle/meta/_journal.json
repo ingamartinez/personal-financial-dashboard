@@ -253,6 +253,13 @@
       "when": 1776655289031,
       "tag": "0035_handy_slapstick",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1776658496155,
+      "tag": "0036_strip_account_currency_suffix",
+      "breakpoints": true
     }
   ]
 }

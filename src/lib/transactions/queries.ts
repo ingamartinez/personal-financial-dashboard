@@ -187,7 +187,7 @@ export async function listCounterpartiesExcept(
 
 export async function listAccounts(userId: number) {
   return db
-    .select({ id: accounts.id, name: accounts.name })
+    .select({ id: accounts.id, name: accounts.name, currency: accounts.currency })
     .from(accounts)
     .where(
       and(eq(accounts.userId, userId), eq(accounts.active, true), notDeleted(accounts.deletedAt)),

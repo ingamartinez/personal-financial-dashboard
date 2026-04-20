@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import { createManualExpense } from "@/app/(app)/transactions/actions";
 import type { Currency } from "@/lib/types";
 
@@ -161,7 +162,7 @@ export function QuickExpenseDialog({
             >
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name} ({a.currency})
+                  {formatAccountLabel(a)}
                 </option>
               ))}
             </select>
