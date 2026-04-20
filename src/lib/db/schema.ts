@@ -815,6 +815,8 @@ export type CanaryProjection = {
 // attempt. `regex_outcome` is the serialized ParseResult; `ai_outcome`
 // captures the AI response shape (+ error detail in the failure kinds).
 export const PARSER_EVENT_KINDS = [
+  "parse_outcome_success", // regex parser matched a known shape → ingest attempted
+  "parse_outcome_skip", // SMS intentionally skipped (failed/non-transactional); NOT a failure
   "parse_needs_review", // regex failed, AI fallback not invoked (kill-switch / disabled)
   "ai_fallback_success", // AI parsed, confidence ≥ threshold → ingested
   "ai_fallback_low_confidence", // AI parsed, below threshold → inbox
