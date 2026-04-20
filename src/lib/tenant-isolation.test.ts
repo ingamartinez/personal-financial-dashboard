@@ -26,6 +26,7 @@ import {
 import { listAccountsDetailed } from "@/lib/accounts/queries";
 import { getOpenGaps, getLinkCandidates } from "@/lib/recurring/gap-queries";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
+import { getBudgetsOverview } from "@/lib/budgets/queries";
 import { getSmsHealthHistory } from "@/lib/ingestion/sms-health";
 import {
   countTotal,
@@ -339,6 +340,29 @@ describe("#183 tenant isolation", () => {
     const gapBId = gapsB[0]!.gapId;
     const crossCandidates = await getLinkCandidates(userA, gapBId);
     expect(crossCandidates).toEqual([]);
+  });
+
+  // #338: /budgets page-level queries had no user_id filter on either the
+  // budgets lookup or the spent aggregation — any logged-in user saw every
+  // other user's budgeted amounts, with the "spent" totals summed across
+  // the entire tenant pool. The fixture creates identical fixtures (same
+  // slug, same period, same amount) for both users so only proper scoping
+  // can produce the correct per-user numbers.
+  it("getBudgetsOverview is scoped per user", async () => {
+    const overviewA = await getBudgetsOverview(userA, "2026-04");
+    const overviewB = await getBudgetsOverview(userB, "2026-04");
+
+    // Each user sees exactly their own single budget, not both.
+    const otrosA = overviewA.items.filter((i) => i.categorySlug === "otros");
+    const otrosB = overviewB.items.filter((i) => i.categorySlug === "otros");
+    expect(otrosA).toHaveLength(1);
+    expect(otrosB).toHaveLength(1);
+
+    // userA: -1000 + -2000 → spent 3000. userB: -3000 → spent 3000. If the
+    // spent query leaked across tenants we would see 6000 for each (or more
+    // once fanout from the slug-only JOINs compounds).
+    expect(otrosA[0].spentCents).toBe("3000");
+    expect(otrosB[0].spentCents).toBe("3000");
   });
 
   it("getUpcomingForMonth is scoped per user", async () => {
