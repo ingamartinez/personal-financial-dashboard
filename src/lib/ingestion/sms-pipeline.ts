@@ -49,7 +49,7 @@ export async function ingestParsed(
   opts?: { forceAccountId?: number; aiFallbackFetchImpl?: typeof fetch },
 ): Promise<IngestOutcome> {
   if (parsed.kind === "skip") {
-    await recordParseSkip({ userId, reason: parsed.reason });
+    await recordParseSkip({ userId, reason: parsed.reason, raw: parsed.raw });
     return { status: "skipped", reason: `parser: ${parsed.reason}` };
   }
 
@@ -72,7 +72,11 @@ async function ingestNeedsReviewWithAiFallback(
   rawBody: string,
   fetchImpl: typeof fetch | undefined,
 ): Promise<IngestOutcome> {
-  const regexOutcome = { kind: "needs_review" as const, reason: "unknown_pattern" as const };
+  const regexOutcome = {
+    kind: "needs_review" as const,
+    reason: "unknown_pattern" as const,
+    raw: rawBody,
+  };
   const enabled = await isAiFallbackEnabled(userId);
 
   if (!enabled) {
@@ -404,7 +408,7 @@ function buildTxFields(parsed: ParsedSms): {
 
 export function serializeParsed(parsed: ParseResult): Record<string, unknown> {
   if (parsed.kind === "skip" || parsed.kind === "needs_review") {
-    return { kind: parsed.kind, reason: parsed.reason };
+    return { kind: parsed.kind, reason: parsed.reason, raw: parsed.raw };
   }
   return {
     ...parsed,

@@ -1,6 +1,6 @@
-import { and, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { ingestionLogs, transactions } from "@/lib/db/schema";
+import { ingestionLogs, parserEvents, transactions } from "@/lib/db/schema";
 
 // Bancolombia Parser SLOs (PLAN.md §"Bancolombia Parser SLOs"). System-wide
 // aggregates across all users — NOT per-user (that is /admin/health).
@@ -62,12 +62,21 @@ function statusFor(raw: number | null, target: number, higherIsBetter: boolean):
 
 // ---------------------------------------------------------------------------
 // SLO #1 — SMS parse success rate (target ≥ 95%)
+//
+// Computed from `parser_events` (#329 PR2). One row per SMS ingest attempt.
+// Numerator: regex-success + AI-fallback-success (we extracted a tx).
+// Denominator: all parse attempts excluding intentional skips (OTPs, promos,
+// failed-tx notifications are NOT parser failures).
 // ---------------------------------------------------------------------------
 
-/**
- * Aggregates across ALL users, filters out ai-classify + debug-capture rows
- * (same semantics as `computeUserHealthSnapshot`). success = inserted|duplicated.
- */
+const PARSE_SUCCESS_DENOMINATOR_KINDS = [
+  "parse_outcome_success",
+  "parse_needs_review",
+  "ai_fallback_success",
+  "ai_fallback_low_confidence",
+  "ai_fallback_error",
+] as const;
+
 export async function sloParseSuccess(
   windowDays: SloWindow,
   now: Date = new Date(),
@@ -76,30 +85,37 @@ export async function sloParseSuccess(
 
   const [row] = await db
     .select({
-      success: sql<number>`count(*) FILTER (WHERE ${ingestionLogs.status} IN ('inserted', 'duplicated'))::int`,
+      regexSuccess: sql<number>`count(*) FILTER (WHERE ${parserEvents.eventKind} = 'parse_outcome_success')::int`,
+      aiSuccess: sql<number>`count(*) FILTER (WHERE ${parserEvents.eventKind} = 'ai_fallback_success')::int`,
       total: sql<number>`count(*)::int`,
     })
-    .from(ingestionLogs)
+    .from(parserEvents)
     .where(
       and(
-        gte(ingestionLogs.startedAt, start),
-        sql`(${ingestionLogs.payload} ->> 'kind') NOT IN ('ai-classify', 'debug-capture') OR (${ingestionLogs.payload} ->> 'kind') IS NULL`,
+        gte(parserEvents.createdAt, start),
+        eq(parserEvents.source, "sms"),
+        inArray(parserEvents.eventKind, [...PARSE_SUCCESS_DENOMINATOR_KINDS]),
       ),
     );
 
-  const raw = row.total === 0 ? null : row.success / row.total;
+  const success = row.regexSuccess + row.aiSuccess;
+  const raw = row.total === 0 ? null : success / row.total;
   const trend = await dailyParseSuccessTrend(windowDays, now);
+
+  const description =
+    row.total === 0
+      ? "regex + AI fallback / intentos de parsing. Sin datos en la ventana."
+      : `regex ${row.regexSuccess} · AI ${row.aiSuccess} · fallos ${row.total - success} en ${row.total} intentos`;
 
   return {
     key: "parse_success",
     label: "SMS parse success",
-    description:
-      "Ingests terminados sin error (inserted o duplicated) / total. Excluye ai-classify y debug.",
+    description,
     target: "≥ 95%",
     display: raw === null ? "—" : percent(raw),
     raw,
     status: statusFor(raw, 0.95, true),
-    drilldown: "/settings/inbox",
+    drilldown: "/admin/slos/events?kind=failures",
     trend,
   };
 }
@@ -108,15 +124,16 @@ async function dailyParseSuccessTrend(windowDays: SloWindow, now: Date): Promise
   const start = windowStart(windowDays, now);
   const rows = await db
     .select({
-      day: sql<string>`to_char(date_trunc('day', ${ingestionLogs.startedAt} AT TIME ZONE 'America/Bogota'), 'YYYY-MM-DD')`,
-      success: sql<number>`count(*) FILTER (WHERE ${ingestionLogs.status} IN ('inserted', 'duplicated'))::int`,
+      day: sql<string>`to_char(date_trunc('day', ${parserEvents.createdAt} AT TIME ZONE 'America/Bogota'), 'YYYY-MM-DD')`,
+      success: sql<number>`count(*) FILTER (WHERE ${parserEvents.eventKind} IN ('parse_outcome_success', 'ai_fallback_success'))::int`,
       total: sql<number>`count(*)::int`,
     })
-    .from(ingestionLogs)
+    .from(parserEvents)
     .where(
       and(
-        gte(ingestionLogs.startedAt, start),
-        sql`(${ingestionLogs.payload} ->> 'kind') NOT IN ('ai-classify', 'debug-capture') OR (${ingestionLogs.payload} ->> 'kind') IS NULL`,
+        gte(parserEvents.createdAt, start),
+        eq(parserEvents.source, "sms"),
+        inArray(parserEvents.eventKind, [...PARSE_SUCCESS_DENOMINATOR_KINDS]),
       ),
     )
     .groupBy(sql`1`)
