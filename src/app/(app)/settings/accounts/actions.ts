@@ -151,11 +151,24 @@ export async function toggleAccountActive(id: number, active: boolean) {
   revalidate();
 }
 
+const declaredSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("balance"),
+    balanceCents: z.coerce.number().int(),
+  }),
+  z.object({
+    kind: z.literal("availableCredit"),
+    availableCreditCents: z.coerce.number().int().nonnegative(),
+  }),
+]);
+
 const adjustSchema = z.object({
   accountId: z.coerce.number().int().positive(),
-  declaredBalanceCents: z.coerce.number().int(),
+  declared: declaredSchema,
   reason: z.string().max(500).optional(),
 });
+
+export type AdjustBalanceInput = z.input<typeof adjustSchema>;
 
 export type AdjustBalanceResult =
   | { status: "ok"; diffCents: string; txId: number }
@@ -164,15 +177,27 @@ export type AdjustBalanceResult =
 
 /**
  * Reconciliation balance adjustment (YNAB pattern). Inserts a transaction for
- * (declared - current) into the account with `is_adjustment=true`, then
- * updates `accounts.balance_cents` to the declared value. Both happen atomically.
+ * (target - current) into the account with `is_adjustment=true`, then updates
+ * `accounts.balance_cents` to the target value. Both happen atomically.
+ *
+ * Two input shapes via `declared`:
+ *
+ * - `kind: "balance"` — direct balance_cents target. Used for savings and loan,
+ *   where the bank app tells the user their balance literally.
+ *
+ * - `kind: "availableCredit"` — credit card cupo disponible. The bank app
+ *   never shows debt directly, only the available limit, so the server
+ *   reads `metadata.creditLimitCents` and derives
+ *   `balance_cents = availableCreditCents - creditLimitCents` (negative, per
+ *   the repo convention — see CreditMeter in /accounts). Also updates
+ *   `metadata.availableCreditCents` so the card display stays consistent.
  *
  * The adjustment tx is categorized as `adjustments` — spend/insights queries
  * filter these out via `is_adjustment = false`; balance/net-worth queries
  * include them.
  */
 export async function adjustAccountBalance(
-  input: z.input<typeof adjustSchema>,
+  input: AdjustBalanceInput,
 ): Promise<AdjustBalanceResult> {
   const session = await getSessionUser();
   const parsed = adjustSchema.safeParse(input);
@@ -184,8 +209,10 @@ export async function adjustAccountBalance(
     const [account] = await tx
       .select({
         id: accounts.id,
+        type: accounts.type,
         currency: accounts.currency,
         balanceCents: accounts.balanceCents,
+        metadata: accounts.metadata,
       })
       .from(accounts)
       .where(
@@ -200,10 +227,53 @@ export async function adjustAccountBalance(
       return { status: "error", message: "Cuenta no encontrada." };
     }
 
-    const declared = BigInt(parsed.data.declaredBalanceCents);
-    const diff = declared - account.balanceCents;
+    let targetBalanceCents: bigint;
+    let nextMetadata: AccountMetadata = account.metadata;
+
+    if (parsed.data.declared.kind === "balance") {
+      targetBalanceCents = BigInt(parsed.data.declared.balanceCents);
+    } else {
+      if (account.type !== "credit_card") {
+        return {
+          status: "error",
+          message: "El cupo disponible solo aplica a tarjetas de crédito.",
+        };
+      }
+      const limit = account.metadata.creditLimitCents;
+      if (limit === undefined || limit <= 0) {
+        return {
+          status: "error",
+          message: "La tarjeta no tiene límite de crédito configurado. Editala primero.",
+        };
+      }
+      const available = parsed.data.declared.availableCreditCents;
+      if (available > limit) {
+        return {
+          status: "error",
+          message: "El cupo disponible no puede superar al límite de la tarjeta.",
+        };
+      }
+      // debt is limit - available; balance_cents for credit_card is stored
+      // negative (debt reduces net worth — see CreditMeter).
+      targetBalanceCents = BigInt(available) - BigInt(limit);
+      nextMetadata = { ...account.metadata, availableCreditCents: available };
+    }
+
+    const diff = targetBalanceCents - account.balanceCents;
 
     if (diff === BigInt(0)) {
+      // Metadata might still need to be persisted even when the balance
+      // didn't move (e.g. first time availableCreditCents is stored).
+      const metadataDrifted =
+        parsed.data.declared.kind === "availableCredit" &&
+        account.metadata.availableCreditCents !== parsed.data.declared.availableCreditCents;
+      if (metadataDrifted) {
+        await tx
+          .update(accounts)
+          .set({ metadata: nextMetadata, updatedAt: new Date() })
+          .where(eq(accounts.id, account.id));
+        revalidate();
+      }
       return { status: "noop" };
     }
 
@@ -246,7 +316,8 @@ export async function adjustAccountBalance(
         isAdjustment: true,
         rawData: {
           reason: parsed.data.reason ?? null,
-          declaredBalanceCents: declared.toString(),
+          declared: parsed.data.declared,
+          declaredBalanceCents: targetBalanceCents.toString(),
           previousBalanceCents: account.balanceCents.toString(),
         },
       })
@@ -254,7 +325,7 @@ export async function adjustAccountBalance(
 
     await tx
       .update(accounts)
-      .set({ balanceCents: declared, updatedAt: today })
+      .set({ balanceCents: targetBalanceCents, metadata: nextMetadata, updatedAt: today })
       .where(eq(accounts.id, account.id));
 
     revalidate();

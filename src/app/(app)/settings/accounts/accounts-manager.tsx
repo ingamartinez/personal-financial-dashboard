@@ -258,11 +258,11 @@ export function AccountsManager({ items }: { items: AccountRow[] }) {
         open={adjust.open}
         target={adjust.target}
         onClose={() => setAdjust({ open: false, target: null })}
-        onConfirm={async (declaredBalanceCents, reason) => {
+        onConfirm={async (declared, reason) => {
           if (!adjust.target) return;
           const result = await adjustAccountBalance({
             accountId: adjust.target.id,
-            declaredBalanceCents,
+            declared,
             reason,
           });
           if (result.status === "ok") {
