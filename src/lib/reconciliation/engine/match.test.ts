@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jaccard, matchStatement, tokenize } from "./match";
+import { jaccard, matchStatement, overlapCoefficient, tokenize } from "./match";
 import type { ExistingTxnForMatch } from "./types";
 import type { ParsedStatementRow } from "../parsers/types";
 
@@ -55,6 +55,32 @@ describe("jaccard", () => {
   });
   it("returns 0 for two empty sets", () => {
     expect(jaccard(new Set(), new Set())).toBe(0);
+  });
+});
+
+describe("overlapCoefficient", () => {
+  it("is 1 when the smaller set is fully contained in the larger", () => {
+    // The key property: asymmetric size does NOT penalize.
+    expect(
+      overlapCoefficient(
+        new Set(["polar", "tonnoz"]),
+        new Set(["compra", "polar", "tonnoz", "ser"]),
+      ),
+    ).toBe(1);
+  });
+  it("handles the real POLAR smoke-test case above the 0.5 threshold", () => {
+    const bank = new Set(["compra", "intl", "polar", "tonnoz", "ser"]);
+    const sms = new Set(["polar", "tonnoz", "servic"]);
+    // 2 / min(5,3) = 0.67, where jaccard would give 2/6 = 0.33 (below 0.5).
+    expect(overlapCoefficient(bank, sms)).toBeCloseTo(2 / 3);
+  });
+  it("is 0 when either side is empty", () => {
+    expect(overlapCoefficient(new Set(), new Set(["a"]))).toBe(0);
+    expect(overlapCoefficient(new Set(["a"]), new Set())).toBe(0);
+    expect(overlapCoefficient(new Set(), new Set())).toBe(0);
+  });
+  it("is 0 for disjoint sets", () => {
+    expect(overlapCoefficient(new Set(["a", "b"]), new Set(["c", "d"]))).toBe(0);
   });
 });
 
@@ -288,25 +314,27 @@ describe("matchStatement — invariants", () => {
 describe("matchStatement — near-match fallback", () => {
   const date = new Date("2026-04-14T05:00:00Z");
 
-  it("emits near_match when amount is 1 peso off but date + description align (FX rounding case)", () => {
-    // Real shape from smoke-test today: bank statement has "COMPRA INTL POLAR
-    // TONNOZ SER" and the SMS-captured findash row has "POLAR TONNOZ SERVIC"
-    // — decent token overlap + 1-peso amount drift from FX rounding.
+  it("emits near_match for the real POLAR smoke-test case (asymmetric descriptions)", () => {
+    // Actual descriptions captured on 2026-04-19: bank-feed is longer and
+    // has prefix noise ("COMPRA INTL") — jaccard would score 2/6 = 0.33 and
+    // reject. Overlap coefficient scores 2/3 = 0.67 and accepts, which is
+    // the correct behavior for this real FX-rounding duplicate.
     const plan = matchStatement({
       parsedRows: [
         parsedRow({
           occurredAt: date,
-          amountCents: BigInt(1_320_565_00),
+          amountCents: BigInt(25_573_00),
           direction: "out",
-          descriptionRaw: "COMPRA INTL POLAR TONNOZ SERVIC",
+          descriptionRaw: "COMPRA INTL POLAR TONNOZ SER",
         }),
       ],
       existingTxns: [
         existingTxn({
           id: 42,
           occurredAt: date,
-          amountCents: BigInt(-1_320_564_00), // ← 1 peso off
-          descriptionRaw: "POLAR TONNOZ SERVIC",
+          amountCents: BigInt(-25_448_00), // ← 125 pesos off
+          descriptionRaw: "POLAR* TONNOZ-SERVIC",
+          merchant: "POLAR* TONNOZ-SERVIC",
         }),
       ],
     });
@@ -314,7 +342,7 @@ describe("matchStatement — near-match fallback", () => {
     expect(plan.decisions[0].action).toBe("near_match");
     expect(plan.decisions[0].matchedTxnId).toBe(42);
     expect(plan.decisions[0].matchReason).toBe("near_match_fuzzy_amount");
-    expect(plan.decisions[0].amountDiffCents).toBe("100");
+    expect(plan.decisions[0].amountDiffCents).toBe("12500");
     expect(plan.decisions[0].dateDiffDays).toBe(0);
     expect(plan.summary.nearMatches).toBe(1);
     expect(plan.summary.newInserts).toBe(0);
@@ -390,6 +418,30 @@ describe("matchStatement — near-match fallback", () => {
     expect(plan.decisions[0].action).toBe("insert_new");
   });
 
+  it("does NOT emit near_match when the smaller side has fewer than 2 tokens (noise guard)", () => {
+    // A 1-token SMS like `{pago}` would score overlap 1.0 against any
+    // description containing "pago" — the guard rejects before that.
+    const plan = matchStatement({
+      parsedRows: [
+        parsedRow({
+          occurredAt: date,
+          amountCents: BigInt(100_00),
+          direction: "out",
+          descriptionRaw: "PAGO QR SOLUCIONES RESTAURANTE ARGENTINO",
+        }),
+      ],
+      existingTxns: [
+        existingTxn({
+          id: 1,
+          occurredAt: date,
+          amountCents: BigInt(-99_00),
+          descriptionRaw: "PAGO", // 1 meaningful token — below guard
+        }),
+      ],
+    });
+    expect(plan.decisions[0].action).toBe("insert_new");
+  });
+
   it("prefers exact match over near-match when both candidates are available", () => {
     const plan = matchStatement({
       parsedRows: [
@@ -423,14 +475,14 @@ describe("matchStatement — near-match fallback", () => {
     expect(plan.flaggedExisting).toEqual([{ txnId: 1, reason: "no_statement_match" }]);
   });
 
-  it("respects nearMatch config overrides (tighter similarity cutoff)", () => {
+  it("respects nearMatch.descriptionSimilarityMin override (looser cutoff)", () => {
     const plan = matchStatement({
       parsedRows: [
         parsedRow({
           occurredAt: date,
           amountCents: BigInt(10_00),
           direction: "out",
-          descriptionRaw: "ONE TWO THREE FOUR",
+          descriptionRaw: "ALPHA BETA GAMMA DELTA EPSILON",
         }),
       ],
       existingTxns: [
@@ -438,11 +490,35 @@ describe("matchStatement — near-match fallback", () => {
           id: 1,
           occurredAt: date,
           amountCents: BigInt(-9_50),
-          descriptionRaw: "ONE TWO FIVE SIX", // 2/6 = 0.33 jaccard
+          descriptionRaw: "ALPHA ZULU OMEGA SIGMA LAMBDA", // 1/5 overlap = 0.2
         }),
       ],
-      // default threshold 0.5 would reject this — tightening to 0.2 accepts.
-      config: { nearMatch: { descriptionSimilarityMin: 0.2 } },
+      // default threshold 0.5 would reject — loosening to 0.15 accepts.
+      config: { nearMatch: { descriptionSimilarityMin: 0.15 } },
+    });
+    expect(plan.decisions[0].action).toBe("near_match");
+  });
+
+  it("respects nearMatch.minTokensInSmallerSet override (loosening the noise guard)", () => {
+    const plan = matchStatement({
+      parsedRows: [
+        parsedRow({
+          occurredAt: date,
+          amountCents: BigInt(100_00),
+          direction: "out",
+          descriptionRaw: "PAGO QR SOLUCIONES RESTAURANTE",
+        }),
+      ],
+      existingTxns: [
+        existingTxn({
+          id: 1,
+          occurredAt: date,
+          amountCents: BigInt(-99_00),
+          descriptionRaw: "PAGO", // 1-token SMS, default guard rejects
+        }),
+      ],
+      // Loosen the guard to 1 token — now the 1.0 overlap is accepted.
+      config: { nearMatch: { minTokensInSmallerSet: 1 } },
     });
     expect(plan.decisions[0].action).toBe("near_match");
   });
