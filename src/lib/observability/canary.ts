@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { db } from "@/lib/db";
 import { parserCanaryEvents, type CanaryProjection } from "@/lib/db/schema";
 import { parseSmsBancolombia, type ParseResult } from "@/lib/ingestion/sms-bancolombia";
+import { callClaude } from "@/lib/ai/anthropic-client";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "canary" });
 
-const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 const SAMPLE_NUMERATOR = 1;
 const SAMPLE_DENOMINATOR = 100;
 const PROJECTION_FIELDS = ["amountCents", "currency", "merchant", "occurredOn"] as const;
@@ -83,17 +84,28 @@ function normalizeMerchant(s: string): string {
     .trim();
 }
 
-const AI_PROMPT_HEADER = `You are parsing a single Bancolombia SMS notification. Extract these fields as strict JSON.
+const AI_PROMPT_SYSTEM = `You are parsing a single Bancolombia SMS notification. Extract these fields as strict JSON.
 
 - amountCents: integer as string, amount × 100 (e.g. "$50,000 COP" → "5000000"). null if no amount.
 - currency: "COP" | "USD" | null
 - merchant: name of the other party — store name, person, provider. null if it's a transfer/withdrawal/ATM with no counterparty name.
 - occurredOn: date as YYYY-MM-DD from the SMS (assume current year if only month/day shown). null if not present.
 
-Return ONLY valid JSON with exactly these 4 keys. No prose.
+Return ONLY valid JSON with exactly these 4 keys. No prose.`;
 
-SMS:
-`;
+// Accept string or number for amountCents (model occasionally emits a raw int
+// instead of stringified), normalize to string-or-null. Strings get trimmed;
+// empty strings collapse to null.
+const canaryProjectionSchema = z.object({
+  amountCents: z
+    .union([z.string(), z.number(), z.null()])
+    .transform((v) => (v == null ? null : typeof v === "number" ? String(v) : v.trim() || null)),
+  currency: z.enum(["COP", "USD"]).nullable(),
+  merchant: z.union([z.string(), z.null()]).transform((v) => (v == null ? null : v.trim() || null)),
+  occurredOn: z
+    .union([z.string(), z.null()])
+    .transform((v) => (v == null ? null : v.trim() || null)),
+});
 
 export async function shadowParseSms(
   smsBody: string,
@@ -104,61 +116,22 @@ export async function shadowParseSms(
   inputTokens: number;
   outputTokens: number;
 }> {
-  const apiKey = opts?.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-  const model = opts?.model ?? DEFAULT_MODEL;
-  const doFetch = opts?.fetchImpl ?? fetch;
-
-  const res = await doFetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 256,
-      messages: [{ role: "user", content: AI_PROMPT_HEADER + smsBody }],
-    }),
+  const result = await callClaude({
+    system: [{ text: AI_PROMPT_SYSTEM, cacheControl: true }],
+    userPrompt: smsBody,
+    schema: canaryProjectionSchema,
+    maxTokens: 256,
+    model: opts?.model,
+    apiKey: opts?.apiKey,
+    fetchImpl: opts?.fetchImpl,
   });
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Anthropic API error ${res.status}: ${body.slice(0, 300)}`);
-  }
-
-  const payload = (await res.json()) as {
-    content: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens: number; output_tokens: number };
-  };
-  const text = payload.content?.find((c) => c.type === "text")?.text ?? "";
   return {
-    projection: parseProjectionJson(text),
-    model,
-    inputTokens: payload.usage?.input_tokens ?? 0,
-    outputTokens: payload.usage?.output_tokens ?? 0,
+    projection: result.data,
+    model: result.model,
+    inputTokens: result.usage.inputTokens,
+    outputTokens: result.usage.outputTokens,
   };
-}
-
-export function parseProjectionJson(text: string): CanaryProjection {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("shadowParseSms: no JSON object in response");
-  const raw = JSON.parse(match[0]) as Record<string, unknown>;
-  return {
-    amountCents: coerceStringOrNull(raw.amountCents),
-    currency:
-      raw.currency === "COP" || raw.currency === "USD" ? (raw.currency as "COP" | "USD") : null,
-    merchant: coerceStringOrNull(raw.merchant),
-    occurredOn: coerceStringOrNull(raw.occurredOn),
-  };
-}
-
-function coerceStringOrNull(v: unknown): string | null {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "string") return v.trim() || null;
-  if (typeof v === "number" || typeof v === "bigint") return String(v);
-  return null;
 }
 
 // Entry point used by the SMS route's after() hook. Swallows errors — a
