@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
-import { callClaude } from "./anthropic-client";
+import { callClaude, callClaudeText } from "./anthropic-client";
 
 type CapturedRequest = {
   url: string;
@@ -143,5 +143,79 @@ describe("callClaude", () => {
     } finally {
       if (original !== undefined) process.env.ANTHROPIC_API_KEY = original;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// callClaudeText — prose path (no schema, returns raw text)
+// ---------------------------------------------------------------------------
+
+function fakeTextResponse(text: string): Record<string, unknown> {
+  return {
+    id: "msg_test",
+    type: "message",
+    role: "assistant",
+    model: "claude-sonnet-4-6",
+    content: [{ type: "text", text }],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: 800,
+      output_tokens: 250,
+      cache_read_input_tokens: 640,
+      cache_creation_input_tokens: 0,
+    },
+  };
+}
+
+describe("callClaudeText", () => {
+  it("returns the concatenated text + cache usage", async () => {
+    const result = await callClaudeText({
+      system: [{ text: "You are a financial advisor.", cacheControl: true }],
+      userPrompt: "summarize this",
+      apiKey: "sk-test",
+      fetchImpl: mockFetch(fakeTextResponse("## Report\n\nAll good."), []),
+    });
+
+    expect(result.text).toBe("## Report\n\nAll good.");
+    expect(result.model).toBe("claude-sonnet-4-6");
+    expect(result.usage.inputTokens).toBe(800);
+    expect(result.usage.cacheReadTokens).toBe(640);
+  });
+
+  it("sends cache_control on the marked system block", async () => {
+    const captured: CapturedRequest[] = [];
+    await callClaudeText({
+      system: [{ text: "stable rules", cacheControl: true }, { text: "volatile context" }],
+      userPrompt: "ok",
+      apiKey: "sk-test",
+      fetchImpl: mockFetch(fakeTextResponse("reply"), captured),
+    });
+    const system = captured[0].body.system as Array<Record<string, unknown>>;
+    expect(system[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(system[1].cache_control).toBeUndefined();
+  });
+
+  it("throws when the response has no text blocks", async () => {
+    await expect(
+      callClaudeText({
+        userPrompt: "x",
+        apiKey: "sk-test",
+        fetchImpl: mockFetch(fakeTextResponse(""), []),
+      }),
+    ).rejects.toThrow(/empty text/i);
+  });
+
+  it("rethrows typed Anthropic.APIError on non-2xx", async () => {
+    await expect(
+      callClaudeText({
+        userPrompt: "x",
+        apiKey: "sk-test",
+        fetchImpl: mockFetch({}, [], {
+          status: 500,
+          errorBody: { type: "error", error: { type: "api_error", message: "boom" } },
+        }),
+      }),
+    ).rejects.toBeInstanceOf(Anthropic.APIError);
   });
 });
