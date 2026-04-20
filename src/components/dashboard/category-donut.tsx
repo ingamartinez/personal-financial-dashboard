@@ -2,6 +2,7 @@
 
 import { Cell, Pie, PieChart, Tooltip } from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Money } from "@/components/display/money";
 import { formatCop } from "@/lib/money";
 
 const PALETTE = [
@@ -35,7 +36,7 @@ export function CategoryDonut({
       <CardHeader>
         <CardDescription>Expenses by category · {monthLabel}</CardDescription>
         <CardTitle className="text-2xl tabular-nums">
-          {formatCop(BigInt(Math.round(total)))}
+          <Money cents={BigInt(Math.round(total))} currency="COP" />
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -82,7 +83,7 @@ export function CategoryDonut({
                       {pct.toFixed(1)}%
                     </span>
                     <span className="text-right font-medium tabular-nums">
-                      {formatCop(BigInt(Math.round(s.value)))}
+                      <Money cents={BigInt(Math.round(s.value))} currency="COP" />
                     </span>
                   </li>
                 );

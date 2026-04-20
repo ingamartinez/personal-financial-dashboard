@@ -1,14 +1,14 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useTransition } from "react";
+import { useTransition, type ReactNode } from "react";
 import { ChevronLeftIcon, ChevronRightIcon, RefreshCwIcon, SparklesIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { formatCop } from "@/lib/money";
+import { Money } from "@/components/display/money";
 import { cn } from "@/lib/utils";
 import { generateInsight } from "./actions";
 
@@ -108,16 +108,25 @@ export function InsightsViewer({
       </div>
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatCard label="Ingresos" value={formatCop(BigInt(summary.incomeCop * 100))} />
-        <StatCard label="Gastos" value={formatCop(BigInt(summary.expenseCop * 100))} />
+        <StatCard
+          label="Ingresos"
+          value={<Money cents={BigInt(summary.incomeCop * 100)} currency="COP" />}
+        />
+        <StatCard
+          label="Gastos"
+          value={<Money cents={BigInt(summary.expenseCop * 100)} currency="COP" />}
+        />
         <StatCard
           label="Neto"
-          value={formatCop(BigInt(summary.netCop * 100))}
+          value={<Money cents={BigInt(summary.netCop * 100)} currency="COP" />}
           valueClass={summary.netCop >= 0 ? "text-emerald-600" : "text-rose-600"}
           sub={
-            netDelta === 0
-              ? undefined
-              : `${netDelta > 0 ? "+" : ""}${formatCop(BigInt(netDelta * 100))} vs mes anterior`
+            netDelta === 0 ? undefined : (
+              <>
+                {netDelta > 0 ? "+" : ""}
+                <Money cents={BigInt(netDelta * 100)} currency="COP" /> vs mes anterior
+              </>
+            )
           }
         />
         <StatCard
@@ -172,8 +181,8 @@ function StatCard({
   valueClass,
 }: {
   label: string;
-  value: string;
-  sub?: string;
+  value: ReactNode;
+  sub?: ReactNode;
   valueClass?: string;
 }) {
   return (

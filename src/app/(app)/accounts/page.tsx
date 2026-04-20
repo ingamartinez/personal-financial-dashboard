@@ -7,10 +7,11 @@ import { getSessionUser } from "@/lib/auth/session";
 import { getNetWorth } from "@/lib/dashboard/queries";
 import { listAccountsDetailed, type AccountDetail } from "@/lib/accounts/queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
-import { toCop, formatCop, formatMoney } from "@/lib/money";
+import { toCop } from "@/lib/money";
 import { Money } from "@/components/display/money";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import type { ReactNode } from "react";
 
 const RATE_FMT = new Intl.NumberFormat("es-CO", {
   minimumFractionDigits: 2,
@@ -65,9 +66,13 @@ export default async function AccountsPage() {
       </header>
 
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <SummaryCard label="Net worth" valueCop={netWorth.totalCopCents} emphasis />
-        <SummaryCard label="COP" value={formatMoney(netWorth.copCents, "COP")} />
-        <SummaryCard label="USD" value={formatMoney(netWorth.usdCents, "USD")} />
+        <SummaryCard
+          label="Net worth"
+          value={<Money cents={netWorth.totalCopCents} currency="COP" />}
+          emphasis
+        />
+        <SummaryCard label="COP" value={<Money cents={netWorth.copCents} currency="COP" />} />
+        <SummaryCard label="USD" value={<Money cents={netWorth.usdCents} currency="USD" />} />
       </section>
 
       {all.length === 0 ? (
@@ -106,12 +111,10 @@ export default async function AccountsPage() {
 function SummaryCard({
   label,
   value,
-  valueCop,
   emphasis,
 }: {
   label: string;
-  value?: string;
-  valueCop?: bigint;
+  value: ReactNode;
   emphasis?: boolean;
 }) {
   return (
@@ -119,7 +122,7 @@ function SummaryCard({
       <CardContent className="flex flex-col gap-1 py-4">
         <div className="text-muted-foreground text-xs">{label}</div>
         <div className={cn("font-semibold tabular-nums", emphasis ? "text-2xl" : "text-lg")}>
-          {valueCop !== undefined ? formatCop(valueCop) : value}
+          {value}
         </div>
       </CardContent>
     </Card>
@@ -146,7 +149,9 @@ function AccountTypeSection({
           <Icon className="text-muted-foreground size-5" />
           {TYPE_LABEL[type]}
         </h2>
-        <div className="text-muted-foreground text-sm tabular-nums">{formatCop(subtotal)}</div>
+        <div className="text-muted-foreground text-sm tabular-nums">
+          <Money cents={subtotal} currency="COP" />
+        </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((a) => (
