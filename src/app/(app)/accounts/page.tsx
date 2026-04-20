@@ -10,6 +10,7 @@ import {
   type AccountDetail,
   type PhysicalCardSummary,
 } from "@/lib/accounts/queries";
+import { computeNextPayment } from "@/lib/accounts/next-payment";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { toCop } from "@/lib/money";
 import { Money } from "@/components/display/money";
@@ -299,12 +300,13 @@ function CreditCardTile({
     meterCurrency = primary.currency;
   }
 
-  const nextPaymentDate =
-    isShared && pc ? pc.nextPaymentDate : (primary.metadata.nextPaymentDate ?? null);
+  const cutoffDay = isShared && pc ? pc.statementCutoffDay : (primary.metadata.cutoffDay ?? null);
+  const nextPaymentDate = computeNextPayment(cutoffDay, new Date());
 
   const badge = isShared ? "Cupo compartido" : primary.currency;
   const network = isShared && pc ? pc.network : (primary.metadata.network ?? null);
   const last4 = isShared && pc ? pc.last4 : (primary.metadata.last4s?.[0] ?? null);
+  const title = (isShared && pc?.name) || primary.name;
   const metaParts: string[] = [];
   if (network) metaParts.push(network.toUpperCase());
   if (last4) metaParts.push(`*${last4}`);
@@ -316,7 +318,7 @@ function CreditCardTile({
           <span className="truncate">{primary.institution}</span>
           <span className="shrink-0 text-[10px] tracking-wide uppercase">{badge}</span>
         </CardDescription>
-        <CardTitle className="truncate text-base">{primary.name}</CardTitle>
+        <CardTitle className="truncate text-base">{title}</CardTitle>
         {metaParts.length > 0 ? (
           <div className="text-muted-foreground text-xs">{metaParts.join(" · ")}</div>
         ) : null}

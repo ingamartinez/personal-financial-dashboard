@@ -29,11 +29,6 @@ const metadataSchema = z
     creditLimitCents: z.number().int().nonnegative().optional(),
     availableCreditCents: z.number().int().nonnegative().optional(),
     cutoffDay: z.number().int().min(1).max(31).optional(),
-    paymentDueDay: z.number().int().min(1).max(31).optional(),
-    nextPaymentDate: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .optional(),
     interestRateMonthly: z.number().nonnegative().optional(),
     termMonths: z.number().int().positive().optional(),
     loanOriginalCents: z.number().int().nonnegative().optional(),
@@ -55,12 +50,9 @@ const sideSchema = z.object({
 // for backwards compat with the pre-Task-5 form payload.
 const physicalCardInputSchema = z
   .object({
+    name: z.string().min(1).max(100).optional(),
     creditLimitCents: z.number().int().nonnegative().optional(),
     cutoffDay: z.number().int().min(1).max(31).optional(),
-    nextPaymentDate: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .optional(),
     last4: z
       .string()
       .regex(/^\d{4}$/)
@@ -156,24 +148,20 @@ export async function upsertAccount(input: AccountUpsertInput) {
       Math.max(primaryMeta.creditLimitCents ?? 0, secondaryMeta.creditLimitCents ?? 0);
     const cutoffDay =
       parsed.physicalCard?.cutoffDay ?? primaryMeta.cutoffDay ?? secondaryMeta.cutoffDay;
-    const nextPaymentDate =
-      parsed.physicalCard?.nextPaymentDate ??
-      primaryMeta.nextPaymentDate ??
-      secondaryMeta.nextPaymentDate ??
-      null;
     const network = parsed.physicalCard?.network ?? primaryMeta.network ?? secondaryMeta.network;
     const last4 =
       parsed.physicalCard?.last4 ?? primaryMeta.last4s?.[0] ?? secondaryMeta.last4s?.[0];
+    const plasticName = parsed.physicalCard?.name ?? parsed.name;
     await db.transaction(async (trx) => {
       await trx.insert(physicalCards).values({
         id: physicalCardId,
         userId: session.id,
         institution: parsed.institution,
+        name: plasticName,
         network,
         last4,
         creditLimitCents: BigInt(creditLimitCents),
         statementCutoffDay: cutoffDay,
-        nextPaymentDate,
       });
       await trx.insert(accounts).values([
         { ...base, ...sideToValues(parsed.primary), physicalCardId },
@@ -206,13 +194,9 @@ export async function archiveAccount(id: number) {
 const updatePhysicalCardSchema = z
   .object({
     id: z.string().uuid(),
-    creditLimitCents: z.coerce.number().int().nonnegative(),
+    name: z.string().min(1).max(100).nullable().optional(),
+    creditLimitCents: z.coerce.number().int().nonnegative().optional(),
     statementCutoffDay: z.coerce.number().int().min(1).max(31).nullable().optional(),
-    nextPaymentDate: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .nullable()
-      .optional(),
     last4: z
       .string()
       .regex(/^\d{4}$/)
@@ -225,10 +209,13 @@ const updatePhysicalCardSchema = z
 export type UpdatePhysicalCardInput = z.input<typeof updatePhysicalCardSchema>;
 
 /**
- * Updates a multi-currency credit card's shared attributes (#346). Scoped by
- * `user_id = session.id` so one user can never mutate another's card even if
- * they obtain the uuid. Returns `{ ok: true }` on success, `{ ok: false }`
- * when the card isn't found for the session user.
+ * Partially updates a physical card's shared attributes (#346, #362). Scoped by
+ * `user_id = session.id`. Field semantics:
+ * - `undefined` → field is not touched
+ * - `null`      → field is cleared
+ * - value       → field is set
+ * This lets 🎫 (cupo+network only) and ✏️ (name/cutoff/last4) coexist without
+ * trashing each other's state when either submits.
  */
 export async function updatePhysicalCard(
   input: UpdatePhysicalCardInput,
@@ -239,17 +226,18 @@ export async function updatePhysicalCard(
     return { ok: false, message: parsed.error.issues[0]?.message ?? "Input inválido." };
   }
 
+  const d = parsed.data;
+  const set: Record<string, unknown> = { updatedAt: new Date() };
+  if (d.name !== undefined) set.name = d.name;
+  if (d.creditLimitCents !== undefined) set.creditLimitCents = BigInt(d.creditLimitCents);
+  if (d.statementCutoffDay !== undefined) set.statementCutoffDay = d.statementCutoffDay;
+  if (d.last4 !== undefined) set.last4 = d.last4;
+  if (d.network !== undefined) set.network = d.network;
+
   const result = await db
     .update(physicalCards)
-    .set({
-      creditLimitCents: BigInt(parsed.data.creditLimitCents),
-      statementCutoffDay: parsed.data.statementCutoffDay ?? null,
-      nextPaymentDate: parsed.data.nextPaymentDate ?? null,
-      last4: parsed.data.last4 ?? null,
-      network: parsed.data.network ?? null,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(physicalCards.id, parsed.data.id), eq(physicalCards.userId, session.id)))
+    .set(set)
+    .where(and(eq(physicalCards.id, d.id), eq(physicalCards.userId, session.id)))
     .returning({ id: physicalCards.id });
 
   if (result.length === 0) {

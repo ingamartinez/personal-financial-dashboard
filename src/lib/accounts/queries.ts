@@ -7,9 +7,9 @@ import type { AccountType, Currency } from "@/lib/types";
 
 export type PhysicalCardSummary = {
   id: string;
+  name: string | null;
   creditLimitCents: bigint;
   statementCutoffDay: number | null;
-  nextPaymentDate: string | null;
   network: string | null;
   last4: string | null;
 };
@@ -40,9 +40,9 @@ export async function listAccountsDetailed(userId: number): Promise<AccountDetai
       metadata: accounts.metadata,
       physicalCardId: accounts.physicalCardId,
       pcId: physicalCards.id,
+      pcName: physicalCards.name,
       pcCreditLimitCents: physicalCards.creditLimitCents,
       pcStatementCutoffDay: physicalCards.statementCutoffDay,
-      pcNextPaymentDate: physicalCards.nextPaymentDate,
       pcNetwork: physicalCards.network,
       pcLast4: physicalCards.last4,
     })
@@ -72,9 +72,9 @@ export async function listAccountsDetailed(userId: number): Promise<AccountDetai
     physicalCard: r.pcId
       ? {
           id: r.pcId,
+          name: r.pcName,
           creditLimitCents: r.pcCreditLimitCents!,
           statementCutoffDay: r.pcStatementCutoffDay,
-          nextPaymentDate: r.pcNextPaymentDate,
           network: r.pcNetwork,
           last4: r.pcLast4,
         }

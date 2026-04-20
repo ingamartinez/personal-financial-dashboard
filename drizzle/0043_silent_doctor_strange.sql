@@ -1,0 +1,1 @@
+ALTER TABLE "physical_cards" DROP COLUMN "next_payment_date";

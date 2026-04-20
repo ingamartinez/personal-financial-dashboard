@@ -249,13 +249,13 @@ export const physicalCards = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     institution: varchar("institution", { length: 50 }).notNull(),
     institutionSlug: institutionSlug("institution_slug").notNull().default("other"),
+    name: varchar("name", { length: 100 }),
     network: varchar("network", { length: 20 }),
     last4: varchar("last4", { length: 4 }),
     creditLimitCents: bigint("credit_limit_cents", { mode: "bigint" })
       .notNull()
       .default(sql`0`),
     statementCutoffDay: smallint("statement_cutoff_day"),
-    nextPaymentDate: date("next_payment_date"),
     metadata: jsonb("metadata").$type<PhysicalCardMetadata>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

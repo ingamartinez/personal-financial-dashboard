@@ -22,9 +22,9 @@ export default async function SettingsAccountsPage() {
       active: accounts.active,
       metadata: accounts.metadata,
       physicalCardId: accounts.physicalCardId,
+      pcName: physicalCards.name,
       pcCreditLimitCents: physicalCards.creditLimitCents,
       pcStatementCutoffDay: physicalCards.statementCutoffDay,
-      pcNextPaymentDate: physicalCards.nextPaymentDate,
       pcLast4: physicalCards.last4,
       pcNetwork: physicalCards.network,
     })
@@ -54,9 +54,9 @@ export default async function SettingsAccountsPage() {
     physicalCard: r.physicalCardId
       ? {
           id: r.physicalCardId,
+          name: r.pcName,
           creditLimitCents: r.pcCreditLimitCents!.toString(),
           statementCutoffDay: r.pcStatementCutoffDay,
-          nextPaymentDate: r.pcNextPaymentDate,
           last4: r.pcLast4,
           network: r.pcNetwork,
         }
