@@ -94,18 +94,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         <AiClassifyButton unclassified={unclassified} />
       </header>
 
-      <Filters
-        accounts={accounts}
-        categories={categories}
-        values={{
-          from: sp.from,
-          to: sp.to,
-          accountId: sp.accountId,
-          categorySlug: sp.categorySlug,
-          q: sp.q,
-          showAdjustments: sp.showAdjustments,
-        }}
-      />
+      <Filters accounts={accounts} categories={categories} />
 
       <TransactionTable
         rows={rows}
