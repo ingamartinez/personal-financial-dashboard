@@ -337,6 +337,13 @@
       "when": 1776745727227,
       "tag": "0047_thick_golden_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1776751094995,
+      "tag": "0048_black_albert_cleary",
+      "breakpoints": true
     }
   ]
 }

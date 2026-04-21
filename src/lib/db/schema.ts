@@ -93,7 +93,7 @@ export const inviteCodes = pgTable(
   (t) => [check("invite_codes_uses_count_check", sql`${t.usesCount} <= ${t.maxUses}`)],
 );
 
-export const webhookPurpose = pgEnum("webhook_purpose", ["sms", "debug"]);
+export const webhookPurpose = pgEnum("webhook_purpose", ["sms", "debug", "widget"]);
 
 export const webhookTokens = pgTable(
   "webhook_tokens",

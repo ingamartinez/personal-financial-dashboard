@@ -3,9 +3,9 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { webhookTokens } from "@/lib/db/schema";
 
-export type WebhookPurpose = "sms" | "debug";
+export type WebhookPurpose = "sms" | "debug" | "widget";
 
-export const WEBHOOK_PURPOSES: readonly WebhookPurpose[] = ["sms", "debug"] as const;
+export const WEBHOOK_PURPOSES: readonly WebhookPurpose[] = ["sms", "debug", "widget"] as const;
 
 export function hashWebhookToken(plaintext: string): string {
   return createHash("sha256").update(plaintext, "utf8").digest("hex");
@@ -136,7 +136,7 @@ export async function countActiveTokensByPurpose(
     .from(webhookTokens)
     .where(and(eq(webhookTokens.userId, userId), isNull(webhookTokens.revokedAt)))
     .groupBy(webhookTokens.purpose);
-  const result: Record<WebhookPurpose, number> = { sms: 0, debug: 0 };
+  const result: Record<WebhookPurpose, number> = { sms: 0, debug: 0, widget: 0 };
   for (const row of rows) {
     result[row.purpose as WebhookPurpose] = row.count;
   }
