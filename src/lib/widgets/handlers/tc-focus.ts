@@ -35,6 +35,7 @@ import { getCurrentFxRate } from "@/lib/fx/repo";
 import { createLogger } from "@/lib/logger";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import type { WidgetHandler, WidgetHandlerResult } from "@/app/api/widget/v1/[id]/registry";
+import { bogotaIsoNow, centsToCop, roundUtilizationPct } from "./_shared";
 
 const log = createLogger({ module: "widget-tc-focus" });
 
@@ -142,42 +143,12 @@ export function computeNextCutoff(
   return { next, daysTo };
 }
 
-// Bogota-offset ISO-8601 — e.g. `2026-04-21T17:23:00-05:00`. We format without
-// seconds of precision finer than whole-second and without milliseconds, which
-// matches the issue's sample response.
-function bogotaIsoNow(now: Date): string {
-  const shifted = new Date(now.getTime() - BOGOTA_OFFSET_MS);
-  const y = shifted.getUTCFullYear();
-  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(shifted.getUTCDate()).padStart(2, "0");
-  const hh = String(shifted.getUTCHours()).padStart(2, "0");
-  const mm = String(shifted.getUTCMinutes()).padStart(2, "0");
-  const ss = String(shifted.getUTCSeconds()).padStart(2, "0");
-  return `${y}-${m}-${d}T${hh}:${mm}:${ss}-05:00`;
-}
-
 // ---------------------------------------------------------------------------
-// Money helpers — everything out of the DB is bigint cents. The widget
-// contract exposes COP as integer pesos (no cents shown in the tile).
+// Money helpers — centsToCop / roundUtilizationPct / bogotaIsoNow live in
+// ./_shared.ts. Only the handler-local `BI_ZERO` clamp sentinel stays here.
 // ---------------------------------------------------------------------------
 
 const BI_ZERO = BigInt(0);
-const BI_HUNDRED = BigInt(100);
-const BI_TEN_THOUSAND = BigInt(10000);
-
-function centsToCop(cents: bigint): number {
-  // Integer division in bigint-space, then narrow to number. COP amounts we
-  // expect here (cupo, balances) comfortably fit in Number.MAX_SAFE_INTEGER
-  // after dividing by 100.
-  return Number(cents / BI_HUNDRED);
-}
-
-function roundUtilizationPct(used: bigint, limit: bigint): number {
-  if (limit <= BI_ZERO) return 0;
-  // (used * 10000) / limit yields "percent * 100"; round to integer percent.
-  const scaled = (used * BI_TEN_THOUSAND) / limit;
-  return Math.round(Number(scaled) / 100);
-}
 
 // ---------------------------------------------------------------------------
 // Handler
