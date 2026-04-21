@@ -6,7 +6,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
     testTimeout: 10_000,
     setupFiles: ["./vitest.setup.ts"],
     // Integration tests share a single Postgres database and INSERT/DELETE

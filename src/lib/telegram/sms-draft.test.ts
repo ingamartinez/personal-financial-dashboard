@@ -137,14 +137,38 @@ describe("buildDraftFromParsedSms", () => {
     expect(result.draft.accountId).toBe(1);
   });
 
-  it("maps tc_payment to expense with 'pago-tc' category", () => {
+  it("maps tc_payment to a transfer group draft (savings → TC) with no category (#405)", () => {
     const parsed = parseOrThrow(
       "Bancolombia: Pagaste $500.000,00 en la tarjeta de credito *2575 desde la cuenta *1234, el 15/04/2026 a las 10:00",
     );
     const result = buildDraftFromParsedSms(parsed, ACCOUNTS);
     expect(result.draft.direction).toBe("expense");
-    expect(result.draft.categorySlug).toBe("pago-tc");
+    // #405: transfers don't carry a spend/income category.
+    expect(result.draft.categorySlug).toBeUndefined();
+    // Origin is the savings account matched by fromLast4.
     expect(result.draft.accountId).toBe(1);
+    // Destination TC is resolved from toCardLast4 + currency.
+    expect(result.draft.transfer).toEqual({ destinationAccountId: 2 });
+  });
+
+  it("tc_payment leaves destination undefined when the TC isn't in findash", () => {
+    const parsed = parseOrThrow(
+      "Bancolombia: Pagaste $500.000,00 en la tarjeta de credito *7777 desde la cuenta *1234, el 15/04/2026 a las 10:00",
+    );
+    const result = buildDraftFromParsedSms(parsed, ACCOUNTS);
+    expect(result.draft.transfer).toEqual({ destinationAccountId: undefined });
+  });
+
+  it("tc_credit_received produces an unpaired transfer-leg draft (#405)", () => {
+    const parsed = parseOrThrow(
+      "Bancolombia: AIDA MALDONADO hizo un abono por $2,125,092 a tu tarjeta de credito terminada en **2575, el 03/12/2025 13:40. Si tienes dudas, llamanos al 018000931987. Estamos cerca.",
+    );
+    const result = buildDraftFromParsedSms(parsed, ACCOUNTS);
+    expect(result.draft.categorySlug).toBeUndefined();
+    // Empty transfer marker → confirm will insert a single leg with
+    // channel="transfer" and transfer_group_id=null (origin is external).
+    expect(result.draft.transfer).toEqual({});
+    expect(result.draft.accountId).toBe(2);
   });
 
   it("maps atm_withdrawal with resolved account but no category", () => {

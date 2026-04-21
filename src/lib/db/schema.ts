@@ -404,6 +404,12 @@ export const transactions = pgTable(
       onDelete: "set null",
     }),
     recurringYearMonth: varchar("recurring_year_month", { length: 7 }),
+    // Transfer group id (#405 / parent #345). When set, this tx is one leg of
+    // a multi-leg transfer (e.g. TC statement payment = savings debit + TC
+    // credit). App-level invariants: (a) every tx in the group has the same
+    // user_id, (b) Σ(amount_cents) = 0, (c) soft-delete is atomic across the
+    // group. Validated in tests / action layer, not the DB.
+    transferGroupId: uuid("transfer_group_id"),
     rawData: jsonb("raw_data").notNull().default({}),
     notes: text("notes"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
@@ -416,6 +422,9 @@ export const transactions = pgTable(
     index("transactions_user_category_idx").on(t.userId, t.categorySlug),
     index("transactions_user_counterparty_idx").on(t.userId, t.counterpartyId),
     index("transactions_account_recon_idx").on(t.accountId, t.reconciliationStatus, t.occurredAt),
+    index("transactions_transfer_group_idx")
+      .on(t.transferGroupId)
+      .where(sql`${t.transferGroupId} IS NOT NULL`),
     index("transactions_flagged_idx")
       .on(t.userId, t.occurredAt)
       .where(sql`${t.reconciliationStatus} = 'flagged'`),
@@ -791,6 +800,14 @@ export type TelegramDraft = {
   accountId?: number;
   categorySlug?: string;
   notes?: string;
+  // #405: when set, the confirm inserts with channel="transfer" and
+  // category_slug=null. If `destinationAccountId` is also set, a companion
+  // credit leg is inserted atomically as a transfer group (used for
+  // tc_payment). Without destination, a single unpaired transfer leg is
+  // inserted (used for tc_credit_received — origin is external).
+  transfer?: {
+    destinationAccountId?: number;
+  };
 };
 
 export type TelegramSessionState = {

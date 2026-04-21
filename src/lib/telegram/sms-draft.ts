@@ -85,10 +85,11 @@ function describe(parsed: ParsedSms): {
         direction: "expense",
       };
     case "tc_payment":
+      // #405: no category — transfers live outside spend/income taxonomy.
+      // The confirm flow reads `draft.transfer` to know to insert as a group.
       return {
         description: `Pago TC *${parsed.toCardLast4}`,
         direction: "expense",
-        categorySlug: "pago-tc",
       };
     case "transfer_received":
       return {
@@ -116,11 +117,13 @@ function describe(parsed: ParsedSms): {
         direction: "expense",
       };
     case "tc_credit_received":
+      // #405: single unpaired transfer leg — origin is external (we don't have
+      // it in the SMS), so there's no companion credit. Direction is "income"
+      // only in the cosmetic sense (money arrives at the TC reducing debt).
       return {
         merchant: parsed.senderName,
         description: `Abono de ${parsed.senderName} a TC *${parsed.toCardLast4}`,
         direction: "income",
-        categorySlug: "pago-tc",
       };
     case "bre_b_transfer":
       return {
@@ -138,6 +141,18 @@ export function buildDraftFromParsedSms(
   const accountId = resolveAccountId(parsed, accounts);
   const { merchant, description, direction, categorySlug } = describe(parsed);
 
+  // #405: `tc_payment` → paired transfer group (destination resolved from
+  // `toCardLast4`). `tc_credit_received` → single unpaired transfer leg
+  // (origin is external / unknown).
+  let transfer: TelegramDraft["transfer"];
+  if (parsed.kind === "tc_payment") {
+    const routable = toRoutable(accounts);
+    const dest = resolveAccountFromLast4(parsed.toCardLast4, parsed.currency, routable);
+    transfer = { destinationAccountId: dest?.id };
+  } else if (parsed.kind === "tc_credit_received") {
+    transfer = {};
+  }
+
   const draft: TelegramDraft = {
     amountCents: parsed.amountCents.toString(),
     currency: parsed.currency,
@@ -147,6 +162,7 @@ export function buildDraftFromParsedSms(
     occurredOn: parsed.occurredOn,
     accountId,
     categorySlug,
+    transfer,
   };
 
   return {

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { AiClassifyButton } from "@/components/transactions/ai-classify-button";
 import { Filters } from "@/components/transactions/filters";
 import { TransactionTable } from "@/components/transactions/transaction-table";
+import { TransferGroupDialog } from "@/components/transactions/transfer-group-dialog";
 import { getSessionUser } from "@/lib/auth/session";
 import {
   countTotal,
@@ -97,7 +98,10 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
             {PAGE_SIZE} per page
           </p>
         </div>
-        <AiClassifyButton unclassified={unclassified} />
+        <div className="flex items-center gap-2">
+          <TransferGroupDialog accounts={accounts} />
+          <AiClassifyButton unclassified={unclassified} />
+        </div>
       </header>
 
       <Filters accounts={accounts} categories={categories} />

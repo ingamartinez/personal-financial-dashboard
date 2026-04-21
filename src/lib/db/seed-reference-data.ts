@@ -83,7 +83,17 @@ export const categorySeedRows: CategorySeed[] = [
   { slug: "cdts", name: "CDTs", parentSlug: "inversiones" },
   { slug: "fics", name: "FICs", parentSlug: "inversiones" },
   { slug: "deudas", name: "Deudas", icon: "credit-card", color: "#dc2626", sortOrder: 100 },
+  // Kept for historical data only. Since #405, TC statement payments are
+  // modeled as transfer groups (savings debit + TC credit, category_slug = null,
+  // channel = "transfer"). New tc_payment / tc_credit_received SMS should no
+  // longer be inserted with this slug. The seed stays so existing rows still
+  // resolve their FK; archived rows and pre-migration data keep working.
   { slug: "pago-tc", name: "Pago Tarjeta de Crédito", parentSlug: "deudas" },
+  // Used by the monthly "intereses causados" job (#407). The job inserts one
+  // synthetic tx per TC per cycle summing Σ(balance × rate) across live
+  // installment purchases. Interest accrued IS an expense, so this category is
+  // a real child of `deudas` (not a transfer like `pago-tc`).
+  { slug: "intereses-tc", name: "Intereses TC", parentSlug: "deudas" },
   { slug: "pago-prestamo", name: "Pago Préstamo", parentSlug: "deudas" },
   { slug: "ropa", name: "Ropa", icon: "shirt", color: "#8b5cf6", sortOrder: 110 },
   { slug: "tecnologia", name: "Tecnología", icon: "laptop", color: "#06b6d4", sortOrder: 120 },
