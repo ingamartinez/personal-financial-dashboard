@@ -31,6 +31,12 @@ Ver el JSON que devuelve cada widget en [`api-reference.md`](./api-reference.md)
 
 ## Setup por plataforma
 
+> **iOS (primary path):** el camino rápido es el **tutorial en la app** —
+> entrá a `/settings/widgets` y seguí los 7 pasos. Los botones de copiar
+> bajan los scripts al portapapeles (con la URL de tu instancia ya
+> pre-cargada en el setup) y te evitan cualquier typo. La guía markdown
+> queda como referencia para debugging.
+
 | Plataforma | Guía                                     | Requisitos                                                                                             |
 | ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | iOS        | [`setup-ios.md`](./setup-ios.md)         | iPhone + [Scriptable](https://scriptable.app) (gratis)                                                 |
@@ -49,6 +55,17 @@ Ambos flujos siguen la misma secuencia:
    parámetro (`hoy.S`, `tc-focus.S|<card_id>`, etc.).
 5. Opcional: crear múltiples instancias con distintos parámetros para
    distintos widgets en el mismo home.
+
+### URLs crudas de los scripts (fallback)
+
+Sirvelos Next.js como estáticos, siempre apuntan a la versión desplegada:
+
+- Widget principal: `https://findash.alejoframes.com/widgets/scriptable/findash-widget.js`
+- Setup token: `https://findash.alejoframes.com/widgets/scriptable/findash-set-token.js`
+
+En tu propia instancia reemplazá el host por el tuyo. Usalos sólo si el
+tutorial en la app no te funciona o si querés un enlace directo para
+compartir.
 
 ## Formato del parámetro
 
