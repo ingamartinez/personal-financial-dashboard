@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { ArchiveIcon, MoreHorizontalIcon, RotateCcwIcon } from "lucide-react";
+import { ArchiveIcon, CalendarClockIcon, MoreHorizontalIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 import { archiveTransaction, restoreTransaction } from "@/app/(app)/transactions/actions";
 import {
@@ -21,15 +21,33 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { TcInstallmentsDialog } from "./tc-installments-dialog";
+import type { AccountType, Currency } from "@/lib/types";
 
 type Props = {
   txId: number;
   isArchived: boolean;
+  // #406: only TC tx get the "Editar cuotas" action. Passing the full context
+  // up front (instead of re-fetching on open) keeps the dialog instant.
+  accountType: AccountType;
+  amountCents: bigint;
+  currency: Currency;
+  installmentsTotal: number;
+  installmentRateBps: number | null;
 };
 
-export function TransactionRowActions({ txId, isArchived }: Props) {
+export function TransactionRowActions({
+  txId,
+  isArchived,
+  accountType,
+  amountCents,
+  currency,
+  installmentsTotal,
+  installmentRateBps,
+}: Props) {
   const [pending, startTransition] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [installmentsOpen, setInstallmentsOpen] = useState(false);
 
   const onArchive = () => {
     startTransition(async () => {
@@ -76,7 +94,19 @@ export function TransactionRowActions({ txId, isArchived }: Props) {
             <MoreHorizontalIcon className="size-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuContent align="end" className="w-44">
+          {accountType === "credit_card" && !isArchived ? (
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                setInstallmentsOpen(true);
+              }}
+              disabled={pending}
+            >
+              <CalendarClockIcon className="size-4" />
+              Editar cuotas
+            </DropdownMenuItem>
+          ) : null}
           {isArchived ? (
             <DropdownMenuItem onSelect={onRestore} disabled={pending}>
               <RotateCcwIcon className="size-4" />
@@ -97,6 +127,18 @@ export function TransactionRowActions({ txId, isArchived }: Props) {
           )}
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {accountType === "credit_card" ? (
+        <TcInstallmentsDialog
+          open={installmentsOpen}
+          onOpenChange={setInstallmentsOpen}
+          txId={txId}
+          amountCents={amountCents}
+          currency={currency}
+          installmentsTotal={installmentsTotal}
+          installmentRateBps={installmentRateBps}
+        />
+      ) : null}
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>

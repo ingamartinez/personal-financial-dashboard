@@ -79,7 +79,14 @@ const seedAccounts: Array<{
     institutionSlug: "bancolombia",
     type: "credit_card",
     currency: "COP",
-    metadata: { last4s: ["2575"], network: "visa" },
+    // #406: default EM rate buckets observed on Bancolombia 2026 extracts.
+    // 191 bps = 1.91% EM ≈ 25.49% EA for the 2-36 cuota bucket; 0 for
+    // diferido-sin-intereses. User can override per-account from /settings.
+    metadata: {
+      last4s: ["2575"],
+      network: "visa",
+      creditRateBuckets: { oneMonth: 0, months2to36: 191, advances: 191 },
+    },
   },
   {
     name: "Bancolombia Mastercard *7291",
@@ -87,7 +94,11 @@ const seedAccounts: Array<{
     institutionSlug: "bancolombia",
     type: "credit_card",
     currency: "COP",
-    metadata: { last4s: ["7291"], network: "mastercard" },
+    metadata: {
+      last4s: ["7291"],
+      network: "mastercard",
+      creditRateBuckets: { oneMonth: 0, months2to36: 191, advances: 191 },
+    },
     physicalCardGroup: "bancolombia-mc-7291",
   },
   {
@@ -96,7 +107,11 @@ const seedAccounts: Array<{
     institutionSlug: "bancolombia",
     type: "credit_card",
     currency: "USD",
-    metadata: { last4s: ["7291"], network: "mastercard" },
+    metadata: {
+      last4s: ["7291"],
+      network: "mastercard",
+      creditRateBuckets: { oneMonth: 0, months2to36: 191, advances: 191 },
+    },
     physicalCardGroup: "bancolombia-mc-7291",
   },
 ];

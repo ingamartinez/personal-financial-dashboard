@@ -205,6 +205,24 @@ export const accounts = pgTable(
   ],
 );
 
+// #406: per-bucket monthly effective interest rates for a credit card.
+// Values are ALWAYS Efectiva Mensual Vencida (EM / MV) in basis points
+// (10000 = 100%). Display as EA is computed on read only — NEVER store EA here.
+// Conversion: EA = (1 + EM/10000)^12 - 1.
+//
+// Why per-bucket: Bancolombia extracts show distinct rates for
+//   - compra a 1 cuota (typically 0% — diferido sin intereses)
+//   - compra a 2-36 cuotas (the "full" rate)
+//   - advances / impuestos / mora (often the same as 2-36)
+// Purchase-time rate is snapshotted on the transaction (see
+// `transactions.installment_rate_bps`); a null on the tx falls back to the
+// bucket that matches `installments_total` at compute time.
+export type CreditRateBucketsEM = {
+  oneMonth: number; // bps EM — typical 0 (diferido sin intereses)
+  months2to36: number; // bps EM — typical 180-210 (e.g. 191 bps = 1.91% EM ≈ 25.49% EA)
+  advances: number; // bps EM — typical == months2to36 at this bank
+};
+
 export type AccountMetadata = {
   last4s?: string[];
   network?: "visa" | "mastercard" | "amex";
@@ -222,6 +240,9 @@ export type AccountMetadata = {
   interestPaidCents?: number;
   principalPaidCents?: number;
   nextPaymentDate?: string;
+  // #406: see `CreditRateBucketsEM` above — EM/MV rates in bps for each
+  // purchase bucket. Populated by the account editor for credit_card accounts.
+  creditRateBuckets?: CreditRateBucketsEM;
   // Captured by migration 0036 when stripping ` (COP)` / ` (USD)` suffixes that
   // were used as a pre-helper hack to disambiguate multi-currency cards.
   legacyNameSuffix?: string;
@@ -383,6 +404,18 @@ export const transactions = pgTable(
       .default("unclassified"),
     classificationConfidence: smallint("classification_confidence"),
     classificationReason: varchar("classification_reason", { length: 200 }),
+    // #406: installment plan for credit-card purchases. Inmutable post-insert
+    // (re-installmentizing creates a new transfer group per the modo-B model,
+    // not a mutation — see parent #345). Default 1 means "single payment, no
+    // financing".
+    installmentsTotal: integer("installments_total").notNull().default(1),
+    // #406: ALWAYS Efectiva Mensual Vencida (EM / MV) in basis points.
+    // Display as EA is computed on read; NEVER store EA here. Null falls back
+    // to the bucket on `accounts.metadata.creditRateBuckets` matching
+    // `installments_total` at compute time (see #407). Validator rejects
+    // suspiciously low non-zero values (< 50 bps) that are almost certainly
+    // EA mislabeled as EM.
+    installmentRateBps: smallint("installment_rate_bps"),
     previousCategorySlug: varchar("previous_category_slug", { length: 60 }),
     retroactiveRuleId: integer("retroactive_rule_id").references(
       (): AnyPgColumn => classificationRules.id,

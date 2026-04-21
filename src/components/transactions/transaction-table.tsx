@@ -263,7 +263,15 @@ export function TransactionTable({
                       <Money cents={tx.amountCents} currency={tx.currency} />
                     </TableCell>
                     <TableCell className="px-2">
-                      <TransactionRowActions txId={tx.id} isArchived={isArchived} />
+                      <TransactionRowActions
+                        txId={tx.id}
+                        isArchived={isArchived}
+                        accountType={tx.accountType}
+                        amountCents={tx.amountCents}
+                        currency={tx.currency}
+                        installmentsTotal={tx.installmentsTotal}
+                        installmentRateBps={tx.installmentRateBps}
+                      />
                     </TableCell>
                   </motion.tr>
                 );
@@ -329,7 +337,15 @@ export function TransactionTable({
                     >
                       <Money cents={tx.amountCents} currency={tx.currency} />
                     </span>
-                    <TransactionRowActions txId={tx.id} isArchived={isArchived} />
+                    <TransactionRowActions
+                      txId={tx.id}
+                      isArchived={isArchived}
+                      accountType={tx.accountType}
+                      amountCents={tx.amountCents}
+                      currency={tx.currency}
+                      installmentsTotal={tx.installmentsTotal}
+                      installmentRateBps={tx.installmentRateBps}
+                    />
                   </div>
                 </div>
 
