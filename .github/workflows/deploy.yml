@@ -96,6 +96,8 @@ jobs:
           mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/lib/auth"
           cp scripts/migrate-prod.ts "$STAGE/scripts/migrate-prod.ts"
           cp scripts/backfill-users-reference.ts "$STAGE/scripts/backfill-users-reference.ts"
+          # #405: migrate-prod also calls the pago-tc → transfer-group backfill.
+          cp scripts/migrate-pago-tc-to-transfer.ts "$STAGE/scripts/migrate-pago-tc-to-transfer.ts"
           # migrate-prod imports these for reference-data seeding + per-user
           # backfill; they live under src/ and are NOT traced by Next
           # standalone, so overlay them explicitly.

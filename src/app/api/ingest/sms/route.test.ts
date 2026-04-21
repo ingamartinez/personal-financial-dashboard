@@ -265,7 +265,7 @@ describe("POST /api/ingest/sms", () => {
     expect(rows[0].classification_method).toBe("rule");
   });
 
-  it("inserts a TC payment as pago-tc expense from *6126", async () => {
+  it("inserts a TC payment as a paired transfer group — savings debit + TC credit (#405)", async () => {
     const body =
       "Bancolombia: Pagaste $1,320,564 en la tarjeta de credito *7291 desde la cuenta *6126, el 14/04/2026 21:48. ¿Dudas? Llamanos al 018000912345. Estamos cerca.";
     const res = await POST(
@@ -277,17 +277,39 @@ describe("POST /api/ingest/sms", () => {
     const json = (await res.json()) as { status: string; txId?: number };
     expect(json.status).toBe("inserted");
 
-    const rows = await db.execute<{
+    // The returned txId is the origin (debit) leg. Both legs share the same
+    // transfer_group_id, so we fetch them together to assert the invariants.
+    const [originRow] = await db.execute<{
+      transfer_group_id: string | null;
+    }>(sql`SELECT transfer_group_id FROM transactions WHERE id = ${json.txId!}`);
+    expect(originRow.transfer_group_id).toBeTruthy();
+
+    const legs = await db.execute<{
       amount_cents: string;
       category_slug: string | null;
-      classification_method: string;
+      channel: string;
+      transfer_group_id: string | null;
+      account_id: number;
     }>(sql`
-      SELECT amount_cents, category_slug, classification_method
-      FROM transactions WHERE id = ${json.txId!}
+      SELECT t.amount_cents, t.category_slug, t.channel, t.transfer_group_id, t.account_id
+      FROM transactions t
+      WHERE t.transfer_group_id = ${originRow.transfer_group_id}
+      ORDER BY t.amount_cents ASC
     `);
-    expect(BigInt(rows[0].amount_cents)).toBe(BigInt(-132056400));
-    expect(rows[0].category_slug).toBe("pago-tc");
-    expect(rows[0].classification_method).toBe("manual");
+    expect(legs.length).toBe(2);
+    // Debit leg (savings): negative amount, category null, channel transfer.
+    expect(BigInt(legs[0].amount_cents)).toBe(BigInt(-132056400));
+    // Credit leg (TC): positive amount, reduces debt.
+    expect(BigInt(legs[1].amount_cents)).toBe(BigInt(132056400));
+    // Both legs: no spend/income category, channel="transfer".
+    for (const leg of legs) {
+      expect(leg.category_slug).toBeNull();
+      expect(leg.channel).toBe("transfer");
+    }
+    // Σ = 0 — the core invariant of transfer groups.
+    expect(BigInt(legs[0].amount_cents) + BigInt(legs[1].amount_cents)).toBe(BigInt(0));
+    // Origin savings *6126 and destination TC *7291 are distinct accounts.
+    expect(legs[0].account_id).not.toBe(legs[1].account_id);
   });
 
   it("inserts a transfer_received as income into Ahorros", async () => {
@@ -351,7 +373,7 @@ describe("POST /api/ingest/sms", () => {
     expect(accs[0].currency).toBe("COP");
   });
 
-  it("inserts a tc_credit_received as positive abono on the TC account", async () => {
+  it("inserts a tc_credit_received as an unpaired transfer leg on the TC (#405)", async () => {
     const body =
       "Bancolombia: AIDA MALDONADO hizo un abono por $2,125,092 a tu tarjeta de credito terminada en **2575, el 03/12/2025 13:40. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
     const res = await POST(
@@ -370,13 +392,20 @@ describe("POST /api/ingest/sms", () => {
       category_slug: string | null;
       classification_method: string;
       description_raw: string;
+      channel: string;
+      transfer_group_id: string | null;
     }>(sql`
-      SELECT amount_cents, merchant, account_id, category_slug, classification_method, description_raw
+      SELECT amount_cents, merchant, account_id, category_slug, classification_method,
+             description_raw, channel, transfer_group_id
       FROM transactions WHERE id = ${json.txId!}
     `);
     expect(BigInt(rows[0].amount_cents)).toBe(BigInt(212509200)); // positive — reduces TC debt
     expect(rows[0].merchant).toBe("AIDA MALDONADO");
-    expect(rows[0].category_slug).toBe("pago-tc");
+    // #405: no category (origin is external — not spend/income), channel="transfer",
+    // and no transfer_group_id since there's no companion leg.
+    expect(rows[0].category_slug).toBeNull();
+    expect(rows[0].channel).toBe("transfer");
+    expect(rows[0].transfer_group_id).toBeNull();
     expect(rows[0].classification_method).toBe("manual");
     expect(rows[0].description_raw).toBe("Abono de AIDA MALDONADO a TC *2575");
 

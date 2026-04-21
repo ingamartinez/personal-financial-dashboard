@@ -5,6 +5,7 @@ import { notDeleted } from "@/lib/db/helpers";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
+import { insertTransferGroup } from "@/lib/transactions/transfer-groups";
 import {
   resolveAccountFromLast4,
   type ParseResult,
@@ -131,6 +132,20 @@ async function ingestParsedSms(
     .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)))) as Array<
     RoutableAccount & { institution: string; type: string }
   >;
+
+  // TC statement payment (#405): origin savings ↔ TC destination are both
+  // user accounts, so insert as a paired transfer group. Ingest-level, not
+  // through the generic single-insert path below.
+  if (parsed.kind === "tc_payment") {
+    return ingestTcStatementPayment(userId, parsed, allAccounts, forceAccountId);
+  }
+  // TC credit received (#405): the SMS tells us ONLY the TC destination; the
+  // origin account is external (another bank, Nequi, cash deposit, 3rd-party
+  // transfer). Insert as a single unpaired transfer leg — user can pair
+  // manually from /transactions if the other side is also a findash account.
+  if (parsed.kind === "tc_credit_received") {
+    return ingestTcCreditReceived(userId, parsed, allAccounts, forceAccountId);
+  }
 
   let account: RoutableAccount | null;
   if (forceAccountId !== undefined) {
@@ -285,7 +300,7 @@ export async function resolveCounterparty(
 }
 
 function resolveAccountForParsed(
-  parsed: ParsedSms,
+  parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" }>,
   allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
 ): RoutableAccount | null {
   switch (parsed.kind) {
@@ -293,15 +308,12 @@ function resolveAccountForParsed(
       return resolveAccountFromLast4(parsed.cardLast4, parsed.currency, allAccounts);
     case "transfer_sent":
     case "qr_payment":
-    case "tc_payment":
     case "provider_payment_sent":
     case "atm_withdrawal":
     case "bre_b_transfer":
       return resolveAccountFromLast4(parsed.fromLast4, parsed.currency, allAccounts);
     case "transfer_received":
       return resolveAccountFromLast4(parsed.toLast4, parsed.currency, allAccounts);
-    case "tc_credit_received":
-      return resolveAccountFromLast4(parsed.toCardLast4, parsed.currency, allAccounts);
     case "provider_payment": {
       return (
         allAccounts.find(
@@ -315,7 +327,173 @@ function resolveAccountForParsed(
   }
 }
 
-function buildTxFields(parsed: ParsedSms): {
+// #405: TC statement payment — paired transfer group (savings debit + TC credit).
+// Both accounts must exist in findash; otherwise we bail with an explicit error
+// so the ingestion-inbox retry path can surface it. The old single-tx path used
+// to insert into savings with categorySlug="pago-tc" (a child of "deudas"),
+// which double-counted the original TC purchases as debt. This replaces it.
+async function ingestTcStatementPayment(
+  userId: number,
+  parsed: ParsedSms & { kind: "tc_payment" },
+  allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
+  forceAccountId: number | undefined,
+): Promise<IngestOutcome> {
+  let fromAcc: RoutableAccount | null;
+  if (forceAccountId !== undefined) {
+    const forced = allAccounts.find((a) => a.id === forceAccountId);
+    if (!forced) {
+      return { status: "error", reason: `account ${forceAccountId} not found for user` };
+    }
+    if (forced.currency !== parsed.currency) {
+      return {
+        status: "error",
+        reason: `currency mismatch: parsed=${parsed.currency}, account=${forced.currency}`,
+      };
+    }
+    fromAcc = forced;
+  } else {
+    fromAcc = resolveAccountFromLast4(parsed.fromLast4, parsed.currency, allAccounts);
+  }
+  if (!fromAcc) {
+    return {
+      status: "error",
+      reason: `no source account matches last4=${parsed.fromLast4} currency=${parsed.currency}`,
+    };
+  }
+
+  const toAcc = resolveAccountFromLast4(parsed.toCardLast4, parsed.currency, allAccounts);
+  if (!toAcc) {
+    return {
+      status: "error",
+      reason: `no TC account matches last4=${parsed.toCardLast4} currency=${parsed.currency} — add the card in /settings/accounts before ingesting`,
+    };
+  }
+
+  const occurredAt = new Date(
+    `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
+  );
+  const descriptionRaw = `Pago TC *${parsed.toCardLast4}`;
+  const result = await insertTransferGroup({
+    userId,
+    legs: [
+      {
+        accountId: fromAcc.id,
+        amountCents: -parsed.amountCents,
+        currency: parsed.currency,
+        descriptionRaw,
+        source: "sms",
+        occurredAt,
+        externalId: parsed.externalId,
+        rawData: { kind: parsed.kind, sms: parsed.raw, role: "debit" },
+      },
+      {
+        accountId: toAcc.id,
+        amountCents: parsed.amountCents,
+        currency: parsed.currency,
+        descriptionRaw,
+        source: "sms",
+        occurredAt,
+        externalId: parsed.externalId,
+        rawData: { kind: parsed.kind, sms: parsed.raw, role: "credit" },
+      },
+    ],
+  });
+
+  if (result.status === "duplicated") return { status: "duplicated" };
+  if (result.status === "error") return { status: "error", reason: result.reason };
+
+  for (const txId of result.txIds) {
+    emit({ type: "transaction:created", id: txId, source: "sms", timestamp: Date.now() });
+  }
+  // Contract: IngestOutcome carries a single txId. Return the origin (debit)
+  // leg — it's the one users recognize as "their payment" in logs and UI.
+  return { status: "inserted", txId: result.txIds[0] };
+}
+
+// #405: TC credit received — an abono landing on a TC from an external source.
+// The SMS gives us the TC destination (toCardLast4) and the senderName, but no
+// origin account we can route to. We insert a single transfer leg (channel =
+// "transfer", category_slug = null) so the balance moves correctly without
+// polluting spend/income. If the user later identifies the origin as one of
+// their accounts, they can pair it manually from /transactions.
+async function ingestTcCreditReceived(
+  userId: number,
+  parsed: ParsedSms & { kind: "tc_credit_received" },
+  allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
+  forceAccountId: number | undefined,
+): Promise<IngestOutcome> {
+  let toAcc: RoutableAccount | null;
+  if (forceAccountId !== undefined) {
+    const forced = allAccounts.find((a) => a.id === forceAccountId);
+    if (!forced) {
+      return { status: "error", reason: `account ${forceAccountId} not found for user` };
+    }
+    if (forced.currency !== parsed.currency) {
+      return {
+        status: "error",
+        reason: `currency mismatch: parsed=${parsed.currency}, account=${forced.currency}`,
+      };
+    }
+    toAcc = forced;
+  } else {
+    toAcc = resolveAccountFromLast4(parsed.toCardLast4, parsed.currency, allAccounts);
+  }
+  if (!toAcc) {
+    return {
+      status: "error",
+      reason: `no TC account matches last4=${parsed.toCardLast4} currency=${parsed.currency}`,
+    };
+  }
+
+  const occurredAt = new Date(
+    `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
+  );
+  const descriptionRaw = `Abono de ${parsed.senderName} a TC *${parsed.toCardLast4}`;
+
+  try {
+    const result = await db
+      .insert(transactions)
+      .values({
+        userId,
+        accountId: toAcc.id,
+        occurredAt,
+        amountCents: parsed.amountCents,
+        currency: parsed.currency,
+        descriptionRaw,
+        descriptionClean: null,
+        merchant: parsed.senderName,
+        categorySlug: null,
+        counterpartyId: null,
+        classificationMethod: "manual",
+        classificationConfidence: null,
+        source: "sms",
+        channel: "transfer",
+        externalId: parsed.externalId,
+        rawData: { kind: parsed.kind, sms: parsed.raw },
+      })
+      .onConflictDoNothing({
+        target: [transactions.accountId, transactions.externalId],
+        where: sql`${transactions.externalId} IS NOT NULL`,
+      })
+      .returning({ id: transactions.id });
+
+    if (result.length === 0) return { status: "duplicated" };
+    emit({
+      type: "transaction:created",
+      id: result[0].id,
+      source: "sms",
+      timestamp: Date.now(),
+    });
+    return { status: "inserted", txId: result[0].id };
+  } catch (err) {
+    return {
+      status: "error",
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function buildTxFields(parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" }>): {
   amountCents: bigint;
   descriptionRaw: string;
   merchant: string | null;
@@ -346,14 +524,6 @@ function buildTxFields(parsed: ParsedSms): {
         merchant: null,
         categorySlug: null,
         method: "unclassified",
-      };
-    case "tc_payment":
-      return {
-        amountCents: -parsed.amountCents,
-        descriptionRaw: `Pago TC *${parsed.toCardLast4}`,
-        merchant: null,
-        categorySlug: "pago-tc",
-        method: "manual",
       };
     case "transfer_received":
       return {
@@ -386,14 +556,6 @@ function buildTxFields(parsed: ParsedSms): {
         merchant: null,
         categorySlug: null,
         method: "unclassified",
-      };
-    case "tc_credit_received":
-      return {
-        amountCents: parsed.amountCents,
-        descriptionRaw: `Abono de ${parsed.senderName} a TC *${parsed.toCardLast4}`,
-        merchant: parsed.senderName,
-        categorySlug: "pago-tc",
-        method: "manual",
       };
     case "bre_b_transfer":
       return {

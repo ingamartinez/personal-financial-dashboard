@@ -41,6 +41,7 @@ const {
   confirmClassification,
   archiveTransaction,
   restoreTransaction,
+  createManualTransferGroup,
 } = await import("./actions");
 const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
 const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
@@ -1331,5 +1332,245 @@ describe("archiveTransaction / restoreTransaction (#375)", () => {
     const state = await accountState(acc.id);
     expect(state.totalCount).toBe(1);
     expect(state.liveCount).toBe(0);
+  });
+});
+
+// #405: archive / restore cascade across transfer_group_id. Prevents "half-
+// archived" groups that would break the Σ=0 invariant and leave account
+// balances internally inconsistent.
+describe("archiveTransaction / restoreTransaction over transfer groups (#405)", () => {
+  const EXT_PREFIX = "test-cp-action:tgarchive";
+  async function cleanup() {
+    await db.execute(sql`DELETE FROM transactions WHERE external_id LIKE ${EXT_PREFIX + "%"}`);
+  }
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function seedPairedGroup(suffix: string): Promise<{
+    originId: number;
+    destId: number;
+    groupId: string;
+  }> {
+    const [savings] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const [tc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Visa *2575' LIMIT 1
+    `);
+    const [groupRow] = await db.execute<{ id: string }>(sql`SELECT gen_random_uuid()::text AS id`);
+    const groupId = groupRow.id;
+
+    const [origin] = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        classification_method, source, channel, transfer_group_id, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${savings.id}, now(), -500000, 'COP', 'Pago TC *2575',
+        'manual'::classification_method, 'sms', 'transfer'::tx_channel,
+        ${groupId}::uuid, ${`${EXT_PREFIX}:${suffix}`}
+      )
+      RETURNING id
+    `);
+    const [dest] = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        classification_method, source, channel, transfer_group_id, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${tc.id}, now(), 500000, 'COP', 'Pago TC *2575',
+        'manual'::classification_method, 'sms', 'transfer'::tx_channel,
+        ${groupId}::uuid, ${`${EXT_PREFIX}:${suffix}`}
+      )
+      RETURNING id
+    `);
+    return { originId: origin.id, destId: dest.id, groupId };
+  }
+
+  it("archiving one leg archives every sibling in the group atomically", async () => {
+    const { originId, destId, groupId } = await seedPairedGroup("cascade-archive");
+
+    const result = await archiveTransaction({ txId: originId });
+    expect(result).toEqual({ status: "ok" });
+
+    const liveLegs = await db.execute<{ n: string }>(sql`
+      SELECT count(*)::text AS n FROM transactions
+      WHERE transfer_group_id = ${groupId}::uuid AND deleted_at IS NULL
+    `);
+    expect(liveLegs[0].n).toBe("0");
+
+    // And the sibling is actually archived (not just filtered).
+    const [sibling] = await db.execute<{ deleted_at: string | null }>(sql`
+      SELECT deleted_at FROM transactions WHERE id = ${destId}
+    `);
+    expect(sibling.deleted_at).not.toBeNull();
+  });
+
+  it("restoring one leg restores every sibling in the group atomically", async () => {
+    const { originId, destId, groupId } = await seedPairedGroup("cascade-restore");
+    await archiveTransaction({ txId: originId });
+
+    const result = await restoreTransaction({ txId: destId });
+    expect(result).toEqual({ status: "ok" });
+
+    const liveLegs = await db.execute<{ n: string }>(sql`
+      SELECT count(*)::text AS n FROM transactions
+      WHERE transfer_group_id = ${groupId}::uuid AND deleted_at IS NULL
+    `);
+    expect(liveLegs[0].n).toBe("2");
+  });
+
+  it("cascade does NOT touch transactions outside the group", async () => {
+    const { originId } = await seedPairedGroup("cascade-isolation");
+    const standaloneId = await seedTx({
+      counterpartyId: await seedBareCounterparty({ displayName: "test-cp-archive-isolation" }),
+      externalId: `${EXT_PREFIX}:standalone`,
+    });
+
+    await archiveTransaction({ txId: originId });
+
+    const [standalone] = await db.execute<{ deleted_at: string | null }>(sql`
+      SELECT deleted_at FROM transactions WHERE id = ${standaloneId}
+    `);
+    expect(standalone.deleted_at).toBeNull();
+  });
+});
+
+// #405: manual transfer-group creation via /transactions UI. Covers the
+// balance / currency / account-distinctness invariants and the happy paths
+// for 1-to-1 and 1-to-N.
+describe("createManualTransferGroup (#405)", () => {
+  async function cleanup() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE raw_data @> '{"manualTransfer": true}'
+    `);
+  }
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function savingsId(): Promise<number> {
+    const [row] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    return row.id;
+  }
+  async function visaId(): Promise<number> {
+    const [row] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Visa *2575' LIMIT 1
+    `);
+    return row.id;
+  }
+  async function mastercardCopId(): Promise<number> {
+    const [row] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts
+      WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Mastercard *7291' AND currency = 'COP'
+      LIMIT 1
+    `);
+    return row.id;
+  }
+  async function usdId(): Promise<number> {
+    const [row] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'ARQ Ahorros' LIMIT 1
+    `);
+    return row.id;
+  }
+
+  it("creates a 1-to-1 group with Σ=0 and channel=transfer on every leg", async () => {
+    const origin = await savingsId();
+    const dest = await visaId();
+    const result = await createManualTransferGroup({
+      origin: { accountId: origin, amount: "50000" },
+      destinations: [{ accountId: dest, amount: "50000" }],
+      occurredOn: "2026-04-15",
+      description: "Manual pago TC",
+      notes: null,
+    });
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+
+    const legs = await db.execute<{
+      amount_cents: string;
+      channel: string;
+      category_slug: string | null;
+    }>(sql`
+      SELECT amount_cents::text, channel, category_slug
+      FROM transactions WHERE transfer_group_id = ${result.transferGroupId}::uuid
+      ORDER BY amount_cents ASC
+    `);
+    expect(legs.length).toBe(2);
+    for (const leg of legs) {
+      expect(leg.channel).toBe("transfer");
+      expect(leg.category_slug).toBeNull();
+    }
+    expect(BigInt(legs[0].amount_cents) + BigInt(legs[1].amount_cents)).toBe(BigInt(0));
+  });
+
+  it("creates a 1-to-N group (compra de cartera shape: 1 debit + 2 credits)", async () => {
+    const origin = await savingsId();
+    const [destA, destB] = [await visaId(), await mastercardCopId()];
+    const result = await createManualTransferGroup({
+      origin: { accountId: origin, amount: "100000" },
+      destinations: [
+        { accountId: destA, amount: "40000" },
+        { accountId: destB, amount: "60000" },
+      ],
+      occurredOn: "2026-04-15",
+      description: "Compra de cartera",
+      notes: null,
+    });
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.txIds.length).toBe(3);
+  });
+
+  it("rejects an unbalanced group (|debit| ≠ Σ|credit|)", async () => {
+    const origin = await savingsId();
+    const dest = await visaId();
+    const result = await createManualTransferGroup({
+      origin: { accountId: origin, amount: "50000" },
+      destinations: [{ accountId: dest, amount: "49000" }],
+      occurredOn: "2026-04-15",
+      description: "Bad",
+      notes: null,
+    });
+    expect(result.status).toBe("error");
+  });
+
+  it("rejects a group whose origin matches one of the destinations", async () => {
+    const origin = await savingsId();
+    const result = await createManualTransferGroup({
+      origin: { accountId: origin, amount: "1000" },
+      destinations: [{ accountId: origin, amount: "1000" }],
+      occurredOn: "2026-04-15",
+      description: "Self",
+      notes: null,
+    });
+    expect(result.status).toBe("error");
+  });
+
+  it("rejects a cross-currency group", async () => {
+    const originCop = await savingsId();
+    const destUsd = await usdId();
+    const result = await createManualTransferGroup({
+      origin: { accountId: originCop, amount: "1000" },
+      destinations: [{ accountId: destUsd, amount: "1000" }],
+      occurredOn: "2026-04-15",
+      description: "FX",
+      notes: null,
+    });
+    expect(result.status).toBe("error");
+    if (result.status === "error") expect(result.message).toMatch(/currency/i);
+  });
+
+  it("rejects a future-dated group", async () => {
+    const origin = await savingsId();
+    const dest = await visaId();
+    const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const result = await createManualTransferGroup({
+      origin: { accountId: origin, amount: "1000" },
+      destinations: [{ accountId: dest, amount: "1000" }],
+      occurredOn: future,
+      description: "Future",
+      notes: null,
+    });
+    expect(result.status).toBe("error");
   });
 });

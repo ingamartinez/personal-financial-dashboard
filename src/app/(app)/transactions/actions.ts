@@ -25,6 +25,11 @@ import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { decimalStringToCents } from "@/lib/money";
+import {
+  insertTransferGroup,
+  validateTransferGroupLegs,
+  type TransferLeg,
+} from "@/lib/transactions/transfer-groups";
 import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
 const updateSchema = z.object({
@@ -843,30 +848,63 @@ export type ArchiveResult = { status: "ok" } | { status: "not-found" };
  * The derived balance excludes archived rows (see `derivedBalanceCentsSql`),
  * so archiving moves the account balance immediately. Restore reverses it.
  *
- * Trailing `notDeleted()` in the WHERE makes the update idempotent — a second
- * archive call no-ops instead of refreshing the timestamp.
- *
- * Transfer-pair caveat (pre-requisite of #345A): once transfer pairs land,
- * archiving one side should warn / archive the other. Today there are no
- * paired transfers in the schema, so this is a no-op concern.
+ * #405: when the row belongs to a transfer group (transfer_group_id IS NOT NULL),
+ * the archive cascades to every live sibling leg in the same transaction. This
+ * preserves the group invariant (Σ=0) — archiving half a transfer would leave
+ * the account balances inconsistent.
  */
 export async function archiveTransaction(input: { txId: number }): Promise<ArchiveResult> {
   const session = await getSessionUser();
   const { txId } = txIdSchema.parse(input);
 
-  const updated = await db
-    .update(transactions)
-    .set({ deletedAt: sql`NOW()`, updatedAt: new Date() })
-    .where(
-      and(
-        eq(transactions.userId, session.id),
-        eq(transactions.id, txId),
-        notDeleted(transactions.deletedAt),
-      ),
-    )
-    .returning({ id: transactions.id });
+  const archivedIds = await db.transaction(async (trx) => {
+    const [target] = await trx
+      .select({
+        id: transactions.id,
+        transferGroupId: transactions.transferGroupId,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, txId),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
+      .limit(1);
 
-  if (updated.length === 0) return { status: "not-found" };
+    if (!target) return [];
+
+    if (target.transferGroupId) {
+      const rows = await trx
+        .update(transactions)
+        .set({ deletedAt: sql`NOW()`, updatedAt: new Date() })
+        .where(
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.transferGroupId, target.transferGroupId),
+            notDeleted(transactions.deletedAt),
+          ),
+        )
+        .returning({ id: transactions.id });
+      return rows.map((r) => r.id);
+    }
+
+    const rows = await trx
+      .update(transactions)
+      .set({ deletedAt: sql`NOW()`, updatedAt: new Date() })
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, txId),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
+      .returning({ id: transactions.id });
+    return rows.map((r) => r.id);
+  });
+
+  if (archivedIds.length === 0) return { status: "not-found" };
 
   revalidatePath("/");
   revalidatePath("/transactions");
@@ -879,30 +917,214 @@ export async function archiveTransaction(input: { txId: number }): Promise<Archi
  * Restore a previously archived transaction (#375). Clears `deleted_at` so the
  * row becomes visible again and the derived balance re-includes it.
  *
- * The trailing `isNotNull(deletedAt)` filter makes it idempotent and prevents
- * restoring a row that was never archived (can't happen via UI, but defensive).
+ * #405: transfer group siblings restore together for the same Σ=0 reason.
  */
 export async function restoreTransaction(input: { txId: number }): Promise<ArchiveResult> {
   const session = await getSessionUser();
   const { txId } = txIdSchema.parse(input);
 
-  const updated = await db
-    .update(transactions)
-    .set({ deletedAt: null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(transactions.userId, session.id),
-        eq(transactions.id, txId),
-        isNotNull(transactions.deletedAt),
-      ),
-    )
-    .returning({ id: transactions.id });
+  const restoredIds = await db.transaction(async (trx) => {
+    const [target] = await trx
+      .select({
+        id: transactions.id,
+        transferGroupId: transactions.transferGroupId,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, txId),
+          isNotNull(transactions.deletedAt),
+        ),
+      )
+      .limit(1);
 
-  if (updated.length === 0) return { status: "not-found" };
+    if (!target) return [];
+
+    if (target.transferGroupId) {
+      const rows = await trx
+        .update(transactions)
+        .set({ deletedAt: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.transferGroupId, target.transferGroupId),
+            isNotNull(transactions.deletedAt),
+          ),
+        )
+        .returning({ id: transactions.id });
+      return rows.map((r) => r.id);
+    }
+
+    const rows = await trx
+      .update(transactions)
+      .set({ deletedAt: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, txId),
+          isNotNull(transactions.deletedAt),
+        ),
+      )
+      .returning({ id: transactions.id });
+    return rows.map((r) => r.id);
+  });
+
+  if (restoredIds.length === 0) return { status: "not-found" };
 
   revalidatePath("/");
   revalidatePath("/transactions");
   revalidatePath("/accounts");
 
   return { status: "ok" };
+}
+
+// #405: manual transfer-group creation (1-to-N). Used by the "Nueva
+// transferencia" dialog in /transactions. Accepts 1 origin (debit) + N
+// destinations (credits); validates balance invariants; inserts atomically.
+//
+// Currency is taken from each leg's account — the UI must clamp credit
+// currencies to match the debit, since cross-currency transfer groups would
+// require an FX pairing we don't model today.
+const manualTransferLegSchema = z.object({
+  accountId: z.coerce.number().int().positive(),
+  amount: z
+    .string()
+    .trim()
+    .transform((value, ctx) => {
+      try {
+        const cents = decimalStringToCents(value);
+        if (cents <= BigInt(0)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Amount must be greater than zero",
+          });
+          return z.NEVER;
+        }
+        return cents;
+      } catch {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Amount must be a positive decimal" });
+        return z.NEVER;
+      }
+    }),
+});
+
+const manualTransferGroupSchema = z
+  .object({
+    origin: manualTransferLegSchema,
+    destinations: z.array(manualTransferLegSchema).min(1).max(10),
+    occurredOn: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")
+      .refine((d) => d <= new Date().toISOString().slice(0, 10), {
+        message: "Date cannot be in the future",
+      }),
+    description: z.string().trim().min(1).max(200),
+    notes: z.string().max(500).nullable(),
+  })
+  .refine(
+    (v) => {
+      const creditsSum = v.destinations.reduce((acc, d) => acc + d.amount, BigInt(0));
+      return creditsSum === v.origin.amount;
+    },
+    { message: "Total of destination amounts must equal origin amount" },
+  )
+  .refine(
+    (v) => {
+      const originId = v.origin.accountId;
+      return v.destinations.every((d) => d.accountId !== originId);
+    },
+    { message: "Origin and destination accounts must differ" },
+  );
+
+export type ManualTransferGroupInput = z.input<typeof manualTransferGroupSchema>;
+export type ManualTransferGroupResult =
+  | { status: "ok"; transferGroupId: string; txIds: number[] }
+  | { status: "error"; message: string };
+
+export async function createManualTransferGroup(
+  input: ManualTransferGroupInput,
+): Promise<ManualTransferGroupResult> {
+  const session = await getSessionUser();
+  const result = manualTransferGroupSchema.safeParse(input);
+  if (!result.success) {
+    return { status: "error", message: result.error.issues[0]?.message ?? "Invalid input" };
+  }
+  const parsed = result.data;
+
+  const involvedAccountIds = Array.from(
+    new Set([parsed.origin.accountId, ...parsed.destinations.map((d) => d.accountId)]),
+  );
+
+  const accountRows = await db
+    .select({ id: accounts.id, currency: accounts.currency })
+    .from(accounts)
+    .where(
+      and(
+        eq(accounts.userId, session.id),
+        inArray(accounts.id, involvedAccountIds),
+        notDeleted(accounts.deletedAt),
+      ),
+    );
+
+  if (accountRows.length !== involvedAccountIds.length) {
+    return { status: "error", message: "One or more accounts not found" };
+  }
+  const accountById = new Map(accountRows.map((a) => [a.id, a]));
+  const originAcc = accountById.get(parsed.origin.accountId);
+  const originCurrency = originAcc?.currency;
+  if (!originCurrency) return { status: "error", message: "Origin account not found" };
+  if (parsed.destinations.some((d) => accountById.get(d.accountId)?.currency !== originCurrency)) {
+    return {
+      status: "error",
+      message: "All legs must share the same currency",
+    };
+  }
+
+  const occurredAt = new Date(`${parsed.occurredOn}T12:00:00Z`);
+  const legs: TransferLeg[] = [
+    {
+      accountId: parsed.origin.accountId,
+      amountCents: -parsed.origin.amount,
+      currency: originCurrency,
+      descriptionRaw: parsed.description,
+      source: "manual",
+      occurredAt,
+      rawData: { role: "debit", manualTransfer: true },
+      notes: parsed.notes,
+    },
+    ...parsed.destinations.map<TransferLeg>((d) => ({
+      accountId: d.accountId,
+      amountCents: d.amount,
+      currency: originCurrency,
+      descriptionRaw: parsed.description,
+      source: "manual",
+      occurredAt,
+      rawData: { role: "credit", manualTransfer: true },
+      notes: parsed.notes,
+    })),
+  ];
+
+  const validation = validateTransferGroupLegs(legs);
+  if (!validation.ok) {
+    return { status: "error", message: `invalid transfer group: ${validation.reason}` };
+  }
+
+  const insertResult = await insertTransferGroup({ userId: session.id, legs });
+  if (insertResult.status === "error") {
+    return { status: "error", message: insertResult.reason };
+  }
+  if (insertResult.status === "duplicated") {
+    return { status: "error", message: "One or more legs conflict with existing transactions" };
+  }
+
+  for (const txId of insertResult.txIds) {
+    emit({ type: "transaction:created", id: txId, source: "manual", timestamp: Date.now() });
+  }
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+  revalidatePath("/accounts");
+
+  return { status: "ok", transferGroupId: insertResult.transferGroupId, txIds: insertResult.txIds };
 }

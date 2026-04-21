@@ -19,6 +19,7 @@ import { db } from "../src/lib/db";
 import { seedReferenceData } from "../src/lib/db/seed-reference-data";
 import { createLogger } from "../src/lib/logger";
 import { backfillUsersReferenceData } from "./backfill-users-reference";
+import { migratePagoTcToTransfer } from "./migrate-pago-tc-to-transfer";
 
 const log = createLogger({ module: "migrate-prod" });
 
@@ -61,6 +62,17 @@ for (const r of backfill) {
 log.info(
   { count: backfill.length, event: "migrate_prod_backfill_done" },
   "backfill complete — processed active users",
+);
+
+// #405: data-only migration that retrofits historical `pago-tc` transactions
+// into transfer groups. Idempotent: only touches rows where
+// `category_slug = 'pago-tc' AND transfer_group_id IS NULL`, so every deploy
+// after the first is a no-op for already-migrated rows.
+log.info({ event: "migrate_prod_pago_tc_start" }, "backfilling pago-tc → transfer groups");
+const pagoTcReport = await migratePagoTcToTransfer();
+log.info(
+  { ...pagoTcReport, event: "migrate_prod_pago_tc_done" },
+  "pago-tc transfer-group backfill complete",
 );
 
 await db.$client.end();
