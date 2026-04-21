@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ReceiptTextIcon, UserIcon, BuildingIcon, WrenchIcon } from "lucide-react";
+import { ArchiveIcon, ReceiptTextIcon, UserIcon, BuildingIcon, WrenchIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Money } from "@/components/display/money";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -22,6 +22,7 @@ import { CategoryCell, type CategoryOption } from "./category-cell";
 import { ClassificationReasonDialog } from "./classification-reason-dialog";
 import { ConfidenceBadge, confidenceBand } from "./confidence-badge";
 import { CounterpartyDialog } from "./counterparty-dialog";
+import { TransactionRowActions } from "./transaction-row-actions";
 
 const ROW_CLASSES =
   "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted";
@@ -59,6 +60,19 @@ function AdjustmentBadge() {
     >
       <WrenchIcon className="size-2.5" />
       Ajuste
+    </Badge>
+  );
+}
+
+function ArchivedBadge() {
+  return (
+    <Badge
+      variant="outline"
+      className="shrink-0 gap-1 border-amber-300 text-[10px] font-medium tracking-wide text-amber-700 uppercase dark:border-amber-700 dark:text-amber-300"
+      title="Archived — excluded from balance and reports"
+    >
+      <ArchiveIcon className="size-2.5" />
+      Archived
     </Badge>
   );
 }
@@ -148,6 +162,9 @@ export function TransactionTable({
               <TableHead className="px-4">Description</TableHead>
               <TableHead className="w-[256px] px-4">Category</TableHead>
               <TableHead className="w-[156px] px-4 text-right">Amount</TableHead>
+              <TableHead className="w-[52px] px-2">
+                <span className="sr-only">Actions</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -157,6 +174,7 @@ export function TransactionTable({
                 const isNew = newIds.has(tx.id);
                 const isHighlighted = tx.id === highlightId;
                 const isUnclassified = tx.classificationMethod === "unclassified";
+                const isArchived = tx.deletedAt !== null;
                 const isLowConfidence =
                   confidenceBand(tx.classificationMethod, tx.classificationConfidence) === "low";
                 return (
@@ -167,7 +185,8 @@ export function TransactionTable({
                     className={cn(
                       ROW_CLASSES,
                       (isNew || isHighlighted) && "tx-row-new",
-                      isLowConfidence && "bg-rose-50/40 dark:bg-rose-950/15",
+                      isLowConfidence && !isArchived && "bg-rose-50/40 dark:bg-rose-950/15",
+                      isArchived && "text-muted-foreground bg-muted/30 opacity-70",
                     )}
                     initial={enterInitial}
                     animate={enterAnimate}
@@ -181,7 +200,10 @@ export function TransactionTable({
                     </TableCell>
                     <TableCell className="px-4">
                       <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate font-medium">{primaryDescription(tx)}</span>
+                        <span className={cn("truncate font-medium", isArchived && "line-through")}>
+                          {primaryDescription(tx)}
+                        </span>
+                        {isArchived ? <ArchivedBadge /> : null}
                         {tx.isAdjustment ? <AdjustmentBadge /> : null}
                         {tx.counterparty ? (
                           <CounterpartyTypeBadge type={tx.counterparty.type} />
@@ -233,11 +255,15 @@ export function TransactionTable({
                     <TableCell
                       className={cn(
                         "money px-4 text-right font-medium",
-                        isExpense ? "text-destructive" : "text-emerald-600",
+                        isExpense && !isArchived && "text-destructive",
+                        !isExpense && !isArchived && "text-emerald-600",
                       )}
                       suppressHydrationWarning
                     >
                       <Money cents={tx.amountCents} currency={tx.currency} />
+                    </TableCell>
+                    <TableCell className="px-2">
+                      <TransactionRowActions txId={tx.id} isArchived={isArchived} />
                     </TableCell>
                   </motion.tr>
                 );
@@ -253,6 +279,7 @@ export function TransactionTable({
             const isExpense = tx.amountCents < BigInt(0);
             const isNew = newIds.has(tx.id);
             const isHighlighted = tx.id === highlightId;
+            const isArchived = tx.deletedAt !== null;
             return (
               <motion.li
                 key={tx.id}
@@ -260,6 +287,7 @@ export function TransactionTable({
                 className={cn(
                   "bg-card flex flex-col gap-2 rounded-md border p-3",
                   (isNew || isHighlighted) && "tx-row-new",
+                  isArchived && "text-muted-foreground bg-muted/30 opacity-70",
                 )}
                 initial={enterInitial}
                 animate={enterAnimate}
@@ -268,7 +296,10 @@ export function TransactionTable({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="truncate font-medium">{primaryDescription(tx)}</span>
+                      <span className={cn("truncate font-medium", isArchived && "line-through")}>
+                        {primaryDescription(tx)}
+                      </span>
+                      {isArchived ? <ArchivedBadge /> : null}
                       {tx.isAdjustment ? <AdjustmentBadge /> : null}
                       {tx.counterparty ? (
                         <CounterpartyTypeBadge type={tx.counterparty.type} />
@@ -287,14 +318,19 @@ export function TransactionTable({
                       </p>
                     ) : null}
                   </div>
-                  <span
-                    className={`money shrink-0 text-right text-sm font-semibold ${
-                      isExpense ? "text-destructive" : "text-emerald-600"
-                    }`}
-                    suppressHydrationWarning
-                  >
-                    <Money cents={tx.amountCents} currency={tx.currency} />
-                  </span>
+                  <div className="flex shrink-0 items-start gap-1">
+                    <span
+                      className={cn(
+                        "money text-right text-sm font-semibold",
+                        isExpense && !isArchived && "text-destructive",
+                        !isExpense && !isArchived && "text-emerald-600",
+                      )}
+                      suppressHydrationWarning
+                    >
+                      <Money cents={tx.amountCents} currency={tx.currency} />
+                    </span>
+                    <TransactionRowActions txId={tx.id} isArchived={isArchived} />
+                  </div>
                 </div>
 
                 <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">

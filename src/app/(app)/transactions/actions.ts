@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
@@ -46,7 +46,13 @@ export async function updateTransactionCategory(input: {
         merchant: transactions.merchant,
       })
       .from(transactions)
-      .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)))
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, txId),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
       .limit(1);
 
     if (!current) return;
@@ -141,6 +147,7 @@ export async function confirmClassification(input: {
           eq(transactions.userId, session.id),
           eq(transactions.id, parsed.data.txId),
           inArray(transactions.classificationMethod, ["rule", "ai"]),
+          notDeleted(transactions.deletedAt),
         ),
       )
       .limit(1);
@@ -349,7 +356,13 @@ export async function classifySingleWithAi(
       categorySlug: transactions.categorySlug,
     })
     .from(transactions)
-    .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)))
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.id, txId),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
     .limit(1);
 
   if (!tx) throw new Error("Transaction not found");
@@ -816,4 +829,80 @@ export async function splitCounterparty(
   revalidatePath("/transactions");
 
   return result;
+}
+
+const txIdSchema = z.object({ txId: z.coerce.number().int().positive() });
+
+export type ArchiveResult = { status: "ok" } | { status: "not-found" };
+
+/**
+ * Soft-delete a transaction (#375). Sets `deleted_at = NOW()` — the row stays
+ * in the table, unique indexes, and dedup paths so re-ingestion can't resurrect
+ * it, but `notDeleted()`-filtered queries (the default everywhere) hide it.
+ *
+ * The derived balance excludes archived rows (see `derivedBalanceCentsSql`),
+ * so archiving moves the account balance immediately. Restore reverses it.
+ *
+ * Trailing `notDeleted()` in the WHERE makes the update idempotent — a second
+ * archive call no-ops instead of refreshing the timestamp.
+ *
+ * Transfer-pair caveat (pre-requisite of #345A): once transfer pairs land,
+ * archiving one side should warn / archive the other. Today there are no
+ * paired transfers in the schema, so this is a no-op concern.
+ */
+export async function archiveTransaction(input: { txId: number }): Promise<ArchiveResult> {
+  const session = await getSessionUser();
+  const { txId } = txIdSchema.parse(input);
+
+  const updated = await db
+    .update(transactions)
+    .set({ deletedAt: sql`NOW()`, updatedAt: new Date() })
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.id, txId),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
+    .returning({ id: transactions.id });
+
+  if (updated.length === 0) return { status: "not-found" };
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+  revalidatePath("/accounts");
+
+  return { status: "ok" };
+}
+
+/**
+ * Restore a previously archived transaction (#375). Clears `deleted_at` so the
+ * row becomes visible again and the derived balance re-includes it.
+ *
+ * The trailing `isNotNull(deletedAt)` filter makes it idempotent and prevents
+ * restoring a row that was never archived (can't happen via UI, but defensive).
+ */
+export async function restoreTransaction(input: { txId: number }): Promise<ArchiveResult> {
+  const session = await getSessionUser();
+  const { txId } = txIdSchema.parse(input);
+
+  const updated = await db
+    .update(transactions)
+    .set({ deletedAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.id, txId),
+        isNotNull(transactions.deletedAt),
+      ),
+    )
+    .returning({ id: transactions.id });
+
+  if (updated.length === 0) return { status: "not-found" };
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+  revalidatePath("/accounts");
+
+  return { status: "ok" };
 }

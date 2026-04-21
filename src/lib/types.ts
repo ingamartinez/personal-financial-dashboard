@@ -54,4 +54,5 @@ export type TxRow = {
   accountId: number;
   accountName: string;
   counterparty: CounterpartyValue | null;
+  deletedAt: Date | null;
 };

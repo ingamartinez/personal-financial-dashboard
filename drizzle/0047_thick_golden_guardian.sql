@@ -1,0 +1,3 @@
+ALTER TABLE "transactions" ADD COLUMN "deleted_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "transactions_account_occurred_live_idx" ON "transactions" USING btree ("account_id","occurred_at") WHERE "transactions"."deleted_at" IS NULL;--> statement-breakpoint
+CREATE INDEX "transactions_user_occurred_live_idx" ON "transactions" USING btree ("user_id","occurred_at") WHERE "transactions"."deleted_at" IS NULL;

@@ -17,6 +17,10 @@ import type { AccountType, Currency } from "@/lib/types";
  * subquery scope resolves to `transactions.id` — collapsing the
  * correlation and always returning 0.
  *
+ * Archived transactions (`deleted_at IS NOT NULL`, see #375) are
+ * excluded so that archiving a row removes it from the derived
+ * balance — restoring reverses it.
+ *
  * Returns `string` (postgres bigint wire format); callers must wrap
  * with `BigInt(...)`.
  */
@@ -24,6 +28,7 @@ export const derivedBalanceCentsSql = sql<string>`(
   SELECT COALESCE(SUM("transactions"."amount_cents"), 0)
   FROM "transactions"
   WHERE "transactions"."account_id" = "accounts"."id"
+    AND "transactions"."deleted_at" IS NULL
 )`;
 
 export type PhysicalCardSummary = {

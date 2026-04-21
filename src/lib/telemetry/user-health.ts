@@ -47,7 +47,7 @@ export async function computeUserHealthSnapshot(
       last: sql<string | null>`max(${transactions.createdAt})`,
     })
     .from(transactions)
-    .where(eq(transactions.userId, userId));
+    .where(and(eq(transactions.userId, userId), notDeleted(transactions.deletedAt)));
 
   const sourceRows = await db
     .select({
@@ -55,7 +55,13 @@ export async function computeUserHealthSnapshot(
       count: sql<number>`count(*)::int`,
     })
     .from(transactions)
-    .where(and(eq(transactions.userId, userId), gte(transactions.createdAt, thirtyDaysAgo)))
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        gte(transactions.createdAt, thirtyDaysAgo),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
     .groupBy(transactions.source);
 
   const captureSources30d: CaptureSources30d = {};
@@ -100,6 +106,7 @@ export async function computeUserHealthSnapshot(
         eq(transactions.channel, "bank"),
         eq(transactions.isAdjustment, false),
         eq(transactions.reconciliationStatus, "unreconciled"),
+        notDeleted(transactions.deletedAt),
       ),
     );
 
@@ -114,6 +121,7 @@ export async function computeUserHealthSnapshot(
         eq(transactions.userId, userId),
         eq(transactions.isAdjustment, true),
         gte(transactions.occurredAt, thirtyDaysAgo),
+        notDeleted(transactions.deletedAt),
       ),
     );
 

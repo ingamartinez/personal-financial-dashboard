@@ -52,7 +52,13 @@ export default async function RulesPage() {
         n: sql<number>`count(*)::int`,
       })
       .from(transactions)
-      .where(and(eq(transactions.userId, session.id), isNotNull(transactions.retroactiveRuleId)))
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          isNotNull(transactions.retroactiveRuleId),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
       .groupBy(transactions.retroactiveRuleId),
   ]);
 

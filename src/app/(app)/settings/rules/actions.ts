@@ -97,6 +97,7 @@ async function previewRuleApply(
     or(ilike(transactions.descriptionClean, pattern), ilike(transactions.merchant, pattern)),
     isNotNull(transactions.categorySlug),
     sql`${transactions.categorySlug} <> ${categorySlug}`,
+    notDeleted(transactions.deletedAt),
   )!;
 
   const [countRow] = await db

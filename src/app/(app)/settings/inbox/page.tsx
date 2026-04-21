@@ -72,6 +72,7 @@ export default async function SettingsInboxPage() {
           inArray(transactions.classificationMethod, ["rule", "ai"]),
           gte(transactions.classificationConfidence, 0),
           lt(transactions.classificationConfidence, CONFIDENCE_LOW_THRESHOLD),
+          notDeleted(transactions.deletedAt),
         ),
       )
       .orderBy(desc(transactions.occurredAt), desc(transactions.id))

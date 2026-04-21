@@ -96,6 +96,7 @@ export async function getMonthlyFlow(
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         notAdjustment(transactions.isAdjustment),
+        notDeleted(transactions.deletedAt),
       ),
     )
     .groupBy(transactions.currency);
@@ -157,6 +158,7 @@ export async function getCategoryBreakdown(
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
         notAdjustment(transactions.isAdjustment),
+        notDeleted(transactions.deletedAt),
       ),
     )
     .groupBy(rootSlug, transactions.currency, rootCategories.name, rootCategories.color);
@@ -234,6 +236,7 @@ export async function getTopExpenses(
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
         notAdjustment(transactions.isAdjustment),
+        notDeleted(transactions.deletedAt),
       ),
     )
     .orderBy(

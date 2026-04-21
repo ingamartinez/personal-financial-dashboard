@@ -122,6 +122,7 @@ export async function getUpcomingForMonth(
         eq(transactions.userId, userId),
         inArray(transactions.recurringId, recurringIds),
         eq(transactions.recurringYearMonth, ym),
+        notDeleted(transactions.deletedAt),
       ),
     );
   const explicitMap = new Map<number, number>();
@@ -152,6 +153,7 @@ export async function getUpcomingForMonth(
           new Date(rangeEnd.getTime() + matchWindowAfterDays * 86400000),
         ),
         isNull(transactions.recurringId),
+        notDeleted(transactions.deletedAt),
       ),
     );
 

@@ -132,6 +132,7 @@ async function loadExistingTxns(
         eq(transactions.accountId, accountId),
         gte(transactions.occurredAt, periodStart),
         lte(transactions.occurredAt, periodEnd),
+        notDeleted(transactions.deletedAt),
       ),
     );
   return rows.map((r) => ({

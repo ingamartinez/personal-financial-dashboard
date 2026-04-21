@@ -58,6 +58,7 @@ export default async function ReconcilePage({
         eq(transactions.userId, session.id),
         eq(transactions.accountId, accountId),
         eq(transactions.reconciliationStatus, "flagged"),
+        notDeleted(transactions.deletedAt),
       ),
     )
     .orderBy(desc(transactions.occurredAt))
@@ -88,6 +89,7 @@ export default async function ReconcilePage({
               eq(transactions.userId, session.id),
               eq(transactions.accountId, accountId),
               eq(transactions.reconciliationStatus, "imported_from_statement"),
+              notDeleted(transactions.deletedAt),
             ),
           )
           .orderBy(desc(transactions.occurredAt))

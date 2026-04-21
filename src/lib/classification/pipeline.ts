@@ -37,6 +37,7 @@ export async function classifyUnclassifiedBatch(
         eq(transactions.userId, userId),
         eq(transactions.classificationMethod, "unclassified"),
         isNull(transactions.categorySlug),
+        notDeleted(transactions.deletedAt),
       ),
     )
     .orderBy(asc(transactions.id))

@@ -1,4 +1,5 @@
 import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { notDeleted } from "@/lib/db/helpers";
 import { db } from "@/lib/db";
 import { ingestionLogs, parserEvents, transactions } from "@/lib/db/schema";
 
@@ -162,7 +163,7 @@ export async function sloClassificationRate(
       total: sql<number>`count(*)::int`,
     })
     .from(transactions)
-    .where(gte(transactions.createdAt, start));
+    .where(and(gte(transactions.createdAt, start), notDeleted(transactions.deletedAt)));
 
   const raw = row.total === 0 ? null : row.auto / row.total;
 
@@ -173,7 +174,7 @@ export async function sloClassificationRate(
       total: sql<number>`count(*)::int`,
     })
     .from(transactions)
-    .where(gte(transactions.createdAt, start))
+    .where(and(gte(transactions.createdAt, start), notDeleted(transactions.deletedAt)))
     .groupBy(sql`1`)
     .orderBy(sql`1`);
 

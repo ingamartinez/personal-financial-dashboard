@@ -114,6 +114,7 @@ export async function buildInsightsSummary(
             gte(transactions.occurredAt, cur.start),
             lte(transactions.occurredAt, cur.end),
             notAdjustment(transactions.isAdjustment),
+            notDeleted(transactions.deletedAt),
           ),
         )
         .groupBy(transactions.currency),
@@ -130,6 +131,7 @@ export async function buildInsightsSummary(
             gte(transactions.occurredAt, prev.start),
             lte(transactions.occurredAt, prev.end),
             notAdjustment(transactions.isAdjustment),
+            notDeleted(transactions.deletedAt),
           ),
         )
         .groupBy(transactions.currency),
@@ -157,6 +159,7 @@ export async function buildInsightsSummary(
               gte(transactions.occurredAt, cur.start),
               lte(transactions.occurredAt, cur.end),
               notAdjustment(transactions.isAdjustment),
+              notDeleted(transactions.deletedAt),
             ),
           )
           .groupBy(rootSlug, root.name, transactions.currency);
@@ -181,6 +184,7 @@ export async function buildInsightsSummary(
               gte(transactions.occurredAt, prev.start),
               lte(transactions.occurredAt, prev.end),
               notAdjustment(transactions.isAdjustment),
+              notDeleted(transactions.deletedAt),
             ),
           )
           .groupBy(rootSlug, transactions.currency);
@@ -201,6 +205,7 @@ export async function buildInsightsSummary(
             sql`${transactions.merchant} IS NOT NULL`,
             sql`${transactions.amountCents} < 0`,
             notAdjustment(transactions.isAdjustment),
+            notDeleted(transactions.deletedAt),
           ),
         )
         .groupBy(transactions.merchant, transactions.currency)
