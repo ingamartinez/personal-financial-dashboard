@@ -22,12 +22,17 @@ describe("proxy matcher", () => {
     }
   });
 
-  it("exempts bearer-token API routes (regression for #200)", () => {
+  it("exempts bearer-token API routes (regression for #200, #399)", () => {
     for (const path of [
       "/api/ingest/sms",
       "/api/ingest/debug",
       "/api/ingest/ocr",
       "/api/fx/refresh",
+      "/api/widget/v1/tc-focus",
+      "/api/widget/v1/mis-tcs",
+      "/api/widget/v1/hoy",
+      "/api/widget/v1/mes-actual",
+      "/api/widget/v1/recent-tx",
     ]) {
       expect(matches(path), `${path} must bypass the session proxy`).toBe(false);
     }
