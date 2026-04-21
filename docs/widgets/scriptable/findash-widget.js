@@ -98,16 +98,15 @@ function parseParameter(raw) {
 // ----------------------------------------------------------------------------
 
 async function fetchWidget({ baseUrl, token, widgetId, size, extra }) {
-  const params = new URLSearchParams();
-  params.set("size", size);
-  if (extra) {
+  // Scriptable's JavaScriptCore runtime does not expose URLSearchParams, so
+  // we build the query string by hand with encodeURIComponent.
+  const qs = [`size=${encodeURIComponent(size)}`];
+  if (extra && widgetId === "tc-focus") {
     // tc-focus uses `target=<id>`. Today it is the only widget that takes an
-    // extra. If new widgets add extras, this mapping table grows.
-    if (widgetId === "tc-focus") {
-      params.set("target", extra);
-    }
+    // extra. If new widgets add extras, extend the mapping here.
+    qs.push(`target=${encodeURIComponent(extra)}`);
   }
-  const url = `${baseUrl.replace(/\/$/, "")}/api/widget/v1/${widgetId}?${params.toString()}`;
+  const url = `${baseUrl.replace(/\/$/, "")}/api/widget/v1/${widgetId}?${qs.join("&")}`;
   const req = new Request(url);
   req.method = "GET";
   req.headers = {
@@ -546,6 +545,8 @@ async function main() {
     saveCache(parameterRaw, payload);
     renderPayload(widget, parsed, payload, { stale: false });
   } catch (err) {
+    console.error("findash-widget error:", err);
+    console.error("stack:", err?.stack);
     if (err instanceof FindashError && err.kind === "auth") {
       renderError(widget, err.message);
     } else if (err instanceof FindashError && err.kind === "unknown-widget") {
@@ -557,7 +558,10 @@ async function main() {
       } else if (err instanceof FindashError && err.kind === "network") {
         renderError(widget, "Sin conexión.");
       } else {
-        renderError(widget, err instanceof FindashError ? err.message : "Error al cargar widget.");
+        const name = err?.name || "Error";
+        const msg = err?.message || String(err);
+        const stackLine = (err?.stack || "").split("\n")[0] || "";
+        renderError(widget, `${name}: ${msg}\n${stackLine}`);
       }
     }
   }
