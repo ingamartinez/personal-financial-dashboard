@@ -12,9 +12,11 @@
 
 import { registerWidgetHandler } from "@/app/api/widget/v1/[id]/registry";
 import { hoyHandler } from "./hoy";
+import { mesActualHandler } from "./mes-actual";
 import { misTcsHandler } from "./mis-tcs";
 import { tcFocusHandler } from "./tc-focus";
 
 registerWidgetHandler("hoy", hoyHandler);
+registerWidgetHandler("mes-actual", mesActualHandler);
 registerWidgetHandler("mis-tcs", misTcsHandler);
 registerWidgetHandler("tc-focus", tcFocusHandler);
