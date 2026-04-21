@@ -67,7 +67,9 @@ describe("accounts actions: single-currency", () => {
     expect(row).toBeDefined();
     expect(row.type).toBe("savings");
     expect(row.currency).toBe("COP");
-    expect(row.balanceCents).toBe(BigInt(120_000_000));
+    // #370: balance_cents column is gone; the declared opening balance is
+    // persisted as a 'Saldo inicial' tx on the ledger (#368).
+    expect(await derivedBalance(row.id)).toBe(BigInt(120_000_000));
     expect(row.physicalCardId).toBeNull();
     expect(row.deletedAt).toBeNull();
 
@@ -98,7 +100,7 @@ describe("accounts actions: single-currency", () => {
     expect(archived).toHaveLength(1);
   });
 
-  it("updates an existing account via id", async () => {
+  it("updates metadata on an existing account via id (balance is ledger-only, unchanged by upsert edit)", async () => {
     await upsertAccount({
       name: `${MARKER}-edit`,
       institution: "Bancolombia",
@@ -115,11 +117,19 @@ describe("accounts actions: single-currency", () => {
       name: `${MARKER}-edit`,
       institution: "Bancolombia",
       type: "savings",
-      primary: { currency: "COP", balance: 750_000 },
+      primary: {
+        currency: "COP",
+        balance: 750_000, // ignored on edit — users adjust balance via the adjust flow
+        metadata: { last4s: ["1234"] },
+      },
     });
 
     const [after] = await db.select().from(accounts).where(eq(accounts.id, before.id));
-    expect(after.balanceCents).toBe(BigInt(75_000_000));
+    // #370: upsertAccount's edit path no longer writes balance — it only
+    // touches currency + metadata. The declared opening balance persists
+    // as the single 'Saldo inicial' tx created on original upsert.
+    expect(after.metadata.last4s).toEqual(["1234"]);
+    expect(await derivedBalance(before.id)).toBe(BigInt(50_000_000));
   });
 
   it("rejects secondary currency on non-credit_card types", async () => {
@@ -276,7 +286,7 @@ describe("accounts actions: multi-currency credit card", () => {
     expect(pc.last4).toBe("7291");
     // Sub-accounts are untouched.
     const [refreshed] = await db.select().from(accounts).where(eq(accounts.id, rows[0].id));
-    expect(refreshed.balanceCents).toBe(BigInt(0));
+    expect(await derivedBalance(refreshed.id)).toBe(BigInt(0));
     expect(refreshed.metadata.creditLimitCents).toBeUndefined();
   });
 
@@ -453,7 +463,6 @@ describe("accounts actions: auth scoping", () => {
       institution: "Other",
       type: "savings",
       currency: "COP",
-      balanceCents: BigInt(0),
     });
     const [victim] = await db
       .select()
@@ -605,7 +614,6 @@ describe("adjustAccountBalance", () => {
         institution: "Bancolombia",
         type: "savings",
         currency: "COP",
-        balanceCents: BigInt(100_000_00),
       })
       .returning({ id: accounts.id });
 
@@ -646,7 +654,6 @@ describe("adjustAccountBalance", () => {
   describe("credit_card adjustBalance via availableCredit", () => {
     async function seedCreditCard(opts: {
       creditLimit?: number;
-      balanceCents?: number;
       availableCredit?: number;
     }): Promise<number> {
       const metadata: AccountMetadata = {};
@@ -660,7 +667,6 @@ describe("adjustAccountBalance", () => {
           institution: "Bancolombia",
           type: "credit_card",
           currency: "COP",
-          balanceCents: BigInt(opts.balanceCents ?? 0),
           metadata,
         })
         .returning({ id: accounts.id });
@@ -668,7 +674,7 @@ describe("adjustAccountBalance", () => {
     }
 
     it("derives debt from cupo and stores balance as negative", async () => {
-      const accountId = await seedCreditCard({ creditLimit: 5_000_000, balanceCents: 0 });
+      const accountId = await seedCreditCard({ creditLimit: 5_000_000 });
 
       const result = await adjustAccountBalance({
         accountId,
@@ -690,7 +696,7 @@ describe("adjustAccountBalance", () => {
     });
 
     it("refuses when the account has no creditLimitCents in metadata", async () => {
-      const accountId = await seedCreditCard({ balanceCents: 0 });
+      const accountId = await seedCreditCard({});
 
       const result = await adjustAccountBalance({
         accountId,
@@ -704,7 +710,7 @@ describe("adjustAccountBalance", () => {
     });
 
     it("refuses availableCredit larger than the limit (sanity check)", async () => {
-      const accountId = await seedCreditCard({ creditLimit: 5_000_000, balanceCents: 0 });
+      const accountId = await seedCreditCard({ creditLimit: 5_000_000 });
 
       const result = await adjustAccountBalance({
         accountId,

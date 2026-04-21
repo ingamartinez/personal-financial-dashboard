@@ -323,6 +323,13 @@
       "when": 1776729854787,
       "tag": "0045_reconcile_balance_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1776734160904,
+      "tag": "0046_skinny_electro",
+      "breakpoints": true
     }
   ]
 }

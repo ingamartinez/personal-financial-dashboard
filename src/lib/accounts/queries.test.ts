@@ -105,7 +105,6 @@ describe("getAvailableCreditCOP", () => {
           institution: "Bancolombia",
           type: "credit_card",
           currency: "COP",
-          balanceCents: BigInt(0),
           physicalCardId: id,
         },
         {
@@ -114,7 +113,6 @@ describe("getAvailableCreditCOP", () => {
           institution: "Bancolombia",
           type: "credit_card",
           currency: "USD",
-          balanceCents: BigInt(0),
           physicalCardId: id,
         },
       ])
@@ -193,12 +191,13 @@ describe("getAvailableCreditCOP", () => {
   });
 });
 
-describe("listAccountsDetailed: derived balance (#368)", () => {
+describe("listAccountsDetailed: derived balance (#368, #370)", () => {
   afterEach(cleanup);
 
-  it("derives balance from SUM(transactions), not from the stored column", async () => {
-    // Insert an account with a non-zero stored `balance_cents` that is
-    // deliberately DIFFERENT from the ledger — mirrors pre-#368 prod drift.
+  it("derives balance from SUM(transactions)", async () => {
+    // Post-#370 the stored `balance_cents` column is gone — balance is
+    // computed exclusively from the ledger. This test seeds two txs and
+    // asserts the reader returns SUM(amount_cents).
     const [acc] = await db
       .insert(accounts)
       .values({
@@ -207,12 +206,10 @@ describe("listAccountsDetailed: derived balance (#368)", () => {
         institution: "Bancolombia",
         type: "savings",
         currency: "COP",
-        balanceCents: BigInt(999_999_99), // stale/drifted stored value
       })
       .returning({ id: accounts.id });
 
-    // Ledger: two expense txs totalling -3_000. The stored column and the
-    // ledger diverge on purpose to prove readers ignore the column.
+    // Ledger: two expense txs totalling -3_000.
     await db
       .insert(categories)
       .values({
@@ -252,8 +249,7 @@ describe("listAccountsDetailed: derived balance (#368)", () => {
     const rows = await listAccountsDetailed(USER_A);
     const found = rows.find((r) => r.name === `${MARKER}-drift`);
     expect(found).toBeDefined();
-    // The reader derives from the ledger, not the stored column — value must
-    // match SUM(txs) = -3_000, NOT the drifted stored 999_999_99.
+    // Balance is derived from the ledger: SUM(txs) = -3_000.
     expect(found!.balanceCents).toBe(BigInt(-3000));
   });
 });
@@ -279,7 +275,6 @@ describe("listAccountsDetailed: physical card join", () => {
       institution: "Bancolombia",
       type: "credit_card",
       currency: "COP",
-      balanceCents: BigInt(0),
       physicalCardId: pcId,
     });
 
@@ -302,7 +297,6 @@ describe("listAccountsDetailed: physical card join", () => {
       institution: "Bancolombia",
       type: "savings",
       currency: "COP",
-      balanceCents: BigInt(1_000_000_00),
     });
     const rows = await listAccountsDetailed(USER_A);
     const single = rows.find((r) => r.name === `${MARKER}-single`);
@@ -328,7 +322,6 @@ describe("listAccountsDetailed: physical card join", () => {
       institution: "Bancolombia",
       type: "credit_card",
       currency: "COP",
-      balanceCents: BigInt(0),
       physicalCardId: pcId,
     });
 
