@@ -3,7 +3,11 @@ import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
-import { groupCreditCards, listAccountsDetailed } from "@/lib/accounts/queries";
+import {
+  derivedBalanceCentsSql,
+  groupCreditCards,
+  listAccountsDetailed,
+} from "@/lib/accounts/queries";
 import { computeNextPayment } from "@/lib/accounts/next-payment";
 import type { AccountType, CounterpartyType, Currency } from "@/lib/types";
 
@@ -23,20 +27,29 @@ export type AccountStatus = {
 };
 
 export async function getAccountStatuses(userId: number): Promise<AccountStatus[]> {
-  return db
+  const rows = await db
     .select({
       id: accounts.id,
       name: accounts.name,
       institution: accounts.institution,
       type: accounts.type,
       currency: accounts.currency,
-      balanceCents: accounts.balanceCents,
+      balanceCents: derivedBalanceCentsSql,
     })
     .from(accounts)
     .where(
       and(eq(accounts.userId, userId), eq(accounts.active, true), notDeleted(accounts.deletedAt)),
     )
     .orderBy(asc(accounts.name));
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    institution: r.institution,
+    type: r.type,
+    currency: r.currency,
+    balanceCents: BigInt(r.balanceCents),
+  }));
 }
 
 export type NetWorth = {

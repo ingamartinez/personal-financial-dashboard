@@ -9,6 +9,7 @@ import {
   transactions,
 } from "@/lib/db/schema";
 import { notAdjustment, notDeleted } from "@/lib/db/helpers";
+import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import type { Currency } from "@/lib/types";
 import { callClaudeText } from "@/lib/ai/anthropic-client";
 
@@ -89,7 +90,7 @@ export async function buildInsightsSummary(
           institution: accounts.institution,
           type: accounts.type,
           currency: accounts.currency,
-          balanceCents: accounts.balanceCents,
+          balanceCents: derivedBalanceCentsSql,
         })
         .from(accounts)
         .where(
@@ -320,7 +321,7 @@ export async function buildInsightsSummary(
     institution: a.institution,
     type: a.type,
     currency: a.currency,
-    balanceCop: toCopNumber(a.balanceCents, a.currency, copPerUsd),
+    balanceCop: toCopNumber(BigInt(a.balanceCents), a.currency, copPerUsd),
   }));
 
   return {

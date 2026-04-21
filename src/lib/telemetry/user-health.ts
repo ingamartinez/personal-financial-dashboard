@@ -10,6 +10,7 @@ import {
   type CaptureSources30d,
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 
 const MS_PER_DAY = 86_400_000;
 const THIRTY_DAYS_MS = 30 * MS_PER_DAY;
@@ -170,7 +171,7 @@ async function computeStatementDivergence(
   if (latestPerAccount.size === 0) return null;
 
   const accountRows = await db
-    .select({ id: accounts.id, balanceCents: accounts.balanceCents })
+    .select({ id: accounts.id, balanceCents: derivedBalanceCentsSql })
     .from(accounts)
     .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)));
 
@@ -178,7 +179,7 @@ async function computeStatementDivergence(
   for (const acc of accountRows) {
     const stmtBalance = latestPerAccount.get(acc.id);
     if (stmtBalance !== undefined) {
-      total += acc.balanceCents - stmtBalance;
+      total += BigInt(acc.balanceCents) - stmtBalance;
     }
   }
   return total;

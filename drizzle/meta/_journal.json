@@ -316,6 +316,13 @@
       "when": 1776699982379,
       "tag": "0044_chubby_ghost_rider",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1776729854787,
+      "tag": "0045_reconcile_balance_drift",
+      "breakpoints": true
     }
   ]
 }

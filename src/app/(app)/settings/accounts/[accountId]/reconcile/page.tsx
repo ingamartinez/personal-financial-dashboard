@@ -4,6 +4,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { getSessionUser } from "@/lib/auth/session";
 import { ReconcileForm } from "./reconcile-form";
@@ -29,7 +30,7 @@ export default async function ReconcilePage({
       institutionSlug: accounts.institutionSlug,
       currency: accounts.currency,
       type: accounts.type,
-      balanceCents: accounts.balanceCents,
+      balanceCents: derivedBalanceCentsSql,
     })
     .from(accounts)
     .where(

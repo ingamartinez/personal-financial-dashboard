@@ -272,11 +272,14 @@ describe("computeUserHealthSnapshot", () => {
 
   it("statementDivergenceCents sums (findash − latest statement) per account in the 30d window", async () => {
     const accountId = await seedAccount();
-    // Set findash's account balance.
-    await db
-      .update(accounts)
-      .set({ balanceCents: BigInt(1_200_000_00) })
-      .where(sql`${accounts.id} = ${accountId}`);
+    // Set findash's account balance via the ledger (#368): derived balance
+    // is SUM(transactions), not the stored column.
+    await seedTx({
+      accountId,
+      source: "manual",
+      createdAt: ago(1),
+      amountCents: BigInt(1_200_000_00),
+    });
 
     // Two imports for the same account — the later one should win.
     const periodEndRecent = new Date(NOW.getTime() - 2 * 86_400_000).toISOString().slice(0, 10);
@@ -307,10 +310,12 @@ describe("computeUserHealthSnapshot", () => {
 
   it("statementDivergenceCents ignores imports older than 30 days", async () => {
     const accountId = await seedAccount();
-    await db
-      .update(accounts)
-      .set({ balanceCents: BigInt(500_000_00) })
-      .where(sql`${accounts.id} = ${accountId}`);
+    await seedTx({
+      accountId,
+      source: "manual",
+      createdAt: ago(1),
+      amountCents: BigInt(500_000_00),
+    });
 
     const stale = new Date(NOW.getTime() - 40 * 86_400_000).toISOString().slice(0, 10);
     await db.insert(statementImports).values({
@@ -329,10 +334,12 @@ describe("computeUserHealthSnapshot", () => {
 
   it("statementDivergenceCents ignores imports whose balance_at_end is NULL", async () => {
     const accountId = await seedAccount();
-    await db
-      .update(accounts)
-      .set({ balanceCents: BigInt(100_000_00) })
-      .where(sql`${accounts.id} = ${accountId}`);
+    await seedTx({
+      accountId,
+      source: "manual",
+      createdAt: ago(1),
+      amountCents: BigInt(100_000_00),
+    });
 
     const recent = new Date(NOW.getTime() - 2 * 86_400_000).toISOString().slice(0, 10);
     await db.insert(statementImports).values({

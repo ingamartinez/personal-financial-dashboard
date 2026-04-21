@@ -2,8 +2,44 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, physicalCards, users } from "@/lib/db/schema";
+import { accounts, categories, physicalCards, transactions, users } from "@/lib/db/schema";
 import { getAvailableCreditCOP, listAccountsDetailed } from "./queries";
+
+// #368: balance is now derived from SUM(transactions.amount_cents). Tests
+// that want a specific opening balance must insert a tx — the stored
+// accounts.balance_cents column is ignored by readers.
+async function seedOpeningBalance(
+  userId: number,
+  accountId: number,
+  currency: "COP" | "USD",
+  amountCents: number,
+): Promise<void> {
+  if (amountCents === 0) return;
+  await db
+    .insert(categories)
+    .values({
+      userId,
+      slug: "adjustments",
+      name: "Ajustes de saldo",
+      icon: "wrench",
+      color: "#475569",
+      sortOrder: 1000,
+    })
+    .onConflictDoNothing({ target: [categories.userId, categories.slug] });
+  await db.insert(transactions).values({
+    userId,
+    accountId,
+    occurredAt: new Date(),
+    amountCents: BigInt(amountCents),
+    currency,
+    descriptionRaw: "__test_opening_balance",
+    categorySlug: "adjustments",
+    classificationMethod: "manual",
+    source: "balance_adjustment",
+    channel: "manual",
+    isAdjustment: true,
+  });
+}
 
 const MARKER = "__test_accounts_queries";
 const OTHER_EMAIL = `${MARKER}-other@test.local`;
@@ -12,8 +48,12 @@ let USER_A = 0;
 let USER_B = 0;
 
 async function cleanup() {
-  // Accounts reference physical_cards via FK (ON DELETE SET NULL), so it's safe
-  // to delete both in any order, but we clear accounts first to keep logs tidy.
+  // Transactions reference accounts via ON DELETE RESTRICT FK — purge every
+  // tx on any MARKER account (opening-balance #368 + ledger fixtures) before
+  // the accounts themselves.
+  await db.execute(
+    sql`DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE ${MARKER + "%"})`,
+  );
   await db.execute(sql`DELETE FROM accounts WHERE name LIKE ${MARKER + "%"}`);
   await db.execute(
     sql`DELETE FROM physical_cards WHERE metadata->>'coalescedFrom' IS NULL AND institution = 'Bancolombia' AND user_id IN (${USER_A}, ${USER_B})`,
@@ -56,26 +96,33 @@ describe("getAvailableCreditCOP", () => {
       last4: "7291",
       creditLimitCents: BigInt(params.limitCents),
     });
-    await db.insert(accounts).values([
-      {
-        userId: params.userId,
-        name: `${MARKER}${params.name ?? ""}-cop`,
-        institution: "Bancolombia",
-        type: "credit_card",
-        currency: "COP",
-        balanceCents: BigInt(params.copBalanceCents),
-        physicalCardId: id,
-      },
-      {
-        userId: params.userId,
-        name: `${MARKER}${params.name ?? ""}-usd`,
-        institution: "Bancolombia",
-        type: "credit_card",
-        currency: "USD",
-        balanceCents: BigInt(params.usdBalanceCents),
-        physicalCardId: id,
-      },
-    ]);
+    const inserted = await db
+      .insert(accounts)
+      .values([
+        {
+          userId: params.userId,
+          name: `${MARKER}${params.name ?? ""}-cop`,
+          institution: "Bancolombia",
+          type: "credit_card",
+          currency: "COP",
+          balanceCents: BigInt(0),
+          physicalCardId: id,
+        },
+        {
+          userId: params.userId,
+          name: `${MARKER}${params.name ?? ""}-usd`,
+          institution: "Bancolombia",
+          type: "credit_card",
+          currency: "USD",
+          balanceCents: BigInt(0),
+          physicalCardId: id,
+        },
+      ])
+      .returning({ id: accounts.id, currency: accounts.currency });
+    for (const row of inserted) {
+      const opening = row.currency === "COP" ? params.copBalanceCents : params.usdBalanceCents;
+      await seedOpeningBalance(params.userId, row.id, row.currency, opening);
+    }
     return id;
   }
 
@@ -143,6 +190,71 @@ describe("getAvailableCreditCOP", () => {
     const fakeId = randomUUID();
     const result = await getAvailableCreditCOP(USER_A, fakeId, 4100);
     expect(result).toBeNull();
+  });
+});
+
+describe("listAccountsDetailed: derived balance (#368)", () => {
+  afterEach(cleanup);
+
+  it("derives balance from SUM(transactions), not from the stored column", async () => {
+    // Insert an account with a non-zero stored `balance_cents` that is
+    // deliberately DIFFERENT from the ledger — mirrors pre-#368 prod drift.
+    const [acc] = await db
+      .insert(accounts)
+      .values({
+        userId: USER_A,
+        name: `${MARKER}-drift`,
+        institution: "Bancolombia",
+        type: "savings",
+        currency: "COP",
+        balanceCents: BigInt(999_999_99), // stale/drifted stored value
+      })
+      .returning({ id: accounts.id });
+
+    // Ledger: two expense txs totalling -3_000. The stored column and the
+    // ledger diverge on purpose to prove readers ignore the column.
+    await db
+      .insert(categories)
+      .values({
+        userId: USER_A,
+        slug: "adjustments",
+        name: "Ajustes de saldo",
+        icon: "wrench",
+        color: "#475569",
+        sortOrder: 1000,
+      })
+      .onConflictDoNothing({ target: [categories.userId, categories.slug] });
+    await db.insert(transactions).values([
+      {
+        userId: USER_A,
+        accountId: acc.id,
+        occurredAt: new Date(),
+        amountCents: BigInt(-1000),
+        currency: "COP",
+        descriptionRaw: "__test_opening_balance tx1",
+        classificationMethod: "manual",
+        source: "sms",
+        channel: "bank",
+      },
+      {
+        userId: USER_A,
+        accountId: acc.id,
+        occurredAt: new Date(),
+        amountCents: BigInt(-2000),
+        currency: "COP",
+        descriptionRaw: "__test_opening_balance tx2",
+        classificationMethod: "manual",
+        source: "sms",
+        channel: "bank",
+      },
+    ]);
+
+    const rows = await listAccountsDetailed(USER_A);
+    const found = rows.find((r) => r.name === `${MARKER}-drift`);
+    expect(found).toBeDefined();
+    // The reader derives from the ledger, not the stored column — value must
+    // match SUM(txs) = -3_000, NOT the drifted stored 999_999_99.
+    expect(found!.balanceCents).toBe(BigInt(-3000));
   });
 });
 

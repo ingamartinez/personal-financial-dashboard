@@ -2,6 +2,7 @@ import { asc, and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, physicalCards } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { getSessionUser } from "@/lib/auth/session";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { AccountsManager, type AccountRow } from "./accounts-manager";
@@ -18,7 +19,7 @@ export default async function SettingsAccountsPage() {
       institution: accounts.institution,
       type: accounts.type,
       currency: accounts.currency,
-      balanceCents: accounts.balanceCents,
+      balanceCents: derivedBalanceCentsSql,
       active: accounts.active,
       metadata: accounts.metadata,
       physicalCardId: accounts.physicalCardId,
