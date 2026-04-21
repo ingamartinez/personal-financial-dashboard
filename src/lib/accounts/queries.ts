@@ -5,6 +5,27 @@ import { notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import type { AccountType, Currency } from "@/lib/types";
 
+/**
+ * Derived balance — the source of truth for an account's current balance
+ * is `SUM(transactions.amount_cents)`, not the `accounts.balance_cents`
+ * column (see #368). This SQL fragment inlines the subquery and must be
+ * used inside a SELECT whose FROM references `accounts` so that the
+ * outer `accounts.id` resolves to the outer row.
+ *
+ * Qualifiers are hard-coded because drizzle interpolates
+ * `${accounts.id}` as a bare identifier (`"id"`), which inside the
+ * subquery scope resolves to `transactions.id` — collapsing the
+ * correlation and always returning 0.
+ *
+ * Returns `string` (postgres bigint wire format); callers must wrap
+ * with `BigInt(...)`.
+ */
+export const derivedBalanceCentsSql = sql<string>`(
+  SELECT COALESCE(SUM("transactions"."amount_cents"), 0)
+  FROM "transactions"
+  WHERE "transactions"."account_id" = "accounts"."id"
+)`;
+
 export type PhysicalCardSummary = {
   id: string;
   name: string | null;
@@ -35,7 +56,7 @@ export async function listAccountsDetailed(userId: number): Promise<AccountDetai
       institution: accounts.institution,
       type: accounts.type,
       currency: accounts.currency,
-      balanceCents: accounts.balanceCents,
+      balanceCents: derivedBalanceCentsSql,
       active: accounts.active,
       metadata: accounts.metadata,
       physicalCardId: accounts.physicalCardId,
@@ -65,7 +86,7 @@ export async function listAccountsDetailed(userId: number): Promise<AccountDetai
     institution: r.institution,
     type: r.type,
     currency: r.currency,
-    balanceCents: r.balanceCents,
+    balanceCents: BigInt(r.balanceCents),
     active: r.active,
     metadata: r.metadata,
     physicalCardId: r.physicalCardId,
@@ -128,10 +149,10 @@ export async function getAvailableCreditCOP(
     .select({
       creditLimitCents: physicalCards.creditLimitCents,
       copDebtCents: sql<string>`
-        COALESCE(SUM(CASE WHEN ${accounts.currency} = 'COP' THEN ${accounts.balanceCents} ELSE 0 END), 0)
+        COALESCE(SUM(CASE WHEN ${accounts.currency} = 'COP' THEN ${derivedBalanceCentsSql} ELSE 0 END), 0)
       `,
       usdDebtCents: sql<string>`
-        COALESCE(SUM(CASE WHEN ${accounts.currency} = 'USD' THEN ${accounts.balanceCents} ELSE 0 END), 0)
+        COALESCE(SUM(CASE WHEN ${accounts.currency} = 'USD' THEN ${derivedBalanceCentsSql} ELSE 0 END), 0)
       `,
     })
     .from(physicalCards)

@@ -27,7 +27,24 @@ const {
 const TEST_USER_ID = 1;
 const MARKER = "__test_accounts_ui";
 
+// #368: account balance is derived from SUM(transactions.amount_cents).
+async function derivedBalance(accountId: number): Promise<bigint> {
+  const [row] = await db
+    .select({
+      total: sql<string>`COALESCE(SUM(${transactions.amountCents}), 0)`,
+    })
+    .from(transactions)
+    .where(eq(transactions.accountId, accountId));
+  return BigInt(row.total);
+}
+
 async function cleanup() {
+  // transactions.account_id FK is ON DELETE RESTRICT — purge txs (including
+  // opening-balance txs inserted on upsertAccount create, #368) before the
+  // accounts they reference.
+  await db.execute(
+    sql`DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE ${MARKER + "%"})`,
+  );
   await db.execute(sql`DELETE FROM accounts WHERE name LIKE ${MARKER + "%"}`);
 }
 
@@ -471,7 +488,13 @@ describe("adjustAccountBalance", () => {
   const ADJ_MARKER = "__test_adjust_acct";
 
   async function adjustCleanup() {
-    await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE 'Ajuste de saldo%'`);
+    // transactions.account_id FK is RESTRICT — purge ALL txs on the marker
+    // accounts (includes 'Saldo inicial' openings from upsertAccount and
+    // 'Ajuste de saldo' rows from adjustAccountBalance) before deleting
+    // the accounts themselves.
+    await db.execute(
+      sql`DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE ${ADJ_MARKER + "%"})`,
+    );
     await db.execute(sql`DELETE FROM accounts WHERE name LIKE ${ADJ_MARKER + "%"}`);
   }
 
@@ -511,8 +534,7 @@ describe("adjustAccountBalance", () => {
       expect(tx.classificationMethod).toBe("manual");
     }
 
-    const [after] = await db.select().from(accounts).where(eq(accounts.id, accountId));
-    expect(after.balanceCents).toBe(BigInt(12_000_000));
+    expect(await derivedBalance(accountId)).toBe(BigInt(12_000_000));
   });
 
   it("negative diff: creates adjustment tx for the shortfall", async () => {
@@ -535,7 +557,17 @@ describe("adjustAccountBalance", () => {
     });
     expect(result.status).toBe("noop");
 
-    const txs = await db.select().from(transactions).where(eq(transactions.accountId, accountId));
+    // Only the 'Saldo inicial' opening-balance tx should exist (from
+    // seedAccount) — the no-op adjust must not insert anything new.
+    const txs = await db
+      .select()
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.accountId, accountId),
+          sql`${transactions.descriptionRaw} LIKE 'Ajuste de saldo%'`,
+        ),
+      );
     expect(txs).toHaveLength(0);
   });
 
@@ -652,7 +684,7 @@ describe("adjustAccountBalance", () => {
       }
 
       const [after] = await db.select().from(accounts).where(eq(accounts.id, accountId));
-      expect(after.balanceCents).toBe(BigInt(-1_800_000));
+      expect(await derivedBalance(accountId)).toBe(BigInt(-1_800_000));
       expect(after.metadata.availableCreditCents).toBe(3_200_000);
       expect(after.metadata.creditLimitCents).toBe(5_000_000);
     });
@@ -754,11 +786,9 @@ describe("adjustAccountBalance", () => {
       });
 
       expect(result.status).toBe("ok");
-      const [cop] = await db.select().from(accounts).where(eq(accounts.id, copId));
-      const [usd] = await db.select().from(accounts).where(eq(accounts.id, usdId));
-      expect(cop.balanceCents).toBe(BigInt(-1_090_000_00));
+      expect(await derivedBalance(copId)).toBe(BigInt(-1_090_000_00));
       // USD sub is untouched.
-      expect(usd.balanceCents).toBe(BigInt(-100_00));
+      expect(await derivedBalance(usdId)).toBe(BigInt(-100_00));
     });
 
     it("AS-5: adjusts only the USD sub when the target is USD (back-solve through TRM)", async () => {
@@ -778,11 +808,9 @@ describe("adjustAccountBalance", () => {
       });
 
       expect(result.status).toBe("ok");
-      const [usd] = await db.select().from(accounts).where(eq(accounts.id, usdId));
-      const [cop] = await db.select().from(accounts).where(eq(accounts.id, copId));
       // 500_000_00 COP / 4100 = 12_195.12 → integer truncation = 12_195 cents USD.
-      expect(usd.balanceCents).toBe(BigInt(-12_195));
-      expect(cop.balanceCents).toBe(BigInt(-500_000_00));
+      expect(await derivedBalance(usdId)).toBe(BigInt(-12_195));
+      expect(await derivedBalance(copId)).toBe(BigInt(-500_000_00));
     });
 
     it("rejects when the physical card has no limit configured", async () => {

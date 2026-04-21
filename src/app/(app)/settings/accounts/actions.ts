@@ -13,6 +13,7 @@ import {
   type AccountMetadata,
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { getSessionUser } from "@/lib/auth/session";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { convertCents } from "@/lib/money";
@@ -105,6 +106,59 @@ function sideToValues(side: z.infer<typeof sideSchema>) {
   };
 }
 
+/**
+ * #368: balance is derived from `SUM(transactions.amount_cents)`. On
+ * account creation we persist the user-declared opening balance as an
+ * adjustment-style transaction so the derived value matches what the
+ * user typed. Stays a no-op when balance is 0. Callers must first
+ * ensure the 'adjustments' category exists for the user.
+ */
+async function insertOpeningBalanceTx(
+  trx: Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db,
+  userId: number,
+  accountId: number,
+  currency: "COP" | "USD",
+  balanceCents: bigint,
+): Promise<void> {
+  if (balanceCents === BigInt(0)) return;
+  const today = new Date();
+  await trx.insert(transactions).values({
+    userId,
+    accountId,
+    occurredAt: today,
+    amountCents: balanceCents,
+    currency,
+    descriptionRaw: "Saldo inicial",
+    categorySlug: ADJUSTMENT_CATEGORY_SLUG,
+    classificationMethod: "manual",
+    source: "balance_adjustment",
+    channel: "manual",
+    isAdjustment: true,
+    rawData: { event: "opening_balance", issue: 368 },
+  });
+}
+
+async function ensureAdjustmentsCategory(
+  trx: Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db,
+  userId: number,
+): Promise<void> {
+  await trx
+    .insert(categories)
+    .values({
+      userId,
+      slug: ADJUSTMENT_CATEGORY_SLUG,
+      name: "Ajustes de saldo",
+      icon: "wrench",
+      color: "#475569",
+      sortOrder: 1000,
+    })
+    .onConflictDoNothing({ target: [categories.userId, categories.slug] });
+  await trx
+    .update(categories)
+    .set({ deletedAt: null, updatedAt: new Date() })
+    .where(and(eq(categories.userId, userId), eq(categories.slug, ADJUSTMENT_CATEGORY_SLUG)));
+}
+
 export async function upsertAccount(input: AccountUpsertInput) {
   const session = await getSessionUser();
   const parsed = upsertSchema.parse(input);
@@ -163,13 +217,46 @@ export async function upsertAccount(input: AccountUpsertInput) {
         creditLimitCents: BigInt(creditLimitCents),
         statementCutoffDay: cutoffDay,
       });
-      await trx.insert(accounts).values([
-        { ...base, ...sideToValues(parsed.primary), physicalCardId },
-        { ...base, ...sideToValues(parsed.secondary!), physicalCardId },
-      ]);
+      const inserted = await trx
+        .insert(accounts)
+        .values([
+          { ...base, ...sideToValues(parsed.primary), physicalCardId },
+          { ...base, ...sideToValues(parsed.secondary!), physicalCardId },
+        ])
+        .returning({ id: accounts.id, currency: accounts.currency });
+      await ensureAdjustmentsCategory(trx, session.id);
+      const primaryInserted = inserted.find((r) => r.currency === parsed.primary.currency)!;
+      const secondaryInserted = inserted.find((r) => r.currency === parsed.secondary!.currency)!;
+      await insertOpeningBalanceTx(
+        trx,
+        session.id,
+        primaryInserted.id,
+        parsed.primary.currency,
+        sideToValues(parsed.primary).balanceCents,
+      );
+      await insertOpeningBalanceTx(
+        trx,
+        session.id,
+        secondaryInserted.id,
+        parsed.secondary!.currency,
+        sideToValues(parsed.secondary!).balanceCents,
+      );
     });
   } else {
-    await db.insert(accounts).values({ ...base, ...sideToValues(parsed.primary) });
+    await db.transaction(async (trx) => {
+      const [inserted] = await trx
+        .insert(accounts)
+        .values({ ...base, ...sideToValues(parsed.primary) })
+        .returning({ id: accounts.id });
+      await ensureAdjustmentsCategory(trx, session.id);
+      await insertOpeningBalanceTx(
+        trx,
+        session.id,
+        inserted.id,
+        parsed.primary.currency,
+        sideToValues(parsed.primary).balanceCents,
+      );
+    });
   }
 
   revalidate();
@@ -324,12 +411,12 @@ export async function adjustAccountBalance(
   }
 
   return db.transaction(async (tx) => {
-    const [account] = await tx
+    const [accountRow] = await tx
       .select({
         id: accounts.id,
         type: accounts.type,
         currency: accounts.currency,
-        balanceCents: accounts.balanceCents,
+        balanceCents: derivedBalanceCentsSql,
         metadata: accounts.metadata,
         physicalCardId: accounts.physicalCardId,
       })
@@ -342,9 +429,10 @@ export async function adjustAccountBalance(
         ),
       );
 
-    if (!account) {
+    if (!accountRow) {
       return { status: "error", message: "Cuenta no encontrada." };
     }
+    const account = { ...accountRow, balanceCents: BigInt(accountRow.balanceCents) };
 
     let targetBalanceCents: bigint;
     let nextMetadata: AccountMetadata = account.metadata;
@@ -419,11 +507,11 @@ export async function adjustAccountBalance(
           message: "El cupo disponible no puede superar al cupo total del plástico.",
         };
       }
-      const siblings = await tx
+      const siblingRows = await tx
         .select({
           id: accounts.id,
           currency: accounts.currency,
-          balanceCents: accounts.balanceCents,
+          balanceCents: derivedBalanceCentsSql,
         })
         .from(accounts)
         .where(
@@ -434,6 +522,7 @@ export async function adjustAccountBalance(
             notDeleted(accounts.deletedAt),
           ),
         );
+      const siblings = siblingRows.map((s) => ({ ...s, balanceCents: BigInt(s.balanceCents) }));
 
       const fx = await getCurrentFxRate();
       // Total debt (COP) across the pair = limit - declared available.
@@ -525,9 +614,12 @@ export async function adjustAccountBalance(
       })
       .returning({ id: transactions.id });
 
+    // Balance is derived from SUM(transactions.amount_cents) post #368 —
+    // the adjustment tx inserted above *is* the state change. Metadata
+    // still needs persisting (availableCreditCents, etc.).
     await tx
       .update(accounts)
-      .set({ balanceCents: targetBalanceCents, metadata: nextMetadata, updatedAt: today })
+      .set({ metadata: nextMetadata, updatedAt: today })
       .where(eq(accounts.id, account.id));
 
     revalidate();

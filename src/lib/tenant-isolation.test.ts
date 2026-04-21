@@ -294,10 +294,13 @@ describe("#183 tenant isolation", () => {
 
   it("dashboard queries are scoped per user", async () => {
     const [nwA, nwB] = await Promise.all([getNetWorth(userA, 4000), getNetWorth(userB, 4000)]);
-    // Distinct values because userA and userB touch disjoint accounts (all are
-    // empty; balances stay at 0 but the SQL paths are exercised).
-    expect(nwA.totalCopCents).toBe(BigInt(0));
-    expect(nwB.totalCopCents).toBe(BigInt(0));
+    // Each user has two -1000 / -2000 txs on their own account (and no opening
+    // balance), so derived net worth = -3000 for both. #368: net worth is
+    // derived from SUM(transactions.amount_cents), not the stored column.
+    // The assertion we actually care about is that each user's value reflects
+    // ONLY their own txs — not leakage across tenants.
+    expect(nwA.totalCopCents).toBe(BigInt(-3000));
+    expect(nwB.totalCopCents).toBe(BigInt(-3000));
 
     const statusesA = await getAccountStatuses(userA);
     expect(statusesA).toHaveLength(1);
