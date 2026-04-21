@@ -26,6 +26,7 @@ const INITIAL_STATE: MintActionState = { status: "idle" };
 const PURPOSE_LABELS: Record<WebhookPurpose, string> = {
   sms: "SMS ingest",
   debug: "Debug capture",
+  widget: "Widget feed",
 };
 
 export function WebhookTokensManager({ tokens }: { tokens: TokenRow[] }) {
