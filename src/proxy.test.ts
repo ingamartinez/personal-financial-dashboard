@@ -57,4 +57,13 @@ describe("proxy matcher", () => {
       expect(matches(path), `${path} should be exempt`).toBe(false);
     }
   });
+
+  it("exempts /widgets/* public scripts (regression for #403)", () => {
+    for (const path of [
+      "/widgets/scriptable/findash-widget.js",
+      "/widgets/scriptable/findash-set-token.js",
+    ]) {
+      expect(matches(path), `${path} must be publicly servable`).toBe(false);
+    }
+  });
 });
