@@ -15,8 +15,7 @@ type CheatsheetRow = {
   example: string;
 };
 
-// TODO(#390): once the setup guide lands at /docs/widgets, link to it from
-// the header description here and from the main page.
+// Setup guide lives at /docs/widgets/README.md (linked from the page header).
 const ROWS: readonly CheatsheetRow[] = [
   { widget: "TC Focus", id: "tc-focus", sizes: "S", example: "tc-focus.S|<card_id>" },
   { widget: "Mis TCs", id: "mis-tcs", sizes: "M, L", example: "mis-tcs.M" },
