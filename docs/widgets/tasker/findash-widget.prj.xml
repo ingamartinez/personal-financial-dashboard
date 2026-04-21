@@ -1,0 +1,16 @@
+<!--
+  Placeholder — a ready-to-import Tasker project is a wishlist item.
+
+  Why this file is empty:
+  - Tasker project XMLs are tightly coupled to Tasker version and device DPI.
+  - A hand-crafted XML would almost certainly fail to import on a different
+    device, so we ship the step-by-step markdown guide instead (./setup.md).
+  - Once one user has a working project and captures screenshots, they can
+    export it via `Projects → Findash → Export → Data Export` and replace this
+    file with the real XML. See CONTRIBUTE section at the bottom of setup.md.
+
+  Tracking: the umbrella epic is #382; the Tasker contribution slot is left
+  open for community. No issue filed yet — open one before contributing so
+  testing expectations are scoped (which Android version, which Tasker
+  version, which DPI class).
+-->

@@ -23,6 +23,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Scriptable widget scripts — they run in Scriptable's own JS runtime on
+    // iOS with its own globals (Keychain, Request, Color, ListWidget, …) and
+    // are shipped as documentation artifacts, not Next.js source. Linting
+    // them against next-ts rules produces false positives.
+    "docs/widgets/scriptable/**",
   ]),
 ]);
 
