@@ -17,6 +17,13 @@ export type WidgetSize = "S" | "M" | "L";
 export type WidgetHandlerContext = {
   userId: number;
   size: WidgetSize;
+  /**
+   * Read-only view of the request URL's query string. The router already
+   * validates `size` before dispatch; per-widget params (e.g. `target` for
+   * `tc-focus`) are left to the handler to parse and validate with Zod.
+   * Shared as a `URLSearchParams` so handlers don't need to re-parse the URL.
+   */
+  searchParams: URLSearchParams;
 };
 
 export type WidgetHandlerResult = {
