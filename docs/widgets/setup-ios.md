@@ -5,7 +5,22 @@ iPhone. Usa [Scriptable](https://scriptable.app) — app gratis, mantiene el
 código en iCloud, corre JavaScript nativo con acceso a `Keychain`, `Request`,
 y primitivas de widget (`ListWidget`, `Stack`, `Text`).
 
-## Requisitos
+## Camino recomendado — usá el tutorial en la app
+
+El camino soportado y **menos propenso a typos** es el tutorial
+embebido en Findash:
+
+1. Abrí **Findash → Settings → Widgets** en el iPhone.
+2. Seguí los 7 pasos del tutorial arriba del gestor de tokens.
+3. Cada botón **Copiar** deja el script en el portapapeles — el
+   `findash-set-token.js` ya viene con la URL de tu instancia
+   pre-cargada, así que no podés typear mal el dominio.
+
+Si por lo que sea el tutorial no carga (sin JS en el browser, clipboard
+API bloqueada, etc.), el resto de esta guía describe el flujo manual
+tradicional usando los archivos crudos del repo.
+
+## Requisitos (flujo manual)
 
 - iPhone con iOS 16+ (widgets en escritorio).
 - [Scriptable](https://apps.apple.com/app/scriptable/id1405459188) instalado.
@@ -27,26 +42,19 @@ minteado mostrando el plaintext]
 
 ## Paso 2 — Instalar los scripts en Scriptable
 
-El repo contiene dos scripts en [`docs/widgets/scriptable/`](./scriptable/):
+Next.js sirve los scripts como assets estáticos desde `public/`:
 
-- [`findash-widget.js`](./scriptable/findash-widget.js) — el widget en sí.
-  Uno solo para todos los tamaños y tipos, dispatch por parámetro.
-- [`findash-set-token.js`](./scriptable/findash-set-token.js) — helper
-  one-shot para guardar token + base URL.
+- Widget principal: <https://findash.alejoframes.com/widgets/scriptable/findash-widget.js>
+  (en tu propia instancia, reemplazá el host).
+- Setup token: <https://findash.alejoframes.com/widgets/scriptable/findash-set-token.js>
 
 ### Abrir los scripts en tu iPhone
 
-La forma más rápida es usar el botón "Raw" de GitHub y compartir a
-Scriptable:
-
-1. En el iPhone, abrí
-   <https://github.com/ingamartinez/personal-financial-dashboard/blob/main/docs/widgets/scriptable/findash-widget.js>.
-2. Tocá **Raw**.
-3. Seleccionás todo el código → **Copy**.
-4. Abrí Scriptable → **+** (nuevo script) → pegás el código. Renombrás el
+1. En Safari del iPhone, abrí la URL del widget principal (arriba).
+2. Tocá el texto, **seleccioná todo** y **Copy**.
+3. Abrí Scriptable → **+** (nuevo script) → pegás el código. Renombrás el
    script a `Findash Widget` (tocando el título arriba).
-5. Repetís con [`findash-set-token.js`](./scriptable/findash-set-token.js),
-   llamando al script `Findash Set Token`.
+4. Repetís con el script de setup, llamándolo `Findash Set Token`.
 
 > Alternativa: copiar los archivos a iCloud Drive →
 > `Scriptable/` (Scriptable los levanta directo si el folder está linkeado).

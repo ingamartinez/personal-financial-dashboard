@@ -29,7 +29,8 @@ function setSessionUser(user: { id: number; email: string; name: string } | null
 }
 
 // Imported AFTER the mocks so they resolve to the stubs above.
-const { mintWidgetTokenAction, revokeWidgetTokenAction } = await import("./actions");
+const { mintWidgetTokenAction, revokeWidgetTokenAction, getPersonalizedSetupScriptAction } =
+  await import("./actions");
 
 const TEST_USER_ID = 1;
 const LABEL_PREFIX = "vitest-widget-actions-";
@@ -200,6 +201,81 @@ describe("settings/widgets actions", () => {
       const [row] = await db.select().from(webhookTokens).where(eq(webhookTokens.id, otherTokenId));
       expect(row.revokedAt).toBeNull();
       expect(row.userId).toBe(otherUserId);
+    });
+  });
+
+  describe("getPersonalizedSetupScriptAction", () => {
+    // Preserve the env so swapping AUTH_URL in one test does not leak.
+    const originalAuthUrl = process.env.AUTH_URL;
+    const originalNextAuthUrl = process.env.NEXTAUTH_URL;
+    const originalPublicAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+    beforeEach(() => {
+      setSessionUser({ id: TEST_USER_ID, email: "test@findash.local", name: "Test" });
+      delete process.env.AUTH_URL;
+      delete process.env.NEXTAUTH_URL;
+      delete process.env.NEXT_PUBLIC_APP_URL;
+    });
+
+    afterAll(() => {
+      if (originalAuthUrl !== undefined) process.env.AUTH_URL = originalAuthUrl;
+      if (originalNextAuthUrl !== undefined) process.env.NEXTAUTH_URL = originalNextAuthUrl;
+      if (originalPublicAppUrl !== undefined)
+        process.env.NEXT_PUBLIC_APP_URL = originalPublicAppUrl;
+    });
+
+    it("returns the personalized script with the placeholder substituted for AUTH_URL", async () => {
+      process.env.AUTH_URL = "https://findash.test";
+
+      const res = await getPersonalizedSetupScriptAction();
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      // Placeholder is gone from the returned script.
+      expect(res.script).not.toContain("https://findash.example.com");
+      // Effective base URL shows up in the `existingBase` default literal.
+      expect(res.script).toContain("https://findash.test");
+      // Sanity: the header comment / Keychain constants stayed intact.
+      expect(res.script).toContain("FINDASH_TOKEN");
+      expect(res.script).toContain("FINDASH_BASE_URL");
+    });
+
+    it("falls back through env vars in order (AUTH_URL beats NEXTAUTH_URL beats NEXT_PUBLIC_APP_URL)", async () => {
+      process.env.AUTH_URL = "https://from-auth-url.example";
+      process.env.NEXTAUTH_URL = "https://from-nextauth.example";
+      process.env.NEXT_PUBLIC_APP_URL = "https://from-public.example";
+
+      const res = await getPersonalizedSetupScriptAction();
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.script).toContain("https://from-auth-url.example");
+      expect(res.script).not.toContain("https://from-nextauth.example");
+      expect(res.script).not.toContain("https://from-public.example");
+    });
+
+    it("trims trailing slash from the configured base URL", async () => {
+      process.env.AUTH_URL = "https://findash.test/";
+      const res = await getPersonalizedSetupScriptAction();
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.script).toContain("https://findash.test");
+      expect(res.script).not.toContain("https://findash.test/");
+    });
+
+    it("falls back to the hardcoded production URL when no env vars are set", async () => {
+      const res = await getPersonalizedSetupScriptAction();
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.script).toContain("https://findash.alejoframes.com");
+      expect(res.script).not.toContain("https://findash.example.com");
+    });
+
+    it("returns an error when no session is present", async () => {
+      setSessionUser(null);
+      const res = await getPersonalizedSetupScriptAction();
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error).toMatch(/autenticado/i);
     });
   });
 });
