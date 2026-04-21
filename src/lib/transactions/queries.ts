@@ -21,6 +21,7 @@ export type TxFilters = {
   categorySlug?: string;
   q?: string;
   cursor?: string;
+  hideAdjustments?: boolean;
 };
 
 export type TxListResult = {
@@ -66,6 +67,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
       )!,
     );
   }
+  if (filters.hideAdjustments) conditions.push(eq(transactions.isAdjustment, false));
   if (filters.cursor) {
     const c = decodeCursor(filters.cursor);
     if (c) {
@@ -236,6 +238,7 @@ export async function countTotal(
       )!,
     );
   }
+  if (filters.hideAdjustments) conditions.push(eq(transactions.isAdjustment, false));
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(transactions)
