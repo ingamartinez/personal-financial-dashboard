@@ -15,17 +15,22 @@ export type FiltersProps = {
     accountId?: string;
     categorySlug?: string;
     q?: string;
+    showAdjustments?: string;
   };
 };
 
 export function Filters({ accounts, categories, values }: FiltersProps) {
-  const activeCount = [
+  const stringActive = [
     values.from,
     values.to,
     values.accountId,
     values.categorySlug,
     values.q,
   ].filter((v) => Boolean(v && v.length > 0)).length;
+  // Default behavior hides adjustments — so "showAdjustments set" is itself a deviation
+  // from the default and counts as an active filter.
+  const showAdjustments = Boolean(values.showAdjustments);
+  const activeCount = stringActive + (showAdjustments ? 1 : 0);
   const hasAny = activeCount > 0;
 
   return (
@@ -113,6 +118,23 @@ export function Filters({ accounts, categories, values }: FiltersProps) {
             </Button>
           ) : null}
         </div>
+
+        <label
+          htmlFor="showAdjustments"
+          className="flex cursor-pointer items-center gap-2 text-sm sm:col-span-2 lg:col-span-6"
+        >
+          <input
+            id="showAdjustments"
+            name="showAdjustments"
+            type="checkbox"
+            defaultChecked={showAdjustments}
+            className="border-input size-4 rounded border"
+          />
+          <span>Show balance adjustments</span>
+          <span className="text-muted-foreground text-xs">
+            (hidden by default — reconciliation entries, not spend)
+          </span>
+        </label>
       </form>
     </details>
   );

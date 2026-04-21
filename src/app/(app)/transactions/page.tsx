@@ -24,6 +24,7 @@ type SearchParams = Promise<{
   q?: string;
   cursor?: string;
   highlight?: string;
+  showAdjustments?: string;
 }>;
 
 function buildHref(base: Record<string, string | undefined>, cursor: string | null) {
@@ -43,6 +44,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const accountId = sp.accountId ? Number(sp.accountId) : undefined;
   const highlightRaw = sp.highlight ? Number(sp.highlight) : undefined;
   const highlightId = Number.isFinite(highlightRaw) ? highlightRaw : undefined;
+  const hideAdjustments = !sp.showAdjustments;
   const filters = {
     from: sp.from,
     to: sp.to,
@@ -50,6 +52,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     categorySlug: sp.categorySlug,
     q: sp.q,
     cursor: sp.cursor,
+    hideAdjustments,
   };
 
   const [{ rows, nextCursor }, accounts, categories, total, unclassified, allCounterparties] =
@@ -74,6 +77,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     accountId: sp.accountId,
     categorySlug: sp.categorySlug,
     q: sp.q,
+    showAdjustments: sp.showAdjustments,
   };
 
   return (
@@ -82,8 +86,9 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         <div>
           <h1 className="text-h1">Transactions</h1>
           <p className="text-body text-muted-foreground">
-            {total.toLocaleString()} total · {unclassified.toLocaleString()} unclassified · showing
-            up to {PAGE_SIZE} per page
+            {total.toLocaleString()} total · {unclassified.toLocaleString()} unclassified
+            {hideAdjustments ? " · balance adjustments hidden" : null} · showing up to {PAGE_SIZE}{" "}
+            per page
           </p>
         </div>
         <AiClassifyButton unclassified={unclassified} />
@@ -98,6 +103,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
           accountId: sp.accountId,
           categorySlug: sp.categorySlug,
           q: sp.q,
+          showAdjustments: sp.showAdjustments,
         }}
       />
 
