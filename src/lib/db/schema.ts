@@ -185,9 +185,6 @@ export const accounts = pgTable(
     institutionSlug: institutionSlug("institution_slug").notNull().default("other"),
     type: accountType("type").notNull(),
     currency: currency("currency").notNull(),
-    balanceCents: bigint("balance_cents", { mode: "bigint" })
-      .notNull()
-      .default(sql`0`),
     active: boolean("active").notNull().default(true),
     metadata: jsonb("metadata").$type<AccountMetadata>().notNull().default({}),
     physicalCardId: uuid("physical_card_id").references((): AnyPgColumn => physicalCards.id, {
@@ -983,8 +980,9 @@ export const userHealthSnapshots = pgTable(
     // Sum of `is_adjustment = true` txn amounts in the last 30d — measures
     // how much the user has corrected findash via balance adjustments.
     divergenceCents: bigint("divergence_cents", { mode: "bigint" }),
-    // Sum of (accounts.balance_cents − latest statement_imports.balance_at_end_cents)
-    // across accounts whose most recent 30d statement import carries a balance —
+    // Sum of (derived_balance − latest statement_imports.balance_at_end_cents)
+    // across accounts whose most recent 30d statement import carries a balance,
+    // where `derived_balance = SUM(transactions.amount_cents)` per #368/#370 —
     // measures the remaining gap between findash and reality per #304.
     // NULL until a statement import with a user-provided balance lands.
     statementDivergenceCents: bigint("statement_divergence_cents", { mode: "bigint" }),

@@ -101,9 +101,13 @@ function revalidate() {
 function sideToValues(side: z.infer<typeof sideSchema>) {
   return {
     currency: side.currency,
-    balanceCents: BigInt(Math.round(side.balance * 100)),
     metadata: (side.metadata ?? {}) as AccountMetadata,
   };
+}
+
+/** Declared opening balance in cents — the ledger seed for a new account. */
+function openingBalanceCents(side: z.infer<typeof sideSchema>): bigint {
+  return BigInt(Math.round(side.balance * 100));
 }
 
 /**
@@ -232,14 +236,14 @@ export async function upsertAccount(input: AccountUpsertInput) {
         session.id,
         primaryInserted.id,
         parsed.primary.currency,
-        sideToValues(parsed.primary).balanceCents,
+        openingBalanceCents(parsed.primary),
       );
       await insertOpeningBalanceTx(
         trx,
         session.id,
         secondaryInserted.id,
         parsed.secondary!.currency,
-        sideToValues(parsed.secondary!).balanceCents,
+        openingBalanceCents(parsed.secondary!),
       );
     });
   } else {
@@ -254,7 +258,7 @@ export async function upsertAccount(input: AccountUpsertInput) {
         session.id,
         inserted.id,
         parsed.primary.currency,
-        sideToValues(parsed.primary).balanceCents,
+        openingBalanceCents(parsed.primary),
       );
     });
   }
