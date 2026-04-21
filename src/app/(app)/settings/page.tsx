@@ -51,6 +51,12 @@ const LINKS = [
       "Per-user bearer tokens for the SMS and debug ingest endpoints. Mint, copy once, revoke when needed.",
   },
   {
+    href: "/settings/widgets",
+    title: "Widgets",
+    description:
+      "Tokens y cheatsheet para los widgets de pantalla de inicio (Scriptable / Tasker). Generá, copiá una vez, revocá cuando quieras.",
+  },
+  {
     href: "/settings/telegram",
     title: "Telegram bot",
     description:

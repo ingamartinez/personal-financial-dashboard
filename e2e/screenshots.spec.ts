@@ -11,6 +11,7 @@ const pages = [
   { name: "settings-ingestion", path: "/settings/ingestion", hasDonut: false },
   { name: "settings-rules", path: "/settings/rules", hasDonut: false },
   { name: "settings-inbox", path: "/settings/inbox", hasDonut: false },
+  { name: "settings-widgets", path: "/settings/widgets", hasDonut: false },
   { name: "signup-missing", path: "/signup", hasDonut: false },
   { name: "signup-unknown", path: "/signup?code=__DOESNOTEXIST__", hasDonut: false },
 ];

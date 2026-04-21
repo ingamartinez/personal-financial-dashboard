@@ -69,6 +69,26 @@ export async function listWebhookTokensForUser(userId: number) {
     .orderBy(desc(webhookTokens.createdAt));
 }
 
+/**
+ * Widget-scoped variant of {@link listWebhookTokensForUser}. Same shape, but
+ * filtered to `purpose = 'widget'` at the DB so /settings/widgets doesn't have
+ * to post-filter. Keeps the generic list method untouched.
+ */
+export async function listWidgetTokensForUser(userId: number) {
+  return db
+    .select({
+      id: webhookTokens.id,
+      purpose: webhookTokens.purpose,
+      label: webhookTokens.label,
+      createdAt: webhookTokens.createdAt,
+      lastUsedAt: webhookTokens.lastUsedAt,
+      revokedAt: webhookTokens.revokedAt,
+    })
+    .from(webhookTokens)
+    .where(and(eq(webhookTokens.userId, userId), eq(webhookTokens.purpose, "widget")))
+    .orderBy(desc(webhookTokens.createdAt));
+}
+
 export type ResolvedWebhookAuth = {
   userId: number;
   tokenId: number;
