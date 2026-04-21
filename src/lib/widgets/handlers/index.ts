@@ -11,6 +11,8 @@
  */
 
 import { registerWidgetHandler } from "@/app/api/widget/v1/[id]/registry";
+import { misTcsHandler } from "./mis-tcs";
 import { tcFocusHandler } from "./tc-focus";
 
+registerWidgetHandler("mis-tcs", misTcsHandler);
 registerWidgetHandler("tc-focus", tcFocusHandler);
