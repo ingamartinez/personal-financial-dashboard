@@ -169,9 +169,13 @@ describe("GET /api/widget/v1/[id]", () => {
   });
 
   it("dispatches to the registered handler with userId + size and returns 200", async () => {
-    const seen: Array<{ userId: number; size: string }> = [];
+    const seen: Array<{ userId: number; size: string; hasSearchParams: boolean }> = [];
     const stub: WidgetHandler = async (ctx) => {
-      seen.push({ userId: ctx.userId, size: ctx.size });
+      seen.push({
+        userId: ctx.userId,
+        size: ctx.size,
+        hasSearchParams: ctx.searchParams instanceof URLSearchParams,
+      });
       return { body: { greeting: "hola", user: ctx.userId, size: ctx.size } };
     };
     registerWidgetHandler(STUB_WIDGET_ID, stub);
@@ -180,7 +184,7 @@ describe("GET /api/widget/v1/[id]", () => {
     expect(res.status).toBe(200);
     const json = (await res.json()) as { greeting: string; user: number; size: string };
     expect(json).toEqual({ greeting: "hola", user: TEST_USER_A_ID, size: "M" });
-    expect(seen).toEqual([{ userId: TEST_USER_A_ID, size: "M" }]);
+    expect(seen).toEqual([{ userId: TEST_USER_A_ID, size: "M", hasSearchParams: true }]);
   });
 
   it("maps handler exceptions to a 500 internal_error without leaking internals", async () => {

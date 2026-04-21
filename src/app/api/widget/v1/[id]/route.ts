@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createLogger } from "@/lib/logger";
 import { resolveWebhookAuth } from "@/lib/webhook-tokens";
+// Importing the handlers index for its registerWidgetHandler side effects —
+// each handler module lives in src/lib/widgets/handlers/ and registers itself
+// on import. Keep this side-effect import even when nothing here references
+// the module directly, otherwise the registry would be empty at request time.
+import "@/lib/widgets/handlers";
 import { consumeRateLimit } from "./rate-limit";
 import { getWidgetHandler, type WidgetSize } from "./registry";
 
@@ -116,7 +121,11 @@ export async function GET(
   //    filter data. If a handler throws we log with Pino's err serializer
   //    (safe against log-injection) and return a generic 500.
   try {
-    const result = await handler({ userId: auth.userId, size });
+    const result = await handler({
+      userId: auth.userId,
+      size,
+      searchParams: url.searchParams,
+    });
     return NextResponse.json(result.body, { status: result.status ?? 200 });
   } catch (err) {
     log.error(
