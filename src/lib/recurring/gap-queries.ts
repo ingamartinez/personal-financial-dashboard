@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
+import { notDeleted } from "@/lib/db/helpers";
 import {
   accounts,
   categories,
@@ -87,6 +88,7 @@ export async function getLinkCandidates(
         isNull(transactions.recurringId),
         gte(transactions.occurredAt, windowStart),
         lte(transactions.occurredAt, windowEnd),
+        notDeleted(transactions.deletedAt),
       ),
     )
     .orderBy(desc(transactions.occurredAt));

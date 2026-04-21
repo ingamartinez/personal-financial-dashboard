@@ -25,6 +25,7 @@ type SearchParams = Promise<{
   cursor?: string;
   highlight?: string;
   showAdjustments?: string;
+  showArchived?: string;
 }>;
 
 function buildHref(base: Record<string, string | undefined>, cursor: string | null) {
@@ -45,6 +46,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const highlightRaw = sp.highlight ? Number(sp.highlight) : undefined;
   const highlightId = Number.isFinite(highlightRaw) ? highlightRaw : undefined;
   const hideAdjustments = !sp.showAdjustments;
+  const includeArchived = Boolean(sp.showArchived);
   const filters = {
     from: sp.from,
     to: sp.to,
@@ -53,6 +55,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     q: sp.q,
     cursor: sp.cursor,
     hideAdjustments,
+    includeArchived,
   };
 
   const [{ rows, nextCursor }, accounts, categories, total, unclassified, allCounterparties] =
@@ -66,6 +69,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         accountId: filters.accountId,
         categorySlug: filters.categorySlug,
         q: filters.q,
+        includeArchived,
       }),
       countUnclassified(session.id),
       listCounterparties(session.id),
@@ -78,6 +82,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     categorySlug: sp.categorySlug,
     q: sp.q,
     showAdjustments: sp.showAdjustments,
+    showArchived: sp.showArchived,
   };
 
   return (
@@ -87,8 +92,9 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
           <h1 className="text-h1">Transactions</h1>
           <p className="text-body text-muted-foreground">
             {total.toLocaleString()} total · {unclassified.toLocaleString()} unclassified
-            {hideAdjustments ? " · balance adjustments hidden" : null} · showing up to {PAGE_SIZE}{" "}
-            per page
+            {hideAdjustments ? " · balance adjustments hidden" : null}
+            {!includeArchived ? " · archived hidden" : " · archived included"} · showing up to{" "}
+            {PAGE_SIZE} per page
           </p>
         </div>
         <AiClassifyButton unclassified={unclassified} />

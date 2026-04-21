@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { classificationRules, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUserOrNull } from "@/lib/auth/session";
 import { findMatchingRule } from "@/lib/classification/rules";
 import type { ClassificationMethod } from "@/lib/types";
@@ -99,7 +100,13 @@ export async function GET(
       updatedAt: transactions.updatedAt,
     })
     .from(transactions)
-    .where(and(eq(transactions.userId, session.id), eq(transactions.id, id)))
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.id, id),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
     .limit(1);
 
   if (!txn) {

@@ -106,6 +106,7 @@ export async function detectGapsForMonth(
         eq(transactions.userId, userId),
         inArray(transactions.recurringId, recurringIds),
         eq(transactions.recurringYearMonth, yearMonth),
+        notDeleted(transactions.deletedAt),
       ),
     );
   const linkedSet = new Set(existingLinks.map((l) => l.recurringId as number));
@@ -137,6 +138,7 @@ export async function detectGapsForMonth(
           isNull(transactions.recurringId),
           gte(transactions.occurredAt, windowStart),
           lte(transactions.occurredAt, windowEnd),
+          notDeleted(transactions.deletedAt),
         ),
       )
       .limit(2);

@@ -66,7 +66,13 @@ export async function countCategoryReferences(
   const [txCount] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(transactions)
-    .where(and(eq(transactions.userId, userId), eq(transactions.categorySlug, slug)));
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.categorySlug, slug),
+        notDeleted(transactions.deletedAt),
+      ),
+    );
 
   const [budgetCount] = await db
     .select({ n: sql<number>`count(*)::int` })

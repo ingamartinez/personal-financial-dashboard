@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { emit } from "@/lib/events/bus";
 import {
   DEFAULT_WINDOW_AFTER_DAYS,
@@ -44,7 +45,13 @@ export async function autoLinkTransaction(
       recurringId: transactions.recurringId,
     })
     .from(transactions)
-    .where(and(eq(transactions.userId, userId), eq(transactions.id, txId)))
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.id, txId),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
     .limit(1);
 
   if (!tx) return { status: "no-open-gap" };

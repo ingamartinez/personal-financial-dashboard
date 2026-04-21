@@ -1,6 +1,7 @@
 import { and, eq, gte } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 
 const MS_PER_DAY = 86_400_000;
 const WINDOW_DAYS = 30;
@@ -41,6 +42,7 @@ export async function detectRecurringAdjustmentInsight(
         eq(transactions.userId, userId),
         eq(transactions.isAdjustment, true),
         gte(transactions.occurredAt, cutoff),
+        notDeleted(transactions.deletedAt),
       ),
     );
 

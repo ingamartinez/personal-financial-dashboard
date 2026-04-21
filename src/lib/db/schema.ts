@@ -406,6 +406,7 @@ export const transactions = pgTable(
     recurringYearMonth: varchar("recurring_year_month", { length: 7 }),
     rawData: jsonb("raw_data").notNull().default({}),
     notes: text("notes"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -418,6 +419,12 @@ export const transactions = pgTable(
     index("transactions_flagged_idx")
       .on(t.userId, t.occurredAt)
       .where(sql`${t.reconciliationStatus} = 'flagged'`),
+    index("transactions_account_occurred_live_idx")
+      .on(t.accountId, t.occurredAt)
+      .where(sql`${t.deletedAt} IS NULL`),
+    index("transactions_user_occurred_live_idx")
+      .on(t.userId, t.occurredAt)
+      .where(sql`${t.deletedAt} IS NULL`),
     uniqueIndex("transactions_external_unique")
       .on(t.accountId, t.externalId)
       .where(sql`${t.externalId} IS NOT NULL`),

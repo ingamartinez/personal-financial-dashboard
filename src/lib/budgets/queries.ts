@@ -90,6 +90,7 @@ export async function getBudgetsOverview(
             gte(transactions.occurredAt, start),
             lte(transactions.occurredAt, end),
             notAdjustment(transactions.isAdjustment),
+            notDeleted(transactions.deletedAt),
           ),
         )
         .groupBy(rootSlug);

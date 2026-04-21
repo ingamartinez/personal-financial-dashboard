@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { reconciliationDecisions, statementImports, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import type { ParsedStatement, ParsedStatementRow } from "./parsers/types";
 import type { MatchingPlan } from "./engine/types";
 
@@ -185,7 +186,13 @@ export async function recordReconciliationDecision(input: ReviewInput): Promise<
           reconciliationStatus: transactions.reconciliationStatus,
         })
         .from(transactions)
-        .where(and(eq(transactions.id, targetId), eq(transactions.userId, input.userId)))
+        .where(
+          and(
+            eq(transactions.id, targetId),
+            eq(transactions.userId, input.userId),
+            notDeleted(transactions.deletedAt),
+          ),
+        )
         .limit(1);
       if (!target) throw new Error("merge_target_not_found");
       if (target.reconciliationStatus !== "imported_from_statement") {

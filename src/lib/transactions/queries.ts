@@ -22,6 +22,7 @@ export type TxFilters = {
   q?: string;
   cursor?: string;
   hideAdjustments?: boolean;
+  includeArchived?: boolean;
 };
 
 export type TxListResult = {
@@ -48,6 +49,7 @@ export function decodeCursor(cursor: string): { occurredAt: Date; id: number } |
 
 export async function listTransactions(userId: number, filters: TxFilters): Promise<TxListResult> {
   const conditions = [eq(transactions.userId, userId)];
+  if (!filters.includeArchived) conditions.push(notDeleted(transactions.deletedAt));
 
   if (filters.from) conditions.push(gte(transactions.occurredAt, new Date(filters.from)));
   if (filters.to) {
@@ -96,6 +98,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
       isAdjustment: transactions.isAdjustment,
       accountId: transactions.accountId,
       accountName: accounts.name,
+      deletedAt: transactions.deletedAt,
       cpId: counterparties.id,
       cpDisplayName: counterparties.displayName,
       cpType: counterparties.type,
@@ -137,6 +140,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
     isAdjustment: r.isAdjustment,
     accountId: r.accountId,
     accountName: r.accountName,
+    deletedAt: r.deletedAt,
     counterparty: r.cpId
       ? {
           id: r.cpId,
@@ -210,7 +214,11 @@ export async function countUnclassified(userId: number): Promise<number> {
     .select({ n: sql<number>`count(*)::int` })
     .from(transactions)
     .where(
-      and(eq(transactions.userId, userId), eq(transactions.classificationMethod, "unclassified")),
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.classificationMethod, "unclassified"),
+        notDeleted(transactions.deletedAt),
+      ),
     );
   return row?.n ?? 0;
 }
@@ -220,6 +228,7 @@ export async function countTotal(
   filters: Omit<TxFilters, "cursor">,
 ): Promise<number> {
   const conditions = [eq(transactions.userId, userId)];
+  if (!filters.includeArchived) conditions.push(notDeleted(transactions.deletedAt));
   if (filters.from) conditions.push(gte(transactions.occurredAt, new Date(filters.from)));
   if (filters.to) {
     const to = new Date(filters.to);

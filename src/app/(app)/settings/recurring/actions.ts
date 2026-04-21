@@ -246,6 +246,7 @@ export async function promoteUpcoming(input: PromoteUpcomingInput) {
         eq(transactions.userId, session.id),
         eq(transactions.recurringId, r.id),
         eq(transactions.recurringYearMonth, ym),
+        notDeleted(transactions.deletedAt),
       ),
     )
     .limit(1);
@@ -347,7 +348,13 @@ export async function linkTxToRecurring(input: LinkTxToRecurringInput) {
     const [tx] = await trx
       .select({ id: transactions.id, recurringId: transactions.recurringId })
       .from(transactions)
-      .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)))
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, txId),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
       .limit(1);
     if (!tx) throw new Error("Transaction not found");
     if (tx.recurringId && tx.recurringId !== recurringId) {
@@ -362,6 +369,7 @@ export async function linkTxToRecurring(input: LinkTxToRecurringInput) {
           eq(transactions.userId, session.id),
           eq(transactions.recurringId, recurringId),
           eq(transactions.recurringYearMonth, ym),
+          notDeleted(transactions.deletedAt),
         ),
       )
       .limit(1);

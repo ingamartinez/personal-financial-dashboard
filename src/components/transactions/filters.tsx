@@ -27,6 +27,7 @@ export function Filters({ accounts, categories }: FiltersProps) {
   const currentAccountId = searchParams.get("accountId") ?? "";
   const currentCategorySlug = searchParams.get("categorySlug") ?? "";
   const showAdjustmentsActive = Boolean(searchParams.get("showAdjustments"));
+  const showArchivedActive = Boolean(searchParams.get("showArchived"));
 
   // Local mirror for the text search so every keystroke stays snappy; we push
   // the URL (and therefore the DB query) only after SEARCH_DEBOUNCE_MS of idle.
@@ -74,7 +75,7 @@ export function Filters({ accounts, categories }: FiltersProps) {
     currentCategorySlug,
     currentQ,
   ].filter((v) => v.length > 0).length;
-  const activeCount = stringActive + (showAdjustmentsActive ? 1 : 0);
+  const activeCount = stringActive + (showAdjustmentsActive ? 1 : 0) + (showArchivedActive ? 1 : 0);
   const hasAny = activeCount > 0;
 
   return (
@@ -186,6 +187,23 @@ export function Filters({ accounts, categories }: FiltersProps) {
           <span>Show balance adjustments</span>
           <span className="text-muted-foreground text-xs">
             (hidden by default — reconciliation entries, not spend)
+          </span>
+        </label>
+
+        <label
+          htmlFor="showArchived"
+          className="flex cursor-pointer items-center gap-2 text-sm sm:col-span-2 lg:col-span-6"
+        >
+          <input
+            id="showArchived"
+            type="checkbox"
+            checked={showArchivedActive}
+            onChange={(e) => applyChange("showArchived", e.target.checked ? "on" : "")}
+            className="border-input size-4 rounded border"
+          />
+          <span>Show archived</span>
+          <span className="text-muted-foreground text-xs">
+            (hidden by default — archived transactions are excluded from balance and reports)
           </span>
         </label>
       </div>

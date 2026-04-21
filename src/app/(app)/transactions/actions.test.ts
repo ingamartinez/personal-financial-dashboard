@@ -39,6 +39,8 @@ const {
   classifySingleWithAi,
   updateTransactionCategory,
   confirmClassification,
+  archiveTransaction,
+  restoreTransaction,
 } = await import("./actions");
 const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
 const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
@@ -1215,5 +1217,119 @@ describe("classifySingleWithAi", () => {
   it("rejects an invalid txId via zod", async () => {
     await expect(classifySingleWithAi({ txId: 0 })).rejects.toThrow();
     await expect(classifySingleWithAi({ txId: -1 })).rejects.toThrow();
+  });
+});
+
+describe("archiveTransaction / restoreTransaction (#375)", () => {
+  const EXT_PREFIX = "test-cp-action:archive";
+  async function archiveCleanup() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE ${EXT_PREFIX + "%"}
+    `);
+  }
+  beforeEach(archiveCleanup);
+  afterEach(archiveCleanup);
+
+  async function accountState(accountId: number) {
+    const [row] = await db.execute<{
+      balance: string;
+      live_count: number;
+      total_count: number;
+    }>(sql`
+      SELECT
+        COALESCE(SUM(amount_cents) FILTER (WHERE deleted_at IS NULL), 0)::text AS balance,
+        COUNT(*) FILTER (WHERE deleted_at IS NULL)::int AS live_count,
+        COUNT(*)::int AS total_count
+      FROM transactions
+      WHERE account_id = ${accountId} AND external_id LIKE ${EXT_PREFIX + "%"}
+    `);
+    return {
+      balanceCents: BigInt(row.balance),
+      liveCount: row.live_count,
+      totalCount: row.total_count,
+    };
+  }
+
+  it("archive excludes the tx from the derived balance; restore brings it back", async () => {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const txId = await seedTx({
+      counterpartyId: await seedBareCounterparty({ displayName: "test-cp-archive-1" }),
+      externalId: `${EXT_PREFIX}:balance`,
+    });
+
+    const before = await accountState(acc.id);
+    expect(before.balanceCents).toBe(BigInt(-5000));
+    expect(before.liveCount).toBe(1);
+
+    const archived = await archiveTransaction({ txId });
+    expect(archived).toEqual({ status: "ok" });
+
+    const afterArchive = await accountState(acc.id);
+    expect(afterArchive.balanceCents).toBe(BigInt(0));
+    expect(afterArchive.liveCount).toBe(0);
+    expect(afterArchive.totalCount).toBe(1);
+
+    const restored = await restoreTransaction({ txId });
+    expect(restored).toEqual({ status: "ok" });
+
+    const afterRestore = await accountState(acc.id);
+    expect(afterRestore.balanceCents).toBe(BigInt(-5000));
+    expect(afterRestore.liveCount).toBe(1);
+  });
+
+  it("archive is idempotent (second call returns not-found)", async () => {
+    const txId = await seedTx({
+      counterpartyId: await seedBareCounterparty({ displayName: "test-cp-archive-2" }),
+      externalId: `${EXT_PREFIX}:idempotent`,
+    });
+    const first = await archiveTransaction({ txId });
+    expect(first).toEqual({ status: "ok" });
+    const second = await archiveTransaction({ txId });
+    expect(second).toEqual({ status: "not-found" });
+  });
+
+  it("restore on a live tx is a no-op (returns not-found)", async () => {
+    const txId = await seedTx({
+      counterpartyId: await seedBareCounterparty({ displayName: "test-cp-archive-3" }),
+      externalId: `${EXT_PREFIX}:no-restore`,
+    });
+    const result = await restoreTransaction({ txId });
+    expect(result).toEqual({ status: "not-found" });
+  });
+
+  it("re-ingesting the same externalId after archive does NOT duplicate the row (unique index still sees archived)", async () => {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const txId = await seedTx({
+      counterpartyId: await seedBareCounterparty({ displayName: "test-cp-archive-4" }),
+      externalId: `${EXT_PREFIX}:dedup`,
+    });
+    await archiveTransaction({ txId });
+
+    // Mirror the ingestion dedup path: INSERT … ON CONFLICT DO NOTHING on
+    // the same (account_id, external_id) partial unique index.
+    const [row] = await db.execute<{ inserted: number }>(sql`
+      WITH ins AS (
+        INSERT INTO transactions (
+          user_id, account_id, occurred_at, amount_cents, currency,
+          description_raw, classification_method, source, external_id, raw_data
+        ) VALUES (
+          ${TEST_USER_ID}, ${acc.id}, now(), -5000, 'COP', 'resurrected',
+          'unclassified'::classification_method, 'sms', ${EXT_PREFIX + ":dedup"}, '{}'::jsonb
+        )
+        ON CONFLICT (account_id, external_id) WHERE external_id IS NOT NULL DO NOTHING
+        RETURNING id
+      )
+      SELECT count(*)::int AS inserted FROM ins
+    `);
+    expect(row.inserted).toBe(0);
+
+    // Archived row is still the only row — dedup did NOT resurrect or duplicate.
+    const state = await accountState(acc.id);
+    expect(state.totalCount).toBe(1);
+    expect(state.liveCount).toBe(0);
   });
 });
