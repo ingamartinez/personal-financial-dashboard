@@ -478,6 +478,10 @@ export function AccountsManager({ items, copPerUsd }: { items: AccountRow[]; cop
         open={editor.open}
         editing={editor.editing}
         onClose={close}
+        onRequestAdjust={(target) => {
+          close();
+          setAdjust({ open: true, target });
+        }}
       />
       <PhysicalCardEditor
         key={pcard.target?.physicalCard?.id ?? "pcard-closed"}
@@ -583,10 +587,12 @@ function AccountEditor({
   open,
   editing,
   onClose,
+  onRequestAdjust,
 }: {
   open: boolean;
   editing: AccountRow | null;
   onClose: () => void;
+  onRequestAdjust: (target: AccountRow) => void;
 }) {
   const [pending, startTransition] = useTransition();
   const isEdit = !!editing;
@@ -809,22 +815,46 @@ function AccountEditor({
                 <option value="USD">USD</option>
               </select>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="acc-balance">
-                {type === "credit_card" ? "Current balance" : "Opening balance"} ({currency})
-              </Label>
-              <Input
-                id="acc-balance"
-                type="number"
-                inputMode="decimal"
-                step={currency === "USD" ? "0.01" : "1"}
-                value={balance}
-                onChange={(e) => setBalance(e.target.value)}
-                required
-                className="tabular-nums"
-              />
-            </div>
+            {isEdit && editing ? (
+              <div className="flex flex-col gap-1.5">
+                <Label>Balance actual ({currency})</Label>
+                <div className="bg-muted/40 text-muted-foreground flex h-9 items-center rounded-md border px-2 text-sm tabular-nums">
+                  <Money cents={BigInt(editing.balanceCents)} currency={editing.currency} />
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="acc-balance">
+                  {type === "credit_card" ? "Current balance" : "Opening balance"} ({currency})
+                </Label>
+                <Input
+                  id="acc-balance"
+                  type="number"
+                  inputMode="decimal"
+                  step={currency === "USD" ? "0.01" : "1"}
+                  value={balance}
+                  onChange={(e) => setBalance(e.target.value)}
+                  required
+                  className="tabular-nums"
+                />
+              </div>
+            )}
           </div>
+          {isEdit && editing ? (
+            <p className="text-muted-foreground -mt-1 text-xs">
+              El balance se deriva del ledger (suma de transacciones). Para corregirlo, usá{" "}
+              <button
+                type="button"
+                className="text-foreground underline underline-offset-4 hover:no-underline"
+                onClick={() => {
+                  onRequestAdjust(editing);
+                }}
+              >
+                Ajustar saldo
+              </button>
+              .
+            </p>
+          ) : null}
 
           {multiCurrencyAllowed ? (
             <label className="flex items-center gap-2 text-sm">
