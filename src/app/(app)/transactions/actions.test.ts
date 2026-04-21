@@ -42,6 +42,7 @@ const {
   archiveTransaction,
   restoreTransaction,
   createManualTransferGroup,
+  updateTransactionInstallments,
 } = await import("./actions");
 const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
 const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
@@ -1572,5 +1573,137 @@ describe("createManualTransferGroup (#405)", () => {
       notes: null,
     });
     expect(result.status).toBe("error");
+  });
+});
+
+// #406: installments + rate per tx — the "edit cuotas" flow from /transactions.
+// Covers: happy path, rate snapshot on TC tx, rejection of suspiciously low
+// EM values, and the account-type gate.
+describe("updateTransactionInstallments (#406)", () => {
+  const EXT_PREFIX = "test-cp-action:installments";
+  async function cleanup() {
+    await db.execute(sql`DELETE FROM transactions WHERE external_id LIKE ${EXT_PREFIX + "%"}`);
+  }
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function seedTcTx(externalId: string): Promise<number> {
+    const [tc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Visa *2575' LIMIT 1
+    `);
+    const [row] = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        classification_method, source, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${tc.id}, now(), -2479900, 'COP', 'MercadoPago L',
+        'unclassified'::classification_method, 'sms', ${externalId}
+      )
+      RETURNING id
+    `);
+    return row.id;
+  }
+
+  async function seedSavingsTx(externalId: string): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const [row] = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        classification_method, source, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${acc.id}, now(), -50000, 'COP', 'test',
+        'unclassified'::classification_method, 'manual', ${externalId}
+      )
+      RETURNING id
+    `);
+    return row.id;
+  }
+
+  it("updates installments and snapshots the rate on a TC tx", async () => {
+    const txId = await seedTcTx(`${EXT_PREFIX}:happy`);
+    const result = await updateTransactionInstallments({
+      txId,
+      installmentsTotal: 12,
+      installmentRateBps: 191,
+    });
+    expect(result.status).toBe("ok");
+
+    const [row] = await db.execute<{
+      installments_total: number;
+      installment_rate_bps: number | null;
+    }>(sql`
+      SELECT installments_total, installment_rate_bps FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.installments_total).toBe(12);
+    expect(row.installment_rate_bps).toBe(191);
+  });
+
+  it("accepts a null rate (inherit from account bucket at compute time)", async () => {
+    const txId = await seedTcTx(`${EXT_PREFIX}:inherit`);
+    const result = await updateTransactionInstallments({
+      txId,
+      installmentsTotal: 3,
+      installmentRateBps: null,
+    });
+    expect(result.status).toBe("ok");
+
+    const [row] = await db.execute<{
+      installments_total: number;
+      installment_rate_bps: number | null;
+    }>(sql`
+      SELECT installments_total, installment_rate_bps FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.installments_total).toBe(3);
+    expect(row.installment_rate_bps).toBeNull();
+  });
+
+  it("rejects suspiciously low EM values (likely EA mislabeled as EM)", async () => {
+    const txId = await seedTcTx(`${EXT_PREFIX}:low-rate`);
+    const result = await updateTransactionInstallments({
+      txId,
+      installmentsTotal: 3,
+      installmentRateBps: 25, // 0.25% EM — almost certainly EA mistaken as EM
+    });
+    expect(result.status).toBe("error");
+    if (result.status === "error") expect(result.message).toMatch(/EM/);
+  });
+
+  it("accepts 0 as a valid rate (diferido sin intereses)", async () => {
+    const txId = await seedTcTx(`${EXT_PREFIX}:zero`);
+    const result = await updateTransactionInstallments({
+      txId,
+      installmentsTotal: 9,
+      installmentRateBps: 0,
+    });
+    expect(result.status).toBe("ok");
+  });
+
+  it("refuses to update a tx whose account is not a credit_card", async () => {
+    const txId = await seedSavingsTx(`${EXT_PREFIX}:savings`);
+    const result = await updateTransactionInstallments({
+      txId,
+      installmentsTotal: 3,
+      installmentRateBps: 191,
+    });
+    expect(result.status).toBe("error");
+    if (result.status === "error") expect(result.message).toMatch(/tarjeta/i);
+  });
+
+  it("rejects installments out of range (0 or > 120)", async () => {
+    const txId = await seedTcTx(`${EXT_PREFIX}:range`);
+    const zero = await updateTransactionInstallments({
+      txId,
+      installmentsTotal: 0,
+      installmentRateBps: null,
+    });
+    expect(zero.status).toBe("error");
+    const tooMany = await updateTransactionInstallments({
+      txId,
+      installmentsTotal: 500,
+      installmentRateBps: null,
+    });
+    expect(tooMany.status).toBe("error");
   });
 });

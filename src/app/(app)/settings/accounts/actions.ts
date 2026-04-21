@@ -20,6 +20,39 @@ import { convertCents } from "@/lib/money";
 
 const ADJUSTMENT_CATEGORY_SLUG = "adjustments";
 
+// #406: each bucket is an EM bps value; 0 is a valid case (diferido sin
+// intereses on the 1-cuota bucket). The validator allowing [0 OR >= 50]
+// matches `validateInstallmentRateBps` in src/lib/finance/rates.ts — they
+// enforce the same convention at different layers.
+const creditRateBucketsSchema = z
+  .object({
+    oneMonth: z
+      .number()
+      .int()
+      .nonnegative()
+      .refine((v) => v === 0 || v >= 50, {
+        message: "Tasa EM sospechosamente baja (¿EA mal etiquetada como EM?)",
+      })
+      .refine((v) => v < 10000, { message: "Tasa EM fuera de rango razonable" }),
+    months2to36: z
+      .number()
+      .int()
+      .nonnegative()
+      .refine((v) => v === 0 || v >= 50, {
+        message: "Tasa EM sospechosamente baja (¿EA mal etiquetada como EM?)",
+      })
+      .refine((v) => v < 10000, { message: "Tasa EM fuera de rango razonable" }),
+    advances: z
+      .number()
+      .int()
+      .nonnegative()
+      .refine((v) => v === 0 || v >= 50, {
+        message: "Tasa EM sospechosamente baja (¿EA mal etiquetada como EM?)",
+      })
+      .refine((v) => v < 10000, { message: "Tasa EM fuera de rango razonable" }),
+  })
+  .strict();
+
 const metadataSchema = z
   .object({
     last4s: z
@@ -35,6 +68,7 @@ const metadataSchema = z
     loanOriginalCents: z.number().int().nonnegative().optional(),
     loanRemainingCents: z.number().int().nonnegative().optional(),
     monthlyPaymentCents: z.number().int().nonnegative().optional(),
+    creditRateBuckets: creditRateBucketsSchema.optional(),
   })
   .strict();
 

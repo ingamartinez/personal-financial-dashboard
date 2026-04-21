@@ -30,6 +30,7 @@ import {
   validateTransferGroupLegs,
   type TransferLeg,
 } from "@/lib/transactions/transfer-groups";
+import { validateInstallmentRateBps, rateValidationMessage } from "@/lib/finance/rates";
 import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
 const updateSchema = z.object({
@@ -1127,4 +1128,93 @@ export async function createManualTransferGroup(
   revalidatePath("/accounts");
 
   return { status: "ok", transferGroupId: insertResult.transferGroupId, txIds: insertResult.txIds };
+}
+
+// #406: update the installment plan on an existing TC transaction. Only the
+// cuota count and the optional rate override are mutable — the account, the
+// amount, and the occurred date are intentionally locked, because any true
+// re-financing should be modeled as the modo-B split (ver #345 regla 6)
+// and that's a separate, explicit flow. Leaving `installment_rate_bps` as
+// `null` means "inherit from the account's bucket at compute time".
+const updateInstallmentsSchema = z
+  .object({
+    txId: z.coerce.number().int().positive(),
+    installmentsTotal: z.coerce.number().int().min(1).max(120),
+    // Union order matters — zod tries variants in order, and
+    // `z.coerce.number()` would coerce `null` to 0 if it came first.
+    // Handle explicit null / empty string before the number coercion.
+    installmentRateBps: z
+      .union([z.null(), z.literal(""), z.coerce.number().int()])
+      .transform((v) => (v === "" ? null : v)),
+  })
+  .superRefine((v, ctx) => {
+    if (v.installmentRateBps === null) return;
+    const res = validateInstallmentRateBps(v.installmentRateBps);
+    if (!res.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: rateValidationMessage(res.reason),
+        path: ["installmentRateBps"],
+      });
+    }
+  });
+
+export type UpdateInstallmentsInput = z.input<typeof updateInstallmentsSchema>;
+export type UpdateInstallmentsResult = { status: "ok" } | { status: "error"; message: string };
+
+export async function updateTransactionInstallments(
+  input: UpdateInstallmentsInput,
+): Promise<UpdateInstallmentsResult> {
+  const session = await getSessionUser();
+  const parsed = updateInstallmentsSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Input inválido" };
+  }
+  const { txId, installmentsTotal, installmentRateBps } = parsed.data;
+
+  // Scope hard to credit_card accounts — installments on savings/loan would be
+  // a bug elsewhere, surface it loudly rather than silently writing.
+  const [tx] = await db
+    .select({
+      id: transactions.id,
+      accountType: accounts.type,
+      amountCents: transactions.amountCents,
+    })
+    .from(transactions)
+    .innerJoin(accounts, eq(accounts.id, transactions.accountId))
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.id, txId),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (!tx) return { status: "error", message: "Transacción no encontrada" };
+  if (tx.accountType !== "credit_card") {
+    return {
+      status: "error",
+      message: "Solo se pueden editar cuotas en transacciones de tarjeta de crédito",
+    };
+  }
+
+  await db
+    .update(transactions)
+    .set({
+      installmentsTotal,
+      installmentRateBps,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+
+  emit({
+    type: "transaction:updated",
+    id: txId,
+    source: "manual",
+    timestamp: Date.now(),
+  });
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+  return { status: "ok" };
 }

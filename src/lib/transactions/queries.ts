@@ -98,6 +98,9 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
       isAdjustment: transactions.isAdjustment,
       accountId: transactions.accountId,
       accountName: accounts.name,
+      accountType: accounts.type,
+      installmentsTotal: transactions.installmentsTotal,
+      installmentRateBps: transactions.installmentRateBps,
       deletedAt: transactions.deletedAt,
       cpId: counterparties.id,
       cpDisplayName: counterparties.displayName,
@@ -140,6 +143,9 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
     isAdjustment: r.isAdjustment,
     accountId: r.accountId,
     accountName: r.accountName,
+    accountType: r.accountType,
+    installmentsTotal: r.installmentsTotal,
+    installmentRateBps: r.installmentRateBps,
     deletedAt: r.deletedAt,
     counterparty: r.cpId
       ? {
