@@ -50,3 +50,6 @@ next-env.d.ts
 .claude/
 CLAUDE.md
 MovimientosTusCuentasBancolombia*.xlsx
+
+# local-only personal financial artifacts (statements, simulations, etc)
+.private/
