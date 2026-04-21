@@ -77,6 +77,24 @@ function ArchivedBadge() {
   );
 }
 
+// #407: compact cuota progress badge. We don't currently know the "paid"
+// index for the tx without running the schedule helper on render, so the
+// MVP shows just the total `N cuotas` for N > 1 — enough for the user to
+// spot financed purchases at a glance. Future iteration can compute
+// paid/total via the schedule.
+function InstallmentsBadge({ total }: { total: number }) {
+  if (total <= 1) return null;
+  return (
+    <Badge
+      variant="outline"
+      className="shrink-0 gap-1 border-indigo-300 text-[10px] font-medium tracking-wide text-indigo-700 uppercase dark:border-indigo-700 dark:text-indigo-300"
+      title={`Financiado a ${total} cuotas`}
+    >
+      {total} cuotas
+    </Badge>
+  );
+}
+
 function CounterpartyTypeBadge({ type }: { type: NonNullable<TxRow["counterparty"]>["type"] }) {
   if (type === "person") {
     return (
@@ -205,6 +223,9 @@ export function TransactionTable({
                         </span>
                         {isArchived ? <ArchivedBadge /> : null}
                         {tx.isAdjustment ? <AdjustmentBadge /> : null}
+                        {tx.accountType === "credit_card" && tx.installmentsTotal > 1 ? (
+                          <InstallmentsBadge total={tx.installmentsTotal} />
+                        ) : null}
                         {tx.counterparty ? (
                           <CounterpartyTypeBadge type={tx.counterparty.type} />
                         ) : null}
