@@ -10,11 +10,12 @@
 // No DB writes. The dashboard banner + the per-account view both read from
 // here; the consolidate page writes via the server actions in #418.
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { db, type DB } from "@/lib/db";
 import type { AccountMetadata } from "@/lib/db/schema";
-import { statementImports } from "@/lib/db/schema";
+import { statementImports, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { cycleAnchor } from "@/lib/finance/intereses-causados-job";
 
 // Conservative fallback when neither the account metadata nor the linked card
@@ -23,7 +24,13 @@ const FALLBACK_CUT_DAY = 31;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-export type CycleStatus = "in-progress" | "pending" | "consolidated";
+// `no-activity` = anchor has passed, not consolidated, and the window
+// `(prev_anchor, this_anchor]` contains zero user-visible transactions.
+// Introduced in #430 to kill the "consolidate an empty cycle" nag for new
+// users, fresh accounts, and dormant cards. Importing old txs (CSV/SMS
+// backfill/extracto) flips it back to `pending` on the next read — the
+// rule is current ledger state, not a frozen snapshot.
+export type CycleStatus = "in-progress" | "pending" | "no-activity" | "consolidated";
 
 export type CycleSummary = {
   cycle: string; // "YYYY-MM"
@@ -117,14 +124,26 @@ export async function recentCycles(ctx: CyclesContext): Promise<CycleSummary[]> 
     if (row.cycle) consolidatedByCycle.set(row.cycle, { id: row.id, importedAt: row.importedAt });
   }
 
-  return labels.map((cycle) => {
+  // First-pass classification without activity check.
+  type Prelim = {
+    cycle: string;
+    anchor: Date;
+    prevAnchor: Date;
+    status: CycleStatus;
+    consolidatedAt: Date | null;
+    statementImportId: number | null;
+    daysOverdue: number;
+  };
+  const prelim: Prelim[] = labels.map((cycle) => {
     const anchor = cycleAnchor(cycle, cutoffDay);
+    const prevAnchor = cycleAnchor(previousCycle(cycle), cutoffDay);
     const hit = consolidatedByCycle.get(cycle);
     if (hit) {
       return {
         cycle,
-        status: "consolidated" as const,
         anchor,
+        prevAnchor,
+        status: "consolidated",
         consolidatedAt: hit.importedAt,
         statementImportId: hit.id,
         daysOverdue: 0,
@@ -133,8 +152,9 @@ export async function recentCycles(ctx: CyclesContext): Promise<CycleSummary[]> 
     if (anchor.getTime() > now.getTime()) {
       return {
         cycle,
-        status: "in-progress" as const,
         anchor,
+        prevAnchor,
+        status: "in-progress",
         consolidatedAt: null,
         statementImportId: null,
         daysOverdue: 0,
@@ -143,13 +163,68 @@ export async function recentCycles(ctx: CyclesContext): Promise<CycleSummary[]> 
     const daysOverdue = Math.max(0, Math.floor((now.getTime() - anchor.getTime()) / MS_PER_DAY));
     return {
       cycle,
-      status: "pending" as const,
       anchor,
+      prevAnchor,
+      status: "pending",
       consolidatedAt: null,
       statementImportId: null,
       daysOverdue,
     };
   });
+
+  // #430: only candidates for activity-demotion are `pending` rows. If none
+  // are pending we skip the tx-count query entirely (zero cost on the happy
+  // path where every past cycle is already consolidated).
+  const pendingRows = prelim.filter((p) => p.status === "pending");
+  if (pendingRows.length > 0) {
+    const windowStart = pendingRows.reduce(
+      (min, p) => (p.prevAnchor < min ? p.prevAnchor : min),
+      pendingRows[0].prevAnchor,
+    );
+    const windowEnd = pendingRows.reduce(
+      (max, p) => (p.anchor > max ? p.anchor : max),
+      pendingRows[0].anchor,
+    );
+
+    // Pull only `occurred_at` for the minimum superset window. Syntheticos de
+    // `intereses-causados-job` (rawData.synthetic === true) se excluyen —
+    // contarlas haría que un ciclo sin compras reales pero con intereses
+    // computados salga como "pending", contradiciendo la semántica del issue.
+    const liveRows = await database
+      .select({ occurredAt: transactions.occurredAt })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, ctx.userId),
+          eq(transactions.accountId, ctx.accountId),
+          notDeleted(transactions.deletedAt),
+          sql`${transactions.occurredAt} > ${windowStart.toISOString()}`,
+          sql`${transactions.occurredAt} <= ${windowEnd.toISOString()}`,
+          sql`COALESCE(${transactions.rawData} ->> 'synthetic', 'false') <> 'true'`,
+        ),
+      );
+
+    for (const p of pendingRows) {
+      const hasActivity = liveRows.some(
+        (r) =>
+          r.occurredAt.getTime() > p.prevAnchor.getTime() &&
+          r.occurredAt.getTime() <= p.anchor.getTime(),
+      );
+      if (!hasActivity) {
+        p.status = "no-activity";
+        p.daysOverdue = 0; // no-activity cycles are not overdue — nothing to do.
+      }
+    }
+  }
+
+  return prelim.map((p) => ({
+    cycle: p.cycle,
+    status: p.status,
+    anchor: p.anchor,
+    consolidatedAt: p.consolidatedAt,
+    statementImportId: p.statementImportId,
+    daysOverdue: p.daysOverdue,
+  }));
 }
 
 export type OverdueCycleSummary = CycleSummary & {

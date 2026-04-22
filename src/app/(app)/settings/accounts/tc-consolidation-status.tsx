@@ -32,6 +32,8 @@ function statusLabel(status: CycleStatus): string {
       return "pendiente";
     case "in-progress":
       return "en curso";
+    case "no-activity":
+      return "sin actividad";
   }
 }
 
@@ -100,7 +102,11 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
                   {cycles.map((cycle) => (
                     <div
                       key={cycle.cycle}
-                      className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                      className={
+                        cycle.status === "no-activity"
+                          ? "flex items-center gap-2 rounded-md border px-3 py-2 text-sm opacity-70"
+                          : "flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                      }
                     >
                       <span className="font-mono text-xs">{cycle.cycle}</span>
                       <Badge
@@ -110,6 +116,9 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
                             : cycle.status === "pending"
                               ? "secondary"
                               : "outline"
+                        }
+                        className={
+                          cycle.status === "no-activity" ? "text-muted-foreground" : undefined
                         }
                       >
                         {statusLabel(cycle.status)}
