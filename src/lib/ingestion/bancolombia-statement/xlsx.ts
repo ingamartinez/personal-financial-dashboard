@@ -199,28 +199,56 @@ export function parsePeriod(
 
 type SheetRows = (string | null)[][];
 
-function loadSheet(buffer: Buffer): { name: string; rows: SheetRows } {
-  let wb: XLSX.WorkBook;
+export type StatementSheetName = "PESOS" | "DOLARES";
+
+const SUPPORTED_SHEETS: readonly StatementSheetName[] = ["PESOS", "DOLARES"] as const;
+
+function readWorkbook(buffer: Buffer): XLSX.WorkBook {
   try {
-    wb = XLSX.read(buffer, { type: "buffer", raw: false, cellDates: false });
+    return XLSX.read(buffer, { type: "buffer", raw: false, cellDates: false });
   } catch (err) {
     throw new Error(`parseBancolombiaStatement: not a valid xlsx file (${(err as Error).message})`);
   }
-  const sheetName = wb.SheetNames.find((n) => n.toUpperCase() === "PESOS") ?? wb.SheetNames[0];
-  if (!sheetName) {
-    throw new Error("parseBancolombiaStatement: workbook has no sheets");
+}
+
+function pickSheetName(wb: XLSX.WorkBook, preferred: StatementSheetName | null): string {
+  if (preferred !== null) {
+    const match = wb.SheetNames.find((n) => n.toUpperCase() === preferred);
+    if (!match) {
+      throw new Error(
+        `parseBancolombiaStatement: sheet "${preferred}" not found (available: ${wb.SheetNames.join(", ") || "<none>"})`,
+      );
+    }
+    return match;
   }
+  // Legacy default: PESOS if present, else the first sheet — matches the
+  // pre-#426 behavior so single-sheet callers keep working unchanged.
+  return wb.SheetNames.find((n) => n.toUpperCase() === "PESOS") ?? wb.SheetNames[0];
+}
+
+function loadSheetRows(wb: XLSX.WorkBook, sheetName: string): SheetRows {
   const sheet = wb.Sheets[sheetName];
   if (!sheet) {
     throw new Error(`parseBancolombiaStatement: sheet "${sheetName}" missing`);
   }
-  const rows = XLSX.utils.sheet_to_json<(string | null)[]>(sheet, {
+  return XLSX.utils.sheet_to_json<(string | null)[]>(sheet, {
     header: 1,
     raw: false,
     defval: null,
     blankrows: true,
   });
-  return { name: sheetName, rows };
+}
+
+function loadSheet(
+  buffer: Buffer,
+  preferred: StatementSheetName | null,
+): { name: string; rows: SheetRows } {
+  const wb = readWorkbook(buffer);
+  if (!wb.SheetNames.length) {
+    throw new Error("parseBancolombiaStatement: workbook has no sheets");
+  }
+  const name = pickSheetName(wb, preferred);
+  return { name, rows: loadSheetRows(wb, name) };
 }
 
 function cellText(rows: SheetRows, rowIdx: number, colIdx: number): string {
@@ -326,24 +354,40 @@ function extractSummary(rows: SheetRows): StatementSummary {
   };
 }
 
-function extractRates(rows: SheetRows): StatementRates {
-  const rateFor = (label: string): number => {
-    const needle = label.toLowerCase();
-    for (let i = 0; i < rows.length; i++) {
-      if (cellText(rows, i, 0).toLowerCase().includes(needle)) {
-        const parsed = parseRateEmX10k(cellText(rows, i, 1));
-        if (parsed == null) {
-          throw new Error(`parseBancolombiaStatement: rate for "${label}" is empty`);
+function extractRates(rows: SheetRows, currency: StatementCurrency): StatementRates {
+  const rateForAny = (labels: string[]): number => {
+    for (const label of labels) {
+      const needle = label.toLowerCase();
+      for (let i = 0; i < rows.length; i++) {
+        if (cellText(rows, i, 0).toLowerCase().includes(needle)) {
+          const parsed = parseRateEmX10k(cellText(rows, i, 1));
+          if (parsed == null) {
+            throw new Error(`parseBancolombiaStatement: rate for "${label}" is empty`);
+          }
+          return parsed;
         }
-        return parsed;
       }
     }
-    throw new Error(`parseBancolombiaStatement: missing rate row "${label}"`);
+    throw new Error(`parseBancolombiaStatement: missing rate row "${labels[0]}"`);
   };
+  // USD (international) extractos use a simpler rate table: one row for
+  // "Compra Internacional" covering all installment horizons and "Avance
+  // Internacional" for cash advances. COP extractos split compras into 1-mes
+  // vs 2-36 meses. Fall back to the international labels when the COP ones
+  // aren't present so the parser handles both sheet layouts.
+  if (currency === "USD") {
+    const compra = rateForAny(["compra internacional", "compras internacionales"]);
+    const advances = rateForAny(["avance internacional", "avances internacionales", "avances"]);
+    return {
+      oneMonth: compra,
+      months2to36: compra,
+      advances,
+    };
+  }
   return {
-    oneMonth: rateFor("compra un mes"),
-    months2to36: rateFor("compra 2 - 36 meses"),
-    advances: rateFor("avances"),
+    oneMonth: rateForAny(["compra un mes"]),
+    months2to36: rateForAny(["compra 2 - 36 meses"]),
+    advances: rateForAny(["avances"]),
   };
 }
 
@@ -423,12 +467,58 @@ function extractStatementRows(rows: SheetRows): StatementRow[] {
   return out;
 }
 
-export function parseBancolombiaStatement(buffer: Buffer): ParsedStatement {
-  const { rows } = loadSheet(buffer);
+export type ParseStatementOptions = {
+  // Pick a specific sheet. Defaults to the legacy "PESOS-first, else first
+  // sheet" discovery so single-sheet callers keep working.
+  sheet?: StatementSheetName;
+};
+
+function parseSheetRows(rows: SheetRows): ParsedStatement {
   const account = extractAccount(rows);
   const period = extractPeriod(rows);
   const summary = extractSummary(rows);
-  const currentRates = extractRates(rows);
+  const currentRates = extractRates(rows, account.currency);
   const statementRows = extractStatementRows(rows);
   return { account, period, summary, currentRates, rows: statementRows };
+}
+
+export function parseBancolombiaStatement(
+  buffer: Buffer,
+  opts?: ParseStatementOptions,
+): ParsedStatement {
+  const { rows } = loadSheet(buffer, opts?.sheet ?? null);
+  return parseSheetRows(rows);
+}
+
+// Multi-sheet helper: one ParsedStatement per PESOS/DOLARES sheet present in
+// the workbook, in the order they appear. Returns length 1 for a single-sheet
+// xlsx (the Visa case) and length 2 for Mastercard/Amex internacionales.
+// Sheet discovery is case-insensitive. If a sheet is present but empty/invalid
+// (can't parse), we surface the underlying parse error with the sheet name
+// prefixed so callers can tell which sheet failed.
+export function parseBancolombiaStatementAllSheets(buffer: Buffer): ParsedStatement[] {
+  const wb = readWorkbook(buffer);
+  if (!wb.SheetNames.length) {
+    throw new Error("parseBancolombiaStatement: workbook has no sheets");
+  }
+  const present: { canonical: StatementSheetName; raw: string }[] = [];
+  for (const target of SUPPORTED_SHEETS) {
+    const raw = wb.SheetNames.find((n) => n.toUpperCase() === target);
+    if (raw) present.push({ canonical: target, raw });
+  }
+  if (present.length === 0) {
+    // Fall back to the legacy discovery (first sheet) for backwards compat
+    // with workbooks that didn't follow the PESOS/DOLARES naming.
+    return [parseSheetRows(loadSheetRows(wb, wb.SheetNames[0]))];
+  }
+  const out: ParsedStatement[] = [];
+  for (const { canonical, raw } of present) {
+    try {
+      out.push(parseSheetRows(loadSheetRows(wb, raw)));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`parseBancolombiaStatement[${canonical}]: ${msg}`);
+    }
+  }
+  return out;
 }

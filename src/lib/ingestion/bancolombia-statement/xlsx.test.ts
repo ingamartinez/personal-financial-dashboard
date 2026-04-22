@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   parseBancolombiaStatement,
+  parseBancolombiaStatementAllSheets,
   parseCopAmount,
   parseCuotas,
   parsePeriod,
@@ -147,14 +148,93 @@ describe("parsePeriod", () => {
 // Runs in CI — the real fixture at .private/statements/ is gitignored.
 // -----------------------------------------------------------------------------
 
-function buildSyntheticSheet(): Buffer {
-  const aoa: (string | number | null)[][] = [
+type SyntheticOptions = {
+  last4?: string;
+  moneda?: string;
+};
+
+function buildSyntheticAoa(opts: SyntheticOptions = {}): (string | number | null)[][] {
+  const last4 = opts.last4 ?? "9999";
+  const moneda = opts.moneda ?? "PESOS";
+  const isUsd = /USD|DOLAR/i.test(moneda);
+  const rateRows: (string | number | null)[][] = isUsd
+    ? [
+        [
+          "Compra Internacional",
+          "1.9110 %",
+          "25.5026 %",
+          "+ Saldo anterior",
+          "300.000,00",
+          "Cuota transacciones",
+          "50.000,00",
+        ],
+        [
+          "Avance Internacional",
+          "1.9110 %",
+          "25.5026 %",
+          "+ Compras del mes",
+          "250.000,00",
+          "Cuota Transacciones anteriores",
+          "0,00",
+        ],
+        ["Mora", "1.9110 %", "25.5026 %", "+ Intereses de mora", "0,00", "Cuota avances", "0,00"],
+        [null, null, null, "+ Intereses corrientes", "5.000,00", "+ Intereses de mora", "0,00"],
+        [null, null, null, "+ Avances", "0,00", "+ Intereses corrientes", "5.000,00"],
+      ]
+    : [
+        [
+          "Compra un mes",
+          "0.0000 %",
+          "0.0000 %",
+          "+ Saldo anterior",
+          "300.000,00",
+          "Cuota transacciones",
+          "50.000,00",
+        ],
+        [
+          "Compra 2 - 36 meses",
+          "1.9110 %",
+          "25.5026 %",
+          "+ Compras del mes",
+          "250.000,00",
+          "Cuota Transacciones anteriores",
+          "0,00",
+        ],
+        [
+          "Impuestos",
+          "1.9110 %",
+          "25.5026 %",
+          "+ Intereses de mora",
+          "0,00",
+          "Cuota avances",
+          "0,00",
+        ],
+        [
+          "Avances",
+          "1.9110 %",
+          "25.5026 %",
+          "+ Intereses corrientes",
+          "5.000,00",
+          "+ Intereses de mora",
+          "0,00",
+        ],
+        [
+          "Mora",
+          "1.9110 %",
+          "25.5026 %",
+          "+ Avances",
+          "0,00",
+          "+ Intereses corrientes",
+          "5.000,00",
+        ],
+      ];
+  return [
     ["Información Cliente:"],
     ["Cliente", null, "Dirección", "Ciudad", "Departamento"],
     ["TEST USER", null, "CALLE 1", "MEDELLIN", "ANTIOQUIA"],
     [],
-    ["Información de la Tarjeta", "************9999"],
-    ["Moneda: ", "PESOS"],
+    ["Información de la Tarjeta", `************${last4}`],
+    ["Moneda: ", moneda],
     [],
     ["Periodo facturado: ", "01 ene", "31 ene. 2026"],
     ["Pagar antes de: ", "feb. 15, 2026"],
@@ -173,35 +253,7 @@ function buildSyntheticSheet(): Buffer {
       "Resumen Pago Mínimo",
     ],
     [],
-    [
-      "Compra un mes",
-      "0.0000 %",
-      "0.0000 %",
-      "+ Saldo anterior",
-      "300.000,00",
-      "Cuota transacciones",
-      "50.000,00",
-    ],
-    [
-      "Compra 2 - 36 meses",
-      "1.9110 %",
-      "25.5026 %",
-      "+ Compras del mes",
-      "250.000,00",
-      "Cuota Transacciones anteriores",
-      "0,00",
-    ],
-    ["Impuestos", "1.9110 %", "25.5026 %", "+ Intereses de mora", "0,00", "Cuota avances", "0,00"],
-    [
-      "Avances",
-      "1.9110 %",
-      "25.5026 %",
-      "+ Intereses corrientes",
-      "5.000,00",
-      "+ Intereses de mora",
-      "0,00",
-    ],
-    ["Mora", "1.9110 %", "25.5026 %", "+ Avances", "0,00", "+ Intereses corrientes", "5.000,00"],
+    ...rateRows,
     [null, null, null, "+ Otros cargos", "0,00"],
     [null, null, null, "Cargos", "555.000,00"],
     [null, null, null, "(-) Pagos / abonos", "100.000,00"],
@@ -270,10 +322,22 @@ function buildSyntheticSheet(): Buffer {
       "66.666,68",
     ],
   ];
+}
 
+function buildSyntheticSheet(): Buffer {
   const wb = XLSX.utils.book_new();
-  const sheet = XLSX.utils.aoa_to_sheet(aoa);
+  const sheet = XLSX.utils.aoa_to_sheet(buildSyntheticAoa());
   XLSX.utils.book_append_sheet(wb, sheet, "PESOS");
+  const buf = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
+  return Buffer.from(buf);
+}
+
+function buildMultiSheetSynthetic(): Buffer {
+  const wb = XLSX.utils.book_new();
+  const pesos = XLSX.utils.aoa_to_sheet(buildSyntheticAoa({ last4: "8888", moneda: "PESOS" }));
+  const dolares = XLSX.utils.aoa_to_sheet(buildSyntheticAoa({ last4: "8888", moneda: "USD" }));
+  XLSX.utils.book_append_sheet(wb, pesos, "PESOS");
+  XLSX.utils.book_append_sheet(wb, dolares, "DOLARES");
   const buf = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
   return Buffer.from(buf);
 }
@@ -334,6 +398,42 @@ describe("parseBancolombiaStatement (synthetic fixture)", () => {
     const beforeRow = before[0];
     expect(beforeRow.merchant).toBe("OLD MERCHANT");
     expect(beforeRow.rateEmX10k).toBe(18311);
+  });
+});
+
+describe("parseBancolombiaStatement (multi-sheet)", () => {
+  it("parseBancolombiaStatementAllSheets returns both COP + USD for PESOS+DOLARES workbook", () => {
+    const parsed = parseBancolombiaStatementAllSheets(buildMultiSheetSynthetic());
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0].account).toEqual({ last4: "8888", currency: "COP" });
+    expect(parsed[1].account).toEqual({ last4: "8888", currency: "USD" });
+  });
+
+  it("parseBancolombiaStatementAllSheets returns a single ParsedStatement for PESOS-only workbook", () => {
+    const parsed = parseBancolombiaStatementAllSheets(buildSyntheticSheet());
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].account).toEqual({ last4: "9999", currency: "COP" });
+  });
+
+  it("parseBancolombiaStatement({ sheet: 'DOLARES' }) selects the USD sheet", () => {
+    const parsed = parseBancolombiaStatement(buildMultiSheetSynthetic(), { sheet: "DOLARES" });
+    expect(parsed.account.currency).toBe("USD");
+  });
+
+  it("parseBancolombiaStatement({ sheet: 'PESOS' }) selects the COP sheet", () => {
+    const parsed = parseBancolombiaStatement(buildMultiSheetSynthetic(), { sheet: "PESOS" });
+    expect(parsed.account.currency).toBe("COP");
+  });
+
+  it("throws when requested sheet name is not present", () => {
+    expect(() => parseBancolombiaStatement(buildSyntheticSheet(), { sheet: "DOLARES" })).toThrow(
+      /sheet "DOLARES" not found/,
+    );
+  });
+
+  it("remains backwards-compatible when called with no options (PESOS-only)", () => {
+    const parsed = parseBancolombiaStatement(buildSyntheticSheet());
+    expect(parsed.account.currency).toBe("COP");
   });
 });
 
@@ -436,4 +536,51 @@ describeIfFixture("parseBancolombiaStatement (real fixture 202603 Visa 2575)", (
     expect(row?.rateEmX10k).toBe(18895);
     expect(row?.amountCents).toBe(BigInt(24650000));
   });
+
+  it("parseBancolombiaStatementAllSheets returns a single ParsedStatement (Visa is PESOS-only)", () => {
+    const parsed = parseBancolombiaStatementAllSheets(readFileSync(FIXTURE_PATH));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].account).toEqual({ last4: "2575", currency: "COP" });
+  });
 });
+
+const MASTERCARD_FIXTURE_PATH = resolve(
+  process.cwd(),
+  ".private/statements/Extracto_202603_Mastercard_Detallado_7291.xlsx",
+);
+
+const describeIfMastercardFixture = existsSync(MASTERCARD_FIXTURE_PATH) ? describe : describe.skip;
+
+describeIfMastercardFixture(
+  "parseBancolombiaStatementAllSheets (real fixture 202603 Mastercard 7291)",
+  () => {
+    let parsed: ReturnType<typeof parseBancolombiaStatementAllSheets>;
+    beforeAll(() => {
+      parsed = parseBancolombiaStatementAllSheets(readFileSync(MASTERCARD_FIXTURE_PATH));
+    });
+
+    it("returns two ParsedStatement — PESOS first, DOLARES second", () => {
+      expect(parsed).toHaveLength(2);
+    });
+
+    it("first element is the COP statement for card 7291", () => {
+      expect(parsed[0].account).toEqual({ last4: "7291", currency: "COP" });
+    });
+
+    it("second element is the USD statement for card 7291", () => {
+      expect(parsed[1].account).toEqual({ last4: "7291", currency: "USD" });
+    });
+
+    it("COP sheet has at least one parsed row", () => {
+      expect(parsed[0].rows.length).toBeGreaterThan(0);
+    });
+
+    it("USD sheet has at least one parsed row", () => {
+      expect(parsed[1].rows.length).toBeGreaterThan(0);
+    });
+
+    it("both sheets share the same statement period (same physical card, same cycle)", () => {
+      expect(parsed[0].period.endDate.toISOString()).toBe(parsed[1].period.endDate.toISOString());
+    });
+  },
+);
