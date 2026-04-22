@@ -153,6 +153,15 @@ export const reconciliationStatus = pgEnum("reconciliation_status", [
   "imported_from_statement",
 ]);
 
+// #418: discriminates between the two xlsx exports Bancolombia produces:
+// "movimientos" = operational account history (src/lib/reconciliation parsers);
+// "extracto_detallado" = TC monthly statement with installments+rate+cycle
+// metadata (src/lib/ingestion/bancolombia-statement parser, #417).
+export const statementImportKind = pgEnum("statement_import_kind", [
+  "movimientos",
+  "extracto_detallado",
+]);
+
 export const classificationMethod = pgEnum("classification_method", [
   "rule",
   "rule_retroactive",
@@ -509,10 +518,20 @@ export const statementImports = pgTable(
     importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
     txnCount: integer("txn_count").notNull().default(0),
     balanceAtEndCents: bigint("balance_at_end_cents", { mode: "bigint" }),
+    // #418: extracto_detallado consolidation tracks the cycle + the match
+    // report + the synthetic intereses-causados tx for auditability and
+    // idempotency. Null for movimientos imports.
+    kind: statementImportKind("kind").notNull().default("movimientos"),
+    cycle: varchar("cycle", { length: 7 }),
+    syntheticTxId: integer("synthetic_tx_id"),
+    report: jsonb("report"),
   },
   (t) => [
     uniqueIndex("statement_imports_user_account_file_unique").on(t.userId, t.accountId, t.fileHash),
     index("statement_imports_account_period_idx").on(t.accountId, t.periodStart, t.periodEnd),
+    uniqueIndex("statement_imports_cycle_unique")
+      .on(t.userId, t.accountId, t.cycle)
+      .where(sql`${t.kind} = 'extracto_detallado' AND ${t.cycle} IS NOT NULL`),
   ],
 );
 
