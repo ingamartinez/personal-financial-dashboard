@@ -16,6 +16,7 @@ import { MonthSwitcher } from "@/components/dashboard/month-switcher";
 import { RecurringInboxCard } from "@/components/dashboard/recurring-inbox-card";
 import { SmsHealthCard } from "@/components/dashboard/sms-health-card";
 import { CreditCardsCard } from "@/components/dashboard/credit-cards-card";
+import { PendingConsolidationBanner } from "@/components/dashboard/pending-consolidation-banner";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
 import { getOpenGaps } from "@/lib/recurring/gap-queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
@@ -97,6 +98,8 @@ export default async function DashboardPage({
         </div>
         <MonthSwitcher ym={ym} />
       </header>
+
+      <PendingConsolidationBanner userId={session.id} />
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-4">
         <NetWorthCard data={netWorth} fx={fx} />

@@ -12,6 +12,14 @@ const pages = [
   { name: "settings-rules", path: "/settings/rules", hasDonut: false },
   { name: "settings-inbox", path: "/settings/inbox", hasDonut: false },
   { name: "settings-widgets", path: "/settings/widgets", hasDonut: false },
+  { name: "settings-accounts", path: "/settings/accounts", hasDonut: false },
+  // #419: consolidate page. Without DEV_AUTH_BYPASS=1 this renders the login
+  // redirect — still worth including so the route gets a smoke run.
+  {
+    name: "settings-consolidate-2026-03",
+    path: "/settings/accounts/5/consolidate/2026-03",
+    hasDonut: false,
+  },
   { name: "signup-missing", path: "/signup", hasDonut: false },
   { name: "signup-unknown", path: "/signup?code=__DOESNOTEXIST__", hasDonut: false },
 ];
