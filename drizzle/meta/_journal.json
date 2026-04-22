@@ -358,6 +358,13 @@
       "when": 1776811523737,
       "tag": "0050_sour_silvermane",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1776822575554,
+      "tag": "0051_daily_molten_man",
+      "breakpoints": true
     }
   ]
 }

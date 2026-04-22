@@ -13,19 +13,20 @@
 //     line per period, never bundled into capital.
 //   - regla 3: the rate snapshot lives on the tx — this helper takes it as
 //     input and does NOT look it up (the caller resolves bucket vs override
-//     via `resolveBucketRateBps`).
+//     via `resolveBucketRateX10k`).
 //
-// Rounding: interest is computed as `round(saldo × rate_bps / 10000)` in
-// integer cents, half-up. This matches Bancolombia's display policy close
+// Rounding: interest is computed as `round(saldo × rateEmX10k / 1_000_000)`
+// in integer cents, half-up. Matches Bancolombia's display policy close
 // enough to pass the extract-level tests in the sibling test file. If a
 // future extract diverges, update the policy here — do NOT let the helper
 // drift silently.
 
 import type { Currency } from "@/lib/types";
+import { EM_X10K_PER_FRACTIONAL } from "./rates";
 
 export type InstallmentScheduleInput = {
   amountCents: bigint; // original purchase amount (positive magnitude)
-  rateEMBps: number; // EM rate in bps (0 = diferido sin intereses, 191 = 1.91% EM)
+  rateEmX10k: number; // EM rate stored as percent × 10000 (0 = 0%, 19110 = 1.9110% EM)
   installments: number; // total cuotas, N >= 1
   graceMonth: boolean; // true = month-1 interest deferred to month 2
   purchaseDate: Date; // anchor for month counting
@@ -63,19 +64,20 @@ function bigIntRoundHalfUp(numerator: bigint, denominator: bigint): bigint {
   return (numerator + denominator / BigInt(2)) / denominator;
 }
 
-// Interest for a single period, given a starting balance and the bps rate.
-// Split out so tests can drive it directly when checking specific rows.
-export function periodInterestCents(balanceCents: bigint, rateEMBps: number): bigint {
-  if (rateEMBps === 0) return BigInt(0);
+// Interest for a single period, given a starting balance and the stored
+// EM rate (percent × 10000). Split out so tests can drive it directly when
+// checking specific rows.
+export function periodInterestCents(balanceCents: bigint, rateEmX10k: number): bigint {
+  if (rateEmX10k === 0) return BigInt(0);
   if (balanceCents <= BigInt(0)) return BigInt(0);
-  return bigIntRoundHalfUp(balanceCents * BigInt(rateEMBps), BigInt(10000));
+  return bigIntRoundHalfUp(balanceCents * BigInt(rateEmX10k), BigInt(EM_X10K_PER_FRACTIONAL));
 }
 
 export function installmentSchedule(input: InstallmentScheduleInput): InstallmentScheduleOutput {
-  const { amountCents, rateEMBps, installments, graceMonth, purchaseDate, today } = input;
+  const { amountCents, rateEmX10k, installments, graceMonth, purchaseDate, today } = input;
   if (installments < 1) throw new Error("installments must be >= 1");
   if (installments > 240) throw new Error("installments > 240 not supported");
-  if (rateEMBps < 0) throw new Error("rateEMBps must be >= 0");
+  if (rateEmX10k < 0) throw new Error("rateEmX10k must be >= 0");
   if (amountCents <= BigInt(0)) throw new Error("amountCents must be > 0");
 
   const N = installments;
@@ -110,10 +112,10 @@ export function installmentSchedule(input: InstallmentScheduleInput): Installmen
       // original amount, since month 1 paid no capital either — the balance
       // entering month 2 is `amountCents - capital_month_1`).
       const deferredBase = amountCents; // month-1 starts with full amount
-      deferredThis = periodInterestCents(deferredBase, rateEMBps);
-      interestThis = periodInterestCents(balance, rateEMBps);
+      deferredThis = periodInterestCents(deferredBase, rateEmX10k);
+      interestThis = periodInterestCents(balance, rateEmX10k);
     } else {
-      interestThis = periodInterestCents(balance, rateEMBps);
+      interestThis = periodInterestCents(balance, rateEmX10k);
       deferredThis = BigInt(0);
     }
 

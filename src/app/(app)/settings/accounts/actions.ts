@@ -20,36 +20,36 @@ import { convertCents } from "@/lib/money";
 
 const ADJUSTMENT_CATEGORY_SLUG = "adjustments";
 
-// #406: each bucket is an EM bps value; 0 is a valid case (diferido sin
-// intereses on the 1-cuota bucket). The validator allowing [0 OR >= 50]
-// matches `validateInstallmentRateBps` in src/lib/finance/rates.ts — they
-// enforce the same convention at different layers.
+// #406/#411: each bucket is stored as "percent × 10000" so the schema can
+// hold Bancolombia's 4-decimal display (e.g. "1.9110%" → 19110). The limits
+// match `validateInstallmentRate` in src/lib/finance/rates.ts — same
+// convention enforced at both layers.
 const creditRateBucketsSchema = z
   .object({
     oneMonth: z
       .number()
       .int()
       .nonnegative()
-      .refine((v) => v === 0 || v >= 50, {
+      .refine((v) => v === 0 || v >= 5000, {
         message: "Tasa EM sospechosamente baja (¿EA mal etiquetada como EM?)",
       })
-      .refine((v) => v < 10000, { message: "Tasa EM fuera de rango razonable" }),
+      .refine((v) => v < 1_000_000, { message: "Tasa EM fuera de rango razonable" }),
     months2to36: z
       .number()
       .int()
       .nonnegative()
-      .refine((v) => v === 0 || v >= 50, {
+      .refine((v) => v === 0 || v >= 5000, {
         message: "Tasa EM sospechosamente baja (¿EA mal etiquetada como EM?)",
       })
-      .refine((v) => v < 10000, { message: "Tasa EM fuera de rango razonable" }),
+      .refine((v) => v < 1_000_000, { message: "Tasa EM fuera de rango razonable" }),
     advances: z
       .number()
       .int()
       .nonnegative()
-      .refine((v) => v === 0 || v >= 50, {
+      .refine((v) => v === 0 || v >= 5000, {
         message: "Tasa EM sospechosamente baja (¿EA mal etiquetada como EM?)",
       })
-      .refine((v) => v < 10000, { message: "Tasa EM fuera de rango razonable" }),
+      .refine((v) => v < 1_000_000, { message: "Tasa EM fuera de rango razonable" }),
   })
   .strict();
 

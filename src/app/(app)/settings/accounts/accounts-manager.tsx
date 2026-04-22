@@ -29,10 +29,11 @@ import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { AccountMetadata } from "@/lib/db/schema";
 import {
-  formatBpsEmAsEaPercent,
-  parsePercentToBps,
-  validateInstallmentRateBps,
+  EM_X10K_SCALE,
+  formatEmX10kAsEaPercent,
+  parsePercentToEmX10k,
   rateValidationMessage,
+  validateInstallmentRate,
 } from "@/lib/finance/rates";
 import {
   adjustAccountBalance,
@@ -593,21 +594,17 @@ function metadataFromForm(values: {
     const n = Number(values.monthlyPayment);
     if (Number.isFinite(n) && n >= 0) md.monthlyPaymentCents = Math.round(n * 100);
   }
-  // #406: assemble the rate buckets only when the user filled at least one.
-  // An empty form leaves `creditRateBuckets` undefined so we don't overwrite
-  // an account that already has sane values.
+  // #406/#411: assemble the rate buckets only when the user filled at
+  // least one. An empty form leaves `creditRateBuckets` undefined so we
+  // don't overwrite an account that already has sane values.
   const anyRateFilled =
     values.rateOneMonth?.trim() || values.rateMonths2to36?.trim() || values.rateAdvances?.trim();
   if (anyRateFilled) {
-    const oneMonthBps = parsePercentToBps(values.rateOneMonth ?? "0") ?? 0;
-    const months2to36Bps = parsePercentToBps(values.rateMonths2to36 ?? "0") ?? 0;
-    const advancesBps =
-      parsePercentToBps(values.rateAdvances ?? values.rateMonths2to36 ?? "0") ?? 0;
-    md.creditRateBuckets = {
-      oneMonth: oneMonthBps,
-      months2to36: months2to36Bps,
-      advances: advancesBps,
-    };
+    const oneMonth = parsePercentToEmX10k(values.rateOneMonth ?? "0") ?? 0;
+    const months2to36 = parsePercentToEmX10k(values.rateMonths2to36 ?? "0") ?? 0;
+    const advances =
+      parsePercentToEmX10k(values.rateAdvances ?? values.rateMonths2to36 ?? "0") ?? 0;
+    md.creditRateBuckets = { oneMonth, months2to36, advances };
   }
   return md;
 }
@@ -664,23 +661,24 @@ function AccountEditor({
       ? (initialMeta.monthlyPaymentCents / 100).toString()
       : "",
   );
-  // #406: EM rate buckets for credit cards. Show the typed percent (e.g.
-  // "1.9110") so the user can eyeball it against their statement; persist as
-  // bps on submit. Default display for a fresh TC is blank to avoid implying
-  // a value was stored.
+  // #406/#411: EM rate buckets for credit cards. Show the typed percent
+  // (e.g. "1.9110") so the user can eyeball it against their statement;
+  // persist as EM×10000 (4-decimal precision) on submit. Default display
+  // for a fresh TC is blank so the placeholder can surface Bancolombia's
+  // defaults as a hint without implying the value was already stored.
   const [rateOneMonth, setRateOneMonth] = useState(
     initialMeta.creditRateBuckets?.oneMonth != null
-      ? (initialMeta.creditRateBuckets.oneMonth / 100).toFixed(4)
+      ? (initialMeta.creditRateBuckets.oneMonth / EM_X10K_SCALE).toFixed(4)
       : "",
   );
   const [rateMonths2to36, setRateMonths2to36] = useState(
     initialMeta.creditRateBuckets?.months2to36 != null
-      ? (initialMeta.creditRateBuckets.months2to36 / 100).toFixed(4)
+      ? (initialMeta.creditRateBuckets.months2to36 / EM_X10K_SCALE).toFixed(4)
       : "",
   );
   const [rateAdvances, setRateAdvances] = useState(
     initialMeta.creditRateBuckets?.advances != null
-      ? (initialMeta.creditRateBuckets.advances / 100).toFixed(4)
+      ? (initialMeta.creditRateBuckets.advances / EM_X10K_SCALE).toFixed(4)
       : "",
   );
 
@@ -712,17 +710,17 @@ function AccountEditor({
       rateMonths2to36: type === "credit_card" ? rateMonths2to36 : "",
       rateAdvances: type === "credit_card" ? rateAdvances : "",
     });
-    // #406: client-side validation so the "too-low" EM/EA confusion message
-    // lands next to the field instead of bubbling up as a server 500. Server
-    // still re-validates via zod — this is UX, not security.
+    // #406/#411: client-side validation so the "too-low" EM/EA confusion
+    // message lands next to the field instead of bubbling up as a server
+    // 500. Server still re-validates via zod — this is UX, not security.
     if (primaryMd.creditRateBuckets) {
       const b = primaryMd.creditRateBuckets;
-      for (const [label, bps] of [
+      for (const [label, stored] of [
         ["1 cuota", b.oneMonth],
         ["2-36 cuotas", b.months2to36],
         ["avances", b.advances],
       ] as const) {
-        const v = validateInstallmentRateBps(bps);
+        const v = validateInstallmentRate(stored);
         if (!v.ok) {
           toast.error(`Tasa ${label}: ${rateValidationMessage(v.reason)}`);
           return;
@@ -1262,14 +1260,30 @@ function RateBucketsSection({
         vacío si no sabés — las compras heredan 0% por defecto.
       </p>
       <div className="grid grid-cols-3 gap-3">
-        <RateInput id="rate-one-month" label="1 cuota" value={oneMonth} onChange={onOneMonth} />
+        {/* #411: each bucket's placeholder shows Bancolombia's default for that
+            category — hints the user with 0.0000 / 1.9110 / 1.9110 without
+            actually persisting those until they type. */}
+        <RateInput
+          id="rate-one-month"
+          label="1 cuota"
+          value={oneMonth}
+          onChange={onOneMonth}
+          placeholder="0.0000"
+        />
         <RateInput
           id="rate-months-2-36"
           label="2-36 cuotas"
           value={months2to36}
           onChange={onMonths2to36}
+          placeholder="1.9110"
         />
-        <RateInput id="rate-advances" label="Avances" value={advances} onChange={onAdvances} />
+        <RateInput
+          id="rate-advances"
+          label="Avances"
+          value={advances}
+          onChange={onAdvances}
+          placeholder="1.9110"
+        />
       </div>
     </fieldset>
   );
@@ -1280,14 +1294,27 @@ function RateInput({
   label,
   value,
   onChange,
+  placeholder,
 }: {
   id: string;
   label: string;
   value: string;
   onChange: (v: string) => void;
+  placeholder?: string;
 }) {
-  const bps = parsePercentToBps(value);
-  const eaDisplay = bps != null && bps > 0 ? formatBpsEmAsEaPercent(bps) : null;
+  // #411: the EA preview has two sources:
+  //   - typed value  → bright, authoritative ("what you're about to save")
+  //   - placeholder  → faded, suggestive ("what the default would give you")
+  // Showing the placeholder's EA while the input is empty gives the user
+  // context before they type — previously the row collapsed to "—".
+  const storedTyped = parsePercentToEmX10k(value);
+  const storedPlaceholder = placeholder ? parsePercentToEmX10k(placeholder) : null;
+  const typedEa =
+    storedTyped != null && storedTyped > 0 ? formatEmX10kAsEaPercent(storedTyped) : null;
+  const placeholderEa =
+    storedPlaceholder != null && storedPlaceholder > 0
+      ? formatEmX10kAsEaPercent(storedPlaceholder)
+      : null;
   return (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id}>{label}</Label>
@@ -1298,16 +1325,20 @@ function RateInput({
           inputMode="decimal"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="0.0000"
+          placeholder={placeholder ?? "0.0000"}
           className="pr-10 tabular-nums"
         />
         <span className="text-muted-foreground pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-xs">
           %
         </span>
       </div>
-      <p className="text-muted-foreground text-xs tabular-nums">
-        {eaDisplay ? `≈ ${eaDisplay} EA` : "—"}
-      </p>
+      {typedEa ? (
+        <p className="text-muted-foreground text-xs tabular-nums">≈ {typedEa} EA</p>
+      ) : placeholderEa ? (
+        <p className="text-muted-foreground/60 text-xs italic tabular-nums">≈ {placeholderEa} EA</p>
+      ) : (
+        <p className="text-muted-foreground text-xs tabular-nums">—</p>
+      )}
     </div>
   );
 }

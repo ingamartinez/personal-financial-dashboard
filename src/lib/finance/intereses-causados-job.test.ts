@@ -47,9 +47,10 @@ async function seedPurchase(opts: {
   amountCentsMagnitude: bigint;
   occurredAt: string; // YYYY-MM-DD
   installmentsTotal: number;
-  installmentRateBps: number | null;
+  installmentRateEmX10k: number | null;
 }) {
-  const rateSql = opts.installmentRateBps === null ? sql`NULL` : sql`${opts.installmentRateBps}`;
+  const rateSql =
+    opts.installmentRateEmX10k === null ? sql`NULL` : sql`${opts.installmentRateEmX10k}`;
   const [row] = await db.execute<{ id: number }>(sql`
     INSERT INTO transactions (
       user_id, account_id, occurred_at, amount_cents, currency, description_raw,
@@ -69,19 +70,20 @@ async function seedPurchase(opts: {
 describe("computeInterestForCycle", () => {
   it("returns the interest due on the next unpaid cuota", async () => {
     const visa = await getVisaId();
-    await setBucketRates(visa, { oneMonth: 0, months2to36: 191, advances: 191 });
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
 
-    // 100_000 pesos @ 191 bps (1.91% EM) × 12 cuotas. Capital per cuota =
-    // 8333 pesos (since 100_000 / 12 = 8333.33 → floor to peso). Interest
-    // on month 1 (no grace for this one): saldo 10_000_000 cents × 191 / 10000
-    // = 191_000 cents = $1_910 pesos.
+    // 100_000 pesos @ 19110 x10k (1.9110% EM) × 12 cuotas. Capital per cuota
+    // = 8333 pesos (since 100_000 / 12 = 8333.33 → floor to peso). Interest
+    // on month 1 (grace=true so month-1 cuota only covers capital; the
+    // scheduled interest the job reports is month-2's, which folds the
+    // deferred month-1 interest in).
     await seedPurchase({
       accountId: visa,
       externalId: `${EXT_PREFIX}base`,
       amountCentsMagnitude: BigInt(10_000_000),
       occurredAt: "2026-03-10",
       installmentsTotal: 12,
-      installmentRateBps: 191,
+      installmentRateEmX10k: 19110,
     });
 
     const run = await computeInterestForCycle({
@@ -90,13 +92,13 @@ describe("computeInterestForCycle", () => {
       cycle: "2026-04",
     });
     expect(run.intereses.length).toBe(1);
-    expect(run.intereses[0].rateEMBps).toBe(191);
+    expect(run.intereses[0].rateEmX10k).toBe(19110);
     expect(run.totalInterestCents).toBeGreaterThan(BigInt(0));
   });
 
   it("falls back to the account's rate bucket when the tx has no explicit rate", async () => {
     const visa = await getVisaId();
-    await setBucketRates(visa, { oneMonth: 0, months2to36: 200, advances: 200 });
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 20000, advances: 20000 });
 
     await seedPurchase({
       accountId: visa,
@@ -104,7 +106,7 @@ describe("computeInterestForCycle", () => {
       amountCentsMagnitude: BigInt(5_000_000),
       occurredAt: "2026-03-10",
       installmentsTotal: 6,
-      installmentRateBps: null, // inherit from bucket
+      installmentRateEmX10k: null, // inherit from bucket
     });
 
     const run = await computeInterestForCycle({
@@ -113,12 +115,12 @@ describe("computeInterestForCycle", () => {
       cycle: "2026-04",
     });
     expect(run.intereses.length).toBe(1);
-    expect(run.intereses[0].rateEMBps).toBe(200);
+    expect(run.intereses[0].rateEmX10k).toBe(20000);
   });
 
   it("skips purchases with 1 cuota + 0% oneMonth bucket (diferido nominal)", async () => {
     const visa = await getVisaId();
-    await setBucketRates(visa, { oneMonth: 0, months2to36: 191, advances: 191 });
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
 
     await seedPurchase({
       accountId: visa,
@@ -126,7 +128,7 @@ describe("computeInterestForCycle", () => {
       amountCentsMagnitude: BigInt(500_000),
       occurredAt: "2026-03-10",
       installmentsTotal: 1,
-      installmentRateBps: null,
+      installmentRateEmX10k: null,
     });
 
     const run = await computeInterestForCycle({
@@ -142,14 +144,14 @@ describe("computeInterestForCycle", () => {
 describe("applyInteresesCausadosForCycle", () => {
   it("inserts a synthetic tx with category intereses-tc on first run", async () => {
     const visa = await getVisaId();
-    await setBucketRates(visa, { oneMonth: 0, months2to36: 191, advances: 191 });
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
     await seedPurchase({
       accountId: visa,
       externalId: `${EXT_PREFIX}ins-1`,
       amountCentsMagnitude: BigInt(20_000_000),
       occurredAt: "2026-03-10",
       installmentsTotal: 12,
-      installmentRateBps: 191,
+      installmentRateEmX10k: 19110,
     });
 
     const result = await applyInteresesCausadosForCycle({
@@ -178,14 +180,14 @@ describe("applyInteresesCausadosForCycle", () => {
 
   it("is idempotent — second call returns skipped/already-run", async () => {
     const visa = await getVisaId();
-    await setBucketRates(visa, { oneMonth: 0, months2to36: 191, advances: 191 });
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
     await seedPurchase({
       accountId: visa,
       externalId: `${EXT_PREFIX}idem`,
       amountCentsMagnitude: BigInt(10_000_000),
       occurredAt: "2026-03-10",
       installmentsTotal: 12,
-      installmentRateBps: 191,
+      installmentRateEmX10k: 19110,
     });
 
     const first = await applyInteresesCausadosForCycle({

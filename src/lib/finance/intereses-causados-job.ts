@@ -19,7 +19,7 @@ import { db, type DB } from "@/lib/db";
 import { accounts, transactions, type AccountMetadata } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { installmentSchedule } from "@/lib/finance/installment-schedule";
-import { resolveBucketRateBps } from "@/lib/finance/rates";
+import { resolveBucketRateX10k } from "@/lib/finance/rates";
 
 export type CycleKey = `${number}-${string}`; // e.g. "5-2026-04"
 
@@ -29,7 +29,7 @@ export type InterestRun = {
   intereses: Array<{
     txId: number;
     purchaseAmountCents: bigint;
-    rateEMBps: number;
+    rateEmX10k: number; // #411: percent × 10000
     installmentsTotal: number;
     installmentsPaid: number;
     outstandingBeforeCents: bigint;
@@ -97,7 +97,7 @@ export async function computeInterestForCycle(opts: {
       amountCents: transactions.amountCents,
       occurredAt: transactions.occurredAt,
       installmentsTotal: transactions.installmentsTotal,
-      installmentRateBps: transactions.installmentRateBps,
+      installmentRateEmX10k: transactions.installmentRateEmX10k,
     })
     .from(transactions)
     .where(
@@ -119,14 +119,14 @@ export async function computeInterestForCycle(opts: {
   let totalInterestCents = BigInt(0);
 
   for (const p of purchases) {
-    const rateBps =
-      p.installmentRateBps != null
-        ? p.installmentRateBps
-        : (resolveBucketRateBps(buckets, p.installmentsTotal) ?? 0);
+    const rateEmX10k =
+      p.installmentRateEmX10k != null
+        ? p.installmentRateEmX10k
+        : (resolveBucketRateX10k(buckets, p.installmentsTotal) ?? 0);
 
     const schedule = installmentSchedule({
       amountCents: -p.amountCents, // stored negative, helper expects positive magnitude
-      rateEMBps: rateBps,
+      rateEmX10k,
       installments: p.installmentsTotal,
       graceMonth: true, // Bancolombia default per regla 4; safe for extracts today
       purchaseDate: p.occurredAt,
@@ -148,7 +148,7 @@ export async function computeInterestForCycle(opts: {
     intereses.push({
       txId: p.id,
       purchaseAmountCents: -p.amountCents,
-      rateEMBps: rateBps,
+      rateEmX10k,
       installmentsTotal: p.installmentsTotal,
       installmentsPaid: schedule.paidCount,
       outstandingBeforeCents: outstandingBefore,
@@ -225,7 +225,7 @@ export async function applyInteresesCausadosForCycle(opts: {
           breakdown: run.intereses.map((i) => ({
             txId: i.txId,
             amountCents: i.purchaseAmountCents.toString(),
-            rateEMBps: i.rateEMBps,
+            rateEmX10k: i.rateEmX10k,
             installmentsTotal: i.installmentsTotal,
             installmentsPaid: i.installmentsPaid,
             outstandingBeforeCents: i.outstandingBeforeCents.toString(),

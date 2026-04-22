@@ -1,16 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
-  bpsEmToEa,
-  eaToEm,
   emToEa,
-  formatBpsEmAsEaPercent,
-  formatBpsEmAsPercent,
-  MAX_EM_BPS,
-  MIN_NON_ZERO_EM_BPS,
-  parsePercentToBps,
+  eaToEm,
+  emX10kToEa,
+  EM_X10K_PER_FRACTIONAL,
+  EM_X10K_SCALE,
+  formatEmX10kAsEaPercent,
+  formatEmX10kAsPercent,
+  MAX_EM_X10K,
+  MIN_NON_ZERO_EM_X10K,
+  parsePercentToEmX10k,
   rateValidationMessage,
-  resolveBucketRateBps,
-  validateInstallmentRateBps,
+  resolveBucketRateX10k,
+  validateInstallmentRate,
 } from "./rates";
 
 describe("rates: EM ↔ EA conversion", () => {
@@ -19,86 +21,94 @@ describe("rates: EM ↔ EA conversion", () => {
     expect(eaToEm(0)).toBe(0);
   });
 
-  it("EM 1.91% ≈ EA 25.49% (Bancolombia's 2-36 cuota bucket)", () => {
-    const ea = emToEa(0.0191);
-    // Exact: (1.0191)^12 - 1 ≈ 0.25488 → 25.49% rounded
-    expect(ea).toBeCloseTo(0.25488, 4);
+  it("EM 1.9110% ≈ EA 25.50% (Bancolombia's 2-36 cuota bucket at 4 decimals)", () => {
+    const ea = emToEa(0.01911);
+    // Exact: (1.019110)^12 - 1 ≈ 0.25503 → 25.50% rounded
+    expect(ea).toBeCloseTo(0.25503, 4);
   });
 
   it("round-trip: eaToEm ∘ emToEa ≈ identity", () => {
-    for (const em of [0.005, 0.01, 0.0191, 0.05]) {
+    for (const em of [0.005, 0.01, 0.01911, 0.05]) {
       expect(eaToEm(emToEa(em))).toBeCloseTo(em, 10);
     }
   });
 
-  it("bpsEmToEa(191) matches the typical Bancolombia extract display", () => {
-    // 191 bps = 1.91% EM → ~25.49% EA
-    expect(bpsEmToEa(191)).toBeCloseTo(0.25488, 4);
+  it("emX10kToEa(19110) matches the 4-decimal Bancolombia extract display", () => {
+    // 19110 stored (percent × 10000) = 1.9110% EM → ~25.50% EA
+    expect(emX10kToEa(19110)).toBeCloseTo(0.25503, 4);
+  });
+
+  it("EM_X10K_PER_FRACTIONAL exports the divisor so callers don't invent scale factors", () => {
+    expect(EM_X10K_PER_FRACTIONAL).toBe(1_000_000);
+    expect(EM_X10K_SCALE).toBe(10000);
   });
 });
 
 describe("rates: formatters", () => {
-  it("formatBpsEmAsPercent keeps 4 decimals so rates like 1.8311% stay lossless", () => {
-    expect(formatBpsEmAsPercent(1831)).toBe("18.3100%");
-    expect(formatBpsEmAsPercent(191)).toBe("1.9100%");
+  it("formatEmX10kAsPercent keeps 4 decimals for lossless display", () => {
+    expect(formatEmX10kAsPercent(19110)).toBe("1.9110%");
+    expect(formatEmX10kAsPercent(18311)).toBe("1.8311%");
+    expect(formatEmX10kAsPercent(0)).toBe("0.0000%");
   });
 
-  it("formatBpsEmAsEaPercent prints the EA equivalent for display", () => {
-    // 191 bps = 1.91% EM → 25.49% EA rounded to 2 decimals
-    expect(formatBpsEmAsEaPercent(191)).toBe("25.49%");
-    expect(formatBpsEmAsEaPercent(0)).toBe("0.00%");
+  it("formatEmX10kAsEaPercent prints the EA equivalent at 2 decimals", () => {
+    // 19110 stored = 1.9110% EM → 25.5026% EA → 25.50% rounded
+    expect(formatEmX10kAsEaPercent(19110)).toBe("25.50%");
+    expect(formatEmX10kAsEaPercent(0)).toBe("0.00%");
   });
 });
 
-describe("rates: parsePercentToBps", () => {
-  it("parses plain decimal", () => {
-    expect(parsePercentToBps("1.9110")).toBe(191);
-    expect(parsePercentToBps("0")).toBe(0);
-    expect(parsePercentToBps("25.5")).toBe(2550);
+describe("rates: parsePercentToEmX10k", () => {
+  it("parses 4-decimal percent to the exact stored unit", () => {
+    expect(parsePercentToEmX10k("1.9110")).toBe(19110);
+    expect(parsePercentToEmX10k("0")).toBe(0);
+    expect(parsePercentToEmX10k("25.5")).toBe(255000);
   });
 
   it("accepts comma as decimal separator and strips the % suffix", () => {
-    expect(parsePercentToBps("1,9110%")).toBe(191);
-    expect(parsePercentToBps("1,91")).toBe(191);
+    expect(parsePercentToEmX10k("1,9110%")).toBe(19110);
+    expect(parsePercentToEmX10k("1,91")).toBe(19100);
   });
 
   it("rejects negative, NaN, and empty", () => {
-    expect(parsePercentToBps("-1")).toBeNull();
-    expect(parsePercentToBps("abc")).toBeNull();
-    expect(parsePercentToBps("   ")).toBeNull();
+    expect(parsePercentToEmX10k("-1")).toBeNull();
+    expect(parsePercentToEmX10k("abc")).toBeNull();
+    expect(parsePercentToEmX10k("   ")).toBeNull();
   });
 });
 
-describe("rates: validateInstallmentRateBps", () => {
+describe("rates: validateInstallmentRate", () => {
   it("accepts 0 (diferido sin intereses — regla 1 de #345)", () => {
-    expect(validateInstallmentRateBps(0)).toEqual({ ok: true });
+    expect(validateInstallmentRate(0)).toEqual({ ok: true });
   });
 
-  it("accepts typical TC rates", () => {
-    // 191 bps = 1.91% EM — the classic 2-36 cuota Bancolombia rate.
-    expect(validateInstallmentRateBps(191)).toEqual({ ok: true });
+  it("accepts typical TC rates at 4-decimal precision", () => {
+    // 19110 stored = 1.9110% EM, the canonical Bancolombia bucket.
+    expect(validateInstallmentRate(19110)).toEqual({ ok: true });
     // Avance/mora at some banks ~2-3% EM.
-    expect(validateInstallmentRateBps(250)).toEqual({ ok: true });
-    expect(validateInstallmentRateBps(MIN_NON_ZERO_EM_BPS)).toEqual({ ok: true });
+    expect(validateInstallmentRate(25000)).toEqual({ ok: true });
+    expect(validateInstallmentRate(MIN_NON_ZERO_EM_X10K)).toEqual({ ok: true });
   });
 
-  it("rejects non-zero values < MIN_NON_ZERO_EM_BPS (likely EA mislabeled as EM)", () => {
-    // 0.25% EM would give ~3% EA — nonsensical for TC Colombia; more likely
-    // the user typed 0.25 thinking of EA.
-    expect(validateInstallmentRateBps(25)).toEqual({ ok: false, reason: "too-low" });
+  it("rejects non-zero values < MIN_NON_ZERO_EM_X10K (likely EA mislabeled as EM)", () => {
+    // 191 stored = 0.0191% EM — this is what a legacy bps value would look
+    // like if someone forgot to rescale after #411.
+    expect(validateInstallmentRate(191)).toEqual({ ok: false, reason: "too-low" });
+    // 2500 stored = 0.25% EM — also ambiguous / too low.
+    expect(validateInstallmentRate(2500)).toEqual({ ok: false, reason: "too-low" });
   });
 
   it("rejects negative", () => {
-    expect(validateInstallmentRateBps(-100)).toEqual({ ok: false, reason: "negative" });
+    expect(validateInstallmentRate(-100)).toEqual({ ok: false, reason: "negative" });
   });
 
   it("rejects ≥ 100% EM (almost certainly a typo)", () => {
-    expect(validateInstallmentRateBps(MAX_EM_BPS)).toEqual({ ok: false, reason: "too-high" });
-    expect(validateInstallmentRateBps(99999)).toEqual({ ok: false, reason: "too-high" });
+    expect(validateInstallmentRate(MAX_EM_X10K)).toEqual({ ok: false, reason: "too-high" });
+    expect(validateInstallmentRate(9_999_999)).toEqual({ ok: false, reason: "too-high" });
   });
 
   it("rejects non-integers", () => {
-    expect(validateInstallmentRateBps(1.5)).toEqual({ ok: false, reason: "not-integer" });
+    expect(validateInstallmentRate(19110.5)).toEqual({ ok: false, reason: "not-integer" });
   });
 
   it("messages mention EM vs EA explicitly for too-low (most common mistake)", () => {
@@ -108,29 +118,29 @@ describe("rates: validateInstallmentRateBps", () => {
   });
 });
 
-describe("rates: resolveBucketRateBps", () => {
-  const buckets = { oneMonth: 0, months2to36: 191, advances: 191 };
+describe("rates: resolveBucketRateX10k", () => {
+  const buckets = { oneMonth: 0, months2to36: 19110, advances: 19110 };
 
   it("returns oneMonth bucket when installments = 1", () => {
-    expect(resolveBucketRateBps(buckets, 1)).toBe(0);
+    expect(resolveBucketRateX10k(buckets, 1)).toBe(0);
   });
 
   it("returns months2to36 bucket for [2, 36]", () => {
-    expect(resolveBucketRateBps(buckets, 2)).toBe(191);
-    expect(resolveBucketRateBps(buckets, 12)).toBe(191);
-    expect(resolveBucketRateBps(buckets, 36)).toBe(191);
+    expect(resolveBucketRateX10k(buckets, 2)).toBe(19110);
+    expect(resolveBucketRateX10k(buckets, 12)).toBe(19110);
+    expect(resolveBucketRateX10k(buckets, 36)).toBe(19110);
   });
 
   it("returns months2to36 bucket for > 36 installments (no distinct bucket in the extract)", () => {
-    expect(resolveBucketRateBps(buckets, 60)).toBe(191);
+    expect(resolveBucketRateX10k(buckets, 60)).toBe(19110);
   });
 
   it("returns the advances bucket when isAdvance=true regardless of installments", () => {
-    expect(resolveBucketRateBps(buckets, 1, true)).toBe(191);
+    expect(resolveBucketRateX10k(buckets, 1, true)).toBe(19110);
   });
 
   it("returns null when buckets are undefined / missing the relevant bucket", () => {
-    expect(resolveBucketRateBps(undefined, 12)).toBeNull();
-    expect(resolveBucketRateBps({ months2to36: 191 }, 1)).toBeNull();
+    expect(resolveBucketRateX10k(undefined, 12)).toBeNull();
+    expect(resolveBucketRateX10k({ months2to36: 19110 }, 1)).toBeNull();
   });
 });

@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Money } from "@/components/display/money";
-import { formatBpsEmAsEaPercent, parsePercentToBps } from "@/lib/finance/rates";
+import { EM_X10K_SCALE, formatEmX10kAsEaPercent, parsePercentToEmX10k } from "@/lib/finance/rates";
 import { updateTransactionInstallments } from "@/app/(app)/transactions/actions";
 import type { Currency } from "@/lib/types";
 
@@ -29,12 +29,13 @@ export type TcInstallmentsDialogProps = {
   amountCents: bigint;
   currency: Currency;
   installmentsTotal: number;
-  installmentRateBps: number | null;
+  installmentRateEmX10k: number | null;
 };
 
-function initialRateInput(bps: number | null): string {
-  if (bps == null) return "";
-  return (bps / 100).toFixed(4);
+function initialRateInput(emX10k: number | null): string {
+  if (emX10k == null) return "";
+  // stored EM is percent × 10000; show 4 decimals so "19110" → "1.9110"
+  return (emX10k / EM_X10K_SCALE).toFixed(4);
 }
 
 export function TcInstallmentsDialog({
@@ -44,10 +45,10 @@ export function TcInstallmentsDialog({
   amountCents,
   currency,
   installmentsTotal,
-  installmentRateBps,
+  installmentRateEmX10k,
 }: TcInstallmentsDialogProps) {
   const [installments, setInstallments] = useState(installmentsTotal.toString());
-  const [rate, setRate] = useState(initialRateInput(installmentRateBps));
+  const [rate, setRate] = useState(initialRateInput(installmentRateEmX10k));
   const [pending, startTransition] = useTransition();
 
   const installmentsNum = Number(installments);
@@ -59,8 +60,9 @@ export function TcInstallmentsDialog({
     return magnitude / BigInt(installmentsNum);
   }, [amountCents, installmentsNum]);
 
-  const rateBps = rate.trim() === "" ? null : parsePercentToBps(rate);
-  const eaPreview = rateBps != null && rateBps > 0 ? formatBpsEmAsEaPercent(rateBps) : null;
+  const rateEmX10k = rate.trim() === "" ? null : parsePercentToEmX10k(rate);
+  const eaPreview =
+    rateEmX10k != null && rateEmX10k > 0 ? formatEmX10kAsEaPercent(rateEmX10k) : null;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -72,7 +74,7 @@ export function TcInstallmentsDialog({
       const result = await updateTransactionInstallments({
         txId,
         installmentsTotal: installmentsNum,
-        installmentRateBps: rate.trim() === "" ? null : (parsePercentToBps(rate) ?? 0),
+        installmentRateEmX10k: rate.trim() === "" ? null : (parsePercentToEmX10k(rate) ?? 0),
       });
       if (result.status === "error") {
         toast.error(result.message);

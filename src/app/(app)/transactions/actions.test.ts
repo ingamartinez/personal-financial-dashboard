@@ -1626,7 +1626,7 @@ describe("updateTransactionInstallments (#406)", () => {
     const result = await updateTransactionInstallments({
       txId,
       installmentsTotal: 12,
-      installmentRateBps: 191,
+      installmentRateEmX10k: 19110,
     });
     expect(result.status).toBe("ok");
 
@@ -1637,7 +1637,9 @@ describe("updateTransactionInstallments (#406)", () => {
       SELECT installments_total, installment_rate_bps FROM transactions WHERE id = ${txId}
     `);
     expect(row.installments_total).toBe(12);
-    expect(row.installment_rate_bps).toBe(191);
+    // #411: the DB column name stays `installment_rate_bps`, but the unit
+    // is now percent × 10000 — 19110 = 1.9110% EM.
+    expect(row.installment_rate_bps).toBe(19110);
   });
 
   it("accepts a null rate (inherit from account bucket at compute time)", async () => {
@@ -1645,7 +1647,7 @@ describe("updateTransactionInstallments (#406)", () => {
     const result = await updateTransactionInstallments({
       txId,
       installmentsTotal: 3,
-      installmentRateBps: null,
+      installmentRateEmX10k: null,
     });
     expect(result.status).toBe("ok");
 
@@ -1664,7 +1666,7 @@ describe("updateTransactionInstallments (#406)", () => {
     const result = await updateTransactionInstallments({
       txId,
       installmentsTotal: 3,
-      installmentRateBps: 25, // 0.25% EM — almost certainly EA mistaken as EM
+      installmentRateEmX10k: 2500, // 0.25% EM — almost certainly EA mistaken as EM
     });
     expect(result.status).toBe("error");
     if (result.status === "error") expect(result.message).toMatch(/EM/);
@@ -1675,7 +1677,7 @@ describe("updateTransactionInstallments (#406)", () => {
     const result = await updateTransactionInstallments({
       txId,
       installmentsTotal: 9,
-      installmentRateBps: 0,
+      installmentRateEmX10k: 0,
     });
     expect(result.status).toBe("ok");
   });
@@ -1685,7 +1687,7 @@ describe("updateTransactionInstallments (#406)", () => {
     const result = await updateTransactionInstallments({
       txId,
       installmentsTotal: 3,
-      installmentRateBps: 191,
+      installmentRateEmX10k: 19110,
     });
     expect(result.status).toBe("error");
     if (result.status === "error") expect(result.message).toMatch(/tarjeta/i);
@@ -1696,13 +1698,13 @@ describe("updateTransactionInstallments (#406)", () => {
     const zero = await updateTransactionInstallments({
       txId,
       installmentsTotal: 0,
-      installmentRateBps: null,
+      installmentRateEmX10k: null,
     });
     expect(zero.status).toBe("error");
     const tooMany = await updateTransactionInstallments({
       txId,
       installmentsTotal: 500,
-      installmentRateBps: null,
+      installmentRateEmX10k: null,
     });
     expect(tooMany.status).toBe("error");
   });

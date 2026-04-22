@@ -291,7 +291,7 @@ export function TransactionTable({
                         amountCents={tx.amountCents}
                         currency={tx.currency}
                         installmentsTotal={tx.installmentsTotal}
-                        installmentRateBps={tx.installmentRateBps}
+                        installmentRateEmX10k={tx.installmentRateEmX10k}
                       />
                     </TableCell>
                   </motion.tr>
@@ -365,7 +365,7 @@ export function TransactionTable({
                       amountCents={tx.amountCents}
                       currency={tx.currency}
                       installmentsTotal={tx.installmentsTotal}
-                      installmentRateBps={tx.installmentRateBps}
+                      installmentRateEmX10k={tx.installmentRateEmX10k}
                     />
                   </div>
                 </div>
