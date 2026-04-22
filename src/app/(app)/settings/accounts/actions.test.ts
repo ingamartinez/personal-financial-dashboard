@@ -691,7 +691,46 @@ describe("adjustAccountBalance", () => {
 
       const [after] = await db.select().from(accounts).where(eq(accounts.id, accountId));
       expect(await derivedBalance(accountId)).toBe(BigInt(-1_800_000));
-      expect(after.metadata.availableCreditCents).toBe(3_200_000);
+      // #420: cupo is NOT snapshotted anymore — display derives from limit + ledger.
+      expect(after.metadata.availableCreditCents).toBeUndefined();
+      expect(after.metadata.creditLimitCents).toBe(5_000_000);
+    });
+
+    it("#420: strips a stale availableCreditCents snapshot on adjust", async () => {
+      // Legacy row written under the pre-#420 model. The stale value must be
+      // stripped so display stops reading it and starts deriving from ledger.
+      const accountId = await seedCreditCard({
+        creditLimit: 5_000_000,
+        availableCredit: 4_000_000, // stale — ledger says 0 debt → real available=5M
+      });
+
+      const result = await adjustAccountBalance({
+        accountId,
+        declared: { kind: "availableCredit", availableCreditCents: 3_200_000 },
+      });
+
+      expect(result.status).toBe("ok");
+      const [after] = await db.select().from(accounts).where(eq(accounts.id, accountId));
+      expect(after.metadata.availableCreditCents).toBeUndefined();
+      expect(after.metadata.creditLimitCents).toBe(5_000_000);
+    });
+
+    it("#420: strips stale availableCreditCents even on no-op (declared matches)", async () => {
+      // Ledger balance=0, stale snapshot=4M, limit=5M → declared=5M means
+      // debt=0, target balance matches current → diff=0 (noop). Strip still lands.
+      const accountId = await seedCreditCard({
+        creditLimit: 5_000_000,
+        availableCredit: 4_000_000,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId,
+        declared: { kind: "availableCredit", availableCreditCents: 5_000_000 },
+      });
+
+      expect(result.status).toBe("noop");
+      const [after] = await db.select().from(accounts).where(eq(accounts.id, accountId));
+      expect(after.metadata.availableCreditCents).toBeUndefined();
       expect(after.metadata.creditLimitCents).toBe(5_000_000);
     });
 
