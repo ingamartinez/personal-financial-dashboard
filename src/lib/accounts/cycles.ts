@@ -230,13 +230,24 @@ export async function recentCycles(ctx: CyclesContext): Promise<CycleSummary[]> 
 export type OverdueCycleSummary = CycleSummary & {
   accountId: number;
   accountName: string;
+  // #431: surfaced so the dashboard banner can dedupe by plastic (Mastercard
+  // Internacional COP + USD share one physicalCardId and should count as
+  // one pending cycle, not two). Null for standalone accounts.
+  physicalCardId: string | null;
+  currency: string;
 };
 
 // Dashboard banner helper: across all of a user's TC accounts, return every
 // cycle that's pending AND more than `thresholdDays` past its cut.
 export async function overdueCyclesForUser(
   userId: number,
-  accounts: Array<{ id: number; name: string; metadata: AccountMetadata | null | undefined }>,
+  accounts: Array<{
+    id: number;
+    name: string;
+    metadata: AccountMetadata | null | undefined;
+    physicalCardId?: string | null;
+    currency?: string;
+  }>,
   opts: { thresholdDays?: number; now?: Date; count?: number; database?: DB } = {},
 ): Promise<OverdueCycleSummary[]> {
   const threshold = opts.thresholdDays ?? 7;
@@ -252,7 +263,13 @@ export async function overdueCyclesForUser(
     });
     for (const c of cycles) {
       if (c.status === "pending" && c.daysOverdue >= threshold) {
-        out.push({ ...c, accountId: account.id, accountName: account.name });
+        out.push({
+          ...c,
+          accountId: account.id,
+          accountName: account.name,
+          physicalCardId: account.physicalCardId ?? null,
+          currency: account.currency ?? "COP",
+        });
       }
     }
   }
