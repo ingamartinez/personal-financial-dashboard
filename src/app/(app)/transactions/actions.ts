@@ -30,7 +30,7 @@ import {
   validateTransferGroupLegs,
   type TransferLeg,
 } from "@/lib/transactions/transfer-groups";
-import { validateInstallmentRateBps, rateValidationMessage } from "@/lib/finance/rates";
+import { validateInstallmentRate, rateValidationMessage } from "@/lib/finance/rates";
 import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
 const updateSchema = z.object({
@@ -1134,7 +1134,7 @@ export async function createManualTransferGroup(
 // cuota count and the optional rate override are mutable — the account, the
 // amount, and the occurred date are intentionally locked, because any true
 // re-financing should be modeled as the modo-B split (ver #345 regla 6)
-// and that's a separate, explicit flow. Leaving `installment_rate_bps` as
+// and that's a separate, explicit flow. Leaving `installmentRateEmX10k` as
 // `null` means "inherit from the account's bucket at compute time".
 const updateInstallmentsSchema = z
   .object({
@@ -1143,18 +1143,18 @@ const updateInstallmentsSchema = z
     // Union order matters — zod tries variants in order, and
     // `z.coerce.number()` would coerce `null` to 0 if it came first.
     // Handle explicit null / empty string before the number coercion.
-    installmentRateBps: z
+    installmentRateEmX10k: z
       .union([z.null(), z.literal(""), z.coerce.number().int()])
       .transform((v) => (v === "" ? null : v)),
   })
   .superRefine((v, ctx) => {
-    if (v.installmentRateBps === null) return;
-    const res = validateInstallmentRateBps(v.installmentRateBps);
+    if (v.installmentRateEmX10k === null) return;
+    const res = validateInstallmentRate(v.installmentRateEmX10k);
     if (!res.ok) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: rateValidationMessage(res.reason),
-        path: ["installmentRateBps"],
+        path: ["installmentRateEmX10k"],
       });
     }
   });
@@ -1170,7 +1170,7 @@ export async function updateTransactionInstallments(
   if (!parsed.success) {
     return { status: "error", message: parsed.error.issues[0]?.message ?? "Input inválido" };
   }
-  const { txId, installmentsTotal, installmentRateBps } = parsed.data;
+  const { txId, installmentsTotal, installmentRateEmX10k } = parsed.data;
 
   // Scope hard to credit_card accounts — installments on savings/loan would be
   // a bug elsewhere, surface it loudly rather than silently writing.
@@ -1202,7 +1202,7 @@ export async function updateTransactionInstallments(
     .update(transactions)
     .set({
       installmentsTotal,
-      installmentRateBps,
+      installmentRateEmX10k,
       updatedAt: new Date(),
     })
     .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));

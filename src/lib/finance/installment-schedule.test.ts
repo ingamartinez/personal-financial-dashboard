@@ -24,12 +24,12 @@ describe("periodInterestCents", () => {
   });
 
   it("returns 0 when balance is 0 or negative", () => {
-    expect(periodInterestCents(BigInt(0), 191)).toBe(BigInt(0));
-    expect(periodInterestCents(BigInt(-1), 191)).toBe(BigInt(0));
+    expect(periodInterestCents(BigInt(0), 19110)).toBe(BigInt(0));
+    expect(periodInterestCents(BigInt(-1), 19110)).toBe(BigInt(0));
   });
 
-  it("rounds half-up — balance 2_851_666_667 cents × 139 bps ≈ 39_638_167 cents", () => {
-    expect(periodInterestCents(BigInt("2851666667"), 139)).toBe(BigInt("39638167"));
+  it("rounds half-up — 2_851_666_667 cents × 13900 x10k ≈ 39_638_167 cents (1.39% EM)", () => {
+    expect(periodInterestCents(BigInt("2851666667"), 13900)).toBe(BigInt("39638167"));
   });
 });
 
@@ -57,7 +57,7 @@ describe("installmentSchedule — F1 (purchase 12 cuotas @ 1.8311% EM, no grace)
   // amountCents 2_479_900 * 100 = 247_990_000.
   const input = {
     amountCents: BigInt(247_990_000),
-    rateEMBps: 183, // 1.83% EM ≈ 1.8311% rounded to integer bps (schema is smallint)
+    rateEmX10k: 18311, // 1.8311% EM exact — the actual extract rate at 4-decimal precision
     installments: 12,
     graceMonth: false,
     purchaseDate: new Date("2026-02-15"),
@@ -110,7 +110,7 @@ describe("installmentSchedule — F1 (purchase 12 cuotas @ 1.8311% EM, no grace)
 describe("installmentSchedule — F2 (diferido sin intereses 9 cuotas @ 0%)", () => {
   const input = {
     amountCents: BigInt(104_990_000), // 1_049_900 pesos
-    rateEMBps: 0,
+    rateEmX10k: 0,
     installments: 9,
     graceMonth: false,
     purchaseDate: new Date("2026-01-10"),
@@ -141,7 +141,7 @@ describe("installmentSchedule — F2 (diferido sin intereses 9 cuotas @ 0%)", ()
 describe("installmentSchedule — F3 (compra de cartera 29M @ 1.39% EM × 60, graceMonth)", () => {
   const input = {
     amountCents: BigInt("2900000000"), // 29_000_000 COP
-    rateEMBps: 139,
+    rateEmX10k: 13900, // 1.39% EM exact at 4-decimal precision (#411)
     installments: 60,
     graceMonth: true,
     purchaseDate: new Date("2026-05-01"),
@@ -163,10 +163,10 @@ describe("installmentSchedule — F3 (compra de cartera 29M @ 1.39% EM × 60, gr
   it("month 2 under grace absorbs the deferred month-1 interest", () => {
     const m2 = result.rows[1];
     // deferred = month-1 interest on the full amount
-    expect(m2.deferredInterestCents).toBe(periodInterestCents(input.amountCents, 139));
+    expect(m2.deferredInterestCents).toBe(periodInterestCents(input.amountCents, 13900));
     // own interest computed on balance-entering-month-2 = amount - capital_m1
     const balanceM2Start = input.amountCents - result.rows[0].capitalCents;
-    expect(m2.interestCents).toBe(periodInterestCents(balanceM2Start, 139));
+    expect(m2.interestCents).toBe(periodInterestCents(balanceM2Start, 13900));
   });
 
   it("balance reaches 0 at month 60 (regla 5: last cuota absorbs residue)", () => {
@@ -232,7 +232,7 @@ describe("installmentSchedule — edge cases", () => {
   it("N = 1 behaves as a single-payment purchase", () => {
     const result = installmentSchedule({
       amountCents: BigInt(100_000),
-      rateEMBps: 0,
+      rateEmX10k: 0,
       installments: 1,
       graceMonth: false,
       purchaseDate: new Date("2026-04-01"),
@@ -247,7 +247,7 @@ describe("installmentSchedule — edge cases", () => {
   it("`today` before `purchaseDate` yields paidCount = 0, not negative", () => {
     const result = installmentSchedule({
       amountCents: BigInt(100_000),
-      rateEMBps: 0,
+      rateEmX10k: 0,
       installments: 3,
       graceMonth: false,
       purchaseDate: new Date("2026-05-01"),
@@ -259,7 +259,7 @@ describe("installmentSchedule — edge cases", () => {
   it("`today` long after purchase caps paidCount at N", () => {
     const result = installmentSchedule({
       amountCents: BigInt(100_000),
-      rateEMBps: 0,
+      rateEmX10k: 0,
       installments: 3,
       graceMonth: false,
       purchaseDate: new Date("2020-01-01"),
@@ -273,7 +273,7 @@ describe("installmentSchedule — edge cases", () => {
     expect(() =>
       installmentSchedule({
         amountCents: BigInt(0),
-        rateEMBps: 0,
+        rateEmX10k: 0,
         installments: 1,
         graceMonth: false,
         purchaseDate: new Date(),
@@ -285,7 +285,7 @@ describe("installmentSchedule — edge cases", () => {
   it("throws on installments < 1 or > 240", () => {
     const base = {
       amountCents: BigInt(100),
-      rateEMBps: 0,
+      rateEmX10k: 0,
       graceMonth: false,
       purchaseDate: new Date(),
       today: new Date(),

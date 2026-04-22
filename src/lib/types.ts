@@ -56,10 +56,11 @@ export type TxRow = {
   // #406: account type surfaces in the table so the row-actions menu can
   // gate the "Editar cuotas" option to TC rows only.
   accountType: AccountType;
-  // #406: installment fields. `installmentRateBps` is null when the tx
-  // inherits from the account's bucket (see rates.resolveBucketRateBps).
+  // #406/#411: installment fields. `installmentRateEmX10k` is null when the
+  // tx inherits from the account's bucket (see rates.resolveBucketRateX10k).
+  // Stored unit: percent × 10000 (e.g. "1.9110%" → 19110).
   installmentsTotal: number;
-  installmentRateBps: number | null;
+  installmentRateEmX10k: number | null;
   counterparty: CounterpartyValue | null;
   deletedAt: Date | null;
 };

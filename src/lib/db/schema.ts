@@ -205,22 +205,24 @@ export const accounts = pgTable(
   ],
 );
 
-// #406: per-bucket monthly effective interest rates for a credit card.
-// Values are ALWAYS Efectiva Mensual Vencida (EM / MV) in basis points
-// (10000 = 100%). Display as EA is computed on read only — NEVER store EA here.
-// Conversion: EA = (1 + EM/10000)^12 - 1.
+// #406/#411: per-bucket monthly effective interest rates for a credit card.
+// Values are ALWAYS Efectiva Mensual Vencida (EM / MV), stored as
+// "percent × 10000" to preserve the 4 decimals Bancolombia prints on real
+// extracts (e.g. "1.9110%" → 19110). Display as EA is computed on read only
+// — NEVER store EA here. Conversion: fractional = stored / 1_000_000;
+// EA = (1 + fractional)^12 - 1.
 //
 // Why per-bucket: Bancolombia extracts show distinct rates for
 //   - compra a 1 cuota (typically 0% — diferido sin intereses)
 //   - compra a 2-36 cuotas (the "full" rate)
 //   - advances / impuestos / mora (often the same as 2-36)
 // Purchase-time rate is snapshotted on the transaction (see
-// `transactions.installment_rate_bps`); a null on the tx falls back to the
-// bucket that matches `installments_total` at compute time.
+// `transactions.installment_rate_em_x10k`); a null on the tx falls back to
+// the bucket that matches `installments_total` at compute time.
 export type CreditRateBucketsEM = {
-  oneMonth: number; // bps EM — typical 0 (diferido sin intereses)
-  months2to36: number; // bps EM — typical 180-210 (e.g. 191 bps = 1.91% EM ≈ 25.49% EA)
-  advances: number; // bps EM — typical == months2to36 at this bank
+  oneMonth: number; // stored = percent × 10000 — typical 0 (diferido sin intereses)
+  months2to36: number; // stored = percent × 10000 — typical 19110 (= 1.9110% EM ≈ 25.50% EA)
+  advances: number; // stored = percent × 10000 — typical == months2to36 at this bank
 };
 
 export type AccountMetadata = {
@@ -409,13 +411,17 @@ export const transactions = pgTable(
     // not a mutation — see parent #345). Default 1 means "single payment, no
     // financing".
     installmentsTotal: integer("installments_total").notNull().default(1),
-    // #406: ALWAYS Efectiva Mensual Vencida (EM / MV) in basis points.
-    // Display as EA is computed on read; NEVER store EA here. Null falls back
-    // to the bucket on `accounts.metadata.creditRateBuckets` matching
-    // `installments_total` at compute time (see #407). Validator rejects
-    // suspiciously low non-zero values (< 50 bps) that are almost certainly
-    // EA mislabeled as EM.
-    installmentRateBps: smallint("installment_rate_bps"),
+    // #406/#411: Efectiva Mensual Vencida (EM / MV) stored as percent × 10000
+    // (so "1.9110%" → 19110). Preserves the 4-decimal precision Bancolombia
+    // prints on real extracts. Null falls back to the bucket on
+    // `accounts.metadata.creditRateBuckets` matching `installments_total` at
+    // compute time (see #407). Validator rejects non-zero values < 5000
+    // (< 0.5% EM), almost certainly EA mislabeled as EM.
+    //
+    // NOTE: DB column is still named `installment_rate_bps` (from #406's
+    // original smallint scheme) to avoid a rename in #411's migration.
+    // The stored unit CHANGED — it's now "percent × 10000", not bps.
+    installmentRateEmX10k: integer("installment_rate_bps"),
     previousCategorySlug: varchar("previous_category_slug", { length: 60 }),
     retroactiveRuleId: integer("retroactive_rule_id").references(
       (): AnyPgColumn => classificationRules.id,

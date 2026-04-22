@@ -33,7 +33,7 @@ type Props = {
   amountCents: bigint;
   currency: Currency;
   installmentsTotal: number;
-  installmentRateBps: number | null;
+  installmentRateEmX10k: number | null;
 };
 
 export function TransactionRowActions({
@@ -43,7 +43,7 @@ export function TransactionRowActions({
   amountCents,
   currency,
   installmentsTotal,
-  installmentRateBps,
+  installmentRateEmX10k,
 }: Props) {
   const [pending, startTransition] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -136,7 +136,7 @@ export function TransactionRowActions({
           amountCents={amountCents}
           currency={currency}
           installmentsTotal={installmentsTotal}
-          installmentRateBps={installmentRateBps}
+          installmentRateEmX10k={installmentRateEmX10k}
         />
       ) : null}
 
