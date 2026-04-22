@@ -6,6 +6,7 @@ import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { getSessionUser } from "@/lib/auth/session";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { AccountsManager, type AccountRow } from "./accounts-manager";
+import { TcConsolidationStatus } from "./tc-consolidation-status";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +75,7 @@ export default async function SettingsAccountsPage() {
         </p>
       </header>
       <AccountsManager items={items} copPerUsd={fx.rate} />
+      <TcConsolidationStatus userId={session.id} />
     </main>
   );
 }
