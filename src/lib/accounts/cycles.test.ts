@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts, statementImports, users } from "@/lib/db/schema";
+import { accounts, statementImports, transactions, users } from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 
 import {
@@ -43,6 +43,7 @@ async function createTc(userId: number, cutoffDay: number, name: string): Promis
 }
 
 async function cleanupUser(userId: number): Promise<void> {
+  await db.delete(transactions).where(eq(transactions.userId, userId));
   await db.delete(statementImports).where(eq(statementImports.userId, userId));
   await db.delete(accounts).where(eq(accounts.userId, userId));
   await db.delete(users).where(eq(users.id, userId));
@@ -110,6 +111,37 @@ describe("recentCycles — integration", () => {
       cycle: "2026-03",
       report: { marker: "test-fixture" },
     });
+
+    // #430: cycles without txs are demoted to `no-activity`. Seed one
+    // purchase in each past window so these pre-existing tests (which
+    // predate the demotion) still exercise the `pending` classification.
+    // Windows (cutoff=30): 2026-01 = (Dec 30, Jan 30], 2026-02 = (Jan 30, Feb 28].
+    await db.insert(transactions).values([
+      {
+        userId,
+        accountId,
+        occurredAt: utcDate(2026, 1, 15),
+        amountCents: BigInt(-1000),
+        currency: "COP",
+        descriptionRaw: `${TAG} pending-jan-window`,
+        categorySlug: "adjustments",
+        classificationMethod: "manual",
+        source: "manual",
+        channel: "manual",
+      },
+      {
+        userId,
+        accountId,
+        occurredAt: utcDate(2026, 2, 15),
+        amountCents: BigInt(-2000),
+        currency: "COP",
+        descriptionRaw: `${TAG} pending-feb-window`,
+        categorySlug: "adjustments",
+        classificationMethod: "manual",
+        source: "manual",
+        channel: "manual",
+      },
+    ]);
   });
 
   afterAll(async () => {
@@ -152,5 +184,170 @@ describe("recentCycles — integration", () => {
     expect(recents).toHaveLength(1);
     expect(recents[0].cycle).toBe("2026-03");
     expect(recents[0].accountId).toBe(accountId);
+  });
+});
+
+describe("recentCycles — no-activity (#430)", () => {
+  let userId!: number;
+  let accountId!: number;
+
+  beforeAll(async () => {
+    userId = await createUser(`${TAG.toLowerCase()}.noact.${Date.now()}@test.local`);
+    accountId = await createTc(userId, 30, "noact-visa");
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userId);
+  });
+
+  async function clearTxs(): Promise<void> {
+    await db.delete(transactions).where(eq(transactions.userId, userId));
+  }
+
+  it("demotes pending cycles to no-activity when the window has zero live txs", async () => {
+    await clearTxs();
+    const cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    // 2026-04 = in-progress, 2026-03, 2026-02, 2026-01 = all past cuts.
+    expect(cycles[0].status).toBe("in-progress");
+    for (let i = 1; i < cycles.length; i++) {
+      expect(cycles[i].status).toBe("no-activity");
+      expect(cycles[i].daysOverdue).toBe(0);
+    }
+  });
+
+  it("keeps a cycle pending when the window has at least one live tx", async () => {
+    await clearTxs();
+    // One purchase on 2026-03-15, inside (2026-02-28, 2026-03-30] → pending.
+    await db.insert(transactions).values({
+      userId,
+      accountId,
+      occurredAt: utcDate(2026, 3, 15),
+      amountCents: BigInt(-50000),
+      currency: "COP",
+      descriptionRaw: `${TAG} noact tx march`,
+      categorySlug: "adjustments",
+      classificationMethod: "manual",
+      source: "manual",
+      channel: "manual",
+    });
+    const cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    const byCycle = new Map(cycles.map((c) => [c.cycle, c]));
+    expect(byCycle.get("2026-03")?.status).toBe("pending");
+    expect(byCycle.get("2026-03")?.daysOverdue).toBeGreaterThan(0);
+    expect(byCycle.get("2026-02")?.status).toBe("no-activity");
+    expect(byCycle.get("2026-01")?.status).toBe("no-activity");
+  });
+
+  it("ignores synthetic intereses-causados txs when counting activity", async () => {
+    await clearTxs();
+    // Synthetic tx from intereses-causados-job — rawData.synthetic = true.
+    // Anchor is end-of-day on cut day, which IS within (prev_anchor, anchor].
+    await db.insert(transactions).values({
+      userId,
+      accountId,
+      occurredAt: utcDate(2026, 3, 30),
+      amountCents: BigInt(-10000),
+      currency: "COP",
+      descriptionRaw: `${TAG} synthetic intereses`,
+      categorySlug: "intereses-tc",
+      classificationMethod: "manual",
+      source: "manual",
+      channel: "manual",
+      rawData: { synthetic: true, job: "intereses-causados-job" },
+    });
+    const cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    const march = cycles.find((c) => c.cycle === "2026-03");
+    expect(march?.status).toBe("no-activity");
+  });
+
+  it("ignores soft-deleted txs when counting activity", async () => {
+    await clearTxs();
+    await db.insert(transactions).values({
+      userId,
+      accountId,
+      occurredAt: utcDate(2026, 3, 15),
+      amountCents: BigInt(-1234),
+      currency: "COP",
+      descriptionRaw: `${TAG} deleted tx`,
+      categorySlug: "adjustments",
+      classificationMethod: "manual",
+      source: "manual",
+      channel: "manual",
+      deletedAt: new Date(),
+    });
+    const cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    const march = cycles.find((c) => c.cycle === "2026-03");
+    expect(march?.status).toBe("no-activity");
+  });
+
+  it("flips no-activity back to pending when a backfill tx lands in the window", async () => {
+    await clearTxs();
+    let cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    expect(cycles.find((c) => c.cycle === "2026-02")?.status).toBe("no-activity");
+
+    // Simulate a historical import (SMS dump, CSV, extracto) into Feb window.
+    await db.insert(transactions).values({
+      userId,
+      accountId,
+      occurredAt: utcDate(2026, 2, 10),
+      amountCents: BigInt(-999),
+      currency: "COP",
+      descriptionRaw: `${TAG} backfill`,
+      categorySlug: "adjustments",
+      classificationMethod: "manual",
+      source: "manual",
+      channel: "manual",
+    });
+
+    cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    const feb = cycles.find((c) => c.cycle === "2026-02");
+    expect(feb?.status).toBe("pending");
+    expect(feb?.daysOverdue).toBeGreaterThan(0);
+  });
+
+  it("overdueCyclesForUser excludes no-activity cycles from the banner feed", async () => {
+    await clearTxs();
+    const overdue = await overdueCyclesForUser(
+      userId,
+      [{ id: accountId, name: "noact", metadata: { cutoffDay: 30 } }],
+      { thresholdDays: 7, now: utcDate(2026, 4, 15), count: 4 },
+    );
+    expect(overdue).toHaveLength(0);
   });
 });
