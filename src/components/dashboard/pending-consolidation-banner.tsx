@@ -2,6 +2,7 @@ import Link from "next/link";
 import { AlertTriangleIcon } from "lucide-react";
 
 import { overdueCyclesForUser } from "@/lib/accounts/cycles";
+import { dedupeOverdueByPhysicalCard } from "@/lib/accounts/cycle-groups";
 import { db } from "@/lib/db";
 import { accounts } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
@@ -11,6 +12,13 @@ import { and, eq } from "drizzle-orm";
 // or more cycles are past their cut day by more than the threshold. Intended
 // to live at the top of the dashboard — shows nothing when the user is caught
 // up, so it's zero UI cost on the happy path.
+//
+// #431: plastic-dedup. Mastercard Internacional (COP + USD) shares one
+// physicalCardId; consolidating uses a single extract that covers both
+// sheets, so the banner must count ONE pending cycle per (plastic, cycle),
+// not one per account+cycle. The label also drops the currency suffix
+// because the extract is plastic-level ("Bancolombia Mastercard *7291"
+// instead of "Bancolombia Mastercard *7291 (COP)").
 export async function PendingConsolidationBanner({
   userId,
   thresholdDays = 7,
@@ -22,7 +30,9 @@ export async function PendingConsolidationBanner({
     .select({
       id: accounts.id,
       name: accounts.name,
+      currency: accounts.currency,
       metadata: accounts.metadata,
+      physicalCardId: accounts.physicalCardId,
     })
     .from(accounts)
     .where(
@@ -38,13 +48,39 @@ export async function PendingConsolidationBanner({
   const overdue = await overdueCyclesForUser(userId, tcAccounts, { thresholdDays });
   if (overdue.length === 0) return null;
 
-  const mostOverdue = overdue[0];
-  const message =
-    overdue.length === 1
-      ? `Ciclo ${mostOverdue.cycle} de ${mostOverdue.accountName} está pendiente hace ${mostOverdue.daysOverdue} días.`
-      : `Tenés ${overdue.length} ciclos TC sin consolidar — el más atrasado es ${mostOverdue.cycle} de ${mostOverdue.accountName} (+${mostOverdue.daysOverdue}d).`;
+  // Build the plastic → COP account map from the full tcAccounts list so the
+  // banner links to the COP sibling even when the COP side isn't in the
+  // overdue feed (e.g. only USD is pending for that cycle). Keeps the banner
+  // link in lockstep with `TcConsolidationStatus`'s "Consolidar" button.
+  const copAccountByPcId = new Map<string, number>();
+  const copNameByPcId = new Map<string, string>();
+  for (const a of tcAccounts) {
+    if (a.physicalCardId && a.currency === "COP" && !copAccountByPcId.has(a.physicalCardId)) {
+      copAccountByPcId.set(a.physicalCardId, a.id);
+      copNameByPcId.set(a.physicalCardId, a.name);
+    }
+  }
 
-  const linkHref = `/settings/accounts/${mostOverdue.accountId}/consolidate/${mostOverdue.cycle}`;
+  const deduped = dedupeOverdueByPhysicalCard(
+    overdue.map((o) => ({
+      cycle: o.cycle,
+      accountId: o.accountId,
+      accountName: o.accountName,
+      daysOverdue: o.daysOverdue,
+      physicalCardId: o.physicalCardId,
+      currency: o.currency,
+    })),
+    { copAccountByPcId, copNameByPcId },
+  );
+  if (deduped.length === 0) return null;
+
+  const mostOverdue = deduped[0];
+  const message =
+    deduped.length === 1
+      ? `Ciclo ${mostOverdue.cycle} de ${mostOverdue.label} está pendiente hace ${mostOverdue.daysOverdue} días.`
+      : `Tenés ${deduped.length} ciclos TC sin consolidar — el más atrasado es ${mostOverdue.cycle} de ${mostOverdue.label} (+${mostOverdue.daysOverdue}d).`;
+
+  const linkHref = `/settings/accounts/${mostOverdue.primaryAccountId}/consolidate/${mostOverdue.cycle}`;
 
   return (
     <aside

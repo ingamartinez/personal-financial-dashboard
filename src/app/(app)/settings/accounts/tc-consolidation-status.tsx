@@ -2,18 +2,30 @@
 // manager. Shows the last 3 cycles per credit-card account with status badges
 // and a "Consolidar" shortcut on pending ones — the dashboard banner flags
 // users, this is where they complete the work.
+//
+// #431: linked multi-currency plastics (Mastercard COP + USD share one
+// physicalCardId) collapse into ONE block with one row per cycle. The
+// backend still writes one statement_imports row per account; the UI just
+// reflects that the extract is plastic-level.
 
 import Link from "next/link";
 import { and, asc, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts } from "@/lib/db/schema";
+import { accounts, type AccountMetadata } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { recentCycles, type CycleStatus } from "@/lib/accounts/cycles";
+import {
+  groupAccountsForConsolidation,
+  type CycleGroup,
+  type GroupAccount,
+} from "@/lib/accounts/cycle-groups";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+
+type TcAccount = GroupAccount & { metadata: AccountMetadata | null };
 
 function formatBogotaDate(d: Date): string {
   return new Intl.DateTimeFormat("es-CO", {
@@ -37,6 +49,27 @@ function statusLabel(status: CycleStatus): string {
   }
 }
 
+function groupDisplayLabel(group: CycleGroup<TcAccount>): string {
+  const first = group.accounts[0];
+  if (group.isMultiCurrency) {
+    // Drop the currency suffix — `first.name` already embeds the plastic's
+    // *last4 (e.g. "Bancolombia Mastercard *7291"), which is plastic-level.
+    return first.name;
+  }
+  return formatAccountLabel({
+    name: first.name,
+    currency: first.currency,
+    institution: first.institution ?? undefined,
+    metadata: first.metadata,
+  });
+}
+
+function multiCurrencySubtitle(currencies: readonly string[]): string {
+  // Matches the copy from the issue body: "COP + USD · 1 extracto, 2 hojas".
+  const currencyPart = currencies.join(" + ");
+  return `${currencyPart} · 1 extracto, ${currencies.length} hoja${currencies.length === 1 ? "" : "s"}`;
+}
+
 export async function TcConsolidationStatus({ userId }: { userId: number }) {
   const tcAccounts = await db
     .select({
@@ -46,6 +79,7 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
       institution: accounts.institution,
       institutionSlug: accounts.institutionSlug,
       metadata: accounts.metadata,
+      physicalCardId: accounts.physicalCardId,
     })
     .from(accounts)
     .where(
@@ -72,7 +106,8 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
     })),
   );
 
-  const hasPending = perAccount.some((p) => p.cycles.some((c) => c.status === "pending"));
+  const groups = groupAccountsForConsolidation(perAccount);
+  const hasPending = groups.some((g) => g.cycles.some((c) => c.status === "pending"));
 
   return (
     <Card>
@@ -88,64 +123,68 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
       </CardHeader>
       <CardContent>
         <ul className="flex flex-col gap-4">
-          {perAccount.map(({ account, cycles }) => {
-            const label = formatAccountLabel({
-              name: account.name,
-              currency: account.currency,
-              institution: account.institution,
-              metadata: account.metadata,
-            });
+          {groups.map((group) => {
+            const label = groupDisplayLabel(group);
             return (
-              <li key={account.id} className="flex flex-col gap-2">
+              <li key={group.key} className="flex flex-col gap-2">
                 <div className="text-sm font-medium">{label}</div>
                 <div className="flex flex-wrap gap-2">
-                  {cycles.map((cycle) => (
+                  {group.cycles.map((cycle) => (
                     <div
                       key={cycle.cycle}
                       className={
                         cycle.status === "no-activity"
-                          ? "flex items-center gap-2 rounded-md border px-3 py-2 text-sm opacity-70"
-                          : "flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                          ? "flex flex-col gap-1 rounded-md border px-3 py-2 text-sm opacity-70"
+                          : "flex flex-col gap-1 rounded-md border px-3 py-2 text-sm"
                       }
                     >
-                      <span className="font-mono text-xs">{cycle.cycle}</span>
-                      <Badge
-                        variant={
-                          cycle.status === "consolidated"
-                            ? "default"
-                            : cycle.status === "pending"
-                              ? "secondary"
-                              : "outline"
-                        }
-                        className={
-                          cycle.status === "no-activity" ? "text-muted-foreground" : undefined
-                        }
-                      >
-                        {statusLabel(cycle.status)}
-                      </Badge>
-                      {cycle.status === "consolidated" && cycle.consolidatedAt ? (
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs">{cycle.cycle}</span>
+                        <Badge
+                          variant={
+                            cycle.status === "consolidated"
+                              ? "default"
+                              : cycle.status === "pending"
+                                ? "secondary"
+                                : "outline"
+                          }
+                          className={
+                            cycle.status === "no-activity" ? "text-muted-foreground" : undefined
+                          }
+                        >
+                          {statusLabel(cycle.status)}
+                        </Badge>
+                        {cycle.status === "consolidated" && cycle.consolidatedAt ? (
+                          <span className="text-muted-foreground text-xs">
+                            {formatBogotaDate(cycle.consolidatedAt)}
+                          </span>
+                        ) : null}
+                        {cycle.status === "pending" && cycle.daysOverdue > 0 ? (
+                          <span className="text-muted-foreground text-xs">
+                            +{cycle.daysOverdue}d
+                          </span>
+                        ) : null}
+                        {cycle.status === "pending" ? (
+                          <Link
+                            href={`/settings/accounts/${group.primaryAccountId}/consolidate/${cycle.cycle}`}
+                            className={buttonVariants({ variant: "outline", size: "sm" })}
+                          >
+                            Consolidar
+                          </Link>
+                        ) : null}
+                        {cycle.status === "consolidated" ? (
+                          <Link
+                            href={`/settings/accounts/${group.primaryAccountId}/consolidate/${cycle.cycle}`}
+                            className="text-muted-foreground text-xs underline"
+                          >
+                            Ver run
+                          </Link>
+                        ) : null}
+                      </div>
+                      {group.isMultiCurrency ? (
                         <span className="text-muted-foreground text-xs">
-                          {formatBogotaDate(cycle.consolidatedAt)}
+                          {multiCurrencySubtitle(cycle.currencies)}
                         </span>
-                      ) : null}
-                      {cycle.status === "pending" && cycle.daysOverdue > 0 ? (
-                        <span className="text-muted-foreground text-xs">+{cycle.daysOverdue}d</span>
-                      ) : null}
-                      {cycle.status === "pending" ? (
-                        <Link
-                          href={`/settings/accounts/${account.id}/consolidate/${cycle.cycle}`}
-                          className={buttonVariants({ variant: "outline", size: "sm" })}
-                        >
-                          Consolidar
-                        </Link>
-                      ) : null}
-                      {cycle.status === "consolidated" ? (
-                        <Link
-                          href={`/settings/accounts/${account.id}/consolidate/${cycle.cycle}`}
-                          className="text-muted-foreground text-xs underline"
-                        >
-                          Ver run
-                        </Link>
                       ) : null}
                     </div>
                   ))}
