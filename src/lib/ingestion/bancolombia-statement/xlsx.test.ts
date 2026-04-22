@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import * as XLSX from "xlsx";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   parseBancolombiaStatement,
@@ -369,7 +369,12 @@ const FIXTURE_PATH = resolve(
 const describeIfFixture = existsSync(FIXTURE_PATH) ? describe : describe.skip;
 
 describeIfFixture("parseBancolombiaStatement (real fixture 202603 Visa 2575)", () => {
-  const parsed = parseBancolombiaStatement(readFileSync(FIXTURE_PATH));
+  // Lazy read — `describe.skip` still evaluates the body; top-level readFileSync
+  // would explode in CI where the fixture is gitignored.
+  let parsed: ReturnType<typeof parseBancolombiaStatement>;
+  beforeAll(() => {
+    parsed = parseBancolombiaStatement(readFileSync(FIXTURE_PATH));
+  });
 
   it("extracts account last4 + currency", () => {
     expect(parsed.account).toEqual({ last4: "2575", currency: "COP" });
