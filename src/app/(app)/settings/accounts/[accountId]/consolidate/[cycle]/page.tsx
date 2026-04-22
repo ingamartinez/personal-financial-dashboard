@@ -83,7 +83,7 @@ export default async function ConsolidatePage({ params }: { params: CycleRoutePa
   });
 
   return (
-    <div className="flex flex-col gap-6">
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-4 sm:p-6">
       <div className="flex flex-col gap-1">
         <div className="text-muted-foreground flex items-center gap-2 text-xs">
           <Link href="/settings/accounts" className="hover:underline">
@@ -115,7 +115,7 @@ export default async function ConsolidatePage({ params }: { params: CycleRoutePa
           institutionSlug={account.institutionSlug}
         />
       )}
-    </div>
+    </main>
   );
 }
 
