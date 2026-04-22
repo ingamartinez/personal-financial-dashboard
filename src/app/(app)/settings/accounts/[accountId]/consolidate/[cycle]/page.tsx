@@ -13,6 +13,7 @@ import { buttonVariants } from "@/components/ui/button";
 
 import type { ConsolidationReport } from "@/lib/ingestion/bancolombia-statement/consolidate";
 import { ConsolidateForm } from "./consolidate-form";
+import { ReportSection } from "./consolidate-report-view";
 
 export const dynamic = "force-dynamic";
 
@@ -26,10 +27,20 @@ function formatBogotaDate(d: Date): string {
 }
 
 type CycleRouteParams = Promise<{ accountId: string; cycle: string }>;
+type CycleRouteSearchParams = Promise<{ view?: string | string[] }>;
 
-export default async function ConsolidatePage({ params }: { params: CycleRouteParams }) {
+export default async function ConsolidatePage({
+  params,
+  searchParams,
+}: {
+  params: CycleRouteParams;
+  searchParams?: CycleRouteSearchParams;
+}) {
   const session = await getSessionUser();
   const { accountId: rawId, cycle } = await params;
+  const search = (await searchParams) ?? {};
+  const rawView = Array.isArray(search.view) ? search.view[0] : search.view;
+  const view = rawView === "run" ? "run" : "summary";
   const accountId = Number(rawId);
   if (!Number.isInteger(accountId) || accountId <= 0) notFound();
   if (!/^\d{4}-\d{2}$/.test(cycle)) notFound();
@@ -106,7 +117,11 @@ export default async function ConsolidatePage({ params }: { params: CycleRoutePa
       </div>
 
       {existing ? (
-        <ExistingConsolidationCard existing={existing} cycle={cycle} accountId={accountId} />
+        view === "run" ? (
+          <ExistingRunDetail existing={existing} cycle={cycle} accountId={accountId} />
+        ) : (
+          <ExistingConsolidationCard existing={existing} cycle={cycle} accountId={accountId} />
+        )
       ) : (
         <ConsolidateForm
           accountId={accountId}
@@ -116,6 +131,56 @@ export default async function ConsolidatePage({ params }: { params: CycleRoutePa
         />
       )}
     </main>
+  );
+}
+
+function ExistingRunDetail({
+  existing,
+  cycle,
+  accountId,
+}: {
+  existing: {
+    id: number;
+    importedAt: Date;
+    syntheticTxId: number | null;
+    report: unknown;
+    txnCount: number;
+  };
+  cycle: string;
+  accountId: number;
+}) {
+  const report = (existing.report ?? null) as ConsolidationReport | null;
+  return (
+    <Card data-testid="consolidate-run-detail">
+      <CardHeader className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            Run consolidado
+            <Badge variant="secondary">{cycle}</Badge>
+          </CardTitle>
+          <CardDescription>
+            Corrida el {formatBogotaDate(existing.importedAt)} · statement_import #{existing.id} ·{" "}
+            {existing.txnCount} tx tocadas
+          </CardDescription>
+        </div>
+        <Link
+          href={`/settings/accounts/${accountId}/consolidate/${cycle}`}
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          Volver al resumen
+        </Link>
+      </CardHeader>
+      <CardContent>
+        {report ? (
+          <ReportSection report={report} showHeading={false} />
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            Este run no tiene un reporte guardado (puede que se haya ejecutado antes de que lo
+            persistiéramos). Re-ejecutalo desde la consola si necesitás el detalle.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
