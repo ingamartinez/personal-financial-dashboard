@@ -1130,12 +1130,20 @@ export async function createManualTransferGroup(
   return { status: "ok", transferGroupId: insertResult.transferGroupId, txIds: insertResult.txIds };
 }
 
-// #406: update the installment plan on an existing TC transaction. Only the
-// cuota count and the optional rate override are mutable — the account, the
-// amount, and the occurred date are intentionally locked, because any true
-// re-financing should be modeled as the modo-B split (ver #345 regla 6)
-// and that's a separate, explicit flow. Leaving `installmentRateEmX10k` as
-// `null` means "inherit from the account's bucket at compute time".
+// #406/#416: update the installment plan on an existing TC transaction. Only
+// the cuota count and the optional rate override are mutable — the account,
+// the amount, and the occurred date are intentionally locked, because any
+// true re-financing should be modeled as the modo-B split (ver #345 regla 6)
+// and that's a separate, explicit flow.
+//
+// Rate rules (post #416):
+//   - cuotas === 1: `installmentRateEmX10k` stays null (diferido sin
+//     intereses; rate would be ignored anyway).
+//   - cuotas > 1: `installmentRateEmX10k` is REQUIRED. No silent fallback to
+//     the account bucket because Bancolombia's bucket rate changes monthly
+//     and the per-tx value is the source of truth (regla 3). The UI dialog
+//     blocks empty submits; this server-side check is the second line of
+//     defense.
 const updateInstallmentsSchema = z
   .object({
     txId: z.coerce.number().int().positive(),
@@ -1148,6 +1156,15 @@ const updateInstallmentsSchema = z
       .transform((v) => (v === "" ? null : v)),
   })
   .superRefine((v, ctx) => {
+    if (v.installmentsTotal > 1 && v.installmentRateEmX10k === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "La tasa EM es obligatoria para compras a cuotas (> 1). Consultá el extracto del mes.",
+        path: ["installmentRateEmX10k"],
+      });
+      return;
+    }
     if (v.installmentRateEmX10k === null) return;
     const res = validateInstallmentRate(v.installmentRateEmX10k);
     if (!res.ok) {

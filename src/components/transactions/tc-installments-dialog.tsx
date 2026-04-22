@@ -18,10 +18,16 @@ import { EM_X10K_SCALE, formatEmX10kAsEaPercent, parsePercentToEmX10k } from "@/
 import { updateTransactionInstallments } from "@/app/(app)/transactions/actions";
 import type { Currency } from "@/lib/types";
 
-// #406: edit installments + rate on a TC tx. Only these two fields are
+// #406/#416: edit installments + rate on a TC tx. Only these two fields are
 // editable; amount and account stay locked (re-financing = new transfer group,
-// not a mutation — see #345 regla 6). An empty rate input means "inherit from
-// the account's bucket on compute" (null in DB).
+// not a mutation — see #345 regla 6).
+//
+// Rate semantics (post #416):
+//   - cuotas = 1: rate is ignored (diferido sin intereses). Empty is fine.
+//   - cuotas > 1: rate is REQUIRED. No silent fallback to the account bucket
+//     because bucket rates change monthly at Bancolombia (regla 3) and the
+//     user is the source of truth for "what the bank snapshoted for this
+//     tx". Empty submit is rejected client-side + server-side.
 export type TcInstallmentsDialogProps = {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -63,11 +69,19 @@ export function TcInstallmentsDialog({
   const rateEmX10k = rate.trim() === "" ? null : parsePercentToEmX10k(rate);
   const eaPreview =
     rateEmX10k != null && rateEmX10k > 0 ? formatEmX10kAsEaPercent(rateEmX10k) : null;
+  // #416: when cuotas > 1, rate is mandatory. Disable submit + show inline
+  // message; we also double-check server-side in the zod schema.
+  const rateRequired = Number.isInteger(installmentsNum) && installmentsNum > 1;
+  const rateMissing = rateRequired && rate.trim() === "";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!Number.isInteger(installmentsNum) || installmentsNum < 1 || installmentsNum > 120) {
       toast.error("Cuotas debe ser un entero entre 1 y 120");
+      return;
+    }
+    if (rateMissing) {
+      toast.error("Ingresá la tasa EM del extracto para compras a cuotas.");
       return;
     }
     startTransition(async () => {
@@ -91,8 +105,8 @@ export function TcInstallmentsDialog({
         <DialogHeader>
           <DialogTitle>Editar cuotas</DialogTitle>
           <DialogDescription>
-            La tasa se usa para calcular intereses causados. Dejá vacío para heredar del bucket de
-            la cuenta.
+            La tasa se usa para calcular intereses causados. Para compras a cuotas (&gt; 1) es
+            obligatoria — la sacás del extracto mensual. Para 1 cuota, dejala vacía.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
@@ -111,7 +125,9 @@ export function TcInstallmentsDialog({
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="tc-rate">Tasa EM</Label>
+              <Label htmlFor="tc-rate">
+                Tasa EM {rateRequired ? <span className="text-destructive">*</span> : null}
+              </Label>
               <div className="relative">
                 <Input
                   id="tc-rate"
@@ -119,16 +135,23 @@ export function TcInstallmentsDialog({
                   inputMode="decimal"
                   value={rate}
                   onChange={(e) => setRate(e.target.value)}
-                  placeholder="Heredar bucket"
+                  placeholder={rateRequired ? "Ej: 1.9110" : "Sin interés"}
+                  aria-invalid={rateMissing || undefined}
                   className="pr-10 tabular-nums"
                 />
                 <span className="text-muted-foreground pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-xs">
                   %
                 </span>
               </div>
-              <p className="text-muted-foreground text-xs tabular-nums">
-                {eaPreview ? `≈ ${eaPreview} EA` : "—"}
-              </p>
+              {rateMissing ? (
+                <p className="text-destructive text-xs">
+                  Obligatoria para compras a cuotas. Mirá el extracto del mes.
+                </p>
+              ) : (
+                <p className="text-muted-foreground text-xs tabular-nums">
+                  {eaPreview ? `≈ ${eaPreview} EA` : "—"}
+                </p>
+              )}
             </div>
           </div>
 
@@ -151,7 +174,7 @@ export function TcInstallmentsDialog({
             >
               Cancelar
             </Button>
-            <Button type="submit" disabled={pending}>
+            <Button type="submit" disabled={pending || rateMissing}>
               {pending ? "Guardando…" : "Guardar"}
             </Button>
           </DialogFooter>

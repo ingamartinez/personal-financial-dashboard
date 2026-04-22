@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, lt, lte, gte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, isNull, lt, lte, gte, ne, or, sql } from "drizzle-orm";
 import { notDeleted } from "@/lib/db/helpers";
 import { db } from "@/lib/db";
 import {
@@ -23,6 +23,11 @@ export type TxFilters = {
   cursor?: string;
   hideAdjustments?: boolean;
   includeArchived?: boolean;
+  // #416: when true, limits the list to multi-cuota TC purchases missing an
+  // explicit rate — the UI filters to "compras a cuotas sin tasa" so the
+  // user can supply the EM from the extract. Translates to
+  // `installments_total > 1 AND installment_rate_bps IS NULL`.
+  needsRate?: boolean;
 };
 
 export type TxListResult = {
@@ -70,6 +75,10 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
     );
   }
   if (filters.hideAdjustments) conditions.push(eq(transactions.isAdjustment, false));
+  if (filters.needsRate) {
+    conditions.push(gt(transactions.installmentsTotal, 1));
+    conditions.push(isNull(transactions.installmentRateEmX10k));
+  }
   if (filters.cursor) {
     const c = decodeCursor(filters.cursor);
     if (c) {
@@ -254,9 +263,33 @@ export async function countTotal(
     );
   }
   if (filters.hideAdjustments) conditions.push(eq(transactions.isAdjustment, false));
+  if (filters.needsRate) {
+    conditions.push(gt(transactions.installmentsTotal, 1));
+    conditions.push(isNull(transactions.installmentRateEmX10k));
+  }
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(transactions)
     .where(and(...conditions));
+  return row?.n ?? 0;
+}
+
+/**
+ * #416: count live multi-cuota TC purchases missing an explicit rate. Drives
+ * the sticky banner on `/transactions` that prompts the user to supply the
+ * rate from the month's extract. Soft-deleted rows excluded.
+ */
+export async function countNeedingRate(userId: number): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        gt(transactions.installmentsTotal, 1),
+        isNull(transactions.installmentRateEmX10k),
+        notDeleted(transactions.deletedAt),
+      ),
+    );
   return row?.n ?? 0;
 }

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AlertTriangleIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AiClassifyButton } from "@/components/transactions/ai-classify-button";
 import { Filters } from "@/components/transactions/filters";
@@ -6,6 +7,7 @@ import { TransactionTable } from "@/components/transactions/transaction-table";
 import { TransferGroupDialog } from "@/components/transactions/transfer-group-dialog";
 import { getSessionUser } from "@/lib/auth/session";
 import {
+  countNeedingRate,
   countTotal,
   countUnclassified,
   listAccounts,
@@ -27,6 +29,7 @@ type SearchParams = Promise<{
   highlight?: string;
   showAdjustments?: string;
   showArchived?: string;
+  needsRate?: string;
 }>;
 
 function buildHref(base: Record<string, string | undefined>, cursor: string | null) {
@@ -48,6 +51,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const highlightId = Number.isFinite(highlightRaw) ? highlightRaw : undefined;
   const hideAdjustments = !sp.showAdjustments;
   const includeArchived = Boolean(sp.showArchived);
+  const needsRateActive = Boolean(sp.needsRate);
   const filters = {
     from: sp.from,
     to: sp.to,
@@ -57,24 +61,34 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     cursor: sp.cursor,
     hideAdjustments,
     includeArchived,
+    needsRate: needsRateActive,
   };
 
-  const [{ rows, nextCursor }, accounts, categories, total, unclassified, allCounterparties] =
-    await Promise.all([
-      listTransactions(session.id, filters),
-      listAccounts(session.id),
-      listCategories(session.id),
-      countTotal(session.id, {
-        from: filters.from,
-        to: filters.to,
-        accountId: filters.accountId,
-        categorySlug: filters.categorySlug,
-        q: filters.q,
-        includeArchived,
-      }),
-      countUnclassified(session.id),
-      listCounterparties(session.id),
-    ]);
+  const [
+    { rows, nextCursor },
+    accounts,
+    categories,
+    total,
+    unclassified,
+    allCounterparties,
+    needingRate,
+  ] = await Promise.all([
+    listTransactions(session.id, filters),
+    listAccounts(session.id),
+    listCategories(session.id),
+    countTotal(session.id, {
+      from: filters.from,
+      to: filters.to,
+      accountId: filters.accountId,
+      categorySlug: filters.categorySlug,
+      q: filters.q,
+      includeArchived,
+      needsRate: needsRateActive,
+    }),
+    countUnclassified(session.id),
+    listCounterparties(session.id),
+    countNeedingRate(session.id),
+  ]);
 
   const baseQuery = {
     from: sp.from,
@@ -84,6 +98,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     q: sp.q,
     showAdjustments: sp.showAdjustments,
     showArchived: sp.showArchived,
+    needsRate: sp.needsRate,
   };
 
   return (
@@ -105,6 +120,28 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
       </header>
 
       <Filters accounts={accounts} categories={categories} />
+
+      {needingRate > 0 && !needsRateActive ? (
+        <div className="flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 dark:border-amber-900 dark:bg-amber-950/40">
+          <div className="flex items-start gap-2 text-sm">
+            <AlertTriangleIcon className="mt-0.5 size-4 text-amber-700 dark:text-amber-400" />
+            <div>
+              <strong className="font-medium text-amber-900 dark:text-amber-200">
+                {needingRate.toLocaleString()} {needingRate === 1 ? "compra" : "compras"} a cuotas
+                sin tasa EM
+              </strong>
+              <span className="text-amber-800 dark:text-amber-300">
+                {" "}
+                — los intereses causados del ciclo no se van a calcular hasta que las completes.
+                Mirá el extracto del mes.
+              </span>
+            </div>
+          </div>
+          <Button asChild variant="outline" size="sm" className="shrink-0">
+            <Link href="/transactions?needsRate=on">Ver y completar</Link>
+          </Button>
+        </div>
+      ) : null}
 
       <TransactionTable
         rows={rows}

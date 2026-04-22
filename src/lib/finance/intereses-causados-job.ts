@@ -48,13 +48,35 @@ export type InterestRun = {
     installmentsPaid: number;
     outstandingBeforeCents: bigint;
     interestCents: bigint;
+    // #416: true when the tx is multi-cuota but neither an explicit rate nor
+    // a matching bucket was found. Interest can't be computed; the row is
+    // surfaced so the UI can prompt for a rate. `interestCents` is 0n.
+    needsRate: boolean;
   }>;
   totalInterestCents: bigint;
+  // #416: convenience count of rows with `needsRate: true`. Callers (CLI,
+  // future UI) use it to decide whether to warn the user that the run is
+  // incomplete.
+  purchasesNeedingRate: number;
 };
 
 export type ApplyResult =
-  | { status: "inserted"; txId: number; totalInterestCents: bigint }
-  | { status: "skipped"; reason: "zero-interest" | "already-run" }
+  | {
+      status: "inserted";
+      txId: number;
+      totalInterestCents: bigint;
+      // #416: non-zero when some purchases couldn't be priced. The synthetic
+      // tx still ships with the partial total; callers surface the gap.
+      purchasesNeedingRate: number;
+    }
+  | {
+      status: "skipped";
+      reason: "zero-interest" | "already-run";
+      // #416: surfaced even on zero-interest skips — a cycle may have only
+      // needs-rate purchases and no priced ones; the user still needs to see
+      // the gap.
+      purchasesNeedingRate: number;
+    }
   | { status: "error"; reason: string };
 
 function cycleKeyFor(accountId: number, cycle: string): string {
@@ -161,12 +183,30 @@ export async function computeInterestForCycle(opts: {
 
   const intereses: InterestRun["intereses"] = [];
   let totalInterestCents = BigInt(0);
+  let purchasesNeedingRate = 0;
 
   for (const p of purchases) {
-    const rateEmX10k =
-      p.installmentRateEmX10k != null
-        ? p.installmentRateEmX10k
-        : (resolveBucketRateX10k(buckets, p.installmentsTotal) ?? 0);
+    // #416: resolve rate without a silent `?? 0`. Precedence:
+    //   1. per-tx explicit rate (regla 3 — tasa inmutable por tx)
+    //   2. account bucket that matches installments_total
+    //   3. no fuente → needsRate flag; rate stays 0 so the schedule helper
+    //      returns zero interest (correct math: interés indefinido ≠ 0; we
+    //      surface the gap instead of booking a wrong number).
+    // 1-cuota sin fuente se marca NO como needsRate porque cuota única
+    // nunca genera interés (Bancolombia "diferido sin intereses").
+    let rateEmX10k: number;
+    let needsRate = false;
+    if (p.installmentRateEmX10k != null) {
+      rateEmX10k = p.installmentRateEmX10k;
+    } else {
+      const bucketRate = resolveBucketRateX10k(buckets, p.installmentsTotal);
+      if (bucketRate != null) {
+        rateEmX10k = bucketRate;
+      } else {
+        rateEmX10k = 0;
+        if (p.installmentsTotal > 1) needsRate = true;
+      }
+    }
 
     const schedule = installmentSchedule({
       amountCents: -p.amountCents, // stored negative, helper expects positive magnitude
@@ -182,7 +222,10 @@ export async function computeInterestForCycle(opts: {
     if (schedule.paidCount >= schedule.rows.length) continue;
     const nextRow = schedule.rows[schedule.paidCount];
     const interestCents = nextRow.interestCents + nextRow.deferredInterestCents;
-    if (interestCents === BigInt(0)) continue;
+    // #416: drop zero-interest priced rows (unchanged behavior), but KEEP
+    // `needsRate` rows even though their interestCents is 0 — the UI uses
+    // them to prompt for a rate.
+    if (interestCents === BigInt(0) && !needsRate) continue;
 
     const outstandingBefore =
       schedule.paidCount === 0
@@ -197,11 +240,13 @@ export async function computeInterestForCycle(opts: {
       installmentsPaid: schedule.paidCount,
       outstandingBeforeCents: outstandingBefore,
       interestCents,
+      needsRate,
     });
-    totalInterestCents += interestCents;
+    if (needsRate) purchasesNeedingRate += 1;
+    else totalInterestCents += interestCents;
   }
 
-  return { accountId, cycle, anchor, intereses, totalInterestCents };
+  return { accountId, cycle, anchor, intereses, totalInterestCents, purchasesNeedingRate };
 }
 
 // Persist the cycle's interest as a synthetic tx. Idempotent — second call
@@ -226,12 +271,23 @@ export async function applyInteresesCausadosForCycle(opts: {
     LIMIT 1
   `);
   if (existing.length > 0) {
-    return { status: "skipped", reason: "already-run" };
+    // Already-run skips still need a purchasesNeedingRate count — even if the
+    // synthetic already exists, new purchases added since then may need rate.
+    const run = await computeInterestForCycle({ userId, accountId, cycle, database });
+    return {
+      status: "skipped",
+      reason: "already-run",
+      purchasesNeedingRate: run.purchasesNeedingRate,
+    };
   }
 
   const run = await computeInterestForCycle({ userId, accountId, cycle, database });
   if (run.totalInterestCents === BigInt(0)) {
-    return { status: "skipped", reason: "zero-interest" };
+    return {
+      status: "skipped",
+      reason: "zero-interest",
+      purchasesNeedingRate: run.purchasesNeedingRate,
+    };
   }
 
   try {
@@ -274,7 +330,9 @@ export async function applyInteresesCausadosForCycle(opts: {
             installmentsPaid: i.installmentsPaid,
             outstandingBeforeCents: i.outstandingBeforeCents.toString(),
             interestCents: i.interestCents.toString(),
+            needsRate: i.needsRate,
           })),
+          purchasesNeedingRate: run.purchasesNeedingRate,
         },
       })
       .returning({ id: transactions.id });
@@ -283,6 +341,7 @@ export async function applyInteresesCausadosForCycle(opts: {
       status: "inserted",
       txId: inserted.id,
       totalInterestCents: run.totalInterestCents,
+      purchasesNeedingRate: run.purchasesNeedingRate,
     };
   } catch (err) {
     return { status: "error", reason: err instanceof Error ? err.message : String(err) };

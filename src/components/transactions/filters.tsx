@@ -28,6 +28,7 @@ export function Filters({ accounts, categories }: FiltersProps) {
   const currentCategorySlug = searchParams.get("categorySlug") ?? "";
   const showAdjustmentsActive = Boolean(searchParams.get("showAdjustments"));
   const showArchivedActive = Boolean(searchParams.get("showArchived"));
+  const needsRateActive = Boolean(searchParams.get("needsRate"));
 
   // Local mirror for the text search so every keystroke stays snappy; we push
   // the URL (and therefore the DB query) only after SEARCH_DEBOUNCE_MS of idle.
@@ -75,7 +76,11 @@ export function Filters({ accounts, categories }: FiltersProps) {
     currentCategorySlug,
     currentQ,
   ].filter((v) => v.length > 0).length;
-  const activeCount = stringActive + (showAdjustmentsActive ? 1 : 0) + (showArchivedActive ? 1 : 0);
+  const activeCount =
+    stringActive +
+    (showAdjustmentsActive ? 1 : 0) +
+    (showArchivedActive ? 1 : 0) +
+    (needsRateActive ? 1 : 0);
   const hasAny = activeCount > 0;
 
   return (
@@ -204,6 +209,23 @@ export function Filters({ accounts, categories }: FiltersProps) {
           <span>Show archived</span>
           <span className="text-muted-foreground text-xs">
             (hidden by default — archived transactions are excluded from balance and reports)
+          </span>
+        </label>
+
+        <label
+          htmlFor="needsRate"
+          className="flex cursor-pointer items-center gap-2 text-sm sm:col-span-2 lg:col-span-6"
+        >
+          <input
+            id="needsRate"
+            type="checkbox"
+            checked={needsRateActive}
+            onChange={(e) => applyChange("needsRate", e.target.checked ? "on" : "")}
+            className="border-input size-4 rounded border"
+          />
+          <span>Only TC purchases needing rate</span>
+          <span className="text-muted-foreground text-xs">
+            (multi-cuota without an explicit EM — fill from the month&apos;s extract)
           </span>
         </label>
       </div>
