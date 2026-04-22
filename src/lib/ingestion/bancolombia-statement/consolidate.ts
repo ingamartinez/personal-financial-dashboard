@@ -45,6 +45,9 @@ export type MatchStats = {
 export type ConsolidationReport = {
   userId: number;
   accountId: number;
+  // Account currency — useful to callers rendering multi-sheet previews so they
+  // can label each report section (COP vs USD) without re-querying the account.
+  currency: "COP" | "USD";
   cycle: string;
   dryRun: boolean;
   status: ConsolidationStatus;
@@ -202,6 +205,7 @@ function serializeMissing(match: MatchResult): ConsolidationReport["missingInLed
 
 function emptyReport(
   opts: ConsolidateOptions,
+  account: { id: number; currency: "COP" | "USD" },
   match: MatchResult,
   status: ConsolidationStatus,
   statementImportId: number | null,
@@ -210,6 +214,7 @@ function emptyReport(
   return {
     userId: opts.userId,
     accountId: opts.accountId,
+    currency: account.currency,
     cycle: opts.cycle,
     dryRun: opts.dryRun,
     status,
@@ -255,6 +260,9 @@ export async function consolidateCycleFromStatement(
     const persistedReport = (existing.report ?? {}) as Partial<ConsolidationReport>;
     return {
       ...(persistedReport as ConsolidationReport),
+      // Persisted reports written before the currency field was added may
+      // lack it — fill from the current account so the UI has what it needs.
+      currency: persistedReport.currency ?? account.currency,
       dryRun: opts.dryRun,
       status: "already-consolidated",
       statementImportId: existing.id,
@@ -272,7 +280,7 @@ export async function consolidateCycleFromStatement(
   const match = matchStatementAgainstLedger(opts.parsed, txs);
 
   if (opts.dryRun) {
-    return emptyReport(opts, match, "dry-run", null, {
+    return emptyReport(opts, account, match, "dry-run", null, {
       status: "not-run",
       reason: "dry-run",
     });
@@ -378,6 +386,7 @@ export async function consolidateCycleFromStatement(
   const finalReport: ConsolidationReport = {
     userId: opts.userId,
     accountId: opts.accountId,
+    currency: account.currency,
     cycle: opts.cycle,
     dryRun: false,
     status: "consolidated",
