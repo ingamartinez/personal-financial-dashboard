@@ -16,16 +16,30 @@
 
 import { and, eq, sql } from "drizzle-orm";
 import { db, type DB } from "@/lib/db";
-import { accounts, transactions, type AccountMetadata } from "@/lib/db/schema";
+import { accounts, physicalCards, transactions, type AccountMetadata } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { installmentSchedule } from "@/lib/finance/installment-schedule";
 import { resolveBucketRateX10k } from "@/lib/finance/rates";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "intereses-causados-job" });
+
+// Fallback cut day when neither the account nor its linked physical card has
+// one configured. 31 clamps to each month's last day, so a misconfigured
+// account still produces end-of-cycle behavior (the safest generic for
+// Bancolombia-style TCs). A warning is logged so the gap is visible.
+const DEFAULT_CUT_DAY = 31;
 
 export type CycleKey = `${number}-${string}`; // e.g. "5-2026-04"
 
 export type InterestRun = {
   accountId: number;
   cycle: string; // YYYY-MM
+  // Anchor used to split paid vs pending cuotas — end-of-day on the account's
+  // statement cut day, clamped to the month's last day. Surfaced so the
+  // apply-path can reuse it as the synthetic tx's `occurred_at` without
+  // re-resolving the cut day. See #413.
+  anchor: Date;
   intereses: Array<{
     txId: number;
     purchaseAmountCents: bigint;
@@ -47,13 +61,25 @@ function cycleKeyFor(accountId: number, cycle: string): string {
   return `${accountId}-${cycle}`;
 }
 
-// Convert a "YYYY-MM" cycle string into a UTC mid-month date. Used as the
-// `occurred_at` anchor for the synthetic tx and the `today` input to the
-// schedule helper — being mid-month keeps it insensitive to TZ edges.
-function cycleAnchor(cycle: string): Date {
+// Convert a "YYYY-MM" cycle string into the anchor Date for that cycle's
+// statement cut. `cutDay` (1-31) is the account's statement close day; values
+// past the month's actual length are clamped to the last day (e.g. cutDay=31
+// in February becomes Feb 28/29). End-of-day UTC (23:00) so purchases made
+// earlier in that same day still count as paid for `monthsBetween` checks.
+//
+// Why this drives correctness: `installmentSchedule`'s paid-vs-pending split
+// calls `monthsBetween(purchaseDate, anchor)` — anchoring mid-month would
+// decrement the count whenever a purchase's day-of-month falls in the second
+// half, producing a one-cuota-behind interest calc. See #413.
+export function cycleAnchor(cycle: string, cutDay: number): Date {
   const [y, m] = cycle.split("-").map(Number);
   if (!Number.isInteger(y) || !Number.isInteger(m)) throw new Error(`invalid cycle: ${cycle}`);
-  return new Date(Date.UTC(y, m - 1, 15, 12, 0, 0, 0));
+  if (!Number.isInteger(cutDay) || cutDay < 1 || cutDay > 31) {
+    throw new Error(`invalid cutDay: ${cutDay}`);
+  }
+  const lastDayOfMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const day = Math.min(cutDay, lastDayOfMonth);
+  return new Date(Date.UTC(y, m - 1, day, 23, 0, 0, 0));
 }
 
 // For each live installment purchase on the TC, project its schedule as of
@@ -66,16 +92,20 @@ export async function computeInterestForCycle(opts: {
   database?: DB;
 }): Promise<InterestRun> {
   const { userId, accountId, cycle, database = db } = opts;
-  const anchor = cycleAnchor(cycle);
 
+  // Left-join physical_cards so shared-cupo multi-currency cards (Mastercard
+  // Internacional, Amex) pick up the cut day from the shared row rather than
+  // duplicating it in every linked account's metadata.
   const [account] = await database
     .select({
       id: accounts.id,
       type: accounts.type,
       currency: accounts.currency,
       metadata: accounts.metadata,
+      physicalCardCutoffDay: physicalCards.statementCutoffDay,
     })
     .from(accounts)
+    .leftJoin(physicalCards, eq(physicalCards.id, accounts.physicalCardId))
     .where(
       and(eq(accounts.userId, userId), eq(accounts.id, accountId), notDeleted(accounts.deletedAt)),
     )
@@ -87,6 +117,20 @@ export async function computeInterestForCycle(opts: {
   }
   const meta = account.metadata as AccountMetadata;
   const buckets = meta.creditRateBuckets;
+
+  // Prefer the physical card's cut day (shared across linked currency pairs)
+  // then the per-account override in metadata, falling back to last-day-of-
+  // month when nothing is configured. The fallback path logs so the config
+  // gap is observable — see #413.
+  let cutDay = account.physicalCardCutoffDay ?? meta.cutoffDay ?? null;
+  if (cutDay == null) {
+    log.warn(
+      { userId, accountId, cycle, event: "cutoff_day_missing" },
+      "account has no cutoffDay configured — defaulting to last day of month",
+    );
+    cutDay = DEFAULT_CUT_DAY;
+  }
+  const anchor = cycleAnchor(cycle, cutDay);
 
   // Live installment purchases: TC txs with installments_total > 0 and
   // negative amount (purchases, not credits / payments), occurring on or
@@ -157,7 +201,7 @@ export async function computeInterestForCycle(opts: {
     totalInterestCents += interestCents;
   }
 
-  return { accountId, cycle, intereses, totalInterestCents };
+  return { accountId, cycle, anchor, intereses, totalInterestCents };
 }
 
 // Persist the cycle's interest as a synthetic tx. Idempotent — second call
@@ -191,7 +235,7 @@ export async function applyInteresesCausadosForCycle(opts: {
   }
 
   try {
-    const anchor = cycleAnchor(cycle);
+    const anchor = run.anchor;
     const cycleLabel = cycle; // already YYYY-MM
     const [accRow] = await database.execute<{ last4s: unknown; currency: "COP" | "USD" }>(sql`
       SELECT metadata -> 'last4s' AS last4s, currency
