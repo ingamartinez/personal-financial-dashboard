@@ -87,6 +87,10 @@ const seedAccounts: Array<{
       last4s: ["2575"],
       network: "visa",
       creditRateBuckets: { oneMonth: 0, months2to36: 19110, advances: 19110 },
+      // #413: statement cut day drives the intereses-causados job's anchor.
+      // 30 matches the observed Bancolombia 2026 extracts; users edit per TC
+      // from /settings/accounts.
+      cutoffDay: 30,
     },
   },
   {
@@ -216,6 +220,9 @@ export async function runSeed() {
       network: acc.metadata?.network,
       last4: acc.metadata?.last4s?.[0],
       creditLimitCents: BigInt(0),
+      // #413: default statement cut day from observed Bancolombia 2026
+      // extracts. Users edit per TC from /settings/accounts.
+      statementCutoffDay: 30,
     });
   }
   if (newPhysicalCardRows.length > 0) {

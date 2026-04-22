@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { applyInteresesCausadosForCycle, computeInterestForCycle } from "./intereses-causados-job";
+import {
+  applyInteresesCausadosForCycle,
+  computeInterestForCycle,
+  cycleAnchor,
+} from "./intereses-causados-job";
 
 // #407: integration tests for the intereses-causados job. Uses the real test
 // DB (findash_test) — seeds a TC account + purchases, runs the job, inspects
@@ -41,6 +45,23 @@ async function setBucketRates(
   `);
 }
 
+async function setCutoffDay(accountId: number, day: number | null) {
+  if (day === null) {
+    await db.execute(sql`
+      UPDATE accounts
+      SET metadata = metadata - 'cutoffDay', updated_at = now()
+      WHERE id = ${accountId}
+    `);
+  } else {
+    await db.execute(sql`
+      UPDATE accounts
+      SET metadata = jsonb_set(metadata, '{cutoffDay}', ${day.toString()}::jsonb),
+          updated_at = now()
+      WHERE id = ${accountId}
+    `);
+  }
+}
+
 async function seedPurchase(opts: {
   accountId: number;
   externalId: string;
@@ -66,6 +87,40 @@ async function seedPurchase(opts: {
   `);
   return row.id;
 }
+
+describe("cycleAnchor (#413)", () => {
+  it("anchors at end-of-day UTC on the requested cut day", () => {
+    const d = cycleAnchor("2026-03", 30);
+    expect(d.toISOString()).toBe("2026-03-30T23:00:00.000Z");
+  });
+
+  it("clamps cutDay=31 to Feb 28 in a non-leap year", () => {
+    expect(cycleAnchor("2026-02", 31).getUTCDate()).toBe(28);
+  });
+
+  it("clamps cutDay=31 to Feb 29 in a leap year", () => {
+    expect(cycleAnchor("2024-02", 31).getUTCDate()).toBe(29);
+  });
+
+  it("clamps cutDay=31 to April 30", () => {
+    expect(cycleAnchor("2026-04", 31).getUTCDate()).toBe(30);
+  });
+
+  it("keeps the nominal day when it exists in the month", () => {
+    expect(cycleAnchor("2026-03", 15).getUTCDate()).toBe(15);
+  });
+
+  it("rejects invalid cut days", () => {
+    expect(() => cycleAnchor("2026-03", 0)).toThrow(/invalid cutDay/);
+    expect(() => cycleAnchor("2026-03", 32)).toThrow(/invalid cutDay/);
+    expect(() => cycleAnchor("2026-03", 1.5)).toThrow(/invalid cutDay/);
+  });
+
+  it("rejects malformed cycles", () => {
+    expect(() => cycleAnchor("bad", 15)).toThrow(/invalid cycle/);
+    expect(() => cycleAnchor("2026", 15)).toThrow(/invalid cycle/);
+  });
+});
 
 describe("computeInterestForCycle", () => {
   it("returns the interest due on the next unpaid cuota", async () => {
@@ -116,6 +171,72 @@ describe("computeInterestForCycle", () => {
     });
     expect(run.intereses.length).toBe(1);
     expect(run.intereses[0].rateEmX10k).toBe(20000);
+  });
+
+  it("picks up the account's cutoffDay — a later cut → one more cuota paid → less interest (#413)", async () => {
+    const visa = await getVisaId();
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
+
+    // Purchase on Jan 20 with an explicit per-tx rate. Cycle "2026-03".
+    // With cutDay=15 the anchor is Mar 15 and monthsBetween(Jan 20, Mar 15)
+    // decrements by one (15 < 20) → paidCount=1 → charges cuota 2 on a high
+    // balance. With cutDay=30 the anchor is Mar 30 and the decrement doesn't
+    // happen (30 >= 20) → paidCount=2 → charges cuota 3 on a lower balance.
+    // This is the exact scenario that #413 fixes.
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}cutoff-drives-paidcount`,
+      amountCentsMagnitude: BigInt(247_990_000), // 2_479_900 pesos
+      occurredAt: "2026-01-20",
+      installmentsTotal: 12,
+      installmentRateEmX10k: 18311,
+    });
+
+    await setCutoffDay(visa, 15);
+    const early = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-03",
+    });
+    expect(early.intereses[0].installmentsPaid).toBe(1);
+
+    await setCutoffDay(visa, 30);
+    const late = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-03",
+    });
+    expect(late.intereses[0].installmentsPaid).toBe(2);
+
+    // A later cut means more cuotas have been paid → smaller outstanding
+    // balance → smaller interest this cycle.
+    expect(late.totalInterestCents).toBeLessThan(early.totalInterestCents);
+    expect(late.anchor.getUTCDate()).toBe(30);
+    expect(early.anchor.getUTCDate()).toBe(15);
+  });
+
+  it("falls back to last-day-of-month when cutoffDay is missing (#413)", async () => {
+    const visa = await getVisaId();
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
+    await setCutoffDay(visa, null);
+
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}cutoff-missing`,
+      amountCentsMagnitude: BigInt(1_000_000),
+      occurredAt: "2026-03-10",
+      installmentsTotal: 6,
+      installmentRateEmX10k: 19110,
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-04",
+    });
+    // April has 30 days, so cutDay=31 clamps to 30.
+    expect(run.anchor.getUTCMonth()).toBe(3); // April (0-indexed)
+    expect(run.anchor.getUTCDate()).toBe(30);
   });
 
   it("skips purchases with 1 cuota + 0% oneMonth bucket (diferido nominal)", async () => {
