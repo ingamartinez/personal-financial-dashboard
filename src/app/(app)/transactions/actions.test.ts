@@ -1642,11 +1642,11 @@ describe("updateTransactionInstallments (#406)", () => {
     expect(row.installment_rate_bps).toBe(19110);
   });
 
-  it("accepts a null rate (inherit from account bucket at compute time)", async () => {
-    const txId = await seedTcTx(`${EXT_PREFIX}:inherit`);
+  it("accepts a null rate for 1 cuota (no interest — diferido sin intereses)", async () => {
+    const txId = await seedTcTx(`${EXT_PREFIX}:one-cuota-null`);
     const result = await updateTransactionInstallments({
       txId,
-      installmentsTotal: 3,
+      installmentsTotal: 1,
       installmentRateEmX10k: null,
     });
     expect(result.status).toBe("ok");
@@ -1657,8 +1657,21 @@ describe("updateTransactionInstallments (#406)", () => {
     }>(sql`
       SELECT installments_total, installment_rate_bps FROM transactions WHERE id = ${txId}
     `);
-    expect(row.installments_total).toBe(3);
+    expect(row.installments_total).toBe(1);
     expect(row.installment_rate_bps).toBeNull();
+  });
+
+  it("rejects null rate when cuotas > 1 (#416 — no silent bucket fallback)", async () => {
+    const txId = await seedTcTx(`${EXT_PREFIX}:multi-null-rejected`);
+    const result = await updateTransactionInstallments({
+      txId,
+      installmentsTotal: 6,
+      installmentRateEmX10k: null,
+    });
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.message).toMatch(/obligatoria/i);
+    }
   });
 
   it("rejects suspiciously low EM values (likely EA mislabeled as EM)", async () => {

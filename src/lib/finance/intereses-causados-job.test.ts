@@ -239,6 +239,110 @@ describe("computeInterestForCycle", () => {
     expect(run.anchor.getUTCDate()).toBe(30);
   });
 
+  it("flags multi-cuota without explicit rate AND without matching bucket as needsRate (#416)", async () => {
+    const visa = await getVisaId();
+    // Clear any buckets so months2to36 lookup returns null → needsRate path.
+    await db.execute(sql`
+      UPDATE accounts SET metadata = metadata - 'creditRateBuckets', updated_at = now()
+      WHERE id = ${visa}
+    `);
+
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}needs-rate`,
+      amountCentsMagnitude: BigInt(1_000_000),
+      occurredAt: "2026-03-10",
+      installmentsTotal: 6,
+      installmentRateEmX10k: null, // no explicit rate
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-04",
+    });
+
+    expect(run.intereses.length).toBe(1);
+    expect(run.intereses[0].needsRate).toBe(true);
+    expect(run.intereses[0].interestCents).toBe(BigInt(0));
+    expect(run.purchasesNeedingRate).toBe(1);
+    // No priced purchases → total stays at zero (NOT silently booked).
+    expect(run.totalInterestCents).toBe(BigInt(0));
+  });
+
+  it("does NOT flag 1-cuota purchases as needsRate even without bucket (#416)", async () => {
+    const visa = await getVisaId();
+    await db.execute(sql`
+      UPDATE accounts SET metadata = metadata - 'creditRateBuckets', updated_at = now()
+      WHERE id = ${visa}
+    `);
+
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}one-cuota-no-bucket`,
+      amountCentsMagnitude: BigInt(500_000),
+      occurredAt: "2026-03-10",
+      installmentsTotal: 1,
+      installmentRateEmX10k: null,
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-04",
+    });
+
+    // 1-cuota diferido sin intereses — no flag, no row surfaced.
+    expect(run.intereses.length).toBe(0);
+    expect(run.purchasesNeedingRate).toBe(0);
+    expect(run.totalInterestCents).toBe(BigInt(0));
+  });
+
+  it("mixes priced and needsRate purchases correctly: total only counts priced (#416)", async () => {
+    const visa = await getVisaId();
+    // No bucket → unpriced multi-cuota falls to needsRate.
+    await db.execute(sql`
+      UPDATE accounts SET metadata = metadata - 'creditRateBuckets', updated_at = now()
+      WHERE id = ${visa}
+    `);
+
+    // Priced (has explicit rate).
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}mix-priced`,
+      amountCentsMagnitude: BigInt(10_000_000),
+      occurredAt: "2026-03-10",
+      installmentsTotal: 12,
+      installmentRateEmX10k: 19110,
+    });
+    // Unpriced — multi-cuota without bucket or rate.
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}mix-needsrate`,
+      amountCentsMagnitude: BigInt(5_000_000),
+      occurredAt: "2026-03-10",
+      installmentsTotal: 6,
+      installmentRateEmX10k: null,
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-04",
+    });
+
+    expect(run.intereses.length).toBe(2);
+    expect(run.purchasesNeedingRate).toBe(1);
+    const priced = run.intereses.find((i) => !i.needsRate);
+    const unpriced = run.intereses.find((i) => i.needsRate);
+    expect(priced?.rateEmX10k).toBe(19110);
+    expect(unpriced?.rateEmX10k).toBe(0);
+    // The total reflects ONLY the priced row — the unpriced 0n must not mask
+    // the fact that we don't know its interest.
+    expect(run.totalInterestCents).toBe(priced!.interestCents);
+    expect(run.totalInterestCents).toBeGreaterThan(BigInt(0));
+  });
+
   it("skips purchases with 1 cuota + 0% oneMonth bucket (diferido nominal)", async () => {
     const visa = await getVisaId();
     await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
