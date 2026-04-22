@@ -278,10 +278,10 @@ function CreditCardTile({
     const limit = primary.metadata.creditLimitCents;
     if (limit !== undefined && limit > 0) {
       limitCents = BigInt(limit);
-      availableCents =
-        primary.metadata.availableCreditCents !== undefined
-          ? BigInt(primary.metadata.availableCreditCents)
-          : limitCents + primary.balanceCents;
+      // #420: always derive from limit + ledger. The old
+      // `metadata.availableCreditCents` snapshot path went stale whenever a
+      // purchase landed via SMS/manual without a balance-adjust.
+      availableCents = limitCents + primary.balanceCents;
     }
     meterCurrency = primary.currency;
   }

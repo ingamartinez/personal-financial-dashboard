@@ -220,7 +220,6 @@ function CreditCardFormInner({
   const currentDebt = currentBalance < BigInt(0) ? -currentBalance : BigInt(0);
   const limitBig = BigInt(creditLimitCents);
   const currentAvailableFromBalance = limitBig - currentDebt;
-  const priorAvailable = target.metadata.availableCreditCents;
   const placeholderAvailable = Number(currentAvailableFromBalance) / 100;
 
   const [declared, setDeclared] = useState("");
@@ -291,12 +290,7 @@ function CreditCardFormInner({
           autoFocus
         />
         <p className="text-muted-foreground text-xs">
-          El monto disponible que te muestra la app del banco — no la deuda.{" "}
-          {priorAvailable !== undefined ? (
-            <>
-              Último registro: <Money cents={BigInt(priorAvailable)} currency={target.currency} />.
-            </>
-          ) : null}
+          El monto disponible que te muestra la app del banco — no la deuda.
         </p>
         {exceedsLimit ? (
           <p className="text-destructive text-xs">

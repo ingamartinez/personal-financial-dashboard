@@ -229,6 +229,12 @@ export type AccountMetadata = {
   last4s?: string[];
   network?: "visa" | "mastercard" | "amex";
   creditLimitCents?: number;
+  /**
+   * @deprecated #420 — do NOT read. Display always derives cupo disponible
+   * from `creditLimitCents + derivedBalance(SUM(ledger))`. Field kept in the
+   * type for backwards-compat with legacy JSONB rows; `adjustAccountBalance`
+   * strips it on the next balance-adjust so it drains orgánicamente.
+   */
   availableCreditCents?: number;
   cutoffDay?: number;
   paymentDueDay?: number;

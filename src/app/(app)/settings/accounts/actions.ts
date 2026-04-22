@@ -61,7 +61,6 @@ const metadataSchema = z
       .optional(),
     network: z.enum(["visa", "mastercard", "amex"]).optional(),
     creditLimitCents: z.number().int().nonnegative().optional(),
-    availableCreditCents: z.number().int().nonnegative().optional(),
     cutoffDay: z.number().int().min(1).max(31).optional(),
     interestRateMonthly: z.number().nonnegative().optional(),
     termMonths: z.number().int().positive().optional(),
@@ -432,8 +431,9 @@ export type AdjustBalanceResult =
  *   never shows debt directly, only the available limit, so the server
  *   reads `metadata.creditLimitCents` and derives
  *   `balance_cents = availableCreditCents - creditLimitCents` (negative, per
- *   the repo convention — see CreditMeter in /accounts). Also updates
- *   `metadata.availableCreditCents` so the card display stays consistent.
+ *   the repo convention — see CreditMeter in /accounts). #420: the cupo is
+ *   NOT snapshotted in metadata — display derives on read from limit +
+ *   SUM(ledger), so the only persisted state change is the adjustment tx.
  *
  * The adjustment tx is categorized as `adjustments` — spend/insights queries
  * filter these out via `is_adjustment = false`; balance/net-worth queries
@@ -511,7 +511,14 @@ export async function adjustAccountBalance(
       // debt is limit - available; balance_cents for credit_card is stored
       // negative (debt reduces net worth — see CreditMeter).
       targetBalanceCents = BigInt(available) - BigInt(limit);
-      nextMetadata = { ...account.metadata, availableCreditCents: available };
+      // #420: stop snapshotting availableCreditCents. Display always derives
+      // from limit + ledger; strip any stale value so old rows converge on
+      // the next adjust (same pattern as sharedAvailableCop below).
+      if (account.metadata.availableCreditCents !== undefined) {
+        const { availableCreditCents: _drop, ...rest } = account.metadata;
+        void _drop;
+        nextMetadata = rest;
+      }
     } else {
       // kind: "sharedAvailableCop" (#346). Back-solve the target sub-account's
       // balance from: the shared cupo, the declared-available-COP, the sibling
@@ -591,12 +598,11 @@ export async function adjustAccountBalance(
     const diff = targetBalanceCents - account.balanceCents;
 
     if (diff === BigInt(0)) {
-      // Metadata might still need to be persisted even when the balance
-      // didn't move (e.g. first time availableCreditCents is stored).
-      const metadataDrifted =
-        parsed.data.declared.kind === "availableCredit" &&
-        account.metadata.availableCreditCents !== parsed.data.declared.availableCreditCents;
-      if (metadataDrifted) {
+      // #420: on no-op, still persist metadata if we stripped a stale
+      // `availableCreditCents` snapshot. `nextMetadata !== account.metadata`
+      // is the strip signal — both kinds (availableCredit, sharedAvailableCop)
+      // rebind nextMetadata only when something needs cleaning up.
+      if (nextMetadata !== account.metadata) {
         await tx
           .update(accounts)
           .set({ metadata: nextMetadata, updatedAt: new Date() })
@@ -653,8 +659,8 @@ export async function adjustAccountBalance(
       .returning({ id: transactions.id });
 
     // Balance is derived from SUM(transactions.amount_cents) post #368 —
-    // the adjustment tx inserted above *is* the state change. Metadata
-    // still needs persisting (availableCreditCents, etc.).
+    // the adjustment tx inserted above *is* the state change. This update
+    // persists any `nextMetadata` rebind (currently only strip cleanups, #420).
     await tx
       .update(accounts)
       .set({ metadata: nextMetadata, updatedAt: today })

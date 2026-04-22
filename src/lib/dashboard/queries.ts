@@ -315,10 +315,9 @@ export async function getCreditCardsSummary(
       const md = primary.metadata;
       if (md.creditLimitCents && md.creditLimitCents > 0) {
         const limitNative = BigInt(md.creditLimitCents);
-        const availNative =
-          md.availableCreditCents !== undefined
-            ? BigInt(md.availableCreditCents)
-            : limitNative + primary.balanceCents;
+        // #420: always derive — stop reading `md.availableCreditCents`
+        // snapshot since it stays stale between balance-adjusts.
+        const availNative = limitNative + primary.balanceCents;
         limitCopCents += toCopCents(limitNative, primary.currency);
         availableCopCents += toCopCents(availNative, primary.currency);
       }
