@@ -24,6 +24,10 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  SkipCycleButton,
+  UnskipCycleLink,
+} from "@/app/(app)/settings/accounts/[accountId]/consolidate/skip-cycle-actions-ui";
 
 type TcAccount = GroupAccount & { metadata: AccountMetadata | null };
 
@@ -46,6 +50,8 @@ function statusLabel(status: CycleStatus): string {
       return "en curso";
     case "no-activity":
       return "sin actividad";
+    case "skipped":
+      return "omitido";
   }
 }
 
@@ -133,7 +139,7 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
                     <div
                       key={cycle.cycle}
                       className={
-                        cycle.status === "no-activity"
+                        cycle.status === "no-activity" || cycle.status === "skipped"
                           ? "flex flex-col gap-1 rounded-md border px-3 py-2 text-sm opacity-70"
                           : "flex flex-col gap-1 rounded-md border px-3 py-2 text-sm"
                       }
@@ -149,7 +155,9 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
                                 : "outline"
                           }
                           className={
-                            cycle.status === "no-activity" ? "text-muted-foreground" : undefined
+                            cycle.status === "no-activity" || cycle.status === "skipped"
+                              ? "text-muted-foreground"
+                              : undefined
                           }
                         >
                           {statusLabel(cycle.status)}
@@ -165,12 +173,21 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
                           </span>
                         ) : null}
                         {cycle.status === "pending" ? (
-                          <Link
-                            href={`/settings/accounts/${group.primaryAccountId}/consolidate/${cycle.cycle}`}
-                            className={buttonVariants({ variant: "outline", size: "sm" })}
-                          >
-                            Consolidar
-                          </Link>
+                          <>
+                            <Link
+                              href={`/settings/accounts/${group.primaryAccountId}/consolidate/${cycle.cycle}`}
+                              className={buttonVariants({ variant: "outline", size: "sm" })}
+                            >
+                              Consolidar
+                            </Link>
+                            <SkipCycleButton
+                              accountId={group.primaryAccountId}
+                              cycle={cycle.cycle}
+                            />
+                          </>
+                        ) : null}
+                        {cycle.status === "skipped" ? (
+                          <UnskipCycleLink accountId={group.primaryAccountId} cycle={cycle.cycle} />
                         ) : null}
                         {cycle.status === "consolidated" ? (
                           <Link

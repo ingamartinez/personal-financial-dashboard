@@ -61,6 +61,17 @@ describe("coalesceStatus (#431)", () => {
     expect(coalesceStatus(["consolidated", "consolidated"])).toBe("consolidated");
     expect(coalesceStatus(["no-activity", "no-activity"])).toBe("no-activity");
   });
+
+  // #436: skipped fits between consolidated and no-activity — pending still
+  // wins (if any sibling has work), consolidated still wins over skipped,
+  // but skipped surfaces above no-activity (user-explicit > auto-inferred).
+  it("places skipped between consolidated and no-activity", () => {
+    expect(coalesceStatus(["pending", "skipped"])).toBe("pending");
+    expect(coalesceStatus(["in-progress", "skipped"])).toBe("in-progress");
+    expect(coalesceStatus(["consolidated", "skipped"])).toBe("consolidated");
+    expect(coalesceStatus(["skipped", "no-activity"])).toBe("skipped");
+    expect(coalesceStatus(["skipped", "skipped"])).toBe("skipped");
+  });
 });
 
 describe("groupAccountsForConsolidation (#431)", () => {
