@@ -2,7 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts, statementImports, transactions, users } from "@/lib/db/schema";
+import {
+  accounts,
+  skippedConsolidationCycles,
+  statementImports,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 
 import {
@@ -44,6 +50,7 @@ async function createTc(userId: number, cutoffDay: number, name: string): Promis
 
 async function cleanupUser(userId: number): Promise<void> {
   await db.delete(transactions).where(eq(transactions.userId, userId));
+  await db.delete(skippedConsolidationCycles).where(eq(skippedConsolidationCycles.userId, userId));
   await db.delete(statementImports).where(eq(statementImports.userId, userId));
   await db.delete(accounts).where(eq(accounts.userId, userId));
   await db.delete(users).where(eq(users.id, userId));
@@ -349,5 +356,171 @@ describe("recentCycles — no-activity (#430)", () => {
       { thresholdDays: 7, now: utcDate(2026, 4, 15), count: 4 },
     );
     expect(overdue).toHaveLength(0);
+  });
+});
+
+describe("recentCycles — skipped (#436)", () => {
+  let userId!: number;
+  let accountId!: number;
+
+  beforeAll(async () => {
+    userId = await createUser(`${TAG.toLowerCase()}.skip.${Date.now()}@test.local`);
+    accountId = await createTc(userId, 30, "skip-visa");
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userId);
+  });
+
+  async function resetState(): Promise<void> {
+    await db.delete(transactions).where(eq(transactions.userId, userId));
+    await db.delete(statementImports).where(eq(statementImports.userId, userId));
+    await db
+      .delete(skippedConsolidationCycles)
+      .where(eq(skippedConsolidationCycles.userId, userId));
+  }
+
+  async function seedMarchActivity(): Promise<void> {
+    // One purchase inside (2026-02-28, 2026-03-30] → March classifies as pending.
+    await db.insert(transactions).values({
+      userId,
+      accountId,
+      occurredAt: utcDate(2026, 3, 15),
+      amountCents: BigInt(-50000),
+      currency: "COP",
+      descriptionRaw: `${TAG} skip march tx`,
+      categorySlug: "adjustments",
+      classificationMethod: "manual",
+      source: "manual",
+      channel: "manual",
+    });
+  }
+
+  it("promotes a pending cycle to skipped when a live skip row exists", async () => {
+    await resetState();
+    await seedMarchActivity();
+
+    let cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    expect(cycles.find((c) => c.cycle === "2026-03")?.status).toBe("pending");
+
+    await db.insert(skippedConsolidationCycles).values({
+      userId,
+      accountId,
+      cycle: "2026-03",
+      reason: "ya cuadré a mano",
+    });
+
+    cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    const march = cycles.find((c) => c.cycle === "2026-03");
+    expect(march?.status).toBe("skipped");
+    expect(march?.daysOverdue).toBe(0);
+  });
+
+  it("soft-deleted skip rows do NOT promote — cycle returns to its derived status", async () => {
+    await resetState();
+    await seedMarchActivity();
+
+    await db.insert(skippedConsolidationCycles).values({
+      userId,
+      accountId,
+      cycle: "2026-03",
+      deletedAt: new Date(),
+    });
+
+    const cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    expect(cycles.find((c) => c.cycle === "2026-03")?.status).toBe("pending");
+  });
+
+  it("statement_imports row wins over skip (consolidated prevails)", async () => {
+    await resetState();
+    await seedMarchActivity();
+    await db.insert(statementImports).values({
+      userId,
+      accountId,
+      fileHash: "b".repeat(64),
+      periodStart: "2026-02-28",
+      periodEnd: "2026-03-30",
+      kind: "extracto_detallado",
+      cycle: "2026-03",
+      report: { marker: "skip-wins-test" },
+    });
+    await db.insert(skippedConsolidationCycles).values({
+      userId,
+      accountId,
+      cycle: "2026-03",
+    });
+
+    const cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 4,
+      now: utcDate(2026, 4, 15),
+    });
+    expect(cycles.find((c) => c.cycle === "2026-03")?.status).toBe("consolidated");
+  });
+
+  it("banner feed (overdueCyclesForUser) excludes skipped cycles", async () => {
+    await resetState();
+    // Seed Jan + Feb activity so both cycles classify as `pending` naturally.
+    await db.insert(transactions).values([
+      {
+        userId,
+        accountId,
+        occurredAt: utcDate(2026, 1, 15),
+        amountCents: BigInt(-1000),
+        currency: "COP",
+        descriptionRaw: `${TAG} skip-jan`,
+        categorySlug: "adjustments",
+        classificationMethod: "manual",
+        source: "manual",
+        channel: "manual",
+      },
+      {
+        userId,
+        accountId,
+        occurredAt: utcDate(2026, 2, 15),
+        amountCents: BigInt(-1000),
+        currency: "COP",
+        descriptionRaw: `${TAG} skip-feb`,
+        categorySlug: "adjustments",
+        classificationMethod: "manual",
+        source: "manual",
+        channel: "manual",
+      },
+    ]);
+    // Skip Feb only.
+    await db.insert(skippedConsolidationCycles).values({
+      userId,
+      accountId,
+      cycle: "2026-02",
+    });
+
+    const overdue = await overdueCyclesForUser(
+      userId,
+      [{ id: accountId, name: "skip-visa", metadata: { cutoffDay: 30 } }],
+      { thresholdDays: 7, now: utcDate(2026, 4, 15), count: 4 },
+    );
+    const cycles = overdue.map((o) => o.cycle);
+    expect(cycles).not.toContain("2026-02");
+    expect(cycles).toContain("2026-01");
   });
 });

@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts, statementImports } from "@/lib/db/schema";
+import { accounts, skippedConsolidationCycles, statementImports } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { formatAccountLabel } from "@/lib/accounts/format";
@@ -14,6 +14,7 @@ import { buttonVariants } from "@/components/ui/button";
 import type { ConsolidationReport } from "@/lib/ingestion/bancolombia-statement/consolidate";
 import { ConsolidateForm } from "./consolidate-form";
 import { ReportSection } from "./consolidate-report-view";
+import { UnskipCycleLink } from "../skip-cycle-actions-ui";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +87,27 @@ export default async function ConsolidatePage({
     )
     .limit(1);
 
+  // #436: skip state is only meaningful when the cycle is NOT already
+  // consolidated. Consolidated wins, so the skip lookup is skipped when
+  // `existing` is present (saves a query on the happy path).
+  const [skip] = existing
+    ? []
+    : await db
+        .select({
+          skippedAt: skippedConsolidationCycles.skippedAt,
+          reason: skippedConsolidationCycles.reason,
+        })
+        .from(skippedConsolidationCycles)
+        .where(
+          and(
+            eq(skippedConsolidationCycles.userId, session.id),
+            eq(skippedConsolidationCycles.accountId, accountId),
+            eq(skippedConsolidationCycles.cycle, cycle),
+            notDeleted(skippedConsolidationCycles.deletedAt),
+          ),
+        )
+        .limit(1);
+
   const accountLabel = formatAccountLabel({
     name: account.name,
     currency: account.currency,
@@ -122,6 +144,15 @@ export default async function ConsolidatePage({
         ) : (
           <ExistingConsolidationCard existing={existing} cycle={cycle} accountId={accountId} />
         )
+      ) : skip ? (
+        <SkippedCycleCard
+          cycle={cycle}
+          accountId={accountId}
+          skippedAt={skip.skippedAt}
+          reason={skip.reason}
+          accountName={accountLabel}
+          institutionSlug={account.institutionSlug}
+        />
       ) : (
         <ConsolidateForm
           accountId={accountId}
@@ -131,6 +162,65 @@ export default async function ConsolidatePage({
         />
       )}
     </main>
+  );
+}
+
+function SkippedCycleCard({
+  cycle,
+  accountId,
+  skippedAt,
+  reason,
+  accountName,
+  institutionSlug,
+}: {
+  cycle: string;
+  accountId: number;
+  skippedAt: Date;
+  reason: string | null;
+  accountName: string;
+  institutionSlug: string;
+}) {
+  return (
+    <div className="flex flex-col gap-6">
+      <Card data-testid="consolidate-skipped-card">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            Ciclo omitido
+            <Badge variant="outline">{cycle}</Badge>
+          </CardTitle>
+          <CardDescription>
+            Marcado como omitido el {formatBogotaDate(skippedAt)}. No aparece en banner ni en la
+            lista de pendientes.
+            {reason ? (
+              <>
+                {" "}
+                <strong className="font-medium">Motivo:</strong> {reason}
+              </>
+            ) : null}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-2">
+          <UnskipCycleLink accountId={accountId} cycle={cycle} asButton />
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>¿Querés consolidarlo de todas formas?</CardTitle>
+          <CardDescription>
+            Si tenés el extracto, podés seguir adelante sin deshacer la omisión — una vez
+            consolidado el skip queda redundante (consolidado siempre gana).
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ConsolidateForm
+            accountId={accountId}
+            accountName={accountName}
+            cycle={cycle}
+            institutionSlug={institutionSlug}
+          />
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

@@ -14,10 +14,16 @@ import type { CycleStatus, CycleSummary } from "@/lib/accounts/cycles";
 // the same plastic disagree on a cycle (e.g. one currency was consolidated
 // and the other wasn't), the group inherits the more urgent status. Kept as
 // a module-level array so the precedence is readable in one line.
+//
+// #436: `skipped` sits between `consolidated` and `no-activity` — an
+// explicit opt-out is more informative than "no data" (we surface it as
+// "omitido" with a Deshacer action), but if a sibling still has real work
+// pending the group must surface that first.
 const STATUS_PRECEDENCE: readonly CycleStatus[] = [
   "pending",
   "in-progress",
   "consolidated",
+  "skipped",
   "no-activity",
 ] as const;
 

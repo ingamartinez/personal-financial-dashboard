@@ -14,7 +14,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { db, type DB } from "@/lib/db";
 import type { AccountMetadata } from "@/lib/db/schema";
-import { statementImports, transactions } from "@/lib/db/schema";
+import { skippedConsolidationCycles, statementImports, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { cycleAnchor } from "@/lib/finance/intereses-causados-job";
 
@@ -30,7 +30,14 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // users, fresh accounts, and dormant cards. Importing old txs (CSV/SMS
 // backfill/extracto) flips it back to `pending` on the next read — the
 // rule is current ledger state, not a frozen snapshot.
-export type CycleStatus = "in-progress" | "pending" | "no-activity" | "consolidated";
+//
+// `skipped` = user explicitly opted out of consolidating this cycle via
+// #436. Soft-deleted skip rows don't count — unskipping restores the
+// cycle's derived status (pending / no-activity) transparently. A
+// consolidated row always wins over skip: if the user consolidates a
+// skipped cycle via a direct link, the skip becomes redundant, not
+// blocking.
+export type CycleStatus = "in-progress" | "pending" | "no-activity" | "consolidated" | "skipped";
 
 export type CycleSummary = {
   cycle: string; // "YYYY-MM"
@@ -124,6 +131,24 @@ export async function recentCycles(ctx: CyclesContext): Promise<CycleSummary[]> 
     if (row.cycle) consolidatedByCycle.set(row.cycle, { id: row.id, importedAt: row.importedAt });
   }
 
+  // #436: live skip rows promote cycles to the `skipped` status when they
+  // aren't already consolidated. Soft-deleted rows are ignored so
+  // unskip→re-skip flows restore state transparently.
+  const skippedRows = labels.length
+    ? await database
+        .select({ cycle: skippedConsolidationCycles.cycle })
+        .from(skippedConsolidationCycles)
+        .where(
+          and(
+            eq(skippedConsolidationCycles.userId, ctx.userId),
+            eq(skippedConsolidationCycles.accountId, ctx.accountId),
+            inArray(skippedConsolidationCycles.cycle, labels),
+            notDeleted(skippedConsolidationCycles.deletedAt),
+          ),
+        )
+    : [];
+  const skippedCycleSet = new Set(skippedRows.map((r) => r.cycle));
+
   // First-pass classification without activity check.
   type Prelim = {
     cycle: string;
@@ -155,6 +180,18 @@ export async function recentCycles(ctx: CyclesContext): Promise<CycleSummary[]> 
         anchor,
         prevAnchor,
         status: "in-progress",
+        consolidatedAt: null,
+        statementImportId: null,
+        daysOverdue: 0,
+      };
+    }
+    // #436: user-skipped wins over pending / no-activity, loses to consolidated.
+    if (skippedCycleSet.has(cycle)) {
+      return {
+        cycle,
+        anchor,
+        prevAnchor,
+        status: "skipped",
         consolidatedAt: null,
         statementImportId: null,
         daysOverdue: 0,

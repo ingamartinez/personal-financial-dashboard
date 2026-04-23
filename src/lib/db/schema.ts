@@ -535,6 +535,39 @@ export const statementImports = pgTable(
   ],
 );
 
+// #436: cycles the user explicitly marked as "don't consolidate" — escape
+// hatch from the "pending forever" nag for ciclos viejos sin extracto o
+// ya cuadrados vía balance_adjustment. Soft-delete via `deletedAt` so
+// unskipping preserves history. A `statement_imports` row for the same
+// (user, account, cycle) always wins — the work is already done; a skip
+// becomes redundant but does not block.
+export const skippedConsolidationCycles = pgTable(
+  "skipped_consolidation_cycles",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    cycle: varchar("cycle", { length: 7 }).notNull(),
+    reason: text("reason"),
+    skippedAt: timestamp("skipped_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    // At most one live skip per (user, account, cycle). Soft-deleted rows
+    // don't count so skip → unskip → re-skip is legal.
+    uniqueIndex("skipped_consolidation_cycles_live_unique")
+      .on(t.userId, t.accountId, t.cycle)
+      .where(sql`${t.deletedAt} IS NULL`),
+    index("skipped_consolidation_cycles_user_account_idx")
+      .on(t.userId, t.accountId)
+      .where(sql`${t.deletedAt} IS NULL`),
+  ],
+);
+
 export const reconciliationDecisions = pgTable(
   "reconciliation_decisions",
   {

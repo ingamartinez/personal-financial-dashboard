@@ -372,6 +372,13 @@
       "when": 1776834874167,
       "tag": "0052_fluffy_the_fallen",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1776921748061,
+      "tag": "0053_military_manta",
+      "breakpoints": true
     }
   ]
 }
