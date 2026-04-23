@@ -332,6 +332,15 @@ function BalanceProjectionSection({
                 <span className="italic">— podrían estar obsoletos</span>
               </li>
             ) : null}
+            {projection.breakdown.balanceAdjustmentPlugCentsStr !== null &&
+            BigInt(projection.breakdown.balanceAdjustmentPlugCentsStr) !== BigInt(0) ? (
+              <li data-testid="consolidate-projection-adjustment-plug">
+                Ajuste de saldo (saldo real ingresado):{" "}
+                <span className="tabular-nums">
+                  {formatSignedCents(projection.breakdown.balanceAdjustmentPlugCentsStr)}
+                </span>
+              </li>
+            ) : null}
           </ul>
         </>
       )}

@@ -3,11 +3,23 @@ import { createHash } from "node:crypto";
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 
 import { db, type DB } from "@/lib/db";
-import { accounts, physicalCards, statementImports, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  physicalCards,
+  statementImports,
+  transactions,
+} from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { applyInteresesCausadosForCycle } from "@/lib/finance/intereses-causados-job";
 import { createLogger } from "@/lib/logger";
+
+// #433 — the balance_adjustment plug goes into the user's Ajustes de saldo
+// category (same one the reconcile flow + opening-balance tx use). We always
+// call ensureAdjustmentsCategory before insert so this never FK-fails on
+// accounts whose category was soft-deleted by the user.
+const ADJUSTMENTS_CATEGORY_SLUG = "adjustments";
 
 import {
   isBankInterestRow,
@@ -65,12 +77,25 @@ export type BalanceProjection = {
     // account with occurredAt ≤ cycle.endDate. These are NOT auto-retired
     // (see epic #435 non-goals); capa 3 (#434) handles cleanup.
     plugsObsoletosCentsStr: string;
+    // #433 — the compensator plug inserted by this consolidation to reconcile
+    // the ledger against a user-provided "saldo real". Null when no input was
+    // provided OR when the ledger already matched exactly (no plug needed).
+    balanceAdjustmentPlugCentsStr: string | null;
   };
   warn: {
     // |delta| threshold above which the UI paints a warning.
     thresholdCentsStr: string;
     exceeded: boolean;
   };
+};
+
+// #433 — info about a balance_adjustment tx inserted to reconcile the ledger
+// against a user-provided "saldo real". Null at the report level when no
+// input was provided or ledger already matched.
+export type BalanceAdjustmentPlug = {
+  txId: number;
+  amountCentsStr: string; // ledger-signed plug value
+  userInputCentsStr: string; // the saldo real the user typed (ledger sign)
 };
 
 export type ConsolidationReport = {
@@ -110,6 +135,9 @@ export type ConsolidationReport = {
   // #432 — may be absent on legacy persisted reports (pre-#432). UI must
   // treat `undefined` as "not available" and omit the section.
   projection?: BalanceProjection;
+  // #433 — plug tx info when `saldoRealLedgerCents` was provided on commit.
+  // Null when input was absent OR no plug was needed (already-matching).
+  balanceAdjustment?: BalanceAdjustmentPlug | null;
 };
 
 export type ConsolidateOptions = {
@@ -120,6 +148,12 @@ export type ConsolidateOptions = {
   fileHash: string;
   dryRun: boolean;
   database?: DB;
+  // #433 — optional user input "saldo real" in the account currency's ledger
+  // sign (negative for TC debt, positive for savings). When provided AND
+  // dryRun=false AND status ends up "consolidated", inserts a
+  // balance_adjustment tx post-intereses so the final ledger SUM matches
+  // this value exactly.
+  saldoRealLedgerCents?: bigint | null;
 };
 
 export function hashStatementBuffer(buffer: Buffer): string {
@@ -278,6 +312,7 @@ export function buildBalanceProjection(
   match: MatchResult,
   currency: "COP" | "USD",
   interesesTotalCentsPositive: bigint | null,
+  balanceAdjustmentPlugCents: bigint | null = null,
 ): BalanceProjection {
   // Compras insertables: during-period, real auth, not synthetic bank-interest.
   // Mirrors the filter in insertMissingRowInTx so the breakdown matches what
@@ -292,7 +327,10 @@ export function buildBalanceProjection(
   const interesesLedgerCents =
     interesesTotalCentsPositive === null ? null : -interesesTotalCentsPositive;
 
-  const deltaCents = comprasNuevasCents + (interesesLedgerCents ?? BigInt(0));
+  const deltaCents =
+    comprasNuevasCents +
+    (interesesLedgerCents ?? BigInt(0)) +
+    (balanceAdjustmentPlugCents ?? BigInt(0));
   const saldoProyectadoCents = inputs.saldoActualCents + deltaCents;
   const thresholdCents = computeWarnThresholdCents(currency, inputs.creditLimitCents);
   const exceeded = absBigInt(deltaCents) > thresholdCents;
@@ -305,11 +343,99 @@ export function buildBalanceProjection(
       comprasNuevasCentsStr: comprasNuevasCents.toString(),
       interesesCentsStr: interesesLedgerCents === null ? null : interesesLedgerCents.toString(),
       plugsObsoletosCentsStr: inputs.plugsObsoletosCents.toString(),
+      balanceAdjustmentPlugCentsStr:
+        balanceAdjustmentPlugCents === null ? null : balanceAdjustmentPlugCents.toString(),
     },
     warn: {
       thresholdCentsStr: thresholdCents.toString(),
       exceeded,
     },
+  };
+}
+
+// #433 — idempotent category upsert. Matches the reconcile-flow convention
+// (same slug, name, icon, color) so plugs inserted here live in the same
+// bucket as manual balance-adjustments from `/reconcile`.
+async function ensureAdjustmentsCategory(database: DB, userId: number): Promise<void> {
+  await database
+    .insert(categories)
+    .values({
+      userId,
+      slug: ADJUSTMENTS_CATEGORY_SLUG,
+      name: "Ajustes de saldo",
+      icon: "wrench",
+      color: "#475569",
+      sortOrder: 1000,
+    })
+    .onConflictDoNothing({ target: [categories.userId, categories.slug] });
+  // Un-archive if the user had soft-deleted the category previously.
+  await database
+    .update(categories)
+    .set({ deletedAt: null, updatedAt: new Date() })
+    .where(and(eq(categories.userId, userId), eq(categories.slug, ADJUSTMENTS_CATEGORY_SLUG)));
+}
+
+type PlugInsertArgs = {
+  userId: number;
+  accountId: number;
+  currency: "COP" | "USD";
+  cycle: string;
+  cycleEndDate: Date;
+  statementImportId: number;
+  saldoRealLedgerCents: bigint;
+};
+
+// #433 — after the main consolidation txn + intereses job have committed, if
+// the user gave a saldo real we insert a single balance_adjustment tx for
+// the delta so the ledger SUM matches the user's input exactly. No-op when
+// the delta is zero. Runs OUTSIDE the consolidation transaction on purpose
+// (intereses job is already outside — see its comment — and keeping the plug
+// outside too means a failed insert doesn't roll back the ledger fix).
+async function insertSaldoRealPlug(
+  database: DB,
+  args: PlugInsertArgs,
+): Promise<BalanceAdjustmentPlug | null> {
+  const [balanceRow] = await database
+    .select({ cents: derivedBalanceCentsSql })
+    .from(accounts)
+    .where(and(eq(accounts.userId, args.userId), eq(accounts.id, args.accountId)))
+    .limit(1);
+  const ledgerSumCents = BigInt(balanceRow?.cents ?? "0");
+  const plugCents = args.saldoRealLedgerCents - ledgerSumCents;
+  if (plugCents === BigInt(0)) return null;
+
+  await ensureAdjustmentsCategory(database, args.userId);
+  const [inserted] = await database
+    .insert(transactions)
+    .values({
+      userId: args.userId,
+      accountId: args.accountId,
+      occurredAt: args.cycleEndDate,
+      amountCents: plugCents,
+      currency: args.currency,
+      descriptionRaw: `Ajuste post-consolidación ${args.cycle} · saldo ingresado por user`,
+      merchant: "Balance adjustment",
+      categorySlug: ADJUSTMENTS_CATEGORY_SLUG,
+      classificationMethod: "manual",
+      source: "balance_adjustment",
+      channel: "manual",
+      isAdjustment: true,
+      statementImportId: args.statementImportId,
+      rawData: {
+        event: "saldo_real_consolidation_plug",
+        issue: 433,
+        cycle: args.cycle,
+        declaredLedgerCents: args.saldoRealLedgerCents.toString(),
+        previousLedgerCents: ledgerSumCents.toString(),
+        statementImportId: args.statementImportId,
+      },
+    })
+    .returning({ id: transactions.id });
+
+  return {
+    txId: inserted.id,
+    amountCentsStr: plugCents.toString(),
+    userInputCentsStr: args.saldoRealLedgerCents.toString(),
   };
 }
 
@@ -408,6 +534,7 @@ function emptyReport(
     statementImportId,
     intereses,
     projection,
+    balanceAdjustment: null,
   };
 }
 
@@ -581,15 +708,50 @@ export async function consolidateCycleFromStatement(
   });
   const intereses: InteresesOutcome = interesesToOutcome(interesesResult);
 
-  // #432 — projection is anchored to the pre-commit saldo snapshot; intereses
-  // total is known only now, so it's plugged in at finalize time.
   const interesesTotalCents =
     intereses.status === "inserted" ? BigInt(intereses.totalInterestCentsStr) : BigInt(0);
+
+  // #433 — optional plug to reconcile ledger SUM against a user-provided
+  // saldo real. Runs AFTER intereses so the plug balances the final state.
+  // `null` when no input was given OR when the ledger already matched
+  // (plug insert would have been zero).
+  let balanceAdjustment: BalanceAdjustmentPlug | null = null;
+  if (opts.saldoRealLedgerCents != null) {
+    balanceAdjustment = await insertSaldoRealPlug(database, {
+      userId: opts.userId,
+      accountId: opts.accountId,
+      currency: account.currency,
+      cycle: opts.cycle,
+      cycleEndDate: opts.parsed.period.endDate,
+      statementImportId: imp.id,
+      saldoRealLedgerCents: opts.saldoRealLedgerCents,
+    });
+    log.info(
+      {
+        userId: opts.userId,
+        accountId: opts.accountId,
+        cycle: opts.cycle,
+        saldoRealLedgerCents: opts.saldoRealLedgerCents.toString(),
+        plugInserted: balanceAdjustment !== null,
+        plugTxId: balanceAdjustment?.txId ?? null,
+        event: "saldo_real_plug",
+      },
+      balanceAdjustment
+        ? "consolidate: inserted saldo-real compensator plug"
+        : "consolidate: saldo-real matched ledger, no plug needed",
+    );
+  }
+
+  // #432 — projection pins `saldoActualCents` to the pre-commit snapshot so
+  // delta = what *this consolidation* moved (compras + intereses + optional
+  // plug). Intereses + plug are filled in here since both run AFTER the main
+  // txn commits.
   const projection = buildBalanceProjection(
     projectionInputs,
     match,
     account.currency,
     interesesTotalCents,
+    balanceAdjustment === null ? null : BigInt(balanceAdjustment.amountCentsStr),
   );
 
   const finalReport: ConsolidationReport = {
@@ -608,6 +770,7 @@ export async function consolidateCycleFromStatement(
     statementImportId: imp.id,
     intereses,
     projection,
+    balanceAdjustment,
   };
 
   await database

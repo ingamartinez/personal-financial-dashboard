@@ -31,6 +31,28 @@ const inputSchema = z.object({
   cycle: z.string().regex(/^\d{4}-\d{2}$/, "cycle must be YYYY-MM"),
 });
 
+// #433 — FormData keys follow `saldoRealLedgerCents_<accountId>` and carry
+// the user-typed saldo real ALREADY CONVERTED TO CENTS (bigint string) by
+// the client. Empty / missing → no input for that account.
+function parseSaldoRealInputs(formData: FormData): Map<number, bigint> {
+  const out = new Map<number, bigint>();
+  for (const [key, value] of formData.entries()) {
+    if (!key.startsWith("saldoRealLedgerCents_")) continue;
+    const rawAccountId = key.slice("saldoRealLedgerCents_".length);
+    const accountId = Number(rawAccountId);
+    if (!Number.isInteger(accountId) || accountId <= 0) continue;
+    const str = typeof value === "string" ? value.trim() : "";
+    if (str === "") continue;
+    try {
+      const parsed = BigInt(str);
+      out.set(accountId, parsed);
+    } catch {
+      throw new Error(`saldo_real_not_integer:accountId=${accountId},value=${str}`);
+    }
+  }
+  return out;
+}
+
 type TcAccount = {
   id: number;
   name: string;
@@ -245,6 +267,8 @@ export async function commitStatementAction(formData: FormData): Promise<Consoli
   const parsedSheets = parseBancolombiaStatementAllSheets(buffer);
   const dispatch = await resolveDispatch(session.id, origin, parsedSheets);
   const fileHash = hashStatementBuffer(buffer);
+  // #433 — per-account saldo real inputs (empty map when user didn't fill any).
+  const saldoRealInputs = parseSaldoRealInputs(formData);
 
   const reports: ConsolidationReport[] = [];
   for (const { account, parsed } of dispatch) {
@@ -255,6 +279,7 @@ export async function commitStatementAction(formData: FormData): Promise<Consoli
       parsed,
       fileHash,
       dryRun: false,
+      saldoRealLedgerCents: saldoRealInputs.get(account.id) ?? null,
     });
     reports.push(r);
   }
