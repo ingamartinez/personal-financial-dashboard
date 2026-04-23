@@ -6,7 +6,10 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import type { ConsolidationReport } from "@/lib/ingestion/bancolombia-statement/consolidate";
+import type {
+  BalanceProjection,
+  ConsolidationReport,
+} from "@/lib/ingestion/bancolombia-statement/consolidate";
 
 export function formatCents(str: string): string {
   if (!str) return "—";
@@ -65,6 +68,9 @@ export function ReportSection({
           <h3 className="text-sm font-semibold">{sectionLabel(report)}</h3>
           <Badge variant="outline">{report.status}</Badge>
         </div>
+      ) : null}
+      {report.projection ? (
+        <BalanceProjectionSection projection={report.projection} dryRun={report.dryRun} />
       ) : null}
       <SummaryGrid report={report} />
       <Alert>
@@ -235,6 +241,115 @@ function MissingSection({ missing }: { missing: ConsolidationReport["missingInLe
         )}
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function formatSignedCents(str: string): string {
+  if (!str) return "—";
+  const big = BigInt(str);
+  const formatted = formatCents(str);
+  if (big > BigInt(0) && !formatted.startsWith("+")) return `+${formatted}`;
+  return formatted;
+}
+
+function BalanceProjectionSection({
+  projection,
+  dryRun,
+}: {
+  projection: BalanceProjection;
+  dryRun: boolean;
+}) {
+  const deltaCents = BigInt(projection.deltaCentsStr);
+  const isZeroDelta = deltaCents === BigInt(0);
+  const plugsCents = BigInt(projection.breakdown.plugsObsoletosCentsStr);
+
+  return (
+    <section
+      data-testid="consolidate-projection"
+      className="flex flex-col gap-3 rounded-md border p-3 text-sm"
+    >
+      <div className="flex items-baseline gap-2">
+        <h4 className="font-semibold">Proyección de saldo</h4>
+        {dryRun ? (
+          <span className="text-muted-foreground text-xs">(preview)</span>
+        ) : (
+          <span className="text-muted-foreground text-xs">(aplicado)</span>
+        )}
+      </div>
+
+      {isZeroDelta ? (
+        <p className="text-muted-foreground text-xs" data-testid="consolidate-projection-zero">
+          Sin cambios en saldo — este ciclo no aporta compras nuevas ni intereses.
+        </p>
+      ) : (
+        <>
+          <p className="text-sm">
+            Saldo disponible cambiará de{" "}
+            <span className="font-medium tabular-nums">
+              {formatCents(projection.saldoActualCentsStr)}
+            </span>{" "}
+            →{" "}
+            <span className="font-medium tabular-nums">
+              {formatCents(projection.saldoProyectadoCentsStr)}
+            </span>{" "}
+            (delta:{" "}
+            <span
+              data-testid="consolidate-projection-delta"
+              className={cn(
+                "font-semibold tabular-nums",
+                deltaCents < BigInt(0)
+                  ? "text-rose-700 dark:text-rose-400"
+                  : "text-emerald-700 dark:text-emerald-400",
+              )}
+            >
+              {formatSignedCents(projection.deltaCentsStr)}
+            </span>
+            )
+          </p>
+          <ul className="text-muted-foreground ml-4 list-disc space-y-0.5 text-xs">
+            <li>
+              Compras nuevas:{" "}
+              <span className="tabular-nums">
+                {formatSignedCents(projection.breakdown.comprasNuevasCentsStr)}
+              </span>
+            </li>
+            <li>
+              Intereses causados:{" "}
+              {projection.breakdown.interesesCentsStr === null ? (
+                <span className="italic">se calculan al confirmar (no incluidos en el delta)</span>
+              ) : (
+                <span className="tabular-nums">
+                  {formatSignedCents(projection.breakdown.interesesCentsStr)}
+                </span>
+              )}
+            </li>
+            {plugsCents !== BigInt(0) ? (
+              <li>
+                Balance adjustments previos (≤ fin del ciclo):{" "}
+                <span className="tabular-nums">
+                  {formatSignedCents(projection.breakdown.plugsObsoletosCentsStr)}
+                </span>{" "}
+                <span className="italic">— podrían estar obsoletos</span>
+              </li>
+            ) : null}
+          </ul>
+        </>
+      )}
+
+      {projection.warn.exceeded ? (
+        <Alert
+          variant="default"
+          data-testid="consolidate-projection-warn"
+          className="border-amber-500/50 bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <AlertTriangleIcon className="size-4" />
+          <AlertTitle>Delta grande</AlertTitle>
+          <AlertDescription>
+            Revisá la sección &quot;Nuevas&quot; antes de confirmar — ¿esperabas este cambio?
+          </AlertDescription>
+        </Alert>
+      ) : null}
+    </section>
   );
 }
 

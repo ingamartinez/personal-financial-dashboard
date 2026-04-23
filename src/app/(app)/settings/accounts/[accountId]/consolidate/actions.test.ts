@@ -265,6 +265,27 @@ describe("previewStatementAction / commitStatementAction", () => {
       .where(eq(statementImports.userId, userId));
     expect(stillOne).toHaveLength(1);
   });
+
+  // #432 — preview delta + breakdown
+  it("dry-run projection reflects pre-commit saldo and compras insertables", async () => {
+    const buf = buildSyntheticXlsxBuffer("2575");
+    const report = asSingle(await previewStatementAction(formDataFor(buf, tcId, "2026-03")));
+    expect(report.projection).toBeDefined();
+    const p = report.projection!;
+    // No seeded txs → saldo actual 0.
+    expect(p.saldoActualCentsStr).toBe("0");
+    // 2 compras (300k + 200k) → ledger-signed total = -500.000,00 COP cents.
+    expect(p.breakdown.comprasNuevasCentsStr).toBe("-50000000");
+    // Dry-run: intereses are null (not yet calculated).
+    expect(p.breakdown.interesesCentsStr).toBeNull();
+    expect(p.breakdown.plugsObsoletosCentsStr).toBe("0");
+    // delta equals compras in dry-run (no intereses).
+    expect(p.deltaCentsStr).toBe("-50000000");
+    expect(p.saldoProyectadoCentsStr).toBe("-50000000");
+    // Floor is 500k COP = 50_000_000 cents → |delta|=50M is NOT strictly greater.
+    // Verify the threshold is at least the floor.
+    expect(BigInt(p.warn.thresholdCentsStr)).toBeGreaterThanOrEqual(BigInt(50_000_000));
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -507,5 +528,23 @@ describe("multi-sheet dispatch (#426)", () => {
     const byCurrency = Object.fromEntries(result.reports.map((r) => [r.currency, r]));
     expect(byCurrency.COP.accountId).toBe(copAccountId);
     expect(byCurrency.USD.accountId).toBe(usdAccountId);
+  });
+
+  // #432 — multi-sheet: each report carries its own projection with the right
+  // currency + delta (500k COP on PESOS, 500 USD on DOLARES, both in ledger sign).
+  it("multi-sheet preview returns one projection per currency with the right delta", async () => {
+    const buf = buildMultiSheetXlsxBuffer("7291");
+    const result = await previewStatementAction(formDataFor(buf, copAccountId, "2026-03"));
+    if (!isMultiReport(result)) throw new Error("expected multi-sheet result");
+    const byCurrency = Object.fromEntries(result.reports.map((r) => [r.currency, r]));
+    expect(byCurrency.COP.projection).toBeDefined();
+    expect(byCurrency.USD.projection).toBeDefined();
+    expect(byCurrency.COP.projection!.deltaCentsStr).toBe("-50000000");
+    expect(byCurrency.COP.projection!.breakdown.comprasNuevasCentsStr).toBe("-50000000");
+    // USD: 500,00 → 50000 cents, ledger-signed = -50000.
+    expect(byCurrency.USD.projection!.deltaCentsStr).toBe("-50000");
+    expect(byCurrency.USD.projection!.breakdown.comprasNuevasCentsStr).toBe("-50000");
+    // USD threshold floor is 125 USD = 12500 cents; |delta|=50000 > 12500 → warn.
+    expect(byCurrency.USD.projection!.warn.exceeded).toBe(true);
   });
 });

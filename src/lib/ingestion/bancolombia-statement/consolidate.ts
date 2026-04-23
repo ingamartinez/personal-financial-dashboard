@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 
 import { db, type DB } from "@/lib/db";
-import { accounts, statementImports, transactions } from "@/lib/db/schema";
+import { accounts, physicalCards, statementImports, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { applyInteresesCausadosForCycle } from "@/lib/finance/intereses-causados-job";
 import { createLogger } from "@/lib/logger";
 
@@ -42,6 +43,36 @@ export type MatchStats = {
   unmatchedInLedger: number;
 };
 
+// #432 — projection of how the account's saldo disponible will change when
+// this cycle is consolidated. Computed once BEFORE any ledger mutation so the
+// snapshot reflects the pre-commit state. All cent values are serialized as
+// strings to keep ConsolidationReport JSON-safe.
+//
+// Ledger-sign convention throughout: for a credit card, compras are negative
+// and pagos positive. `deltaCentsStr` + `saldoActualCentsStr` = projected.
+export type BalanceProjection = {
+  saldoActualCentsStr: string;
+  saldoProyectadoCentsStr: string;
+  deltaCentsStr: string;
+  breakdown: {
+    // Sum of missing-during-period rows that will be INSERTed (excludes
+    // synthetic bank-interest rows and auth-less rows we skip).
+    comprasNuevasCentsStr: string;
+    // Null when intereses haven't been run yet (dry-run); positive-or-zero
+    // ledger-signed value once inserted.
+    interesesCentsStr: string | null;
+    // Informational — sum of existing balance_adjustment plugs on this
+    // account with occurredAt ≤ cycle.endDate. These are NOT auto-retired
+    // (see epic #435 non-goals); capa 3 (#434) handles cleanup.
+    plugsObsoletosCentsStr: string;
+  };
+  warn: {
+    // |delta| threshold above which the UI paints a warning.
+    thresholdCentsStr: string;
+    exceeded: boolean;
+  };
+};
+
 export type ConsolidationReport = {
   userId: number;
   accountId: number;
@@ -76,6 +107,9 @@ export type ConsolidationReport = {
   unmatchedInLedgerIds: number[];
   statementImportId: number | null;
   intereses: InteresesOutcome;
+  // #432 — may be absent on legacy persisted reports (pre-#432). UI must
+  // treat `undefined` as "not available" and omit the section.
+  projection?: BalanceProjection;
 };
 
 export type ConsolidateOptions = {
@@ -131,6 +165,152 @@ async function loadAccount(
     );
   }
   return row;
+}
+
+// #432 — inputs for BalanceProjection. Split out so tests can unit-feed the
+// math helper without a live DB.
+type ProjectionInputs = {
+  saldoActualCents: bigint;
+  plugsObsoletosCents: bigint;
+  // Null when the account has no physical_card link AND no inline
+  // metadata.creditLimitCents — threshold falls back to the currency floor.
+  // Always in COP cents for multi-currency cards (physical_cards.credit_limit_cents
+  // is COP-denominated); callers pass `null` for USD sub-accounts where the
+  // shared COP cupo wouldn't convert cleanly to the account currency.
+  creditLimitCents: bigint | null;
+};
+
+async function loadProjectionInputs(
+  database: DB,
+  userId: number,
+  accountId: number,
+  currency: "COP" | "USD",
+  cycleEndDate: Date,
+): Promise<ProjectionInputs> {
+  // Saldo actual via the correlated subquery helper.
+  const [balanceRow] = await database
+    .select({ cents: derivedBalanceCentsSql })
+    .from(accounts)
+    .where(and(eq(accounts.userId, userId), eq(accounts.id, accountId)))
+    .limit(1);
+
+  // Sum of existing balance_adjustment plugs with occurredAt ≤ cycle.endDate,
+  // live only. These are the candidates for cleanup (capa 3 / #434).
+  const [plugsRow] = await database
+    .select({
+      cents: sql<string>`COALESCE(SUM(${transactions.amountCents}), 0)`,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.accountId, accountId),
+        eq(transactions.source, "balance_adjustment"),
+        lte(transactions.occurredAt, cycleEndDate),
+        notDeleted(transactions.deletedAt),
+      ),
+    );
+
+  // Credit limit lookup: physical_card wins when linked (shared-cupo MC/Amex),
+  // else fall back to metadata.creditLimitCents for single-currency TCs. For
+  // USD sub-accounts we deliberately skip the physical_card COP cupo since
+  // 15%-of-COP-cupo wouldn't map to USD cleanly — use floor only there.
+  let creditLimitCents: bigint | null = null;
+  if (currency === "COP") {
+    const [accountRow] = await database
+      .select({
+        metadata: accounts.metadata,
+        pcCredit: physicalCards.creditLimitCents,
+      })
+      .from(accounts)
+      .leftJoin(
+        physicalCards,
+        and(
+          eq(physicalCards.id, accounts.physicalCardId),
+          eq(physicalCards.userId, accounts.userId),
+        ),
+      )
+      .where(and(eq(accounts.userId, userId), eq(accounts.id, accountId)))
+      .limit(1);
+    if (accountRow?.pcCredit !== null && accountRow?.pcCredit !== undefined) {
+      creditLimitCents = accountRow.pcCredit;
+    } else if (accountRow?.metadata?.creditLimitCents) {
+      creditLimitCents = BigInt(accountRow.metadata.creditLimitCents);
+    }
+  }
+
+  return {
+    saldoActualCents: BigInt(balanceRow?.cents ?? "0"),
+    plugsObsoletosCents: BigInt(plugsRow?.cents ?? "0"),
+    creditLimitCents,
+  };
+}
+
+// COP floor: 500k COP cents; USD floor: 125 USD cents. Both chosen to match
+// the issue's "propongo $500k COP" and a sensible USD equivalent. For COP we
+// also compare against 15% of the credit limit; USD gets floor-only (see note
+// in loadProjectionInputs).
+const COP_THRESHOLD_FLOOR_CENTS = BigInt(500_000_00);
+const USD_THRESHOLD_FLOOR_CENTS = BigInt(125_00);
+
+function computeWarnThresholdCents(
+  currency: "COP" | "USD",
+  creditLimitCents: bigint | null,
+): bigint {
+  const floor = currency === "COP" ? COP_THRESHOLD_FLOOR_CENTS : USD_THRESHOLD_FLOOR_CENTS;
+  if (currency === "COP" && creditLimitCents !== null) {
+    // 15% = 15/100 — BigInt division truncates, fine for a threshold.
+    const fifteenPct = (creditLimitCents * BigInt(15)) / BigInt(100);
+    return fifteenPct > floor ? fifteenPct : floor;
+  }
+  return floor;
+}
+
+function absBigInt(x: bigint): bigint {
+  return x < BigInt(0) ? -x : x;
+}
+
+// #432 — builds the final BalanceProjection from pre-loaded inputs plus the
+// match result and (optionally) the intereses total in statement sign.
+// Export for tests; callers inside this module build it via the wrapper below.
+export function buildBalanceProjection(
+  inputs: ProjectionInputs,
+  match: MatchResult,
+  currency: "COP" | "USD",
+  interesesTotalCentsPositive: bigint | null,
+): BalanceProjection {
+  // Compras insertables: during-period, real auth, not synthetic bank-interest.
+  // Mirrors the filter in insertMissingRowInTx so the breakdown matches what
+  // actually lands in the ledger.
+  const extractoComprasCents = match.missingInLedger
+    .filter((r) => r.kind === "during-period")
+    .filter((r) => !isBankInterestRow(r))
+    .filter((r) => r.authorizationNumber !== null)
+    .reduce<bigint>((acc, r) => acc + r.amountCents, BigInt(0));
+  const comprasNuevasCents = statementAmountToLedger(extractoComprasCents);
+
+  const interesesLedgerCents =
+    interesesTotalCentsPositive === null ? null : -interesesTotalCentsPositive;
+
+  const deltaCents = comprasNuevasCents + (interesesLedgerCents ?? BigInt(0));
+  const saldoProyectadoCents = inputs.saldoActualCents + deltaCents;
+  const thresholdCents = computeWarnThresholdCents(currency, inputs.creditLimitCents);
+  const exceeded = absBigInt(deltaCents) > thresholdCents;
+
+  return {
+    saldoActualCentsStr: inputs.saldoActualCents.toString(),
+    saldoProyectadoCentsStr: saldoProyectadoCents.toString(),
+    deltaCentsStr: deltaCents.toString(),
+    breakdown: {
+      comprasNuevasCentsStr: comprasNuevasCents.toString(),
+      interesesCentsStr: interesesLedgerCents === null ? null : interesesLedgerCents.toString(),
+      plugsObsoletosCentsStr: inputs.plugsObsoletosCents.toString(),
+    },
+    warn: {
+      thresholdCentsStr: thresholdCents.toString(),
+      exceeded,
+    },
+  };
 }
 
 async function loadExistingTxs(
@@ -210,6 +390,7 @@ function emptyReport(
   status: ConsolidationStatus,
   statementImportId: number | null,
   intereses: InteresesOutcome,
+  projection: BalanceProjection,
 ): ConsolidationReport {
   return {
     userId: opts.userId,
@@ -226,6 +407,7 @@ function emptyReport(
     unmatchedInLedgerIds: match.unmatchedInLedger.map((t) => t.id),
     statementImportId,
     intereses,
+    projection,
   };
 }
 
@@ -279,11 +461,27 @@ export async function consolidateCycleFromStatement(
   const txs = await loadExistingTxs(database, opts.userId, opts.accountId, fromDate, toDate);
   const match = matchStatementAgainstLedger(opts.parsed, txs);
 
+  // #432 — snapshot saldo + plugs BEFORE any mutation so the projection
+  // reflects the pre-commit state in both dry-run and commit paths.
+  const projectionInputs = await loadProjectionInputs(
+    database,
+    opts.userId,
+    opts.accountId,
+    account.currency,
+    opts.parsed.period.endDate,
+  );
+
   if (opts.dryRun) {
-    return emptyReport(opts, account, match, "dry-run", null, {
-      status: "not-run",
-      reason: "dry-run",
-    });
+    const dryProjection = buildBalanceProjection(projectionInputs, match, account.currency, null);
+    return emptyReport(
+      opts,
+      account,
+      match,
+      "dry-run",
+      null,
+      { status: "not-run", reason: "dry-run" },
+      dryProjection,
+    );
   }
 
   const nothingToDo =
@@ -383,6 +581,17 @@ export async function consolidateCycleFromStatement(
   });
   const intereses: InteresesOutcome = interesesToOutcome(interesesResult);
 
+  // #432 — projection is anchored to the pre-commit saldo snapshot; intereses
+  // total is known only now, so it's plugged in at finalize time.
+  const interesesTotalCents =
+    intereses.status === "inserted" ? BigInt(intereses.totalInterestCentsStr) : BigInt(0);
+  const projection = buildBalanceProjection(
+    projectionInputs,
+    match,
+    account.currency,
+    interesesTotalCents,
+  );
+
   const finalReport: ConsolidationReport = {
     userId: opts.userId,
     accountId: opts.accountId,
@@ -398,6 +607,7 @@ export async function consolidateCycleFromStatement(
     unmatchedInLedgerIds: match.unmatchedInLedger.map((t) => t.id),
     statementImportId: imp.id,
     intereses,
+    projection,
   };
 
   await database
