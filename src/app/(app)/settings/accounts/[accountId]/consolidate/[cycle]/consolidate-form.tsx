@@ -12,7 +12,8 @@ import type { ConsolidationReport } from "@/lib/ingestion/bancolombia-statement/
 
 import { commitStatementAction, previewStatementAction } from "../actions";
 import { isMultiReport, type ConsolidateActionResult } from "../consolidate-types";
-import { ReportSection } from "./consolidate-report-view";
+import { formatCents, ReportSection } from "./consolidate-report-view";
+import { parseSignedAmountToCents } from "./parse-saldo-real";
 
 type Props = {
   accountId: number;
@@ -41,12 +42,16 @@ export function ConsolidateForm({ accountId, accountName, cycle, institutionSlug
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [preview, setPreview] = useState<ConsolidateActionResult | null>(null);
+  // #433 — per-account saldo-real input keyed by accountId. Empty string ==
+  // "user didn't fill it" → we don't send anything for that account.
+  const [saldoRealInputs, setSaldoRealInputs] = useState<Record<number, string>>({});
   const [parsing, startParsing] = useTransition();
   const [applying, startApplying] = useTransition();
 
   const onFileChosen = useCallback((chosen: File | null) => {
     setFile(chosen);
     setPreview(null);
+    setSaldoRealInputs({});
   }, []);
 
   function handleDragOver(e: React.DragEvent<HTMLLabelElement>) {
@@ -125,6 +130,19 @@ export function ConsolidateForm({ accountId, accountName, cycle, institutionSlug
     fd.set("file", file);
     fd.set("accountId", String(accountId));
     fd.set("cycle", cycle);
+    // #433 — parse each account's saldo-real input into cents and attach.
+    // Empty → skipped. Invalid → block the commit and surface a toast.
+    for (const [rawAccountId, rawValue] of Object.entries(saldoRealInputs)) {
+      const parsed = parseSignedAmountToCents(rawValue);
+      if (parsed === undefined) continue; // empty field
+      if (parsed === null) {
+        toast.error(
+          `No pude leer el saldo real de la cuenta #${rawAccountId}. Usá números (con . o , opcional).`,
+        );
+        return;
+      }
+      fd.set(`saldoRealLedgerCents_${rawAccountId}`, parsed.toString());
+    }
     startApplying(async () => {
       try {
         const result = await commitStatementAction(fd);
@@ -142,6 +160,7 @@ export function ConsolidateForm({ accountId, accountName, cycle, institutionSlug
         }
         setPreview(null);
         setFile(null);
+        setSaldoRealInputs({});
         if (fileInputRef.current) fileInputRef.current.value = "";
         router.refresh();
       } catch (err) {
@@ -230,6 +249,10 @@ export function ConsolidateForm({ accountId, accountName, cycle, institutionSlug
           onConfirm={runCommit}
           canConfirm={canConfirm}
           applying={applying}
+          saldoRealInputs={saldoRealInputs}
+          onSaldoRealChange={(reportAccountId, value) =>
+            setSaldoRealInputs((prev) => ({ ...prev, [reportAccountId]: value }))
+          }
         />
       ) : null}
     </div>
@@ -241,11 +264,15 @@ function PreviewPanel({
   onConfirm,
   canConfirm,
   applying,
+  saldoRealInputs,
+  onSaldoRealChange,
 }: {
   reports: ConsolidationReport[];
   onConfirm: () => void;
   canConfirm: boolean;
   applying: boolean;
+  saldoRealInputs: Record<number, string>;
+  onSaldoRealChange: (accountId: number, value: string) => void;
 }) {
   const isMulti = reports.length > 1;
   return (
@@ -265,9 +292,94 @@ function PreviewPanel({
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
         {reports.map((report, idx) => (
-          <ReportSection key={`${report.accountId}-${idx}`} report={report} showHeading={isMulti} />
+          <div key={`${report.accountId}-${idx}`} className="flex flex-col gap-3">
+            <ReportSection report={report} showHeading={isMulti} />
+            <SaldoRealInput
+              report={report}
+              value={saldoRealInputs[report.accountId] ?? ""}
+              onChange={(v) => onSaldoRealChange(report.accountId, v)}
+              disabled={applying}
+            />
+          </div>
         ))}
       </CardContent>
     </Card>
+  );
+}
+
+// #433 — per-account "saldo real" input. Rendered BELOW each ReportSection
+// in the preview panel so the user can eyeball the projected saldo first,
+// then decide whether to override it. Empty field == "accept the projected
+// delta" (no plug inserted). Non-empty is parsed at submit time via
+// `parseSignedAmountToCents`.
+function SaldoRealInput({
+  report,
+  value,
+  onChange,
+  disabled,
+}: {
+  report: ConsolidationReport;
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  const projected = report.projection?.saldoProyectadoCentsStr;
+  const parsed = parseSignedAmountToCents(value);
+  const isInvalid = parsed === null; // undefined (empty) is fine
+  const parsedLedger = typeof parsed === "bigint" ? parsed : null;
+
+  // Diff vs. projected so the user knows a plug will be inserted.
+  let plugPreview: string | null = null;
+  if (parsedLedger !== null && projected) {
+    const diff = parsedLedger - BigInt(projected);
+    if (diff !== BigInt(0)) {
+      plugPreview = `Se insertará un ajuste de ${formatCents(diff.toString())} para que el saldo quede exactamente en ${formatCents(parsedLedger.toString())}.`;
+    } else {
+      plugPreview = "El saldo real coincide con el proyectado — no se insertará ningún ajuste.";
+    }
+  }
+
+  const placeholder = projected ? formatCents(projected) : "—";
+  const inputId = `saldo-real-${report.accountId}`;
+
+  return (
+    <div
+      data-testid={`saldo-real-input-${report.accountId}`}
+      className="bg-muted/30 flex flex-col gap-2 rounded-md border border-dashed p-3 text-sm"
+    >
+      <label htmlFor={inputId} className="font-medium">
+        ¿Cuál es tu saldo real según el banco?{" "}
+        <span className="text-muted-foreground text-xs font-normal">
+          (opcional — dejá vacío para aceptar el delta proyectado)
+        </span>
+      </label>
+      <input
+        id={inputId}
+        type="text"
+        inputMode="decimal"
+        value={value}
+        disabled={disabled}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(
+          "border-input focus-visible:ring-ring rounded-md border bg-transparent px-3 py-2 tabular-nums focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none",
+          isInvalid && "border-destructive",
+        )}
+        data-testid={`saldo-real-field-${report.accountId}`}
+      />
+      {isInvalid ? (
+        <p className="text-destructive text-xs">
+          Formato no válido. Usá un número (ej: -1.543.000,00 o -1543000.00).
+        </p>
+      ) : plugPreview ? (
+        <p className="text-muted-foreground text-xs">{plugPreview}</p>
+      ) : (
+        <p className="text-muted-foreground text-xs">
+          Si el saldo que ves en el banco difiere del proyectado, entralo acá y al confirmar se
+          inserta un ajuste de saldo para cuadrar. Puede estar compensando compras que Findash nunca
+          vio o plugs viejos obsoletos — andá a /reconcile a revisar después.
+        </p>
+      )}
+    </div>
   );
 }

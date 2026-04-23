@@ -1,9 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as XLSX from "xlsx";
 
 import { db } from "@/lib/db";
 import { accounts, physicalCards, statementImports, transactions, users } from "@/lib/db/schema";
+import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 
 import type { ConsolidationReport } from "@/lib/ingestion/bancolombia-statement/consolidate";
@@ -177,6 +178,9 @@ describe("previewStatementAction / commitStatementAction", () => {
     await db.execute(
       sql`DELETE FROM transactions WHERE user_id = ${userId} AND external_id LIKE 'bancolombia-stmt:%'`,
     );
+    await db.execute(
+      sql`DELETE FROM transactions WHERE user_id = ${userId} AND source = 'balance_adjustment'`,
+    );
     await db.delete(statementImports).where(eq(statementImports.userId, userId));
     await db.execute(
       sql`DELETE FROM transactions WHERE user_id = ${userId} AND category_slug = 'intereses-tc'`,
@@ -285,6 +289,74 @@ describe("previewStatementAction / commitStatementAction", () => {
     // Floor is 500k COP = 50_000_000 cents → |delta|=50M is NOT strictly greater.
     // Verify the threshold is at least the floor.
     expect(BigInt(p.warn.thresholdCentsStr)).toBeGreaterThanOrEqual(BigInt(50_000_000));
+  });
+
+  // #433 — saldo real + plug compensador
+  it("commit without saldo real input behaves identically (no plug inserted)", async () => {
+    const buf = buildSyntheticXlsxBuffer("2575");
+    const report = asSingle(await commitStatementAction(formDataFor(buf, tcId, "2026-03")));
+    expect(report.balanceAdjustment).toBeNull();
+    expect(report.projection?.breakdown.balanceAdjustmentPlugCentsStr).toBeNull();
+
+    // Ledger SUM == compras (-500k); intereses was skipped for the 1-cuota
+    // fixture so no synthetic tx was added.
+    const [bal] = await db
+      .select({ cents: derivedBalanceCentsSql })
+      .from(accounts)
+      .where(eq(accounts.id, tcId));
+    expect(BigInt(bal.cents)).toBe(BigInt(-50_000_000));
+  });
+
+  it("commit with saldo real matching the projected amount inserts NO plug", async () => {
+    const buf = buildSyntheticXlsxBuffer("2575");
+    const fd = formDataFor(buf, tcId, "2026-03");
+    fd.set(`saldoRealLedgerCents_${tcId}`, "-50000000");
+    const report = asSingle(await commitStatementAction(fd));
+    expect(report.balanceAdjustment).toBeNull();
+    expect(report.projection?.breakdown.balanceAdjustmentPlugCentsStr).toBeNull();
+  });
+
+  it("commit with saldo real differing from projected inserts a compensator plug", async () => {
+    const buf = buildSyntheticXlsxBuffer("2575");
+    const fd = formDataFor(buf, tcId, "2026-03");
+    // User claims real saldo is -600k (vs projected -500k) → plug = -100k.
+    fd.set(`saldoRealLedgerCents_${tcId}`, "-60000000");
+    const report = asSingle(await commitStatementAction(fd));
+    expect(report.balanceAdjustment).not.toBeNull();
+    expect(report.balanceAdjustment!.amountCentsStr).toBe("-10000000");
+    expect(report.balanceAdjustment!.userInputCentsStr).toBe("-60000000");
+    expect(report.projection?.breakdown.balanceAdjustmentPlugCentsStr).toBe("-10000000");
+
+    // Ledger SUM post-plug MUST equal the user's input exactly.
+    const [bal] = await db
+      .select({ cents: derivedBalanceCentsSql })
+      .from(accounts)
+      .where(eq(accounts.id, tcId));
+    expect(BigInt(bal.cents)).toBe(BigInt(-60_000_000));
+
+    // The plug tx is a live balance_adjustment row linked to the import.
+    const plugs = await db
+      .select({
+        id: transactions.id,
+        amountCents: transactions.amountCents,
+        source: transactions.source,
+        categorySlug: transactions.categorySlug,
+        statementImportId: transactions.statementImportId,
+        isAdjustment: transactions.isAdjustment,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          eq(transactions.accountId, tcId),
+          eq(transactions.source, "balance_adjustment"),
+        ),
+      );
+    expect(plugs).toHaveLength(1);
+    expect(plugs[0].amountCents).toBe(BigInt(-10_000_000));
+    expect(plugs[0].categorySlug).toBe("adjustments");
+    expect(plugs[0].isAdjustment).toBe(true);
+    expect(plugs[0].statementImportId).toBe(report.statementImportId);
   });
 });
 
@@ -452,6 +524,9 @@ describe("multi-sheet dispatch (#426)", () => {
     await db.execute(
       sql`DELETE FROM transactions WHERE user_id = ${userId} AND external_id LIKE 'bancolombia-stmt:%'`,
     );
+    await db.execute(
+      sql`DELETE FROM transactions WHERE user_id = ${userId} AND source = 'balance_adjustment'`,
+    );
     await db.delete(statementImports).where(eq(statementImports.userId, userId));
     await db.execute(
       sql`DELETE FROM transactions WHERE user_id = ${userId} AND category_slug = 'intereses-tc'`,
@@ -528,6 +603,38 @@ describe("multi-sheet dispatch (#426)", () => {
     const byCurrency = Object.fromEntries(result.reports.map((r) => [r.currency, r]));
     expect(byCurrency.COP.accountId).toBe(copAccountId);
     expect(byCurrency.USD.accountId).toBe(usdAccountId);
+  });
+
+  // #433 — multi-sheet: user provides a saldo real per currency → one plug
+  // per sub-account. Empty field on one side means no plug on that currency.
+  it("multi-sheet commit inserts one plug per currency the user provided", async () => {
+    const buf = buildMultiSheetXlsxBuffer("7291");
+    const fd = formDataFor(buf, copAccountId, "2026-03");
+    // COP side: claim -600k (projected -500k) → plug -100k.
+    fd.set(`saldoRealLedgerCents_${copAccountId}`, "-60000000");
+    // USD side: claim -600 USD (-60000 cents) vs projected -500 USD (-50000 cents) → plug -10000.
+    fd.set(`saldoRealLedgerCents_${usdAccountId}`, "-60000");
+    const result = await commitStatementAction(fd);
+    if (!isMultiReport(result)) throw new Error("expected multi-sheet result");
+    const byCurrency = Object.fromEntries(result.reports.map((r) => [r.currency, r]));
+    expect(byCurrency.COP.balanceAdjustment).not.toBeNull();
+    expect(byCurrency.COP.balanceAdjustment!.amountCentsStr).toBe("-10000000");
+    expect(byCurrency.USD.balanceAdjustment).not.toBeNull();
+    expect(byCurrency.USD.balanceAdjustment!.amountCentsStr).toBe("-10000");
+
+    // Both plug txs are present in the ledger, linked to the respective imports.
+    const plugs = await db
+      .select({
+        accountId: transactions.accountId,
+        amountCents: transactions.amountCents,
+        statementImportId: transactions.statementImportId,
+      })
+      .from(transactions)
+      .where(and(eq(transactions.userId, userId), eq(transactions.source, "balance_adjustment")));
+    expect(plugs).toHaveLength(2);
+    const plugByAccount = new Map(plugs.map((p) => [p.accountId, p]));
+    expect(plugByAccount.get(copAccountId)?.amountCents).toBe(BigInt(-10_000_000));
+    expect(plugByAccount.get(usdAccountId)?.amountCents).toBe(BigInt(-10_000));
   });
 
   // #432 — multi-sheet: each report carries its own projection with the right
