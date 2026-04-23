@@ -1,14 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, max, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, transactions } from "@/lib/db/schema";
+import { accounts, statementImports, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { getSessionUser } from "@/lib/auth/session";
 import { ReconcileForm } from "./reconcile-form";
 import { FlaggedReview, type FlaggedRow, type MergeCandidate } from "./flagged-review";
+import { PlugCleanupSection, type Plug } from "./plug-cleanup";
 
 export const dynamic = "force-dynamic";
 
@@ -104,6 +105,55 @@ export default async function ReconcilePage({
     descriptionRaw: r.descriptionRaw,
   }));
 
+  // #434: load ALL balance_adjustment txs for this account (live + soft-deleted).
+  // The cleanup UI filters client-side via a "Mostrar borrados" toggle so the
+  // user can un-archive a row without a round-trip.
+  const plugRows = await db
+    .select({
+      id: transactions.id,
+      occurredAt: transactions.occurredAt,
+      amountCents: transactions.amountCents,
+      descriptionRaw: transactions.descriptionRaw,
+      merchant: transactions.merchant,
+      statementImportId: transactions.statementImportId,
+      deletedAt: transactions.deletedAt,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.accountId, accountId),
+        eq(transactions.source, "balance_adjustment"),
+      ),
+    )
+    .orderBy(desc(transactions.occurredAt));
+
+  const plugs: Plug[] = plugRows.map((r) => ({
+    id: r.id,
+    occurredAtISO: r.occurredAt.toISOString(),
+    amountCentsStr: r.amountCents.toString(),
+    description: r.descriptionRaw || r.merchant || "Ajuste de saldo",
+    statementImportId: r.statementImportId,
+    deleted: r.deletedAt !== null,
+  }));
+
+  // Latest statement_imports.periodEnd drives the "probablemente obsoleto"
+  // heuristic — a plug dated ≤ this value is likely compensating for data
+  // that's now been imported.
+  const [lastPeriodRow] = await db
+    .select({ periodEnd: max(statementImports.periodEnd) })
+    .from(statementImports)
+    .where(
+      and(
+        eq(statementImports.userId, session.id),
+        eq(statementImports.accountId, accountId),
+        sql`${statementImports.cycle} IS NOT NULL`,
+      ),
+    );
+  const lastStatementPeriodEndISO = lastPeriodRow?.periodEnd
+    ? new Date(lastPeriodRow.periodEnd).toISOString()
+    : null;
+
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header className="flex items-center justify-between gap-2">
@@ -141,6 +191,15 @@ export default async function ReconcilePage({
           rows={flagged}
           currency={account.currency}
           mergeCandidates={mergeCandidates}
+        />
+      ) : null}
+
+      {plugs.length > 0 ? (
+        <PlugCleanupSection
+          accountId={account.id}
+          currentBalanceCentsStr={account.balanceCents.toString()}
+          plugs={plugs}
+          lastStatementPeriodEndISO={lastStatementPeriodEndISO}
         />
       ) : null}
     </main>
