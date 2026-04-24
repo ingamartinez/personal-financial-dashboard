@@ -49,6 +49,33 @@ export type UserClassificationContext = {
   merchant_hints?: UserClassificationContextHint[];
 };
 
+// #457 (Epic G): captured when SMS and Email Bancolombia describe the same
+// event with diverging fields. Populated by the A+ dedup pipeline so the
+// divergence is auditable instead of silently overwritten. Cleared when the
+// user manually resolves the tx.
+export type SourceMismatchDetails = {
+  fromSource: string;
+  toSource: string;
+  diffs: Array<{
+    field: string;
+    fromValue: unknown;
+    toValue: unknown;
+  }>;
+};
+
+// #453/#457 (Epic G): structured payload extracted by gateway parsers from
+// raw HTML email receipts. The shape varies per gateway, so this is the
+// minimum common contract — parsers may include additional gateway-specific
+// fields under `extra`.
+export type ParsedReceiptPayload = {
+  merchant: string;
+  amountCents: string; // bigint serialized for JSON
+  currency: string;
+  occurredAt: string; // ISO timestamp
+  referenceId: string | null;
+  extra?: Record<string, unknown>;
+};
+
 export const users = pgTable(
   "users",
   {
@@ -142,6 +169,16 @@ export const txSource = pgEnum("tx_source", [
   "telegram",
   "balance_adjustment",
   "csv_reconcile",
+  // #457 (Epic G): tx ingested from Bancolombia notification email — parallel
+  // to "sms", deduped via A+ (first-in wins, log diffs).
+  "gmail_bancolombia",
+  // #454 (Epic G): tx whose merchant was enriched from a gateway email
+  // receipt (MP/PayU/Wompi/Apple/PayPal). The original bank-derived row was
+  // already inserted via another source — this value applies only to txs
+  // that were CREATED by the Gmail pipeline (rare, e.g. statement-only
+  // gateways). For enrichment of existing txs, see `enrichment_source`
+  // column on transactions.
+  "gmail_enrichment",
 ]);
 
 export const txChannel = pgEnum("tx_channel", ["bank", "manual", "transfer"]);
@@ -180,6 +217,38 @@ export const counterpartyKeyKind = pgEnum("counterparty_key_kind", [
   "breb",
   "account",
   "name",
+]);
+
+// #451 (Epic G): lifecycle of a Gmail OAuth connection. `expired` covers
+// Google testing-mode 7-day refresh-token expiry. `revoked` means the user
+// disconnected on our side or revoked from Google. `error` is set after
+// repeated pull failures with a non-recoverable cause.
+export const gmailConnectionStatus = pgEnum("gmail_connection_status", [
+  "active",
+  "expired",
+  "revoked",
+  "error",
+]);
+
+// #453/#457 (Epic G): identifies which gateway parser produced the receipt.
+export const emailReceiptGateway = pgEnum("email_receipt_gateway", [
+  "mercado_pago",
+  "payu",
+  "wompi",
+  "apple",
+  "paypal",
+  "bancolombia",
+]);
+
+// #454 (Epic G): matcher outcome between an email receipt and existing
+// transactions. `pending` is the initial state before the matcher runs.
+// `unmatched` may flip to `matched` later if the corresponding bank tx
+// arrives via SMS/Apple Pay (re-attempted on subsequent pulls).
+export const emailReceiptMatchStatus = pgEnum("email_receipt_match_status", [
+  "pending",
+  "matched",
+  "ambiguous",
+  "unmatched",
 ]);
 
 export const accounts = pgTable(
@@ -466,6 +535,18 @@ export const transactions = pgTable(
     transferGroupId: uuid("transfer_group_id"),
     rawData: jsonb("raw_data").notNull().default({}),
     notes: text("notes"),
+    // #454 (Epic G): merchant extracted from a gateway email receipt
+    // (MP/PayU/Wompi/Apple/PayPal). `description_raw` is preserved unchanged
+    // for audit/rollback. Classification reads enriched_merchant first when
+    // present.
+    enrichedMerchant: varchar("enriched_merchant", { length: 200 }),
+    // #454 (Epic G): which pipeline produced the enrichment. Currently only
+    // 'gmail' — extensible for future sources (e.g. 'manual_correction').
+    enrichmentSource: varchar("enrichment_source", { length: 40 }),
+    // #457 (Epic G): set by A+ dedup when SMS and Email Bancolombia describe
+    // the same event with diverging fields. See SourceMismatchDetails type.
+    sourceMismatch: boolean("source_mismatch").notNull().default(false),
+    sourceMismatchDetails: jsonb("source_mismatch_details").$type<SourceMismatchDetails>(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1114,5 +1195,109 @@ export const userHealthSnapshots = pgTable(
     index("user_health_snapshots_churn_idx")
       .on(t.capturedAt)
       .where(sql`${t.churnSignalFlag} = true`),
+  ],
+);
+
+// #450 (Epic G): one row per (user, gmail account) connection. Tokens are
+// AES-256-GCM encrypted via src/lib/crypto/symmetric.ts using
+// GMAIL_TOKEN_ENCRYPTION_KEY (separate from the Telegram token key for
+// blast-radius isolation). Soft-deleted on disconnect; the Google revoke
+// call is best-effort.
+export const gmailConnections = pgTable(
+  "gmail_connections",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    gmailEmail: varchar("gmail_email", { length: 320 }).notNull(),
+    accessTokenEnc: text("access_token_enc").notNull(),
+    refreshTokenEnc: text("refresh_token_enc").notNull(),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }).notNull(),
+    scopes: text("scopes").array().notNull(),
+    // Watermarks for incremental pulls. `last_pull_history_id` is Gmail's
+    // history cursor — when present, the next pull uses history.list for
+    // delta sync; when absent (first pull or after a long gap that exceeded
+    // history retention), falls back to messages.list with `after:` filter.
+    lastPullAt: timestamp("last_pull_at", { withTimezone: true }),
+    lastPullHistoryId: text("last_pull_history_id"),
+    status: gmailConnectionStatus("status").notNull().default("active"),
+    statusReason: text("status_reason"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Allow a user to reconnect the same gmail address after disconnecting
+    // (soft-deleted rows are excluded from uniqueness).
+    uniqueIndex("gmail_connections_user_email_unique")
+      .on(t.userId, t.gmailEmail)
+      .where(sql`${t.deletedAt} IS NULL`),
+    index("gmail_connections_user_status_idx")
+      .on(t.userId, t.status)
+      .where(sql`${t.deletedAt} IS NULL`),
+    // Pull engine scans active connections — partial index keeps it tight.
+    index("gmail_connections_active_idx")
+      .on(t.lastPullAt)
+      .where(sql`${t.status} = 'active' AND ${t.deletedAt} IS NULL`),
+  ],
+);
+
+// #450 (Epic G): one row per parsed Gmail message. Idempotency by
+// `gmail_msg_id` ensures repeated pulls don't duplicate work. Raw HTML is
+// preserved for audit and re-parsing if a parser bug is fixed later.
+export const emailReceipts = pgTable(
+  "email_receipts",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    gmailConnectionId: integer("gmail_connection_id")
+      .notNull()
+      .references(() => gmailConnections.id, { onDelete: "cascade" }),
+    gmailMsgId: varchar("gmail_msg_id", { length: 64 }).notNull(),
+    gateway: emailReceiptGateway("gateway").notNull(),
+    // Populated after parsing. NULL while parse is pending or if the parser
+    // returns `needs_review` (raw_html is kept regardless for retry).
+    merchant: varchar("merchant", { length: 200 }),
+    amountCents: bigint("amount_cents", { mode: "bigint" }),
+    currency: currency("currency"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }),
+    referenceId: varchar("reference_id", { length: 120 }),
+    rawHtml: text("raw_html").notNull(),
+    parsedPayload: jsonb("parsed_payload").$type<ParsedReceiptPayload | Record<string, never>>(),
+    matchedTransactionId: integer("matched_transaction_id").references(
+      (): AnyPgColumn => transactions.id,
+      { onDelete: "set null" },
+    ),
+    matchStatus: emailReceiptMatchStatus("match_status").notNull().default("pending"),
+    // When match_status='ambiguous': array of candidate tx_ids. The user
+    // disambiguates via /transactions UI (#455) or Telegram bot (#456).
+    matchCandidates: jsonb("match_candidates").$type<number[]>(),
+    parsedAt: timestamp("parsed_at", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Idempotency: same Gmail message can never be ingested twice for the
+    // same user. Soft-deleted rows excluded so a user can re-import after
+    // archive (rare).
+    uniqueIndex("email_receipts_user_msg_unique")
+      .on(t.userId, t.gmailMsgId)
+      .where(sql`${t.deletedAt} IS NULL`),
+    // Pull engine + matcher hot path: find pending/ambiguous receipts for
+    // a user.
+    index("email_receipts_user_status_idx")
+      .on(t.userId, t.matchStatus)
+      .where(sql`${t.deletedAt} IS NULL`),
+    // Matcher join target: scan candidate receipts by user + amount + time
+    // window. Partial on non-bancolombia (gateway enrichments) since
+    // bancolombia uses a different ingestion path.
+    index("email_receipts_match_lookup_idx")
+      .on(t.userId, t.amountCents, t.occurredAt)
+      .where(sql`${t.matchStatus} = 'pending' AND ${t.deletedAt} IS NULL`),
+    index("email_receipts_connection_idx").on(t.gmailConnectionId),
   ],
 );

@@ -379,6 +379,13 @@
       "when": 1776921748061,
       "tag": "0053_military_manta",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1777005513813,
+      "tag": "0054_real_the_leader",
+      "breakpoints": true
     }
   ]
 }

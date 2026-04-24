@@ -37,6 +37,8 @@ const sourceLabel: Record<TxRow["source"], string> = {
   telegram: "Telegram",
   balance_adjustment: "Ajuste",
   csv_reconcile: "CSV (recon)",
+  gmail_bancolombia: "Email BC",
+  gmail_enrichment: "Email",
 };
 
 const methodVariant: Record<
