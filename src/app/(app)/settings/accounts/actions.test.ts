@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -981,13 +981,20 @@ describe("adjustAccountBalance", () => {
       expect(await derivedBalance(copId)).toBe(BigInt(-403_119_800));
       expect(await derivedBalance(usdId)).toBe(BigInt(-288_500));
 
-      // Two balance_adjustment rows present — one per sub-account.
+      // Four balance_adjustment rows present per sub-account: 2 "Saldo
+      // inicial" plugs from upsertAccount() (actions.ts:162-175) + 2
+      // dual-debt plugs from this call. ORDER BY id ASC ensures Map.set
+      // ends with the dual-debt plug (latest id) — without it, physical
+      // heap-scan order is undefined and CI/local can disagree (PG 17
+      // both, but heap layout differs once row width changes — observed
+      // in #460 / Epic G migration).
       const plugs = await db
         .select()
         .from(transactions)
         .where(
           and(eq(transactions.userId, TEST_USER_ID), eq(transactions.source, "balance_adjustment")),
-        );
+        )
+        .orderBy(asc(transactions.id));
       const byAccount = new Map(plugs.map((p) => [p.accountId, p]));
       expect(byAccount.get(copId)?.amountCents).toBe(BigInt(-353_119_800));
       expect(byAccount.get(copId)?.currency).toBe("COP");
