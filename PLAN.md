@@ -121,7 +121,7 @@ Aunque billing NO se implementa, el schema multi-tenant desde day 1 incluye colu
 
 ---
 
-## Data Ingestion — 4 canales (el corazón del sistema)
+## Data Ingestion — 6 canales (el corazón del sistema)
 
 ### Canal 1: Apple Pay Transaction Trigger (iOS 17+) 🍎
 
@@ -198,22 +198,60 @@ Screenshot de la app
 - Formulario rápido en el dashboard
 - Colombia tiene economía de efectivo significativa
 
+### Canal 6: Email (Gmail) 📧
+
+**Cubre dos casos distintos sobre la misma infra (OAuth + pull engine + parsers framework):**
+
+**6a. Enrichment de gateways opacos** — disambigua transacciones cuyo merchant en el extracto bancario es la pasarela y no el comercio real.
+
+```
+Banco dice: "MERCADOPAGO COLOMBIA $65.990"
+    → Buscar mail de MP del mismo monto, ±2 días, scoped por user_id
+    → Mail dice: "Pagaste a Rappi $65.990"
+    → enriched_merchant = "Rappi" (descripción original preservada)
+    → Re-clasificar tx con descripción enriquecida
+```
+
+Gateways MVP: Mercado Pago, PayU, Wompi, Apple (App Store/iCloud), PayPal. Google Play queda fuera (verificado que no aparece en el inbox de los users alpha; documentado como observación). dLocal (`DLO*` prefix) no se enriquece — el procesador no manda recibo, lo manda el merchant final.
+
+**6b. Bancolombia como ingestion source paralelo a SMS** — el banco manda los mismos eventos por mail (`alertasynotificaciones@an.notificacionesbancolombia.com`). Email es más confiable que SMS (cloud nativo, no depende de señal celular) y permite **backfill histórico** que SMS no soporta.
+
+```
+Email Bancolombia llega
+    → Parser cubre los 10 event types del SMS parser (parity)
+    → Dedup A+: first-in wins, log diferencias entre canales
+    → Si difiere significativamente del SMS: flag source_mismatch
+```
+
+- **Esfuerzo**: setup OAuth una vez por user (testing mode hasta ~10 users; verification de Google cuando escalemos)
+- **Token expiry**: en testing mode los refresh tokens expiran cada 7 días → bot pinga al user para re-auth
+- **Backfill inicial**: 2026-01-01 → hoy
+- **Trigger**: cron horario + `/enriquecer` bot command
+- **Ambiguous matches** (2+ candidatos): flag `needs_review` + bot pregunta interactivo con `/omitir`
+- **Multi-tenant safety NO NEGOCIABLE**: TODOS los reads/writes de `gmail_connections` y `email_receipts` filtran por `user_id` del session. Matcher hace JOIN scoping `(user_id, amount_cents, occurred_at±2d)`, NUNCA solo `(amount, date)`. Razón: leak previo en #338.
+
 ### Cobertura por escenario
 
-| Escenario                            | Canal                  | Esfuerzo      |
-| ------------------------------------ | ---------------------- | ------------- |
-| Compra Apple Pay (cualquier tarjeta) | 🍎 Transaction Trigger | Zero          |
-| Compra tarjeta física Bancolombia    | 📱 SMS Shortcut        | Zero          |
-| Suscripciones (e-card)               | 📱 SMS Shortcut        | Zero          |
-| Cuota préstamo consolidado           | 🔁 Recurring           | Zero          |
-| Cualquier movimiento ARQ             | 📸 Screenshot OCR      | ~1 min/semana |
-| Efectivo                             | ✍️ Manual              | ~30 seg/gasto |
+| Escenario                               | Canal                                  | Esfuerzo      |
+| --------------------------------------- | -------------------------------------- | ------------- |
+| Compra Apple Pay (cualquier tarjeta)    | 🍎 Transaction Trigger                 | Zero          |
+| Compra tarjeta física Bancolombia       | 📱 SMS Shortcut + 📧 Email Bancolombia | Zero          |
+| Suscripciones (e-card)                  | 📱 SMS Shortcut + 📧 Email Bancolombia | Zero          |
+| Disambigua merchant tras pasarela opaca | 📧 Gmail enrichment                    | Zero          |
+| Backfill histórico Bancolombia (2026)   | 📧 Email backfill                      | Setup único   |
+| Cuota préstamo consolidado              | 🔁 Recurring                           | Zero          |
+| Cualquier movimiento ARQ                | 📸 Screenshot OCR                      | ~1 min/semana |
+| Efectivo                                | ✍️ Manual                              | ~30 seg/gasto |
 
-**Cobertura automática estimada: ~95%**
+**Cobertura automática estimada: ~95% (con email enrichment, suma específicamente claridad de merchant en transacciones de pasarela)**
 
 ### Deduplicación
 
-Si pagás con Apple Pay usando tarjeta Bancolombia → llegan DOS señales (Transaction Trigger + SMS). El pipeline de ingesta deduplica: mismo monto + misma fecha + ventana de ±5 minutos = misma transacción. Prioridad: Apple Pay (datos más estructurados) > SMS.
+Cuando llegan múltiples señales para el mismo evento, el pipeline aplica dedup por monto + fecha + ventana ±5 min:
+
+- **Apple Pay + SMS Bancolombia** (compra Apple Pay con tarjeta Bancolombia): prioridad Apple Pay (datos más estructurados) > SMS.
+- **SMS Bancolombia + Email Bancolombia** (Canal 2 + Canal 6b): estrategia **A+** — first-in wins (whichever source arrives first creates the tx). La segunda fuente intenta match por `(user_id, amount_cents, last4, occurred_at ±5min)`; si matchea → dedup silencioso. Diferencias menores se loguean. Diferencias significativas (monto distinto, merchant distinto) levantan flag `source_mismatch` en la tx + alerta en bot. Razón de A+ sobre overwrite: si SMS llegó primero y el user ya tocó la tx (categoría, nota, attachment), un overwrite ciego destruye trabajo del usuario.
+- **Email enrichment de gateway** (Canal 6a): nunca crea tx nueva — solo enriquece tx existente del banco. Si no hay match con tx del banco, el receipt queda en `email_receipts` sin enrichment (idempotente por `gmail_msg_id`).
 
 ---
 
@@ -499,20 +537,23 @@ Pre-requisito para invitar amigos al beta cerrado.
 
 **Objetivo**: hacer la app web tan buena que valga la pena cobrar por ella. Esto es lo que desbloquea Phase 7 (SaaS productization).
 
-Cuatro epics grandes aquí:
+Cinco epics grandes aquí:
 
 - **Epic V — Currency Visual Toggle**: dropdown COP/USD/native aplicado globalmente
 - **Epic R — Bank Statement Reconciliation**: balance adjustment (quick win) + CSV Excel parsers (savings/TC/e-card) + engine + UI reconcile + flagged review + divergence tracking
 - **Epic T — Telegram Bot Expansion**: Stage 1 (queries + summaries + charts + inbox), Stage 2 (smart notifs + NLU + write actions + goals), Stage 3 deferred (conversational AI Premium)
 - **Epic I — Insights & Behavioral**: Subscription Hub, anomaly detection, CDT/FIC optimization, TC utilization, forecasting, tax tracking
+- **Epic G — Gmail Email Integration**: OAuth multi-tenant (testing mode → verification al escalar) + pull engine + parsers gateway (MP/PayU/Wompi/Apple/PayPal) + matcher tenant-safe + Bancolombia parser parity con SMS + backfill 2026 + dedup A+ + needs_review UX + bot interactivo. Atacka el problema de "MERCADOPAGO COLOMBIA" cayendo siempre en `Otros` (gateway opacity) Y agrega email Bancolombia como fuente de ingesta más confiable que SMS.
 
 Ver secciones arriba por detalle de cada epic. Sub-issues se crean just-in-time cuando arranca cada sub-task.
 
-**Costo incremental**: tiempo de dev. Potencialmente ~$2-5 más/mes en Claude API si conversational AI se enciende.
+**Costo incremental**: tiempo de dev. Potencialmente ~$2-5 más/mes en Claude API si conversational AI se enciende. Gmail API es free tier (1B quota units/día, no llegamos cerca).
 
 ### Phase 5: iOS native app (TRIGGER-GATED — see Validation Triggers)
 
 Arranca **solo si dispara el trigger de iOS native**. Documentación completa en "Native Clients Strategy" arriba.
+
+> **Reevaluación por Epic G (Gmail Integration)**: el ingestion source de email Bancolombia (Canal 6b) cubre el mismo dominio que el SMS extension nativo, con mayor confiabilidad (cloud nativo, no depende de capturar SMS) y permite backfill que SMS no soporta. **Antes de invertir en `ILMessageFilterExtension` validar el valor incremental** — si email captura el 100% de los eventos Bancolombia con baja latencia (<5min), el SMS extension nativo pierde gran parte de su justificación. Esto NO cancela Phase 5 (la app nativa sigue siendo deseable por widgets, push, AASA, distribución), pero **reorienta el alcance**: app nativa puede ser shell + WebView + pairing, sin extension de SMS, dependiendo de los datos del beta.
 
 - Apple Developer Program enrollment ($99/año, individual)
 - Xcode project setup en `ios/` (monorepo)
@@ -1062,6 +1103,70 @@ Los livianos (anomaly detection, statement reminders, budget alerts, heatmap) qu
 
 ---
 
+## Gmail Email Integration (Epic G)
+
+### Problema que resuelve
+
+Dos problemas distintos sobre la misma infra:
+
+1. **Gateway opacity**: transacciones tipo `MERCADOPAGO COLOMBIA $65.990` no tienen señal en la descripción para clasificar bien. Son pasarelas, no merchants. Si el user clasifica manualmente como "Comida" y el learning loop aprende esa regla, futuras compras MP (que pueden ser un vuelo de $2M) caen mal clasificadas. **No hay regla ni AI con ese único input que pueda hacerlo bien.**
+2. **Confiabilidad de SMS Bancolombia**: SMS depende de captura del iPhone (sin señal = sin tx); no permite backfill (Apple no expone historial de SMS); muere con el iPhone. **Email Bancolombia tiene los mismos eventos** con cloud-native delivery + backfill posible.
+
+### Arquitectura — 6 capas
+
+1. **OAuth + tokens** — `gmail_connections` (multi-tenant, `user_id` scoped). Refresh tokens encriptados con `src/lib/crypto/symmetric.ts` (AES-256-GCM ya existente). Scope mínimo: `gmail.readonly`. Flow OAuth separado del NextAuth login (mejor para opt-in y revocación).
+2. **Pull engine** — `node-cron` horario (alineado con jobs existentes en `src/instrumentation.node.ts`) + comando bot `/enriquecer` para trigger manual / debug. Filtra mails por sender registry; idempotente por `gmail_msg_id` (UNIQUE).
+3. **Parsers por gateway** — uno por gateway, interfaz común `(html: string) → ParsedReceipt | null`. Registry pattern con `{senderPattern, parser, bankDescriptionPattern}`. Storage en `email_receipts` (raw HTML + parsed payload + `user_id`).
+4. **Matcher tenant-safe** — JOIN scoping `(user_id, amount_cents, occurred_at±2d, gateway_keyword in description)`. **NUNCA** solo `(amount, date)`. Salida: confident match / ambiguous (2+ candidatos) / no match.
+5. **Enrichment** — escribe `enriched_merchant` y `enrichment_source='gmail'` en la tx; descripción original preservada para audit/rollback. Trigger reclassify hook.
+6. **Re-classify** — dispara el pipeline existente (`src/lib/classification/pipeline.ts`) sobre la tx enriquecida. Ahora rules + AI ven "Rappi", no "MERCADOPAGO COLOMBIA".
+
+### Gateways MVP
+
+| Gateway                  | Sender                         | Bank pattern           |
+| ------------------------ | ------------------------------ | ---------------------- |
+| Mercado Pago             | `*@mercadopago.com.co`         | `MERCADOPAGO COLOMBIA` |
+| PayU                     | `*@payu.com`                   | `PAYU*`                |
+| Wompi                    | `*@wompi.co`                   | `WOMPI*`               |
+| Apple (App Store/iCloud) | `do_not_reply@email.apple.com` | `APPLE.COM/BILL`       |
+| PayPal                   | `service@(intl.)?paypal.com`   | `PAYPAL*`              |
+| ~~Google Play~~          | —                              | —                      |
+
+**Observación Google Play**: verificado ausente en el inbox del user alpha; la tx `DLO*DiDi Food CO Pay` que parecía Google Pay es en realidad **dLocal** (procesador LATAM). Documentado como observación cerrada en el issue de parsers; se reabre si aparece en otro user beta.
+
+**Out of MVP** (van a V1.5+): PSE (no es gateway único — cada merchant manda su propio mail), ePayco, Stripe internacional, dLocal, "Punto de Venta" (datáfono — no manda mail, problema diferente).
+
+### Bancolombia email como ingestion source (Canal 6b)
+
+- Sender: `alertasynotificaciones@an.notificacionesbancolombia.com` (y otros — investigar full lista durante implementación)
+- Parser cubre los **10 event types** de `src/lib/ingestion/sms-bancolombia.ts` (purchase, transfer_sent, qr_payment, tc_payment, transfer_received, provider_payment, provider_payment_sent, atm_withdrawal, tc_credit_received, bre_b_transfer)
+- **Backfill 2026** (2026-01-01 → hoy): one-shot via comando bot `/backfill-gmail`, idempotente
+- **Dedup A+** (ver sección Deduplicación arriba): first-in wins, log diferencias, flag `source_mismatch` en divergencia significativa
+
+### Disambiguation UX (matcher ambiguous)
+
+Cuando el matcher encuentra 2+ candidatos para un mismo email receipt, **dos surfaces**:
+
+1. **Web** — `/transactions` muestra el flag `needs_review` con opciones inline para elegir el match correcto o marcar "no match"
+2. **Bot Telegram** — DM al user con: "Tenés tx de $65.990 el 22 mar. Posibles: (1) Rappi (2) Uber. ¿Cuál? `/omitir` para saltar". Reusa el patrón multi-step session/draft existente en `src/lib/telegram/router.ts`
+
+Al confirmar match: enrichment + reclassify automático.
+
+### OAuth strategy — Testing mode primero
+
+- **Ahora (alpha, ≤10 users)**: testing mode. Refresh tokens expiran cada 7 días. Bot pinga al user para re-auth semanal. Aceptable porque solo el dev está testeando.
+- **Cuando escale**: Google OAuth verification (~2 semanas). Privacy policy, demo video, justificación de scope, dominio verificado. Después: tokens persisten hasta que el user revoque.
+
+### Multi-tenant safety (NO NEGOCIABLE — acceptance criterion bloqueante)
+
+Razón: leak previo en #338 (per-table memory `per-user-table-join-tenant-safety.md`).
+
+- TODOS los reads/writes de `gmail_connections` y `email_receipts` filtran por `user_id` del session
+- Matcher JOIN scoping incluye `user_id` siempre
+- Tests cubren caso "user A tiene tx del mismo monto/fecha que user B; ningún cross-match ocurre"
+
+---
+
 ## Bancolombia Parser SLOs (v1 gate)
 
 No se agrega soporte de un segundo banco hasta que Bancolombia cumpla estas métricas durante **30 días corridos en el beta cerrado**:
@@ -1128,6 +1233,7 @@ Activar cuando se cumplan TODAS:
 - Retention semanal: abren dashboard ≥ 1 vez/semana
 - ≥ 1 amigo pide explícitamente _"esto necesita app"_
 - Parser Bancolombia cumpliendo SLOs por ≥ 14 días
+- **Validado el valor incremental del SMS extension nativo sobre Canal 6b (Email Bancolombia)** — métricas a comparar: latencia p50/p95, % eventos capturados, falsos negativos. Si email cubre ≥99% con latencia <5min, el alcance de Phase 5 se reorienta (shell+WebView+widgets, sin SMS extension).
 
 Al disparar: pago Apple Developer ($99), arranco Epic B (iOS native).
 
