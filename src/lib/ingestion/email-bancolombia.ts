@@ -112,7 +112,8 @@ export async function ingestParsedEmail(
   const match = await findMatchingTransaction(userId, routed.id, parsed);
   if (match) {
     const diffs = computeDiffs(match, parsed);
-    if (diffs.length > 0) {
+    const flaggedMismatch = diffs.length > 0;
+    if (flaggedMismatch) {
       await flagSourceMismatch(match.id, match.source ?? "unknown", diffs);
       log.info(
         {
@@ -127,7 +128,7 @@ export async function ingestParsedEmail(
       );
     }
     await markReceiptMatched(receiptId, userId, match.id, parsed);
-    return { status: "duplicated" };
+    return { status: "duplicated", flaggedMismatch };
   }
 
   // No existing tx covers this event — insert fresh through the shared

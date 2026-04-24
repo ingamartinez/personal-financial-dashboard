@@ -1,6 +1,7 @@
 import type { TelegramBatchItem, TelegramDraft } from "@/lib/db/schema";
 import type { NluAccountOption, NluCategoryOption } from "@/lib/ai/transaction-nlu";
 import type { PullResult } from "@/lib/gmail/pull";
+import type { BackfillDryRunReport, BackfillReport } from "@/lib/gmail/backfill";
 import type { GatewayId } from "@/lib/gmail/registry";
 import { formatAccountLabel } from "@/lib/accounts/format";
 
@@ -233,4 +234,81 @@ export function renderEnrichConnectPrompt(): string {
 
 export function renderEnrichFailed(): string {
   return "⚠️ Algo falló buscando emails. Probá de nuevo en un rato.";
+}
+
+export function renderBackfillConfirmPrompt(opts: {
+  year: number;
+  preview: BackfillDryRunReport;
+}): string {
+  const { year, preview } = opts;
+  const lines = [
+    `📧 Backfill Bancolombia *${year}*`,
+    "",
+    `• Emails encontrados: ${preview.totalEmails}`,
+    `• Ya ingresados: ${preview.alreadyStored}`,
+    `• Nuevos a procesar: ${preview.newEmails}`,
+  ];
+  if (preview.newEmails === 0) {
+    lines.push("", "✅ No hay nada nuevo que ingresar. Listo.");
+    return lines.join("\n");
+  }
+  lines.push("", "Confirmá con /si para arrancar, o /cancel para abortar.");
+  return lines.join("\n");
+}
+
+export function renderBackfillStarting(): string {
+  return "📧 Arrancando backfill… te mando progreso cada 100 emails.";
+}
+
+export function renderBackfillProgress(opts: { processed: number; total: number }): string {
+  return `📧 Backfill: ${opts.processed}/${opts.total} procesados…`;
+}
+
+export function renderBackfillResult(report: BackfillReport): string {
+  const lines: string[] = [];
+  if (report.canceled) {
+    lines.push("🛑 Backfill cancelado.");
+  } else {
+    lines.push("✅ Backfill completo.");
+  }
+  lines.push(
+    `• Emails revisados: ${report.totalEmails} (ya vistos: ${report.alreadyStored})`,
+    `• Parseados: ${report.parsed} · omitidos: ${report.skipped} · no reconocidos: ${report.needsReview}`,
+    `• Transacciones nuevas: ${report.inserted}`,
+    `• Ya existían (dedup A+): ${report.matchedExisting}`,
+  );
+  if (report.sourceMismatches > 0) {
+    lines.push(`⚠️ Divergencias con otra fuente: ${report.sourceMismatches} — revisá en la web.`);
+  }
+  if (report.errors.length > 0) {
+    lines.push(`⚠️ ${report.errors.length} errores — revisá los logs.`);
+  }
+  const seconds = Math.round(report.durationMs / 100) / 10;
+  lines.push(`⏱️ ${seconds}s`);
+  return lines.join("\n");
+}
+
+export function renderBackfillConnectPrompt(
+  reason: "not_connected" | "revoked" | "unusable",
+): string {
+  if (reason === "not_connected") {
+    return [
+      "📧 Todavía no tenés una cuenta de Gmail conectada.",
+      "",
+      "Entrá a *Settings → Integrations* en la web para conectarla.",
+    ].join("\n");
+  }
+  return [
+    "📧 Tu conexión de Gmail dejó de funcionar (token revocado o expirado).",
+    "",
+    "Entrá a *Settings → Integrations* en la web para reconectarla.",
+  ].join("\n");
+}
+
+export function renderBackfillFailed(): string {
+  return "⚠️ Algo falló con el backfill. Probá de nuevo en un rato.";
+}
+
+export function renderBackfillNothingPending(): string {
+  return "Nada pendiente que confirmar. Escribí /backfill-gmail para arrancar uno.";
 }

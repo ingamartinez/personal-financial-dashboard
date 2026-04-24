@@ -368,7 +368,14 @@ async function handleText(
 
   const command = parseCommand(text);
   if (command) {
-    await handleCommand({ command, chatId, client, userId: deps.userId });
+    await handleCommand({
+      command,
+      chatId,
+      client,
+      userId: deps.userId,
+      telegramUserId: userId,
+      text,
+    });
     return;
   }
 

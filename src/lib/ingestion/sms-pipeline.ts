@@ -28,7 +28,10 @@ const COP_TIMEZONE_OFFSET = "-05:00";
 
 export type IngestOutcome =
   | { status: "inserted"; txId: number; via?: "regex" | "ai_fallback" }
-  | { status: "duplicated" }
+  // `flaggedMismatch` is set by the email pipeline when a duplicate was
+  // detected AND the existing tx had divergences that were recorded on the
+  // tx's `source_mismatch_details`. SMS callers leave it undefined.
+  | { status: "duplicated"; flaggedMismatch?: boolean }
   | { status: "skipped"; reason: string }
   | { status: "error"; reason: string };
 
