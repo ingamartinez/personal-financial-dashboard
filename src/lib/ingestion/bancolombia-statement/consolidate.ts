@@ -14,6 +14,8 @@ import { notDeleted } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { applyInteresesCausadosForCycle } from "@/lib/finance/intereses-causados-job";
 import { createLogger } from "@/lib/logger";
+import { convertCents } from "@/lib/money";
+import { getCurrentFxRate } from "@/lib/fx/repo";
 
 // #433 — the balance_adjustment plug goes into the user's Ajustes de saldo
 // category (same one the reconcile flow + opening-balance tx use). We always
@@ -87,7 +89,26 @@ export type BalanceProjection = {
     thresholdCentsStr: string;
     exceeded: boolean;
   };
+  // #443 — client-facing credit-limit info so consolidate-form can render a
+  // positive "Cupo disponible (según tu banco)" input for credit_card accounts
+  // and derive the ledger-signed value locally before submitting. Absent/null
+  // on savings & loans (client keeps the legacy ledger-signed input for those).
+  creditContext?: CreditContext | null;
 };
+
+// #443 — credit-limit context surfaced to the client. For single-currency TCs
+// we only need the limit. For shared-cupo multi-currency TCs (MC/Amex
+// internacional) we also need the siblings' current debt in COP and the TRM
+// so the client can back-solve the target sub-account's ledger value using
+// the same math as `BalanceAdjustDialog::SharedCupoForm`.
+export type CreditContext =
+  | { kind: "single-currency"; creditLimitCentsStr: string }
+  | {
+      kind: "shared-cupo";
+      creditLimitCopCentsStr: string;
+      siblingDebtCopCentsStr: string;
+      copPerUsd: number;
+    };
 
 // #433 — info about a balance_adjustment tx inserted to reconcile the ledger
 // against a user-provided "saldo real". Null at the report level when no
@@ -212,7 +233,20 @@ type ProjectionInputs = {
   // is COP-denominated); callers pass `null` for USD sub-accounts where the
   // shared COP cupo wouldn't convert cleanly to the account currency.
   creditLimitCents: bigint | null;
+  // #443 — in-memory twin of the output `CreditContext`. Bigints kept native
+  // so builders don't have to re-parse. Null when the account isn't a credit
+  // card OR is a TC without a configured limit (UI falls back to ledger-sign).
+  creditContext: ProjectionCreditContext | null;
 };
+
+type ProjectionCreditContext =
+  | { kind: "single-currency"; creditLimitCents: bigint }
+  | {
+      kind: "shared-cupo";
+      creditLimitCopCents: bigint;
+      siblingDebtCopCents: bigint;
+      copPerUsd: number;
+    };
 
 async function loadProjectionInputs(
   database: DB,
@@ -245,27 +279,32 @@ async function loadProjectionInputs(
       ),
     );
 
-  // Credit limit lookup: physical_card wins when linked (shared-cupo MC/Amex),
-  // else fall back to metadata.creditLimitCents for single-currency TCs. For
-  // USD sub-accounts we deliberately skip the physical_card COP cupo since
-  // 15%-of-COP-cupo wouldn't map to USD cleanly — use floor only there.
+  // Account + optional physical-card join. Used BOTH for the COP 15%-floor
+  // threshold (creditLimitCents) and for the client-facing creditContext
+  // (single-currency vs shared-cupo). We always load this — even for USD
+  // sub-accounts — so the shared-cupo context is populated on both sides.
+  const [accountRow] = await database
+    .select({
+      type: accounts.type,
+      metadata: accounts.metadata,
+      physicalCardId: accounts.physicalCardId,
+      pcCredit: physicalCards.creditLimitCents,
+    })
+    .from(accounts)
+    .leftJoin(
+      physicalCards,
+      and(eq(physicalCards.id, accounts.physicalCardId), eq(physicalCards.userId, accounts.userId)),
+    )
+    .where(and(eq(accounts.userId, userId), eq(accounts.id, accountId)))
+    .limit(1);
+
+  // Credit limit lookup for the COP 15%-floor warn threshold: physical_card
+  // wins when linked (shared-cupo MC/Amex), else fall back to
+  // metadata.creditLimitCents for single-currency TCs. For USD sub-accounts
+  // we deliberately skip the physical_card COP cupo since 15%-of-COP-cupo
+  // wouldn't map to USD cleanly — use floor only there.
   let creditLimitCents: bigint | null = null;
   if (currency === "COP") {
-    const [accountRow] = await database
-      .select({
-        metadata: accounts.metadata,
-        pcCredit: physicalCards.creditLimitCents,
-      })
-      .from(accounts)
-      .leftJoin(
-        physicalCards,
-        and(
-          eq(physicalCards.id, accounts.physicalCardId),
-          eq(physicalCards.userId, accounts.userId),
-        ),
-      )
-      .where(and(eq(accounts.userId, userId), eq(accounts.id, accountId)))
-      .limit(1);
     if (accountRow?.pcCredit !== null && accountRow?.pcCredit !== undefined) {
       creditLimitCents = accountRow.pcCredit;
     } else if (accountRow?.metadata?.creditLimitCents) {
@@ -273,10 +312,56 @@ async function loadProjectionInputs(
     }
   }
 
+  // #443 — creditContext payload for the client. Only populated for credit
+  // cards with a known limit. Shared-cupo (multi-currency) branch needs
+  // siblings' live debt in COP + current TRM so the client can back-solve
+  // the target sub-account's ledger value.
+  let creditContext: ProjectionCreditContext | null = null;
+  if (accountRow?.type === "credit_card") {
+    const pcLimit = accountRow.pcCredit ?? null;
+    const metaLimit = accountRow.metadata?.creditLimitCents;
+    if (accountRow.physicalCardId && pcLimit !== null && pcLimit > BigInt(0)) {
+      const siblingRows = await database
+        .select({
+          id: accounts.id,
+          currency: accounts.currency,
+          balanceCents: derivedBalanceCentsSql,
+        })
+        .from(accounts)
+        .where(
+          and(
+            eq(accounts.userId, userId),
+            eq(accounts.physicalCardId, accountRow.physicalCardId),
+            sql`${accounts.id} != ${accountId}`,
+            notDeleted(accounts.deletedAt),
+          ),
+        );
+      const fx = await getCurrentFxRate(database);
+      let siblingDebtCopCents = BigInt(0);
+      for (const sib of siblingRows) {
+        const bal = BigInt(sib.balanceCents);
+        const nativeDebt = bal < BigInt(0) ? -bal : BigInt(0);
+        siblingDebtCopCents += convertCents(nativeDebt, sib.currency, "COP", fx.rate);
+      }
+      creditContext = {
+        kind: "shared-cupo",
+        creditLimitCopCents: pcLimit,
+        siblingDebtCopCents,
+        copPerUsd: fx.rate,
+      };
+    } else if (metaLimit !== undefined && metaLimit > 0) {
+      creditContext = {
+        kind: "single-currency",
+        creditLimitCents: BigInt(metaLimit),
+      };
+    }
+  }
+
   return {
     saldoActualCents: BigInt(balanceRow?.cents ?? "0"),
     plugsObsoletosCents: BigInt(plugsRow?.cents ?? "0"),
     creditLimitCents,
+    creditContext,
   };
 }
 
@@ -350,6 +435,23 @@ export function buildBalanceProjection(
       thresholdCentsStr: thresholdCents.toString(),
       exceeded,
     },
+    creditContext: serializeCreditContext(inputs.creditContext),
+  };
+}
+
+function serializeCreditContext(ctx: ProjectionCreditContext | null): CreditContext | null {
+  if (ctx === null) return null;
+  if (ctx.kind === "single-currency") {
+    return {
+      kind: "single-currency",
+      creditLimitCentsStr: ctx.creditLimitCents.toString(),
+    };
+  }
+  return {
+    kind: "shared-cupo",
+    creditLimitCopCentsStr: ctx.creditLimitCopCents.toString(),
+    siblingDebtCopCentsStr: ctx.siblingDebtCopCents.toString(),
+    copPerUsd: ctx.copPerUsd,
   };
 }
 
