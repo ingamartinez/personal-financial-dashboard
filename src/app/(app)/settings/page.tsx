@@ -74,6 +74,12 @@ const LINKS = [
     description:
       "Save and restore your transactional data. Useful before a reset or a mass email ingestion — keeps accounts, categories, rules, and integrations untouched.",
   },
+  {
+    href: "/settings/reset",
+    title: "Reset data",
+    description:
+      "Wipe all transactional data (transactions, imports, ingestion history) and start fresh. Auto-snapshot is taken first; config and accounts stay intact.",
+  },
 ];
 
 const ADMIN_LINK = {
