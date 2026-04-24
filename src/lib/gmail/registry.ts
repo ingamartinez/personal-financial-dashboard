@@ -52,21 +52,36 @@ export const GATEWAYS: readonly GatewayConfig[] = [
   },
   {
     id: "apple",
-    senderQueries: ["from:(no_reply@email.apple.com)", "from:(do_not_reply@email.apple.com)"],
+    // Domain-level: catches `no_reply@`, `do_not_reply@`, the underscore-less
+    // `noreply@` variant observed in prod, and future Apple senders at this
+    // domain. Sibling domains (insideapple.apple.com, id.apple.com) are
+    // marketing + account-security and intentionally excluded.
+    senderQueries: ["from:(@email.apple.com)"],
     bankDescriptionRegex: /\bAPPLE\.COM\/BILL\b/i,
     mode: "enrich",
   },
   {
     id: "paypal",
-    senderQueries: ["from:(service@paypal.com)", "from:(service@intl.paypal.com)"],
+    // Domain-level covers service@paypal.com, service@intl.paypal.com, and
+    // any future subdomain. `@paypal.com` in Gmail matches the root domain
+    // AND subdomains, so `@intl.paypal.com` is strictly redundant — kept
+    // for readability of intent.
+    senderQueries: ["from:(@paypal.com)", "from:(@intl.paypal.com)"],
     bankDescriptionRegex: /\bPAYPAL\b/i,
     mode: "enrich",
   },
   {
     id: "bancolombia",
+    // Domain-level for the transactional alert domain (used to be the
+    // specific `alertasynotificaciones@…` email — domain-level is
+    // future-proof when Bancolombia rotates the local-part). Plus the
+    // extractos domain for monthly statements. Marketing-only domains
+    // (correobancolombia.com, tubienestarfinanciero.*) are deliberately
+    // excluded to keep the receipt corpus signal-dense.
     senderQueries: [
-      "from:(alertasynotificaciones@an.notificacionesbancolombia.com)",
+      "from:(@an.notificacionesbancolombia.com)",
       "from:(@bancolombia.com.co)",
+      "from:(@extractos.documentosbancolombia.com)",
     ],
     // Bancolombia is direct-ingest: the matcher never tries to pair an email
     // receipt with a bank tx (the email *is* the source of truth).
