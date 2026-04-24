@@ -909,4 +909,190 @@ describe("adjustAccountBalance", () => {
       }
     });
   });
+
+  // #447 — dual-debt snapshot: enter both currency debts independently so
+  // drift in one sub-account never propagates to the other (unlike
+  // sharedAvailableCop, which back-solves through sibling × TRM).
+  describe("kind: perCurrencyDualDebt (#447)", () => {
+    async function seedPair(params: {
+      limitCents: number;
+      copBalanceCents: number;
+      usdBalanceCents: number;
+    }): Promise<{ copId: number; usdId: number; pcId: string }> {
+      await upsertAccount({
+        name: `${ADJ_MARKER}-dual`,
+        institution: "Bancolombia",
+        type: "credit_card",
+        primary: { currency: "COP", balance: params.copBalanceCents / 100 },
+        secondary: { currency: "USD", balance: params.usdBalanceCents / 100 },
+        physicalCard: { creditLimitCents: params.limitCents, network: "mastercard" },
+      });
+      const rows = await db
+        .select()
+        .from(accounts)
+        .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${ADJ_MARKER}-dual`)));
+      const cop = rows.find((r) => r.currency === "COP")!;
+      const usd = rows.find((r) => r.currency === "USD")!;
+      return { copId: cop.id, usdId: usd.id, pcId: cop.physicalCardId! };
+    }
+
+    async function stubFxRate(rate: number) {
+      await db.execute(sql`
+        INSERT INTO fx_rates (base, quote, rate_micros, as_of, source)
+        VALUES ('USD', 'COP', ${BigInt(Math.round(rate * 1_000_000))}, CURRENT_DATE, 'test')
+        ON CONFLICT (base, quote, as_of) DO UPDATE SET
+          rate_micros = EXCLUDED.rate_micros,
+          source = EXCLUDED.source,
+          fetched_at = NOW()
+      `);
+    }
+
+    afterEach(async () => {
+      await db.execute(sql`DELETE FROM fx_rates WHERE source = 'test'`);
+    });
+
+    it("snapshots both debts atomically — one balance_adjustment per sub-account", async () => {
+      // Current ledger: COP -500k, USD -100 USD. Bank says: debt_cop=4.031.198,
+      // debt_usd=$2.885,00 (the real MC 7291 screenshot). Expected diffs:
+      //   COP: new balance -403_119_800 - current -500_000_00 = -353_119_800
+      //   USD: new balance -288_500    - current -10_000     = -278_500
+      await stubFxRate(3568.88);
+      const { copId, usdId } = await seedPair({
+        limitCents: 17_000_000_00,
+        copBalanceCents: -500_000_00,
+        usdBalanceCents: -100_00,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: {
+          kind: "perCurrencyDualDebt",
+          debtCopCents: 403_119_800,
+          debtUsdCents: 288_500,
+        },
+      });
+
+      expect(result.status).toBe("ok_dual");
+      if (result.status !== "ok_dual") throw new Error("expected ok_dual");
+      expect(result.results).toHaveLength(2);
+
+      // Ledger settles to the declared debts exactly — no TRM-dependent math
+      // leaked into either sub-account.
+      expect(await derivedBalance(copId)).toBe(BigInt(-403_119_800));
+      expect(await derivedBalance(usdId)).toBe(BigInt(-288_500));
+
+      // Two balance_adjustment rows present — one per sub-account.
+      const plugs = await db
+        .select()
+        .from(transactions)
+        .where(
+          and(eq(transactions.userId, TEST_USER_ID), eq(transactions.source, "balance_adjustment")),
+        );
+      const byAccount = new Map(plugs.map((p) => [p.accountId, p]));
+      expect(byAccount.get(copId)?.amountCents).toBe(BigInt(-353_119_800));
+      expect(byAccount.get(copId)?.currency).toBe("COP");
+      expect(byAccount.get(usdId)?.amountCents).toBe(BigInt(-278_500));
+      expect(byAccount.get(usdId)?.currency).toBe("USD");
+      // Both flagged as adjustments so they stay out of spend/insights.
+      expect(plugs.every((p) => p.isAdjustment === true)).toBe(true);
+      expect(plugs.every((p) => p.categorySlug === "adjustments")).toBe(true);
+    });
+
+    it("returns noop when both declared debts match current balances exactly", async () => {
+      await stubFxRate(3568.88);
+      const { copId } = await seedPair({
+        limitCents: 17_000_000_00,
+        copBalanceCents: -403_119_800,
+        usdBalanceCents: -288_500,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: {
+          kind: "perCurrencyDualDebt",
+          debtCopCents: 403_119_800,
+          debtUsdCents: 288_500,
+        },
+      });
+
+      expect(result.status).toBe("noop");
+    });
+
+    it("only inserts a plug for the side that actually changed", async () => {
+      await stubFxRate(3568.88);
+      const { copId, usdId } = await seedPair({
+        limitCents: 17_000_000_00,
+        copBalanceCents: -400_000_00,
+        usdBalanceCents: -288_500, // already matches
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: {
+          kind: "perCurrencyDualDebt",
+          debtCopCents: 403_119_800,
+          debtUsdCents: 288_500,
+        },
+      });
+
+      expect(result.status).toBe("ok_dual");
+      if (result.status !== "ok_dual") throw new Error("expected ok_dual");
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].accountId).toBe(copId);
+      expect(result.results[0].currency).toBe("COP");
+      expect(await derivedBalance(usdId)).toBe(BigInt(-288_500));
+    });
+
+    it("rejects when the combined debt (COP + USD×TRM) exceeds the plastic limit", async () => {
+      await stubFxRate(4000);
+      const { copId } = await seedPair({
+        limitCents: 10_000_000_00,
+        copBalanceCents: 0,
+        usdBalanceCents: 0,
+      });
+
+      // 9MM COP + 500 USD × 4000 = 9MM + 2MM = 11MM > 10MM limit.
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: {
+          kind: "perCurrencyDualDebt",
+          debtCopCents: 9_000_000_00,
+          debtUsdCents: 500_00,
+        },
+      });
+
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.message).toMatch(/cupo total/i);
+      }
+    });
+
+    it("rejects on a single-currency TC (no physicalCardId)", async () => {
+      const [cc] = await db
+        .insert(accounts)
+        .values({
+          userId: TEST_USER_ID,
+          name: `${ADJ_MARKER}-solo`,
+          institution: "Bancolombia",
+          type: "credit_card",
+          currency: "COP",
+          metadata: { creditLimitCents: 5_000_000 },
+        })
+        .returning({ id: accounts.id });
+
+      const result = await adjustAccountBalance({
+        accountId: cc.id,
+        declared: {
+          kind: "perCurrencyDualDebt",
+          debtCopCents: 100_000,
+          debtUsdCents: 10_000,
+        },
+      });
+
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.message).toMatch(/multi-moneda/i);
+      }
+    });
+  });
 });
