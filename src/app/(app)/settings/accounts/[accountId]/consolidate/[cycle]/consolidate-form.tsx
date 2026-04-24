@@ -8,12 +8,15 @@ import { UploadCloudIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import type { ConsolidationReport } from "@/lib/ingestion/bancolombia-statement/consolidate";
+import type {
+  ConsolidationReport,
+  CreditContext,
+} from "@/lib/ingestion/bancolombia-statement/consolidate";
 
 import { commitStatementAction, previewStatementAction } from "../actions";
 import { isMultiReport, type ConsolidateActionResult } from "../consolidate-types";
 import { formatCents, ReportSection } from "./consolidate-report-view";
-import { parseSignedAmountToCents } from "./parse-saldo-real";
+import { deriveLedgerFromInput, projectedCupoCents } from "./derive-cupo-ledger";
 
 type Props = {
   accountId: number;
@@ -130,18 +133,29 @@ export function ConsolidateForm({ accountId, accountName, cycle, institutionSlug
     fd.set("file", file);
     fd.set("accountId", String(accountId));
     fd.set("cycle", cycle);
-    // #433 — parse each account's saldo-real input into cents and attach.
-    // Empty → skipped. Invalid → block the commit and surface a toast.
-    for (const [rawAccountId, rawValue] of Object.entries(saldoRealInputs)) {
-      const parsed = parseSignedAmountToCents(rawValue);
-      if (parsed === undefined) continue; // empty field
-      if (parsed === null) {
-        toast.error(
-          `No pude leer el saldo real de la cuenta #${rawAccountId}. Usá números (con . o , opcional).`,
-        );
+    // #433 + #443 — derive each account's ledger-signed saldo from the raw
+    // input + its creditContext. Empty → skipped. Invalid → block commit with
+    // a toast that points at the specific report that failed.
+    const previewReportsList = preview ? toReportList(preview) : [];
+    for (const report of previewReportsList) {
+      const raw = saldoRealInputs[report.accountId] ?? "";
+      const derived = deriveLedgerFromInput({
+        raw,
+        targetCurrency: report.currency,
+        creditContext: report.projection?.creditContext ?? null,
+      });
+      if (derived.kind === "empty") continue;
+      if (derived.kind === "invalid") {
+        const msg =
+          derived.reason === "negative-cupo"
+            ? "El cupo disponible no puede ser negativo."
+            : derived.reason === "exceeds-limit"
+              ? "El cupo disponible no puede superar el límite de la tarjeta."
+              : "No pude leer el valor ingresado. Usá un número (con . o , opcional).";
+        toast.error(`Cuenta #${report.accountId}: ${msg}`);
         return;
       }
-      fd.set(`saldoRealLedgerCents_${rawAccountId}`, parsed.toString());
+      fd.set(`saldoRealLedgerCents_${report.accountId}`, derived.ledgerCents.toString());
     }
     startApplying(async () => {
       try {
@@ -309,9 +323,19 @@ function PreviewPanel({
 
 // #433 — per-account "saldo real" input. Rendered BELOW each ReportSection
 // in the preview panel so the user can eyeball the projected saldo first,
-// then decide whether to override it. Empty field == "accept the projected
-// delta" (no plug inserted). Non-empty is parsed at submit time via
-// `parseSignedAmountToCents`.
+// then decide whether to override it.
+//
+// #443 — input semantics branch on `projection.creditContext`:
+//
+//   - creditContext is null (savings / loan / no-limit TC) → the legacy
+//     ledger-signed positive input. Empty == "accept the projected delta".
+//   - creditContext.kind === "single-currency" → label "Cupo disponible
+//     (según tu banco)", input positive, <=limit. Client derives
+//     `ledger = cupo - limit`.
+//   - creditContext.kind === "shared-cupo" → label "Cupo disponible (COP,
+//     según tu banco)", input positive in COP. Client derives the target
+//     sub-account's ledger using sibling debt + TRM (same math as
+//     `BalanceAdjustDialog::SharedCupoForm`).
 function SaldoRealInput({
   report,
   value,
@@ -323,24 +347,62 @@ function SaldoRealInput({
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
-  const projected = report.projection?.saldoProyectadoCentsStr;
-  const parsed = parseSignedAmountToCents(value);
-  const isInvalid = parsed === null; // undefined (empty) is fine
-  const parsedLedger = typeof parsed === "bigint" ? parsed : null;
+  const projection = report.projection;
+  const ctx = projection?.creditContext ?? null;
+  const derived = deriveLedgerFromInput({
+    raw: value,
+    targetCurrency: report.currency,
+    creditContext: ctx,
+  });
 
-  // Diff vs. projected so the user knows a plug will be inserted.
-  let plugPreview: string | null = null;
-  if (parsedLedger !== null && projected) {
-    const diff = parsedLedger - BigInt(projected);
-    if (diff !== BigInt(0)) {
-      plugPreview = `Se insertará un ajuste de ${formatCents(diff.toString())} para que el saldo quede exactamente en ${formatCents(parsedLedger.toString())}.`;
-    } else {
-      plugPreview = "El saldo real coincide con el proyectado — no se insertará ningún ajuste.";
+  const projectedLedger = projection ? BigInt(projection.saldoProyectadoCentsStr) : null;
+  const plugCents =
+    derived.kind === "ok" && projectedLedger !== null
+      ? derived.ledgerCents - projectedLedger
+      : null;
+
+  const invalidMessage = (() => {
+    if (derived.kind !== "invalid") return null;
+    if (derived.reason === "negative-cupo") return "El cupo disponible no puede ser negativo.";
+    if (derived.reason === "exceeds-limit" && ctx !== null) {
+      const limitStr =
+        ctx.kind === "single-currency" ? ctx.creditLimitCentsStr : ctx.creditLimitCopCentsStr;
+      const tag = ctx.kind === "single-currency" ? "el límite" : "el cupo total";
+      return `El cupo disponible no puede superar ${tag} (${formatCents(limitStr)}).`;
     }
-  }
+    return ctx === null
+      ? "Formato no válido. Usá un número (ej: -1.543.000,00 o -1543000.00)."
+      : "Formato no válido. Usá un número (ej: 1.543.000 o 1543000).";
+  })();
 
-  const placeholder = projected ? formatCents(projected) : "—";
+  const plugPreview = (() => {
+    if (plugCents === null || derived.kind !== "ok") return null;
+    if (plugCents === BigInt(0)) {
+      return ctx === null
+        ? "El saldo real coincide con el proyectado — no se insertará ningún ajuste."
+        : "El cupo declarado coincide con el proyectado — no se insertará ningún ajuste.";
+    }
+    if (ctx === null) {
+      return `Se insertará un ajuste de ${formatCents(plugCents.toString())} para que el saldo quede en ${formatCents(derived.ledgerCents.toString())}.`;
+    }
+    // TC: phrase in terms of debt ("se suma/resta deuda") since users think in
+    // cupo/deuda, not ledger-sign.
+    const absPlug = plugCents < BigInt(0) ? -plugCents : plugCents;
+    const debtChangeVerb = plugCents < BigInt(0) ? "sumará" : "restará";
+    const debtCents = derived.ledgerCents < BigInt(0) ? -derived.ledgerCents : BigInt(0);
+    return `Se ${debtChangeVerb} una deuda de ${formatCents(absPlug.toString())} — tu deuda en esta cuenta quedará en ${formatCents(debtCents.toString())}.`;
+  })();
+
+  const placeholderCents =
+    projectedLedger !== null
+      ? ctx === null
+        ? projectedLedger
+        : (projectedCupoCents(projectedLedger, report.currency, ctx) ?? null)
+      : null;
+  const placeholder = placeholderCents !== null ? formatCents(placeholderCents.toString()) : "—";
   const inputId = `saldo-real-${report.accountId}`;
+
+  const { label, help } = inputCopy(ctx);
 
   return (
     <div
@@ -348,7 +410,7 @@ function SaldoRealInput({
       className="bg-muted/30 flex flex-col gap-2 rounded-md border border-dashed p-3 text-sm"
     >
       <label htmlFor={inputId} className="font-medium">
-        ¿Cuál es tu saldo real según el banco?{" "}
+        {label}{" "}
         <span className="text-muted-foreground text-xs font-normal">
           (opcional — dejá vacío para aceptar el delta proyectado)
         </span>
@@ -363,23 +425,36 @@ function SaldoRealInput({
         onChange={(e) => onChange(e.target.value)}
         className={cn(
           "border-input focus-visible:ring-ring rounded-md border bg-transparent px-3 py-2 tabular-nums focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none",
-          isInvalid && "border-destructive",
+          invalidMessage !== null && "border-destructive",
         )}
         data-testid={`saldo-real-field-${report.accountId}`}
       />
-      {isInvalid ? (
-        <p className="text-destructive text-xs">
-          Formato no válido. Usá un número (ej: -1.543.000,00 o -1543000.00).
-        </p>
-      ) : plugPreview ? (
+      {invalidMessage !== null ? (
+        <p className="text-destructive text-xs">{invalidMessage}</p>
+      ) : plugPreview !== null ? (
         <p className="text-muted-foreground text-xs">{plugPreview}</p>
       ) : (
-        <p className="text-muted-foreground text-xs">
-          Si el saldo que ves en el banco difiere del proyectado, entralo acá y al confirmar se
-          inserta un ajuste de saldo para cuadrar. Puede estar compensando compras que Findash nunca
-          vio o plugs viejos obsoletos — andá a /reconcile a revisar después.
-        </p>
+        <p className="text-muted-foreground text-xs">{help}</p>
       )}
     </div>
   );
+}
+
+function inputCopy(ctx: CreditContext | null): { label: string; help: string } {
+  if (ctx === null) {
+    return {
+      label: "¿Cuál es tu saldo real según el banco?",
+      help: "Si el saldo que ves en el banco difiere del proyectado, entralo acá y al confirmar se inserta un ajuste de saldo para cuadrar.",
+    };
+  }
+  if (ctx.kind === "single-currency") {
+    return {
+      label: "Cupo disponible (según tu banco)",
+      help: "Copiá el cupo disponible que te muestra Bancolombia — no la deuda. Al confirmar derivamos la deuda restando del límite y armamos un ajuste si cuadra distinto del proyectado.",
+    };
+  }
+  return {
+    label: "Cupo disponible (COP, según tu banco)",
+    help: "En tarjetas multi-moneda el banco muestra un solo cupo en COP. Pegá ese número: vamos a ajustar solo esta sub-cuenta usando la TRM actual — las siblings quedan intactas.",
+  };
 }

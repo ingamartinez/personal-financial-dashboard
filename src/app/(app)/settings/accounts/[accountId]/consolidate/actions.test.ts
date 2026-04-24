@@ -654,4 +654,84 @@ describe("multi-sheet dispatch (#426)", () => {
     // USD threshold floor is 125 USD = 12500 cents; |delta|=50000 > 12500 → warn.
     expect(byCurrency.USD.projection!.warn.exceeded).toBe(true);
   });
+
+  // #443 — projection carries a creditContext so the client form can render
+  // a positive "Cupo disponible" input and back-solve the ledger locally.
+  // Shared-cupo TCs populate both sub-accounts' context with the physical
+  // card's limit + sibling-debt-in-COP + TRM.
+  it("multi-sheet preview populates shared-cupo creditContext on both reports", async () => {
+    const buf = buildMultiSheetXlsxBuffer("7291");
+    const result = await previewStatementAction(formDataFor(buf, copAccountId, "2026-03"));
+    if (!isMultiReport(result)) throw new Error("expected multi-sheet result");
+    const byCurrency = Object.fromEntries(result.reports.map((r) => [r.currency, r]));
+    const copCtx = byCurrency.COP.projection!.creditContext!;
+    const usdCtx = byCurrency.USD.projection!.creditContext!;
+    expect(copCtx).toBeDefined();
+    expect(copCtx.kind).toBe("shared-cupo");
+    expect(usdCtx.kind).toBe("shared-cupo");
+    if (copCtx.kind !== "shared-cupo" || usdCtx.kind !== "shared-cupo") {
+      throw new Error("expected shared-cupo context on both sub-accounts");
+    }
+    // Physical card limit = 10M COP * 100 cents = 1e9 stored as bigint.
+    expect(copCtx.creditLimitCopCentsStr).toBe("1000000000");
+    expect(usdCtx.creditLimitCopCentsStr).toBe("1000000000");
+    // Pre-commit ledger is empty on both (no seeded txs) → sibling debt 0.
+    expect(copCtx.siblingDebtCopCentsStr).toBe("0");
+    expect(usdCtx.siblingDebtCopCentsStr).toBe("0");
+    expect(copCtx.copPerUsd).toBeGreaterThan(0);
+    expect(usdCtx.copPerUsd).toBeGreaterThan(0);
+  });
+});
+
+describe("single-currency creditContext (#443)", () => {
+  let userId!: number;
+  let tcId!: number;
+
+  beforeAll(async () => {
+    userId = await createUser(`${TAG.toLowerCase()}.scc.${Date.now()}@test.local`);
+    sessionMock.id = userId;
+    // Single-currency TC with metadata.creditLimitCents set — triggers
+    // `creditContext.kind === "single-currency"` on projection output.
+    const [row] = await db
+      .insert(accounts)
+      .values({
+        userId,
+        name: `${TAG} visa 9999`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "COP",
+        metadata: { last4s: ["9999"], cutoffDay: 30, creditLimitCents: 2_000_000_00 },
+      })
+      .returning({ id: accounts.id });
+    tcId = row.id;
+  });
+
+  afterEach(async () => {
+    await db.execute(
+      sql`DELETE FROM transactions WHERE user_id = ${userId} AND external_id LIKE 'bancolombia-stmt:%'`,
+    );
+    await db.execute(
+      sql`DELETE FROM transactions WHERE user_id = ${userId} AND source = 'balance_adjustment'`,
+    );
+    await db.delete(statementImports).where(eq(statementImports.userId, userId));
+    await db.execute(
+      sql`DELETE FROM transactions WHERE user_id = ${userId} AND category_slug = 'intereses-tc'`,
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userId);
+  });
+
+  it("preview emits single-currency creditContext with the account's credit limit", async () => {
+    const buf = buildSyntheticXlsxBuffer("9999");
+    const report = asSingle(await previewStatementAction(formDataFor(buf, tcId, "2026-03")));
+    const ctx = report.projection?.creditContext;
+    expect(ctx).toBeDefined();
+    expect(ctx?.kind).toBe("single-currency");
+    if (ctx?.kind !== "single-currency") throw new Error("expected single-currency ctx");
+    // 2_000_000_00 cents = 2M COP.
+    expect(ctx.creditLimitCentsStr).toBe("200000000");
+  });
 });
