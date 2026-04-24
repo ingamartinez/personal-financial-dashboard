@@ -54,4 +54,27 @@ describe("gmail/registry", () => {
     // @ts-expect-error — intentionally out-of-enum to exercise runtime guard.
     expect(() => getGatewayById("stripe")).toThrow(/unknown gateway/);
   });
+
+  // Sentinel — discovered in prod (#465): expanding from email-specific to
+  // domain-level so the engine catches `noreply@` + `no_reply@` +
+  // `do_not_reply@` and future Apple senders at that domain without code
+  // changes. If Apple rotates the local-part, we just keep working.
+  it("apple uses domain-level @email.apple.com (catches noreply/no_reply/do_not_reply variants)", () => {
+    expect(getGatewayById("apple").senderQueries).toContain("from:(@email.apple.com)");
+  });
+
+  // Sentinel — paypal moved from `service@paypal.com` + `service@intl.paypal.com`
+  // to domain-level for future-proofing. Verifies the root domain is there.
+  it("paypal includes domain-level @paypal.com", () => {
+    expect(getGatewayById("paypal").senderQueries).toContain("from:(@paypal.com)");
+  });
+
+  // Sentinel — bancolombia expanded to cover the transactional alerts domain
+  // plus the monthly statements domain surfaced by prod discovery (#465).
+  it("bancolombia covers alerts + bank.com.co + extractos domains", () => {
+    const cfg = getGatewayById("bancolombia");
+    expect(cfg.senderQueries).toContain("from:(@an.notificacionesbancolombia.com)");
+    expect(cfg.senderQueries).toContain("from:(@bancolombia.com.co)");
+    expect(cfg.senderQueries).toContain("from:(@extractos.documentosbancolombia.com)");
+  });
 });
