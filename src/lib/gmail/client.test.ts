@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { gmailConnections, users } from "@/lib/db/schema";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 import {
+  GMAIL_SCOPES,
   GmailConnectionUnusableError,
   GmailNotConnectedError,
   getAuthedClient,
@@ -84,6 +85,21 @@ describe("gmail/client", () => {
     if (ORIGINAL_GMAIL_KEY === undefined) delete process.env.GMAIL_TOKEN_ENCRYPTION_KEY;
     else process.env.GMAIL_TOKEN_ENCRYPTION_KEY = ORIGINAL_GMAIL_KEY;
     // Do NOT call db.$client.end() — see gmail-isolation.test.ts for why.
+  });
+
+  // -------------------------------------------------------------------------
+  // Scope set — sentinel for #462
+  // -------------------------------------------------------------------------
+
+  it("GMAIL_SCOPES includes userinfo.email so the callback's userinfo.get() works", () => {
+    // Without this scope the access token returned post-consent has only
+    // gmail.readonly, and google.oauth2(...).userinfo.get() returns 401
+    // UNAUTHENTICATED. The first connect-after-NextAuth-login may seem to
+    // work via include_granted_scopes inheriting the email grant, but a
+    // disconnect+reconnect cycle exposes the gap (revokeToken wipes all
+    // grants at Google).
+    expect(GMAIL_SCOPES).toContain("https://www.googleapis.com/auth/userinfo.email");
+    expect(GMAIL_SCOPES).toContain("https://www.googleapis.com/auth/gmail.readonly");
   });
 
   // -------------------------------------------------------------------------
