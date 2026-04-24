@@ -961,7 +961,9 @@ export type TelegramSessionStep =
   | "awaiting_category"
   | "awaiting_confirm"
   | "awaiting_photo_account"
-  | "awaiting_batch_confirm";
+  | "awaiting_batch_confirm"
+  | "awaiting_backfill_confirm"
+  | "backfill_running";
 
 export type TelegramBatchItem = {
   draft: TelegramDraft;
@@ -988,6 +990,16 @@ export type TelegramDraft = {
   };
 };
 
+// #458 — when `step` is `awaiting_backfill_confirm` or `backfill_running`,
+// this block holds the requested window (ISO yyyy-mm-dd). `step` is the
+// cancel signal the backfill loop polls — when the user hits /cancel the
+// session row is deleted, and the loop sees `getSession() === null`.
+export type TelegramBackfillState = {
+  from: string;
+  to: string;
+  gateway: "bancolombia";
+};
+
 export type TelegramSessionState = {
   step: TelegramSessionStep;
   draft: TelegramDraft;
@@ -997,6 +1009,7 @@ export type TelegramSessionState = {
   externalIdOverride?: string;
   photoFileId?: string;
   batch?: TelegramBatchItem[];
+  backfill?: TelegramBackfillState;
 };
 
 export const telegramBots = pgTable("telegram_bots", {
