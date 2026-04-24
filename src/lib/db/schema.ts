@@ -1314,3 +1314,27 @@ export const emailReceipts = pgTable(
     index("email_receipts_connection_idx").on(t.gmailConnectionId),
   ],
 );
+
+// #471 — Per-user snapshots of transactional data. Payload is a JSON dump of
+// every user-owned table that gets wiped by the reset flow (#472). Config
+// tables (accounts, categories, rules, budgets, tokens, etc.) are NOT
+// snapshotted — they survive reset and therefore survive restore too.
+//
+// schemaVersion pins the drizzle migration tag active at save time; a restore
+// against a different schema is rejected rather than risking partial column
+// mismatches. Cross-migration restore is out of scope for MVP.
+export const userSnapshots = pgTable(
+  "user_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 200 }).notNull(),
+    schemaVersion: varchar("schema_version", { length: 128 }).notNull(),
+    payload: jsonb("payload").notNull(),
+    payloadBytes: bigint("payload_bytes", { mode: "bigint" }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("user_snapshots_user_created_idx").on(t.userId, t.createdAt.desc())],
+);
