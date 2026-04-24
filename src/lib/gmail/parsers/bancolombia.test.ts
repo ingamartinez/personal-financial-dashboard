@@ -42,11 +42,12 @@ describe("extractVisibleText", () => {
     expect(extractVisibleText(html)).toBe("A B C D");
   });
 
-  it("strips script/style tags with whitespace before the closing > (CodeQL js/bad-tag-filter)", () => {
-    // HTML spec permits whitespace inside a closing tag. A naive `</script>`
-    // regex misses `</script >` and leaves script content in the extracted
-    // text — a stored-XSS vector if that text is ever re-rendered.
-    const html = "<body><script>alert(1)</script ><style>.x{}</style\t>\nhello</body>";
+  it("strips script/style closing tags with garbage content (CodeQL js/bad-tag-filter)", () => {
+    // Browser-lenient closing tag forms (whitespace, bogus attrs) let a
+    // narrower regex leak script contents into the extracted text — a
+    // stored-XSS vector if that text is ever re-rendered.
+    const html =
+      '<body><script>alert(1)</script\t\n foo><style>.x{}</style bar="baz">\nhello</body>';
     const text = extractVisibleText(html);
     expect(text).toBe("hello");
     expect(text).not.toContain("alert");
