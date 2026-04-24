@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { telegramBots, telegramSessions } from "@/lib/db/schema";
-import { encrypt } from "@/lib/crypto/symmetric";
+import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 
 const TEST_USER_ID = 1;
 const VALID_TOKEN = "1234567890:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
@@ -123,7 +123,7 @@ describe("settings/telegram actions", () => {
     it("returns an error when the user already has a bot", async () => {
       await db.insert(telegramBots).values({
         userId: TEST_USER_ID,
-        tokenEncrypted: encrypt(VALID_TOKEN),
+        tokenEncrypted: telegramCipher.encrypt(VALID_TOKEN),
         username: "existing_bot",
         webhookSecret: "a".repeat(64),
       });
@@ -174,7 +174,7 @@ describe("settings/telegram actions", () => {
     it("deletes the bot row + sessions and calls deleteWebhook", async () => {
       await db.insert(telegramBots).values({
         userId: TEST_USER_ID,
-        tokenEncrypted: encrypt(VALID_TOKEN),
+        tokenEncrypted: telegramCipher.encrypt(VALID_TOKEN),
         username: "to_revoke",
         webhookSecret: "b".repeat(64),
       });
@@ -210,7 +210,7 @@ describe("settings/telegram actions", () => {
     it("still deletes the local row when deleteWebhook throws", async () => {
       await db.insert(telegramBots).values({
         userId: TEST_USER_ID,
-        tokenEncrypted: encrypt(VALID_TOKEN),
+        tokenEncrypted: telegramCipher.encrypt(VALID_TOKEN),
         username: "tg_down",
         webhookSecret: "c".repeat(64),
       });

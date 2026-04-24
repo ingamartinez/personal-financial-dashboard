@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { telegramBots } from "@/lib/db/schema";
-import { encrypt } from "@/lib/crypto/symmetric";
+import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 import { POST } from "./route";
 
 const TEST_USER_ID = 1;
@@ -18,7 +18,7 @@ async function seedBot(): Promise<number> {
     .insert(telegramBots)
     .values({
       userId: TEST_USER_ID,
-      tokenEncrypted: encrypt(TOKEN),
+      tokenEncrypted: telegramCipher.encrypt(TOKEN),
       username: "vitest_bot",
       webhookSecret: SECRET,
     })

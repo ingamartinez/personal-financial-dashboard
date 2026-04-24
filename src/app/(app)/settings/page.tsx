@@ -62,6 +62,12 @@ const LINKS = [
     description:
       "Register your BotFather bot. Findash encrypts the token at rest and serves the webhook at /api/telegram/webhook/<botId>.",
   },
+  {
+    href: "/settings/integrations",
+    title: "Integrations",
+    description:
+      "Connect external accounts (Gmail, etc.) so Findash can enrich gateway transactions and pull bank receipts directly from your inbox.",
+  },
 ];
 
 const ADMIN_LINK = {

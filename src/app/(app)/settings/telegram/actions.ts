@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { telegramBots, telegramSessions } from "@/lib/db/schema";
-import { decrypt, encrypt } from "@/lib/crypto/symmetric";
+import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 import { getSessionUser } from "@/lib/auth/session";
 import { createLogger } from "@/lib/logger";
 import { createTelegramClient } from "@/lib/telegram/client";
@@ -90,7 +90,7 @@ export async function registerBotAction(
     .insert(telegramBots)
     .values({
       userId: session.id,
-      tokenEncrypted: encrypt(token),
+      tokenEncrypted: telegramCipher.encrypt(token),
       username,
       webhookSecret,
     })
@@ -128,7 +128,7 @@ export async function revokeBotAction(): Promise<void> {
 
   let token: string | null = null;
   try {
-    token = decrypt(bot.tokenEncrypted);
+    token = telegramCipher.decrypt(bot.tokenEncrypted);
   } catch (err) {
     log.error(
       { err, event: "telegram_revoke_decrypt_failed" },
