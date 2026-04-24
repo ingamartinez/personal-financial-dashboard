@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "@/lib/db";
 import { db as defaultDb } from "@/lib/db";
 import { transactions } from "@/lib/db/schema";
-import type { Currency } from "@/lib/types";
+import type { Currency, TransactionSource } from "@/lib/types";
 
 // Single leg of a transfer group — one INSERT into `transactions`. Sign matters:
 // a debit is negative, a credit is positive. Category is NEVER carried on a
@@ -21,7 +21,7 @@ export type TransferLeg = {
   descriptionClean?: string | null;
   merchant?: string | null;
   counterpartyId?: number | null;
-  source: "sms" | "telegram" | "manual" | "csv" | "csv_reconcile";
+  source: TransactionSource;
   occurredAt: Date;
   externalId?: string | null;
   rawData?: Record<string, unknown>;

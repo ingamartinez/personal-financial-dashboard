@@ -18,6 +18,8 @@ import {
   type GatewayConfig,
   type GatewayId,
 } from "@/lib/gmail/registry";
+import { parseBancolombiaEmail } from "@/lib/gmail/parsers/bancolombia";
+import { ingestParsedEmail } from "@/lib/ingestion/email-bancolombia";
 
 const log = createLogger({ module: "gmail/pull" });
 
@@ -307,6 +309,45 @@ function emptyByGateway(): PullResult["byGateway"] {
 }
 
 /**
+ * Parses + ingests every pending Bancolombia receipt for a user. Called at
+ * the tail of `pullForUser` so freshly-inserted receipts get ingested in the
+ * same cron tick AND stale pending rows from a previously-failed ingestion
+ * get retried on every subsequent cron — no need for a separate reaper.
+ *
+ * A parse/ingest failure for one receipt is logged and does not interrupt
+ * the loop; the receipt stays pending for the next tick to retry.
+ */
+async function processPendingBancolombiaReceipts(userId: number): Promise<void> {
+  const pending = await db
+    .select({ id: emailReceipts.id, rawHtml: emailReceipts.rawHtml })
+    .from(emailReceipts)
+    .where(
+      and(
+        eq(emailReceipts.userId, userId),
+        eq(emailReceipts.gateway, "bancolombia"),
+        eq(emailReceipts.matchStatus, "pending"),
+        notDeleted(emailReceipts.deletedAt),
+      ),
+    );
+  for (const receipt of pending) {
+    try {
+      const parsed = parseBancolombiaEmail(receipt.rawHtml);
+      await ingestParsedEmail(userId, parsed, receipt.id);
+    } catch (err) {
+      log.error(
+        {
+          err,
+          userId,
+          receiptId: receipt.id,
+          event: "gmail_bancolombia_ingest_failed",
+        },
+        "failed to parse+ingest bancolombia receipt; leaving as pending for retry",
+      );
+    }
+  }
+}
+
+/**
  * Pull new Gmail messages for one user, store them in `email_receipts`, and
  * update the connection's `last_pull_at` watermark.
  *
@@ -405,6 +446,18 @@ export async function pullForUser(
       };
     }
     throw err;
+  }
+
+  // Process ingest-mode receipts (#457 — bancolombia). This ALSO picks up
+  // stale receipts from previous pulls whose ingestion errored mid-way, so a
+  // transient DB hiccup doesn't lock a receipt into `pending` forever. Run
+  // even if `errors` is non-empty — per-message list/get failures from the
+  // Google side shouldn't block already-persisted receipts from being parsed.
+  const ingestGatewaysSelected = selectedGateways.filter((g) => g.mode === "ingest");
+  for (const g of ingestGatewaysSelected) {
+    if (g.id === "bancolombia") {
+      await processPendingBancolombiaReceipts(userId);
+    }
   }
 
   // Only advance the watermark on fully successful pulls — partial failures
