@@ -42,6 +42,16 @@ describe("extractVisibleText", () => {
     expect(extractVisibleText(html)).toBe("A B C D");
   });
 
+  it("strips script/style tags with whitespace before the closing > (CodeQL js/bad-tag-filter)", () => {
+    // HTML spec permits whitespace inside a closing tag. A naive `</script>`
+    // regex misses `</script >` and leaves script content in the extracted
+    // text — a stored-XSS vector if that text is ever re-rendered.
+    const html = "<body><script>alert(1)</script ><style>.x{}</style\t>\nhello</body>";
+    const text = extractVisibleText(html);
+    expect(text).toBe("hello");
+    expect(text).not.toContain("alert");
+  });
+
   it("strips multiline <style> blocks (real Bancolombia scaffold)", () => {
     const html = wrapBancolombiaEmail(
       "Bancolombia: Compraste COP10.000,00 en FOO con tu T.Cred *2575, el 01/04/2026 a las 10:00.",

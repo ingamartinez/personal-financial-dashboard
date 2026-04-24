@@ -103,8 +103,12 @@ function decodeHtmlEntities(s: string): string {
 
 export function extractVisibleText(rawHtml: string): string {
   let t = rawHtml;
-  t = t.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ");
-  t = t.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ");
+  // `\s*` on the closing tag lets us drop tags like `</script >` and
+  // `</style\t>` which the HTML spec permits and which a naive `</script>`
+  // regex would leave behind — flagged by CodeQL `js/bad-tag-filter` as a
+  // stored-XSS vector if the extracted text is ever re-rendered elsewhere.
+  t = t.replace(/<style[^>]*>[\s\S]*?<\/style\s*>/gi, " ");
+  t = t.replace(/<script[^>]*>[\s\S]*?<\/script\s*>/gi, " ");
   t = t.replace(/<!--[\s\S]*?-->/g, " ");
   t = t.replace(/<[^>]+>/g, " ");
   t = decodeHtmlEntities(t);

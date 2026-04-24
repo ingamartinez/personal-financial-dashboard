@@ -129,18 +129,18 @@ export const UNIVERSAL_SKIP_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: S
  */
 export function parseBancolombiaAmount(raw: string): { cents: bigint; currency: Currency } {
   const trimmed = raw.trim();
-  let currency: Currency = "COP";
-  let rest = trimmed;
+  let currency: Currency;
+  let rest: string;
 
-  if (rest.startsWith("USD")) {
+  if (trimmed.startsWith("USD")) {
     currency = "USD";
-    rest = rest.slice(3).trim();
-  } else if (rest.startsWith("COP")) {
+    rest = trimmed.slice(3).trim();
+  } else if (trimmed.startsWith("COP")) {
     currency = "COP";
-    rest = rest.slice(3).trim();
-  } else if (rest.startsWith("$")) {
+    rest = trimmed.slice(3).trim();
+  } else if (trimmed.startsWith("$")) {
     currency = "COP";
-    rest = rest.slice(1).trim();
+    rest = trimmed.slice(1).trim();
   } else {
     throw new Error(`Unrecognized currency prefix: "${raw}"`);
   }
