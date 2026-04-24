@@ -21,7 +21,7 @@ import {
   type AiFallbackOutcome,
 } from "@/lib/ingestion/sms-ai-fallback";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
-import type { ClassificationMethod } from "@/lib/types";
+import type { ClassificationMethod, TransactionSource } from "@/lib/types";
 
 // Colombia uses UTC-5 year-round (no DST). Time in SMS is local.
 const COP_TIMEZONE_OFFSET = "-05:00";
@@ -31,6 +31,15 @@ export type IngestOutcome =
   | { status: "duplicated" }
   | { status: "skipped"; reason: string }
   | { status: "error"; reason: string };
+
+// Per-source configuration consumed by the shared Bancolombia tx inserter.
+// `source` goes into `transactions.source`; `rawDataExtras` is spread into
+// `transactions.raw_data` alongside the parsed `kind`. Callers are SMS (#245),
+// email (#457), and future iOS-native ingestion (#Phase-5).
+export interface IngestSourceConfig {
+  source: TransactionSource;
+  rawDataExtras: Record<string, unknown>;
+}
 
 /**
  * Pure ingestion logic — testable in isolation and reusable by the HTTP route,
@@ -65,7 +74,28 @@ export async function ingestParsed(
   // denominator counts "SMS we could understand" independent of whether the
   // DB insert ultimately succeeds, is duplicated, or fails on routing.
   await recordParseSuccess({ userId, regexOutcome: serializeParsed(parsed) });
-  return ingestParsedSms(userId, parsed, opts?.forceAccountId);
+  return ingestParsedBancolombia(
+    userId,
+    parsed,
+    { source: "sms", rawDataExtras: { sms: parsed.raw } },
+    opts?.forceAccountId,
+  );
+}
+
+/**
+ * Shared entry point for non-SMS callers (email — #457, future iOS native —
+ * Phase 5). SMS goes through `ingestParsed` so it also runs the AI fallback
+ * for `needs_review`; other sources handle their own pre-insert logic (e.g.
+ * email does A+ dedup in `ingestParsedEmail`) and only hand off a regex-
+ * matched `ParsedSms` here.
+ */
+export async function ingestBancolombiaTransaction(
+  userId: number,
+  parsed: ParsedSms,
+  cfg: IngestSourceConfig,
+  opts?: { forceAccountId?: number },
+): Promise<IngestOutcome> {
+  return ingestParsedBancolombia(userId, parsed, cfg, opts?.forceAccountId);
 }
 
 async function ingestNeedsReviewWithAiFallback(
@@ -104,21 +134,30 @@ async function ingestNeedsReviewWithAiFallback(
     return { status: "error", reason: `ai_fallback: ${outcome.status} (${detail})` };
   }
 
-  const result = await ingestParsedSms(userId, outcome.parsed, undefined, {
-    parsedByAiFallback: true,
-    aiConfidence: outcome.confidence,
-  });
+  const result = await ingestParsedBancolombia(
+    userId,
+    outcome.parsed,
+    {
+      source: "sms",
+      rawDataExtras: {
+        sms: outcome.parsed.raw,
+        parsedBy: "ai_fallback",
+        aiConfidence: outcome.confidence,
+      },
+    },
+    undefined,
+  );
   // Tag successful AI-fallback inserts so callers (and the SMS route log) can
   // distinguish them from the regex path.
   if (result.status === "inserted") return { ...result, via: "ai_fallback" };
   return result;
 }
 
-async function ingestParsedSms(
+async function ingestParsedBancolombia(
   userId: number,
   parsed: ParsedSms,
+  cfg: IngestSourceConfig,
   forceAccountId: number | undefined,
-  aiFallbackMeta?: { parsedByAiFallback: boolean; aiConfidence: number },
 ): Promise<IngestOutcome> {
   const allAccounts = (await db
     .select({
@@ -137,14 +176,14 @@ async function ingestParsedSms(
   // user accounts, so insert as a paired transfer group. Ingest-level, not
   // through the generic single-insert path below.
   if (parsed.kind === "tc_payment") {
-    return ingestTcStatementPayment(userId, parsed, allAccounts, forceAccountId);
+    return ingestTcStatementPayment(userId, parsed, allAccounts, cfg, forceAccountId);
   }
   // TC credit received (#405): the SMS tells us ONLY the TC destination; the
   // origin account is external (another bank, Nequi, cash deposit, 3rd-party
   // transfer). Insert as a single unpaired transfer leg — user can pair
   // manually from /transactions if the other side is also a findash account.
   if (parsed.kind === "tc_credit_received") {
-    return ingestTcCreditReceived(userId, parsed, allAccounts, forceAccountId);
+    return ingestTcCreditReceived(userId, parsed, allAccounts, cfg, forceAccountId);
   }
 
   let account: RoutableAccount | null;
@@ -213,15 +252,11 @@ async function ingestParsedSms(
         counterpartyId: cp.counterpartyId,
         classificationMethod: finalMethod,
         classificationConfidence: confidence,
-        source: "sms",
+        source: cfg.source,
         externalId: parsed.externalId,
         rawData: {
           kind: parsed.kind,
-          sms: parsed.raw,
-          ...(aiFallbackMeta && {
-            parsedBy: "ai_fallback",
-            aiConfidence: aiFallbackMeta.aiConfidence,
-          }),
+          ...cfg.rawDataExtras,
         },
       })
       .onConflictDoNothing({
@@ -235,7 +270,7 @@ async function ingestParsedSms(
     emit({
       type: "transaction:created",
       id: result[0].id,
-      source: "sms",
+      source: cfg.source,
       timestamp: Date.now(),
     });
     return { status: "inserted", txId: result[0].id };
@@ -336,6 +371,7 @@ async function ingestTcStatementPayment(
   userId: number,
   parsed: ParsedSms & { kind: "tc_payment" },
   allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
+  cfg: IngestSourceConfig,
   forceAccountId: number | undefined,
 ): Promise<IngestOutcome> {
   let fromAcc: RoutableAccount | null;
@@ -381,20 +417,20 @@ async function ingestTcStatementPayment(
         amountCents: -parsed.amountCents,
         currency: parsed.currency,
         descriptionRaw,
-        source: "sms",
+        source: cfg.source,
         occurredAt,
         externalId: parsed.externalId,
-        rawData: { kind: parsed.kind, sms: parsed.raw, role: "debit" },
+        rawData: { kind: parsed.kind, ...cfg.rawDataExtras, role: "debit" },
       },
       {
         accountId: toAcc.id,
         amountCents: parsed.amountCents,
         currency: parsed.currency,
         descriptionRaw,
-        source: "sms",
+        source: cfg.source,
         occurredAt,
         externalId: parsed.externalId,
-        rawData: { kind: parsed.kind, sms: parsed.raw, role: "credit" },
+        rawData: { kind: parsed.kind, ...cfg.rawDataExtras, role: "credit" },
       },
     ],
   });
@@ -403,7 +439,7 @@ async function ingestTcStatementPayment(
   if (result.status === "error") return { status: "error", reason: result.reason };
 
   for (const txId of result.txIds) {
-    emit({ type: "transaction:created", id: txId, source: "sms", timestamp: Date.now() });
+    emit({ type: "transaction:created", id: txId, source: cfg.source, timestamp: Date.now() });
   }
   // Contract: IngestOutcome carries a single txId. Return the origin (debit)
   // leg — it's the one users recognize as "their payment" in logs and UI.
@@ -420,6 +456,7 @@ async function ingestTcCreditReceived(
   userId: number,
   parsed: ParsedSms & { kind: "tc_credit_received" },
   allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
+  cfg: IngestSourceConfig,
   forceAccountId: number | undefined,
 ): Promise<IngestOutcome> {
   let toAcc: RoutableAccount | null;
@@ -466,10 +503,10 @@ async function ingestTcCreditReceived(
         counterpartyId: null,
         classificationMethod: "manual",
         classificationConfidence: null,
-        source: "sms",
+        source: cfg.source,
         channel: "transfer",
         externalId: parsed.externalId,
-        rawData: { kind: parsed.kind, sms: parsed.raw },
+        rawData: { kind: parsed.kind, ...cfg.rawDataExtras },
       })
       .onConflictDoNothing({
         target: [transactions.accountId, transactions.externalId],
@@ -481,7 +518,7 @@ async function ingestTcCreditReceived(
     emit({
       type: "transaction:created",
       id: result[0].id,
-      source: "sms",
+      source: cfg.source,
       timestamp: Date.now(),
     });
     return { status: "inserted", txId: result[0].id };
