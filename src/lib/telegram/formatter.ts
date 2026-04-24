@@ -1,5 +1,7 @@
 import type { TelegramBatchItem, TelegramDraft } from "@/lib/db/schema";
 import type { NluAccountOption, NluCategoryOption } from "@/lib/ai/transaction-nlu";
+import type { PullResult } from "@/lib/gmail/pull";
+import type { GatewayId } from "@/lib/gmail/registry";
 import { formatAccountLabel } from "@/lib/accounts/format";
 
 function formatAmount(amountCentsStr: string, currency: "COP" | "USD"): string {
@@ -186,4 +188,49 @@ export function renderBatchInserted(opts: {
   if (opts.duplicated > 0) parts.push(`🔁 ${opts.duplicated} duplicadas`);
   if (opts.errors > 0) parts.push(`⚠️ ${opts.errors} con error`);
   return parts.join(" · ") || "Sin cambios.";
+}
+
+const GATEWAY_LABELS: Record<GatewayId, string> = {
+  mercado_pago: "Mercado Pago",
+  payu: "PayU",
+  wompi: "Wompi",
+  apple: "Apple",
+  paypal: "PayPal",
+  bancolombia: "Bancolombia",
+};
+
+export function renderEnrichProcessing(): string {
+  return "📧 Buscando emails nuevos en tu Gmail…";
+}
+
+export function renderEnrichResult(result: PullResult): string {
+  const breakdown = (Object.entries(result.byGateway) as [GatewayId, { pulled: number }][])
+    .filter(([, v]) => v.pulled > 0)
+    .map(([id, v]) => `${v.pulled} ${GATEWAY_LABELS[id]}`)
+    .join(", ");
+
+  const lines: string[] = [];
+  if (result.pulled === 0 && result.skipped === 0) {
+    lines.push("📭 No encontré emails nuevos.");
+  } else {
+    const tail = breakdown ? ` (${breakdown})` : "";
+    lines.push(`📧 Ingresé ${result.pulled} recibos nuevos${tail}.`);
+    if (result.skipped > 0) lines.push(`🔁 Omití ${result.skipped} ya vistos.`);
+  }
+  if (result.errors.length > 0) {
+    lines.push(`⚠️ ${result.errors.length} errores — revisá los logs.`);
+  }
+  return lines.join("\n");
+}
+
+export function renderEnrichConnectPrompt(): string {
+  return [
+    "📧 Todavía no tenés una cuenta de Gmail conectada.",
+    "",
+    "Entrá a *Settings → Integrations* en la web para conectarla.",
+  ].join("\n");
+}
+
+export function renderEnrichFailed(): string {
+  return "⚠️ Algo falló buscando emails. Probá de nuevo en un rato.";
 }

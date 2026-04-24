@@ -30,6 +30,7 @@ export async function registerNode() {
   const { checkAndAlertSlos } = await import("@/lib/observability/slo-alerts");
   const { fetchTrm } = await import("@/lib/fx/trm");
   const { getCurrentFxRate, upsertFxRate } = await import("@/lib/fx/repo");
+  const { pullAllActiveConnections } = await import("@/lib/gmail/pull");
   const { createLogger } = await import("@/lib/logger");
   const log = createLogger({ module: "instrumentation" });
 
@@ -145,9 +146,40 @@ export async function registerNode() {
     timezone: "America/Bogota",
   });
 
+  // Hourly Gmail enrichment pull (#452, Epic G). Each tick fans out over
+  // every active gmail_connections row and pulls new gateway receipts +
+  // Bancolombia emails into email_receipts. Per-user failures are logged
+  // but do NOT break the loop — one user's revoked token cannot block the
+  // others. Manual backfills go through /enriquecer (bot) or
+  // POST /api/cron/gmail-pull.
+  cron.schedule(
+    "0 * * * *",
+    async () => {
+      try {
+        const results = await pullAllActiveConnections();
+        const totalPulled = results.reduce((acc, r) => acc + r.pulled, 0);
+        const totalSkipped = results.reduce((acc, r) => acc + r.skipped, 0);
+        const withErrors = results.filter((r) => r.errors.length > 0).length;
+        log.info(
+          {
+            users: results.length,
+            pulled: totalPulled,
+            skipped: totalSkipped,
+            withErrors,
+            event: "gmail_pull_cron_tick",
+          },
+          "gmail pull cron tick",
+        );
+      } catch (err) {
+        log.error({ err, event: "gmail_pull_fanout_failed" }, "gmail pull fan-out failed");
+      }
+    },
+    { timezone: "America/Bogota" },
+  );
+
   log.info(
     { event: "crons_registered" },
-    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *), slo-alerts (*/30 * * * *), fx-refresh (15 6,18 * * *) America/Bogota",
+    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *), slo-alerts (*/30 * * * *), fx-refresh (15 6,18 * * *), gmail-pull (0 * * * *) America/Bogota",
   );
 
   // Backfill on boot when the repo is empty or last known rate came from the
