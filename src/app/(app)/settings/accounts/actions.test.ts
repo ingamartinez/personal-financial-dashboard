@@ -1067,6 +1067,102 @@ describe("adjustAccountBalance", () => {
       }
     });
 
+    it("adjusts only the COP side when USD debt is omitted", async () => {
+      await stubFxRate(3568.88);
+      const { copId, usdId } = await seedPair({
+        limitCents: 17_000_000_00,
+        copBalanceCents: -500_000_00,
+        usdBalanceCents: -288_500, // already matches the bank
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: {
+          kind: "perCurrencyDualDebt",
+          debtCopCents: 403_119_800,
+          // debtUsdCents omitted — USD side stays put.
+        },
+      });
+
+      expect(result.status).toBe("ok_dual");
+      if (result.status !== "ok_dual") throw new Error("expected ok_dual");
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].accountId).toBe(copId);
+      expect(await derivedBalance(copId)).toBe(BigInt(-403_119_800));
+      // USD sub untouched — no new balance_adjustment on it.
+      expect(await derivedBalance(usdId)).toBe(BigInt(-288_500));
+    });
+
+    it("adjusts only the USD side when COP debt is omitted", async () => {
+      await stubFxRate(3568.88);
+      const { copId, usdId } = await seedPair({
+        limitCents: 17_000_000_00,
+        copBalanceCents: -403_119_800, // already matches
+        usdBalanceCents: -100_00,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: {
+          kind: "perCurrencyDualDebt",
+          // debtCopCents omitted — COP side stays put.
+          debtUsdCents: 288_500,
+        },
+      });
+
+      expect(result.status).toBe("ok_dual");
+      if (result.status !== "ok_dual") throw new Error("expected ok_dual");
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].accountId).toBe(usdId);
+      expect(await derivedBalance(usdId)).toBe(BigInt(-288_500));
+      expect(await derivedBalance(copId)).toBe(BigInt(-403_119_800));
+    });
+
+    it("rejects when both debts are omitted (schema-level validation)", async () => {
+      await stubFxRate(3568.88);
+      const { copId } = await seedPair({
+        limitCents: 17_000_000_00,
+        copBalanceCents: -500_000_00,
+        usdBalanceCents: -100_00,
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: { kind: "perCurrencyDualDebt" },
+      });
+
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.message).toMatch(/al menos una/i);
+      }
+    });
+
+    it("sanity check uses current ledger on the omitted side", async () => {
+      // User enters a huge COP debt alone — but USD side (on-ledger) already
+      // carries 500 USD debt. Combined check must use that current USD to
+      // reject the total when it overflows the limit.
+      await stubFxRate(4000);
+      const { copId } = await seedPair({
+        limitCents: 10_000_000_00,
+        copBalanceCents: 0,
+        usdBalanceCents: -500_00, // $500 USD already on-ledger
+      });
+
+      const result = await adjustAccountBalance({
+        accountId: copId,
+        declared: {
+          kind: "perCurrencyDualDebt",
+          debtCopCents: 9_000_000_00, // 9M COP
+          // USD omitted, but the check uses current ledger: 9M + 500×4000 = 11M > 10M
+        },
+      });
+
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.message).toMatch(/cupo total/i);
+      }
+    });
+
     it("rejects on a single-currency TC (no physicalCardId)", async () => {
       const [cc] = await db
         .insert(accounts)
