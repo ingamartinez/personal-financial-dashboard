@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
+  physicalCards,
   reconciliationDecisions,
   statementImports,
   transactions,
@@ -88,6 +89,7 @@ async function cleanupUser(userId: number): Promise<void> {
   await db.delete(transactions).where(eq(transactions.userId, userId));
   await db.delete(statementImports).where(eq(statementImports.userId, userId));
   await db.delete(accounts).where(eq(accounts.userId, userId));
+  await db.delete(physicalCards).where(eq(physicalCards.userId, userId));
   await db.delete(users).where(eq(users.id, userId));
 }
 
@@ -578,5 +580,212 @@ describe("recordReconciliationDecision — merge_into path", () => {
     // Flagged row unchanged
     const [still] = await db.select().from(transactions).where(eq(transactions.id, flagged));
     expect(still.reconciliationStatus).toBe("flagged");
+  });
+});
+
+// #444 — multi-currency Mastercard Internacional movimientos xlsx commits
+// split rows across origin + sibling accounts by parsedRow.currency. Each
+// sub-account gets its own statement_imports row (idempotent per side).
+describe("commitReconciliation — multi-currency dispatch (#444)", () => {
+  let userId!: number;
+  let copAccountId!: number;
+  let usdAccountId!: number;
+  let soloAccountId!: number;
+  let pcId!: string;
+
+  beforeAll(async () => {
+    userId = await createUser(`${TAG.toLowerCase()}.mc.${Date.now()}@test.local`);
+    // Plastic-linked siblings (COP + USD) sharing one physical card.
+    const [pc] = await db
+      .insert(physicalCards)
+      .values({
+        id: sql`gen_random_uuid()`,
+        userId,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        name: `${TAG} mc 7291`,
+        creditLimitCents: BigInt(10_000_000_00),
+        network: "mastercard",
+        last4: "7291",
+      })
+      .returning({ id: physicalCards.id });
+    pcId = pc.id;
+    const [copRow] = await db
+      .insert(accounts)
+      .values({
+        userId,
+        name: `${TAG} mc cop`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "COP",
+        physicalCardId: pcId,
+      })
+      .returning({ id: accounts.id });
+    copAccountId = copRow.id;
+    const [usdRow] = await db
+      .insert(accounts)
+      .values({
+        userId,
+        name: `${TAG} mc usd`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "USD",
+        physicalCardId: pcId,
+      })
+      .returning({ id: accounts.id });
+    usdAccountId = usdRow.id;
+    // Unrelated solo account (no plastic link) — used to validate commit
+    // rejects when a USD row lands on a card without a USD sibling.
+    soloAccountId = await createAccount(userId);
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userId);
+  });
+
+  function buildMixedParsed(): ParsedStatement {
+    const base = new Date("2026-04-15T05:00:00Z");
+    return buildParsed(
+      [
+        {
+          occurredAt: base,
+          amountCents: BigInt(30_000_00),
+          currency: "COP",
+          direction: "out",
+          descriptionRaw: `${TAG} rappi cop`,
+          rawData: { cuotas: 1 },
+          isMetadata: false,
+        },
+        {
+          occurredAt: base,
+          amountCents: BigInt(14_99),
+          currency: "USD",
+          direction: "out",
+          descriptionRaw: `${TAG} amazon prime usd`,
+          rawData: { cuotas: 36 },
+          isMetadata: false,
+        },
+        {
+          occurredAt: base,
+          amountCents: BigInt(1_30_469_00),
+          currency: "COP",
+          direction: "in",
+          descriptionRaw: `${TAG} abono virtual cop`,
+          rawData: { cuotas: 0 },
+          isMetadata: true,
+        },
+      ],
+      { format: "bancolombia_tc" },
+    );
+  }
+
+  function buildInsertPlan(rowCount: number): MatchingPlan {
+    return {
+      decisions: Array.from({ length: rowCount }, (_, i) => ({
+        statementRowIndex: i,
+        action: "insert_new" as const,
+        matchedTxnId: null,
+        matchScore: 0,
+        matchReason: "no_match" as const,
+      })),
+      flaggedExisting: [],
+      summary: { matched: 0, newInserts: rowCount, nearMatches: 0, flaggedExisting: 0 },
+    };
+  }
+
+  it("splits inserts per parsedRow.currency into the matching sub-account", async () => {
+    const parsed = buildMixedParsed();
+    const plan = buildInsertPlan(parsed.rows.length);
+    const result = await commitReconciliation({
+      userId,
+      account: { id: copAccountId, currency: "COP" },
+      siblingAccount: { id: usdAccountId, currency: "USD" },
+      parsed,
+      plan,
+      fileHash: hashFileBuffer(Buffer.from(`${TAG}-mc-dispatch`)),
+    });
+    expect(result.status).toBe("applied");
+    expect(result.inserted).toBe(3);
+
+    // Two statement_imports rows — one per sub-account, both with the same
+    // fileHash so re-upload is idempotent per-side.
+    const imports = await db
+      .select()
+      .from(statementImports)
+      .where(eq(statementImports.userId, userId));
+    const accountIds = new Set(imports.map((i) => i.accountId));
+    expect(accountIds.has(copAccountId)).toBe(true);
+    expect(accountIds.has(usdAccountId)).toBe(true);
+
+    // Txs land on the right account + carry the row's currency (NOT the
+    // origin account's currency — that was the #444 bug).
+    const txs = await db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.userId, userId), eq(transactions.source, "csv_reconcile")));
+    const copTxs = txs.filter((t) => t.accountId === copAccountId);
+    const usdTxs = txs.filter((t) => t.accountId === usdAccountId);
+    expect(copTxs).toHaveLength(2); // the 30k compra + the 130k abono
+    expect(usdTxs).toHaveLength(1); // the amazon prime USD
+    expect(copTxs.every((t) => t.currency === "COP")).toBe(true);
+    expect(usdTxs.every((t) => t.currency === "USD")).toBe(true);
+    expect(usdTxs[0].amountCents).toBe(BigInt(-14_99));
+  });
+
+  it("is idempotent on re-commit: same fileHash returns already_imported", async () => {
+    const parsed = buildMixedParsed();
+    const plan = buildInsertPlan(parsed.rows.length);
+    const fileHash = hashFileBuffer(Buffer.from(`${TAG}-mc-idempo`));
+    await commitReconciliation({
+      userId,
+      account: { id: copAccountId, currency: "COP" },
+      siblingAccount: { id: usdAccountId, currency: "USD" },
+      parsed,
+      plan,
+      fileHash,
+    });
+    const second = await commitReconciliation({
+      userId,
+      account: { id: copAccountId, currency: "COP" },
+      siblingAccount: { id: usdAccountId, currency: "USD" },
+      parsed,
+      plan,
+      fileHash,
+    });
+    expect(second.status).toBe("already_imported");
+    expect(second.inserted).toBe(0);
+  });
+
+  it("throws when a parsed row's currency has no matching target account", async () => {
+    // Solo single-currency COP account (no sibling) + a USD row in the file.
+    const parsed = buildMixedParsed();
+    const plan = buildInsertPlan(parsed.rows.length);
+    await expect(
+      commitReconciliation({
+        userId,
+        account: { id: soloAccountId, currency: "COP" },
+        // No siblingAccount → USD row has nowhere to go.
+        parsed,
+        plan,
+        fileHash: hashFileBuffer(Buffer.from(`${TAG}-mc-missing-target`)),
+      }),
+    ).rejects.toThrow(/missing_account_for_currency:USD/);
+  });
+
+  it("rejects a sibling of the same currency as the primary account", async () => {
+    const parsed = buildMixedParsed();
+    const plan = buildInsertPlan(parsed.rows.length);
+    await expect(
+      commitReconciliation({
+        userId,
+        account: { id: copAccountId, currency: "COP" },
+        siblingAccount: { id: soloAccountId, currency: "COP" },
+        parsed,
+        plan,
+        fileHash: hashFileBuffer(Buffer.from(`${TAG}-mc-same-cur`)),
+      }),
+    ).rejects.toThrow(/sibling_same_currency/);
   });
 });

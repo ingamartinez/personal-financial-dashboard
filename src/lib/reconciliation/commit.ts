@@ -23,7 +23,24 @@ export interface CommitAccount {
 
 export interface CommitInput {
   userId: number;
+  /**
+   * Primary target. Rows whose `parsedRow.currency === account.currency`
+   * insert into this account. Single-currency statements use this
+   * exclusively and don't pass `siblingAccount`.
+   */
   account: CommitAccount;
+  /**
+   * #444 — optional other-currency sibling for Mastercard Internacional
+   * (plastic-level xlsx mixing COP + USD rows in one sheet). When provided,
+   * rows whose `parsedRow.currency === siblingAccount.currency` insert into
+   * `siblingAccount` (NOT `account`). Caller guarantees:
+   *   - `account.currency !== siblingAccount.currency`
+   *   - every `parsed.row.currency` ∈ { account.currency, siblingAccount.currency }
+   *
+   * Commit throws on violations. One `statement_imports` row is created per
+   * sub-account so re-upload is idempotent per-side.
+   */
+  siblingAccount?: CommitAccount;
   parsed: ParsedStatement;
   plan: MatchingPlan;
   fileHash: string;
@@ -32,6 +49,9 @@ export interface CommitInput {
    * `parsed.balanceAtEndCents` held (parsers for most banks can't extract
    * this — see #302 / #304). Null = no balance captured for this import;
    * divergence stays blank on /admin/health.
+   *
+   * Ignored in multi-currency mode (TC movimientos don't carry a closing
+   * balance; caller is expected to pass null when siblingAccount is set).
    */
   userBalanceAtEndCents?: bigint | null;
 }
@@ -49,7 +69,33 @@ export interface CommitInput {
  * ingreso, negative = gasto).
  */
 export async function commitReconciliation(input: CommitInput): Promise<CommitResult> {
+  // #444 — build a currency → account map covering the primary + optional
+  // sibling. Validate once up-front so we fail before touching the DB if the
+  // caller is inconsistent (sibling of same currency, row pointing at a
+  // currency neither target covers, etc.).
+  const accountsByCurrency: Partial<Record<"COP" | "USD", CommitAccount>> = {
+    [input.account.currency]: input.account,
+  };
+  if (input.siblingAccount) {
+    if (input.siblingAccount.currency === input.account.currency) {
+      throw new Error(`sibling_same_currency:${input.account.currency}`);
+    }
+    if (input.siblingAccount.id === input.account.id) {
+      throw new Error("sibling_same_account");
+    }
+    accountsByCurrency[input.siblingAccount.currency] = input.siblingAccount;
+  }
+  for (const row of input.parsed.rows) {
+    if (!accountsByCurrency[row.currency]) {
+      throw new Error(`missing_account_for_currency:${row.currency}`);
+    }
+  }
+
   return db.transaction(async (tx) => {
+    // Idempotency check on the primary account — multi-currency commits run
+    // in a single transaction, so if the primary-side import exists, the
+    // sibling-side one was created atomically in the same retry's tx (or
+    // both rolled back). Checking primary alone is sufficient.
     const existingImport = await tx
       .select({ id: statementImports.id })
       .from(statementImports)
@@ -71,29 +117,49 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
       };
     }
 
-    const balanceAtEndCents =
-      input.userBalanceAtEndCents !== undefined && input.userBalanceAtEndCents !== null
+    const multiCurrency = input.siblingAccount !== undefined;
+    // `userBalanceAtEndCents` only makes sense for a single-account import
+    // (savings closing balance). TC movimientos don't carry it, and in the
+    // multi-currency case the file doesn't ship a per-side closing balance
+    // anyway — force null on both sides to keep the statement_imports row
+    // honest.
+    const balanceAtEndCents = multiCurrency
+      ? null
+      : input.userBalanceAtEndCents !== undefined && input.userBalanceAtEndCents !== null
         ? input.userBalanceAtEndCents
         : input.parsed.balanceAtEndCents;
-    const [imp] = await tx
-      .insert(statementImports)
-      .values({
-        userId: input.userId,
-        accountId: input.account.id,
-        fileHash: input.fileHash,
-        periodStart: toIsoDate(input.parsed.periodStart),
-        periodEnd: toIsoDate(input.parsed.periodEnd),
-        txnCount: 0,
-        balanceAtEndCents,
-      })
-      .returning({ id: statementImports.id });
+
+    // Insert one statement_imports row per target account. Bigint counts are
+    // patched below once we know the per-import txn totals.
+    const importIdByCurrency: Partial<Record<"COP" | "USD", number>> = {};
+    for (const currency of Object.keys(accountsByCurrency) as Array<"COP" | "USD">) {
+      const target = accountsByCurrency[currency]!;
+      const [imp] = await tx
+        .insert(statementImports)
+        .values({
+          userId: input.userId,
+          accountId: target.id,
+          fileHash: input.fileHash,
+          periodStart: toIsoDate(input.parsed.periodStart),
+          periodEnd: toIsoDate(input.parsed.periodEnd),
+          txnCount: 0,
+          // Only the primary target carries the user-supplied closing balance
+          // in single-currency mode; the sibling (when present) never does.
+          balanceAtEndCents: target.id === input.account.id ? balanceAtEndCents : null,
+        })
+        .returning({ id: statementImports.id });
+      importIdByCurrency[currency] = imp.id;
+    }
 
     let matched = 0;
     let inserted = 0;
+    const txnCountByImport = new Map<number, number>();
 
     for (const decision of input.plan.decisions) {
       const parsedRow = input.parsed.rows[decision.statementRowIndex];
       if (!parsedRow) continue;
+      const target = accountsByCurrency[parsedRow.currency]!;
+      const importId = importIdByCurrency[parsedRow.currency]!;
 
       if (decision.action === "match" && decision.matchedTxnId !== null) {
         await tx
@@ -101,7 +167,7 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
           .set({
             reconciliationStatus: "matched",
             reconciledAt: new Date(),
-            statementImportId: imp.id,
+            statementImportId: importId,
             updatedAt: new Date(),
           })
           .where(
@@ -111,20 +177,21 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
       } else {
         await tx.insert(transactions).values({
           userId: input.userId,
-          accountId: input.account.id,
+          accountId: target.id,
           occurredAt: parsedRow.occurredAt,
           amountCents: signedAmount(parsedRow),
-          currency: input.account.currency,
+          currency: parsedRow.currency,
           descriptionRaw: parsedRow.descriptionRaw,
           source: "csv_reconcile",
           channel: "bank",
           reconciliationStatus: "imported_from_statement",
           reconciledAt: new Date(),
-          statementImportId: imp.id,
+          statementImportId: importId,
           rawData: parsedRow.rawData,
         });
         inserted++;
       }
+      txnCountByImport.set(importId, (txnCountByImport.get(importId) ?? 0) + 1);
     }
 
     if (input.plan.flaggedExisting.length > 0) {
@@ -139,14 +206,18 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
         .where(and(eq(transactions.userId, input.userId), inArray(transactions.id, ids)));
     }
 
-    await tx
-      .update(statementImports)
-      .set({ txnCount: matched + inserted })
-      .where(eq(statementImports.id, imp.id));
+    // Patch per-import txn counts (update-per-import keeps the statement_imports
+    // row's `txn_count` accurate even when rows split across siblings).
+    for (const [importId, count] of txnCountByImport) {
+      await tx
+        .update(statementImports)
+        .set({ txnCount: count })
+        .where(eq(statementImports.id, importId));
+    }
 
     return {
       status: "applied" as const,
-      statementImportId: imp.id,
+      statementImportId: importIdByCurrency[input.account.currency]!,
       inserted,
       matched,
       flagged: input.plan.flaggedExisting.length,

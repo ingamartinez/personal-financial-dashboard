@@ -53,6 +53,22 @@ export function ReconcileForm({
           toast.error(
             `The file appears to be from a different bank than this account (${accountInstitutionSlug}). Upload the right statement or edit the account's institution.`,
           );
+        } else if (msg.startsWith("currency_mismatch")) {
+          toast.error(
+            `La moneda del archivo no coincide con esta cuenta (${accountCurrency}). Subí el xlsx correspondiente.`,
+          );
+        } else if (msg === "multi_currency_without_physical_card") {
+          toast.error(
+            "El xlsx mezcla COP y USD, pero esta cuenta no está linkeada a una tarjeta física. Asocíala primero para poder reconciliar las 2 sub-cuentas juntas.",
+          );
+        } else if (msg.startsWith("missing_usd_sibling")) {
+          toast.error(
+            "El xlsx incluye filas USD pero este plástico no tiene una sub-cuenta USD linkeada. Creala desde Cuentas → Tarjetas físicas.",
+          );
+        } else if (msg.startsWith("missing_cop_sibling")) {
+          toast.error(
+            "El xlsx incluye filas COP pero no hay una sub-cuenta COP linkeada a este plástico.",
+          );
         } else {
           toast.error(msg);
         }
@@ -144,6 +160,20 @@ export function ReconcileForm({
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
+            {preview.multiCurrency ? (
+              <div
+                className="rounded-md border border-dashed border-sky-400/40 bg-sky-50 p-3 text-sm text-sky-900 dark:bg-sky-950/40 dark:text-sky-200"
+                data-testid="reconcile-multicurrency-banner"
+              >
+                <strong>Tarjeta multi-moneda detectada.</strong> El xlsx trae{" "}
+                {preview.multiCurrency.rowsByCurrency.COP} fila
+                {preview.multiCurrency.rowsByCurrency.COP === 1 ? "" : "s"} COP +{" "}
+                {preview.multiCurrency.rowsByCurrency.USD} fila
+                {preview.multiCurrency.rowsByCurrency.USD === 1 ? "" : "s"} USD. Al confirmar se
+                aplica a 2 cuentas (#{preview.accountId} {preview.multiCurrency.originCurrency} + #
+                {preview.multiCurrency.siblingAccountId} {preview.multiCurrency.siblingCurrency}).
+              </div>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Badge variant="outline" className="bg-emerald-50 text-emerald-900">
                 {preview.plan.summary.matched} matched
@@ -231,33 +261,34 @@ export function ReconcileForm({
             </div>
 
             <p className="text-muted-foreground text-xs">
-              Currency note: rows are displayed in their statement currency. Inserts persist in the
-              account&apos;s currency ({accountCurrency}). If you&apos;re reconciling a
-              dual-currency card, upload separate statements for COP and USD against the linked
-              accounts.
+              {preview.multiCurrency
+                ? `Cada fila se inserta en la sub-cuenta de su moneda: COP en #${preview.accountId}, USD en #${preview.multiCurrency.siblingAccountId}.`
+                : `Currency note: rows are displayed in their statement currency. Inserts persist in the account's currency (${accountCurrency}). If you're reconciling a dual-currency card, upload the plastic-level xlsx once — we dispatch per-row to the linked siblings.`}
             </p>
 
-            <div className="flex flex-col gap-1.5 rounded-md border border-dashed p-3">
-              <Label htmlFor="recon-balance">Balance al cierre según el banco (opcional)</Label>
-              <Input
-                id="recon-balance"
-                name="balanceAtEnd"
-                type="text"
-                inputMode="decimal"
-                placeholder={accountCurrency === "USD" ? "1234.56" : "1234567"}
-                value={balanceInput}
-                onChange={(e) => setBalanceInput(e.target.value)}
-                disabled={applying}
-              />
-              <p className="text-muted-foreground text-xs">
-                Copialo del app del banco. Si lo ingresás, habilitamos la métrica de divergencia en{" "}
-                <code>/admin/health</code>. Findash actual:{" "}
-                <span className="tabular-nums">
-                  <Money cents={currentFindashBalance} currency={accountCurrency} />
-                </span>
-                .
-              </p>
-            </div>
+            {preview.multiCurrency ? null : (
+              <div className="flex flex-col gap-1.5 rounded-md border border-dashed p-3">
+                <Label htmlFor="recon-balance">Balance al cierre según el banco (opcional)</Label>
+                <Input
+                  id="recon-balance"
+                  name="balanceAtEnd"
+                  type="text"
+                  inputMode="decimal"
+                  placeholder={accountCurrency === "USD" ? "1234.56" : "1234567"}
+                  value={balanceInput}
+                  onChange={(e) => setBalanceInput(e.target.value)}
+                  disabled={applying}
+                />
+                <p className="text-muted-foreground text-xs">
+                  Copialo del app del banco. Si lo ingresás, habilitamos la métrica de divergencia
+                  en <code>/admin/health</code>. Findash actual:{" "}
+                  <span className="tabular-nums">
+                    <Money cents={currentFindashBalance} currency={accountCurrency} />
+                  </span>
+                  .
+                </p>
+              </div>
+            )}
 
             <div className="flex items-center justify-end gap-2">
               <Button variant="outline" onClick={() => setPreview(null)} disabled={applying}>
