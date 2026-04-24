@@ -16,10 +16,12 @@ export interface GatewayConfig {
   // broader filters (domain wildcards) let spoofed/marketing mail slip in.
   senderQueries: string[];
   // Matcher (#454) uses this to check whether a bank tx description
-  // plausibly corresponds to a receipt from this gateway. For `ingest`
-  // gateways (bancolombia) it's never consulted — left as /.^/ to never
-  // match. Values sourced from PLAN.md §Gateway opacity table.
-  bankDescriptionRegex: RegExp;
+  // plausibly corresponds to a receipt from this gateway. `null` for
+  // `ingest` gateways (bancolombia): the matcher never tries to pair their
+  // receipts with a bank tx, so no regex is needed. Values sourced from
+  // PLAN.md §Gateway opacity table. Word boundaries on each pattern so
+  // they only match whole tokens in the bank's description line.
+  bankDescriptionRegex: RegExp | null;
   // `enrich`: receipts are matched back to bank transactions and used to
   // overwrite merchant/category when the bank description is opaque.
   // `ingest`: receipts are ingested as transactions themselves (Bancolombia
@@ -33,31 +35,31 @@ export const GATEWAYS: readonly GatewayConfig[] = [
   {
     id: "mercado_pago",
     senderQueries: ["from:(@mercadopago.com.co)", "from:(@mercadopago.com)"],
-    bankDescriptionRegex: /MERCADOPAGO/i,
+    bankDescriptionRegex: /\bMERCADOPAGO\b/i,
     mode: "enrich",
   },
   {
     id: "payu",
     senderQueries: ["from:(@payu.com)", "from:(@payulatam.com)"],
-    bankDescriptionRegex: /PAYU/i,
+    bankDescriptionRegex: /\bPAYU\b/i,
     mode: "enrich",
   },
   {
     id: "wompi",
     senderQueries: ["from:(@wompi.co)"],
-    bankDescriptionRegex: /WOMPI/i,
+    bankDescriptionRegex: /\bWOMPI\b/i,
     mode: "enrich",
   },
   {
     id: "apple",
     senderQueries: ["from:(no_reply@email.apple.com)", "from:(do_not_reply@email.apple.com)"],
-    bankDescriptionRegex: /APPLE\.COM\/BILL/i,
+    bankDescriptionRegex: /\bAPPLE\.COM\/BILL\b/i,
     mode: "enrich",
   },
   {
     id: "paypal",
     senderQueries: ["from:(service@paypal.com)", "from:(service@intl.paypal.com)"],
-    bankDescriptionRegex: /PAYPAL/i,
+    bankDescriptionRegex: /\bPAYPAL\b/i,
     mode: "enrich",
   },
   {
@@ -68,7 +70,7 @@ export const GATEWAYS: readonly GatewayConfig[] = [
     ],
     // Bancolombia is direct-ingest: the matcher never tries to pair an email
     // receipt with a bank tx (the email *is* the source of truth).
-    bankDescriptionRegex: /.^/,
+    bankDescriptionRegex: null,
     mode: "ingest",
   },
 ] as const;

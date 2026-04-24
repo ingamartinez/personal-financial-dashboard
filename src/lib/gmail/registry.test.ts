@@ -35,20 +35,19 @@ describe("gmail/registry", () => {
   });
 
   it("bankDescriptionRegex matches canonical bank descriptions for enrich gateways", () => {
-    expect(getGatewayById("mercado_pago").bankDescriptionRegex.test("MERCADOPAGO COLOMBIA")).toBe(
+    expect(getGatewayById("mercado_pago").bankDescriptionRegex!.test("MERCADOPAGO COLOMBIA")).toBe(
       true,
     );
-    expect(getGatewayById("payu").bankDescriptionRegex.test("PAYU*TIENDA")).toBe(true);
-    expect(getGatewayById("wompi").bankDescriptionRegex.test("WOMPI*SERVICIO")).toBe(true);
-    expect(getGatewayById("apple").bankDescriptionRegex.test("APPLE.COM/BILL")).toBe(true);
-    expect(getGatewayById("paypal").bankDescriptionRegex.test("PAYPAL *TIENDA")).toBe(true);
+    expect(getGatewayById("payu").bankDescriptionRegex!.test("PAYU*TIENDA")).toBe(true);
+    expect(getGatewayById("wompi").bankDescriptionRegex!.test("WOMPI*SERVICIO")).toBe(true);
+    expect(getGatewayById("apple").bankDescriptionRegex!.test("APPLE.COM/BILL")).toBe(true);
+    expect(getGatewayById("paypal").bankDescriptionRegex!.test("PAYPAL *TIENDA")).toBe(true);
   });
 
-  it("bancolombia bankDescriptionRegex never matches (ingest gateways skip matcher)", () => {
+  it("ingest gateways expose bankDescriptionRegex=null (matcher skips them)", () => {
     const cfg = getGatewayById("bancolombia");
-    expect(cfg.bankDescriptionRegex.test("BANCOLOMBIA")).toBe(false);
-    expect(cfg.bankDescriptionRegex.test("anything")).toBe(false);
-    expect(cfg.bankDescriptionRegex.test("")).toBe(false);
+    expect(cfg.mode).toBe("ingest");
+    expect(cfg.bankDescriptionRegex).toBeNull();
   });
 
   it("getGatewayById throws for an unknown id", () => {
