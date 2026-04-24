@@ -9,10 +9,19 @@ import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "gmail/client" });
 
-// Single scope for the MVP. Listed as readonly array so callers can pass it
-// directly to oauth.generateAuthUrl({ scope: GMAIL_SCOPES }) without
+// Scopes requested at consent time. Listed as readonly array so callers can
+// pass it directly to oauth.generateAuthUrl({ scope: GMAIL_SCOPES }) without
 // readonly→mutable coercion.
-export const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"] as const;
+//
+// `userinfo.email` is REQUIRED for the callback's google.oauth2(...).userinfo.get()
+// call to succeed. Without it the access token returns 401 UNAUTHENTICATED.
+// Discovered via #462 — first connect happened to work via include_granted_scopes
+// inheriting NextAuth's `email` grant, but post-disconnect (which calls
+// oauth.revokeToken and wipes ALL grants) the reconnect failed.
+export const GMAIL_SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/userinfo.email",
+] as const;
 
 // Connection rows are loaded from gmail_connections; one of these errors is
 // thrown for every reason the connection cannot serve a request. Callers
