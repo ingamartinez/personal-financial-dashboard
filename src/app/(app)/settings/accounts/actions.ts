@@ -403,17 +403,26 @@ const declaredSchema = z.discriminatedUnion("kind", [
     availableCopCents: z.coerce.number().int().nonnegative(),
   }),
   // #447 — dual-debt snapshot for shared-cupo multi-currency TCs. User enters
-  // BOTH currency debts separately (the two numbers the bank app displays) and
-  // the server applies one balance_adjustment per sub-account atomically. No
-  // back-solve, no TRM, no dependency on the sibling's ledger state — so drift
-  // in one side never propagates to the other.
-  z.object({
-    kind: z.literal("perCurrencyDualDebt"),
-    // Positive cents in native currency — e.g. 403_119_800 for "COP $4.031.198,00"
-    // and 288_500 for "USD $2.885,00" as shown in the Bancolombia app.
-    debtCopCents: z.coerce.number().int().nonnegative(),
-    debtUsdCents: z.coerce.number().int().nonnegative(),
-  }),
+  // per-currency debts (the numbers the bank app displays) and the server
+  // applies one balance_adjustment per sub-account atomically. No back-solve,
+  // no TRM, no dependency on the sibling's ledger — drift in one side never
+  // propagates to the other.
+  //
+  // Both fields are optional BUT at least one must be present: lets the user
+  // adjust only the side that changed this cycle (e.g. USD updated by the
+  // bank while COP is still on-ledger). Any undefined side keeps its current
+  // balance untouched.
+  z
+    .object({
+      kind: z.literal("perCurrencyDualDebt"),
+      // Positive cents in native currency — e.g. 403_119_800 for "COP $4.031.198,00"
+      // and 288_500 for "USD $2.885,00" as shown in the Bancolombia app.
+      debtCopCents: z.coerce.number().int().nonnegative().optional(),
+      debtUsdCents: z.coerce.number().int().nonnegative().optional(),
+    })
+    .refine((v) => v.debtCopCents !== undefined || v.debtUsdCents !== undefined, {
+      message: "Entrá al menos una de las dos deudas (COP o USD).",
+    }),
 ]);
 
 const adjustSchema = z.object({
@@ -549,15 +558,36 @@ export async function adjustAccountBalance(
         };
       }
 
-      const debtCopCents = BigInt(parsed.data.declared.debtCopCents);
-      const debtUsdCents = BigInt(parsed.data.declared.debtUsdCents);
-      // Sanity check: combined debt in COP must not exceed the plastic's
-      // credit limit. Uses the CURRENT TRM only for the sum check — the
-      // individual sub-account targets are stored in native currency so
-      // TRM drift never taints them post-commit.
+      // #447 — either side can be omitted (schema enforces at least one). A
+      // missing side means "don't touch this sub-account" — we keep its
+      // current ledger and only sanity-check against that baseline.
+      const declaredCop =
+        parsed.data.declared.debtCopCents !== undefined
+          ? BigInt(parsed.data.declared.debtCopCents)
+          : null;
+      const declaredUsd =
+        parsed.data.declared.debtUsdCents !== undefined
+          ? BigInt(parsed.data.declared.debtUsdCents)
+          : null;
+      const currentDebtCop = (() => {
+        const b = BigInt(copRow.balanceCents);
+        return b < BigInt(0) ? -b : BigInt(0);
+      })();
+      const currentDebtUsd = (() => {
+        const b = BigInt(usdRow.balanceCents);
+        return b < BigInt(0) ? -b : BigInt(0);
+      })();
+
+      // Sanity check against the shared cupo: use the declared value where
+      // provided, current ledger where not. This protects from one-sided
+      // updates that would silently push total debt above the plastic's
+      // limit. Only the TRM step lives in this check — individual targets
+      // are stored in native currency so TRM drift never taints them.
       const fx = await getCurrentFxRate();
-      const debtUsdInCop = convertCents(debtUsdCents, "USD", "COP", fx.rate);
-      if (debtCopCents + debtUsdInCop > pc.creditLimitCents) {
+      const effectiveCop = declaredCop ?? currentDebtCop;
+      const effectiveUsd = declaredUsd ?? currentDebtUsd;
+      const debtUsdInCop = convertCents(effectiveUsd, "USD", "COP", fx.rate);
+      if (effectiveCop + debtUsdInCop > pc.creditLimitCents) {
         return {
           status: "error",
           message:
@@ -594,8 +624,12 @@ export async function adjustAccountBalance(
       }> = [];
 
       for (const sub of [copRow, usdRow] as const) {
+        const declared = sub.currency === "COP" ? declaredCop : declaredUsd;
+        // Skip the side the user didn't declare — the schema guarantees at
+        // least one is present, so the other side's ledger stays untouched.
+        if (declared === null) continue;
         const currentBalance = BigInt(sub.balanceCents);
-        const targetBalance = sub.currency === "COP" ? -debtCopCents : -debtUsdCents;
+        const targetBalance = -declared;
         const diff = targetBalance - currentBalance;
         if (diff === BigInt(0)) continue;
         const [inserted] = await tx

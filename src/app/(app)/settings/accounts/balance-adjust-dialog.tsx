@@ -64,17 +64,15 @@ export function BalanceAdjustDialog({
             Ajustar saldo · {formatAccountLabel(target)}
           </DialogTitle>
         </DialogHeader>
-        {target.type === "credit_card" && target.physicalCard ? (
-          <SharedCupoWrapper
+        {target.type === "credit_card" ? (
+          <CreditCardAdjustForm
             target={target}
             siblings={siblings}
-            physicalCard={target.physicalCard}
+            physicalCard={target.physicalCard ?? null}
             copPerUsd={copPerUsd}
             onConfirm={onConfirm}
             onClose={onClose}
           />
-        ) : target.type === "credit_card" ? (
-          <CreditCardForm target={target} onConfirm={onConfirm} onClose={onClose} />
         ) : (
           <BalanceForm target={target} onConfirm={onConfirm} onClose={onClose} />
         )}
@@ -326,11 +324,16 @@ function CreditCardFormInner({
   );
 }
 
-// #447 — picker that lets the user choose between entering the two per-currency
-// debts (the numbers the bank app shows by default) or the shared cupo disponible
-// (legacy back-solve, kept as an "advanced" option for when only the real-time
-// cupo is available).
-type SharedCupoMode = "dualDebt" | "cupoDisponible";
+// #447 follow-up — unified TC adjust UX: single mode toggle ("Cupo" / "Deuda")
+// shared across single-currency and dual-currency TCs. Matches the bank app's
+// mental model (cupo is what you see first; deuda is the alternative view).
+//
+// Matrix of forms shown:
+//   single + cupo  → CreditCardForm       (kind: "availableCredit")
+//   single + deuda → SingleCurrencyDebtForm (kind: "balance", signed negative)
+//   dual   + cupo  → SharedCupoForm       (kind: "sharedAvailableCop")
+//   dual   + deuda → DualDebtForm         (kind: "perCurrencyDualDebt")
+type AdjustMode = "cupo" | "debt";
 
 function parseNonNegativeCents(raw: string): bigint | null {
   if (raw.trim() === "") return null;
@@ -339,7 +342,7 @@ function parseNonNegativeCents(raw: string): bigint | null {
   return BigInt(Math.round(n * 100));
 }
 
-function SharedCupoWrapper({
+function CreditCardAdjustForm({
   target,
   siblings,
   physicalCard,
@@ -349,64 +352,169 @@ function SharedCupoWrapper({
 }: {
   target: AccountRow;
   siblings: AccountRow[];
-  physicalCard: AccountRowPhysicalCard;
+  physicalCard: AccountRowPhysicalCard | null;
   copPerUsd: number;
   onConfirm: (declared: DeclaredValue, reason?: string) => Promise<void>;
   onClose: () => void;
 }) {
-  const [mode, setMode] = useState<SharedCupoMode>("dualDebt");
-  // Dual-debt mode only makes sense when we actually have ONE COP sub-account
-  // and ONE USD sub-account. Anything else (future plastic with 3 currencies,
-  // or a broken link) falls back to the cupo-disponible form.
-  const canDualDebt = (() => {
-    const all = [target, ...siblings];
-    const cop = all.filter((a) => a.currency === "COP");
-    const usd = all.filter((a) => a.currency === "USD");
-    return all.length === 2 && cop.length === 1 && usd.length === 1;
-  })();
-  const effectiveMode: SharedCupoMode = canDualDebt ? mode : "cupoDisponible";
+  // Cupo is the default — matches the bank app's primary display. User toggles
+  // to Deuda for cases where that's more convenient (e.g. for duales, pegás
+  // los dos números de deuda que muestra Bancolombia sin back-solve).
+  const [mode, setMode] = useState<AdjustMode>("cupo");
+  const isDual = physicalCard !== null;
+
   return (
     <div className="flex flex-col gap-3">
-      {canDualDebt ? (
-        <div className="flex flex-wrap gap-2 text-xs">
-          <Button
-            type="button"
-            size="sm"
-            variant={effectiveMode === "dualDebt" ? "default" : "outline"}
-            onClick={() => setMode("dualDebt")}
-          >
-            Deuda COP + USD
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={effectiveMode === "cupoDisponible" ? "default" : "outline"}
-            onClick={() => setMode("cupoDisponible")}
-          >
-            Cupo disponible (avanzado)
-          </Button>
-        </div>
-      ) : null}
-      {effectiveMode === "dualDebt" ? (
-        <DualDebtForm
-          target={target}
-          siblings={siblings}
-          physicalCard={physicalCard}
-          copPerUsd={copPerUsd}
-          onConfirm={onConfirm}
-          onClose={onClose}
-        />
+      <div className="flex flex-wrap gap-2 text-xs">
+        <Button
+          type="button"
+          size="sm"
+          variant={mode === "cupo" ? "default" : "outline"}
+          onClick={() => setMode("cupo")}
+          data-testid="adjust-mode-cupo"
+        >
+          Cupo disponible
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={mode === "debt" ? "default" : "outline"}
+          onClick={() => setMode("debt")}
+          data-testid="adjust-mode-debt"
+        >
+          Deuda
+        </Button>
+      </div>
+      {isDual ? (
+        mode === "cupo" ? (
+          <SharedCupoForm
+            target={target}
+            siblings={siblings}
+            physicalCard={physicalCard}
+            copPerUsd={copPerUsd}
+            onConfirm={onConfirm}
+            onClose={onClose}
+          />
+        ) : (
+          <DualDebtForm
+            target={target}
+            siblings={siblings}
+            physicalCard={physicalCard}
+            copPerUsd={copPerUsd}
+            onConfirm={onConfirm}
+            onClose={onClose}
+          />
+        )
+      ) : mode === "cupo" ? (
+        <CreditCardForm target={target} onConfirm={onConfirm} onClose={onClose} />
       ) : (
-        <SharedCupoForm
-          target={target}
-          siblings={siblings}
-          physicalCard={physicalCard}
-          copPerUsd={copPerUsd}
-          onConfirm={onConfirm}
-          onClose={onClose}
-        />
+        <SingleCurrencyDebtForm target={target} onConfirm={onConfirm} onClose={onClose} />
       )}
     </div>
+  );
+}
+
+// #447 follow-up — single-currency TC debt input: user enters the native-currency
+// debt as a positive number (what the bank app shows under "Deuda"). Submits
+// `kind: "balance"` with `balanceCents: -declaredDebt` so the server treats it
+// as a direct balance target (same contract used by savings / loans). Cleaner
+// than deriving cupo = limit - debt when the user already has the debt number
+// in hand.
+function SingleCurrencyDebtForm({
+  target,
+  onConfirm,
+  onClose,
+}: {
+  target: AccountRow;
+  onConfirm: (declared: DeclaredValue, reason?: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [debtInput, setDebtInput] = useState("");
+  const [reason, setReason] = useState("");
+  const [pending, startTransition] = useTransition();
+
+  const currentBalance = BigInt(target.balanceCents);
+  const currentDebt = currentBalance < BigInt(0) ? -currentBalance : BigInt(0);
+  const placeholderDebt = Number(currentDebt) / 100;
+
+  const declaredDebt = useMemo(() => parseNonNegativeCents(debtInput), [debtInput]);
+
+  // Optional sanity: if creditLimit is present, reject debt > limit with an
+  // inline warning. Mirrors the CreditCardForm upstream check.
+  const creditLimitCents = target.metadata.creditLimitCents;
+  const exceedsLimit =
+    declaredDebt !== null &&
+    creditLimitCents !== undefined &&
+    creditLimitCents > 0 &&
+    declaredDebt > BigInt(creditLimitCents);
+
+  const targetBalance = declaredDebt !== null ? -declaredDebt : null;
+  const diffCents = targetBalance !== null ? targetBalance - currentBalance : BigInt(0);
+  const hasDiff = targetBalance !== null && diffCents !== BigInt(0);
+  const canSubmit = hasDiff && !exceedsLimit;
+
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (targetBalance === null || exceedsLimit) return;
+    startTransition(async () => {
+      await onConfirm(
+        { kind: "balance", balanceCents: Number(targetBalance) },
+        reason.trim() || undefined,
+      );
+    });
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <Label className="text-muted-foreground text-xs tracking-wide uppercase">
+          Deuda actual en Findash
+        </Label>
+        <div className="bg-muted/40 rounded-md border px-3 py-2 text-base font-semibold tabular-nums">
+          <Money cents={currentDebt} currency={target.currency} />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="declared-debt">Deuda (según tu banco)</Label>
+        <Input
+          id="declared-debt"
+          type="number"
+          inputMode="decimal"
+          step="0.01"
+          min="0"
+          value={debtInput}
+          onChange={(e) => setDebtInput(e.target.value)}
+          placeholder={placeholderDebt.toFixed(target.currency === "USD" ? 2 : 0)}
+          required
+          autoFocus
+        />
+        <p className="text-muted-foreground text-xs">
+          El monto que aparece como deuda en el extracto / app del banco ahora mismo.
+        </p>
+        {exceedsLimit && creditLimitCents !== undefined ? (
+          <p className="text-destructive text-xs">
+            La deuda supera el límite de la tarjeta (
+            <Money cents={BigInt(creditLimitCents)} currency={target.currency} />
+            ).
+          </p>
+        ) : null}
+      </div>
+
+      {hasDiff && targetBalance !== null && !exceedsLimit ? (
+        <div className="border-border/60 rounded-md border p-3 text-sm">
+          Se creará una transacción de{" "}
+          <span className="font-semibold tabular-nums">
+            {diffCents > BigInt(0) ? "+" : ""}
+            <Money cents={diffCents} currency={target.currency} />
+          </span>{" "}
+          marcada como <strong>Ajuste</strong>. Queda fuera de spend / insights / budgets.
+        </div>
+      ) : null}
+
+      <ReasonField reason={reason} setReason={setReason} />
+      <Actions pending={pending} canSubmit={canSubmit} onClose={onClose} />
+    </form>
   );
 }
 
@@ -473,31 +581,34 @@ function DualDebtForm({
 
   const hasCop = declaredDebtCop !== null;
   const hasUsd = declaredDebtUsd !== null;
+  const hasAtLeastOne = hasCop || hasUsd;
 
-  // Sanity sum ≤ limit at current TRM (matches the server-side validation).
-  const combinedDebtCop =
-    hasCop && hasUsd
-      ? declaredDebtCop! + convertCents(declaredDebtUsd!, "USD", "COP", copPerUsd)
-      : null;
-  const exceedsLimit = combinedDebtCop !== null && combinedDebtCop > limitCop;
+  // Sanity sum ≤ limit. Uses the declared value on the side(s) the user filled
+  // and the CURRENT ledger on the side(s) left empty — mirrors the server-side
+  // validation so the client preview matches what the action will do.
+  const effectiveCop = declaredDebtCop ?? currentDebtCopCents;
+  const effectiveUsd = declaredDebtUsd ?? currentDebtUsdCents;
+  const combinedDebtCop = effectiveCop + convertCents(effectiveUsd, "USD", "COP", copPerUsd);
+  const exceedsLimit = combinedDebtCop > limitCop;
 
   // Per-account diffs the server would emit — ledger-signed (negative for debt).
+  // Undefined side = "don't touch this account" (server skips it, UI hides the line).
   const copDiffCents = hasCop ? -declaredDebtCop! - BigInt(copRow.balanceCents) : null;
   const usdDiffCents = hasUsd ? -declaredDebtUsd! - BigInt(usdRow.balanceCents) : null;
   const hasChange =
     (copDiffCents !== null && copDiffCents !== BigInt(0)) ||
     (usdDiffCents !== null && usdDiffCents !== BigInt(0));
-  const canSubmit = hasCop && hasUsd && !exceedsLimit && hasChange;
+  const canSubmit = hasAtLeastOne && !exceedsLimit && hasChange;
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!hasCop || !hasUsd || exceedsLimit) return;
+    if (!hasAtLeastOne || exceedsLimit) return;
     startTransition(async () => {
       await onConfirm(
         {
           kind: "perCurrencyDualDebt",
-          debtCopCents: Number(declaredDebtCop),
-          debtUsdCents: Number(declaredDebtUsd),
+          debtCopCents: hasCop ? Number(declaredDebtCop) : undefined,
+          debtUsdCents: hasUsd ? Number(declaredDebtUsd) : undefined,
         },
         reason.trim() || undefined,
       );
@@ -511,9 +622,10 @@ function DualDebtForm({
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       <div className="border-border/60 bg-muted/30 rounded-md border p-3 text-xs">
         <div className="text-muted-foreground">
-          Pegá las <strong>dos deudas</strong> que te muestra Bancolombia &mdash; son los números de
-          &ldquo;Deuda a la fecha en pesos&rdquo; y &ldquo;Deuda a la fecha en dólares&rdquo;.
-          Ajustamos cada sub-cuenta por separado, sin depender del cupo ni de la TRM para cada lado.
+          Pegá la deuda por moneda que te muestra Bancolombia (&ldquo;Deuda a la fecha en
+          pesos&rdquo; y/o &ldquo;Deuda a la fecha en dólares&rdquo;). Llená una o las dos — si
+          dejás una vacía, esa sub-cuenta queda intacta. Cada ajuste se guarda en su moneda nativa,
+          sin depender del cupo ni de la TRM.
         </div>
       </div>
 
@@ -537,7 +649,10 @@ function DualDebtForm({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor="dual-debt-cop">Deuda a la fecha en pesos (COP)</Label>
+        <Label htmlFor="dual-debt-cop">
+          Deuda a la fecha en pesos (COP){" "}
+          <span className="text-muted-foreground text-xs font-normal">(opcional)</span>
+        </Label>
         <Input
           id="dual-debt-cop"
           type="number"
@@ -547,13 +662,15 @@ function DualDebtForm({
           value={debtCopInput}
           onChange={(e) => setDebtCopInput(e.target.value)}
           placeholder={(Number(currentDebtCopCents) / 100).toFixed(0)}
-          required
           autoFocus
         />
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor="dual-debt-usd">Deuda a la fecha en dólares (USD)</Label>
+        <Label htmlFor="dual-debt-usd">
+          Deuda a la fecha en dólares (USD){" "}
+          <span className="text-muted-foreground text-xs font-normal">(opcional)</span>
+        </Label>
         <Input
           id="dual-debt-usd"
           type="number"
@@ -563,9 +680,14 @@ function DualDebtForm({
           value={debtUsdInput}
           onChange={(e) => setDebtUsdInput(e.target.value)}
           placeholder={(Number(currentDebtUsdCents) / 100).toFixed(2)}
-          required
         />
       </div>
+
+      {!hasAtLeastOne ? (
+        <p className="text-muted-foreground text-xs">
+          Llená al menos una de las dos deudas para confirmar el ajuste.
+        </p>
+      ) : null}
 
       {exceedsLimit ? (
         <p className="text-destructive text-xs">
@@ -574,25 +696,40 @@ function DualDebtForm({
         </p>
       ) : null}
 
-      {hasChange && copDiffCents !== null && usdDiffCents !== null && !exceedsLimit ? (
+      {hasChange && !exceedsLimit ? (
         <div className="border-border/60 rounded-md border p-3 text-sm">
-          <div>
-            Cuenta COP (#{copRow.id}):{" "}
-            <span className="font-semibold tabular-nums">
-              {copDiffCents > BigInt(0) ? "+" : ""}
-              <Money cents={copDiffCents} currency="COP" />
-            </span>
-          </div>
-          <div className="mt-1">
-            Cuenta USD (#{usdRow.id}):{" "}
-            <span className="font-semibold tabular-nums">
-              {usdDiffCents > BigInt(0) ? "+" : ""}
-              <Money cents={usdDiffCents} currency="USD" />
-            </span>
-          </div>
+          {copDiffCents !== null && copDiffCents !== BigInt(0) ? (
+            <div>
+              Cuenta COP (#{copRow.id}):{" "}
+              <span className="font-semibold tabular-nums">
+                {copDiffCents > BigInt(0) ? "+" : ""}
+                <Money cents={copDiffCents} currency="COP" />
+              </span>
+            </div>
+          ) : null}
+          {usdDiffCents !== null && usdDiffCents !== BigInt(0) ? (
+            <div className={copDiffCents !== null && copDiffCents !== BigInt(0) ? "mt-1" : ""}>
+              Cuenta USD (#{usdRow.id}):{" "}
+              <span className="font-semibold tabular-nums">
+                {usdDiffCents > BigInt(0) ? "+" : ""}
+                <Money cents={usdDiffCents} currency="USD" />
+              </span>
+            </div>
+          ) : null}
           <div className="text-muted-foreground mt-2 text-xs">
-            Dos ajustes (marcados como <strong>Ajuste</strong>) creados en una sola transacción
-            atómica — quedan fuera de spend/insights/budgets.
+            Ajuste
+            {(copDiffCents ?? BigInt(0)) !== BigInt(0) && (usdDiffCents ?? BigInt(0)) !== BigInt(0)
+              ? "s"
+              : ""}{" "}
+            marcado
+            {(copDiffCents ?? BigInt(0)) !== BigInt(0) && (usdDiffCents ?? BigInt(0)) !== BigInt(0)
+              ? "s"
+              : ""}{" "}
+            como <strong>Ajuste</strong>, atómico
+            {(copDiffCents ?? BigInt(0)) !== BigInt(0) && (usdDiffCents ?? BigInt(0)) !== BigInt(0)
+              ? "s"
+              : ""}{" "}
+            en una sola transacción — quedan fuera de spend/insights/budgets.
           </div>
         </div>
       ) : null}
