@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { canIngest, paywallResponse } from "@/lib/auth/can-ingest";
 import { db } from "@/lib/db";
 import { telegramBots } from "@/lib/db/schema";
-import { decrypt } from "@/lib/crypto/symmetric";
+import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 import { createLogger } from "@/lib/logger";
 import { createTelegramClient } from "@/lib/telegram/client";
 import { handleUpdate, type RouterDeps } from "@/lib/telegram/router";
@@ -58,7 +58,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ botId: 
 
   let token: string;
   try {
-    token = decrypt(bot.tokenEncrypted);
+    token = telegramCipher.decrypt(bot.tokenEncrypted);
   } catch (err) {
     // Ciphertext corrupt or encryption key rotated. Log + 200: Telegram
     // retrying won't help until the bot is re-registered.

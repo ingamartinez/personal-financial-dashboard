@@ -7,7 +7,7 @@ import {
   telegramSessions,
   users,
 } from "@/lib/db/schema";
-import { decrypt } from "@/lib/crypto/symmetric";
+import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 import { createLogger } from "@/lib/logger";
 import { createTelegramClient } from "@/lib/telegram/client";
 import type { TrendPoint } from "@/lib/telemetry/slos";
@@ -168,7 +168,7 @@ async function dispatchTelegramAlert(
 
   let token: string;
   try {
-    token = decrypt(bot.tokenEncrypted);
+    token = telegramCipher.decrypt(bot.tokenEncrypted);
   } catch {
     return "token_decrypt_failed";
   }

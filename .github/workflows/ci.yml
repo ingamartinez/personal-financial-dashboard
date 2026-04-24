@@ -51,6 +51,13 @@ jobs:
       # page-data collection imports the webhook route (#185) during `next build`.
       # 32 zero bytes base64. Real key lives in prod findash.env.
       TELEGRAM_TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      # Same pattern for Gmail integration (Epic G — #459). Real key lives in
+      # /srv/findash/env/findash.env on the droplet.
+      GMAIL_TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      # OAuth callback URL — read by /api/integrations/gmail/oauth/start to
+      # build the Google authorization URL. Build-time stub; real value set
+      # per-environment.
+      GMAIL_OAUTH_REDIRECT_URI: https://ci.findash.local/api/integrations/gmail/oauth/callback
 
     steps:
       - uses: actions/checkout@v6
