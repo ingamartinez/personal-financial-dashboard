@@ -68,6 +68,12 @@ const LINKS = [
     description:
       "Connect external accounts (Gmail, etc.) so Findash can enrich gateway transactions and pull bank receipts directly from your inbox.",
   },
+  {
+    href: "/settings/snapshots",
+    title: "Snapshots",
+    description:
+      "Save and restore your transactional data. Useful before a reset or a mass email ingestion — keeps accounts, categories, rules, and integrations untouched.",
+  },
 ];
 
 const ADMIN_LINK = {
