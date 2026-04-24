@@ -520,6 +520,13 @@ export function AccountsManager({ items, copPerUsd }: { items: AccountRow[]; cop
           if (result.status === "ok") {
             toast.success("Saldo ajustado — transacción creada.");
             setAdjust({ open: false, target: null });
+          } else if (result.status === "ok_dual") {
+            // #447 — one toast with both diffs so the user sees the dual write
+            // as a single action.
+            toast.success(
+              `Saldo ajustado en ${result.results.length} sub-cuenta${result.results.length === 1 ? "" : "s"}.`,
+            );
+            setAdjust({ open: false, target: null });
           } else if (result.status === "noop") {
             toast.info("El saldo declarado coincide con el actual — no hubo cambio.");
             setAdjust({ open: false, target: null });

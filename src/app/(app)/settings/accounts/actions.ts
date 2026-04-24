@@ -402,6 +402,18 @@ const declaredSchema = z.discriminatedUnion("kind", [
     // la deuda del target a partir del sibling + TRM (#346 AS-4/AS-5).
     availableCopCents: z.coerce.number().int().nonnegative(),
   }),
+  // #447 — dual-debt snapshot for shared-cupo multi-currency TCs. User enters
+  // BOTH currency debts separately (the two numbers the bank app displays) and
+  // the server applies one balance_adjustment per sub-account atomically. No
+  // back-solve, no TRM, no dependency on the sibling's ledger state — so drift
+  // in one side never propagates to the other.
+  z.object({
+    kind: z.literal("perCurrencyDualDebt"),
+    // Positive cents in native currency — e.g. 403_119_800 for "COP $4.031.198,00"
+    // and 288_500 for "USD $2.885,00" as shown in the Bancolombia app.
+    debtCopCents: z.coerce.number().int().nonnegative(),
+    debtUsdCents: z.coerce.number().int().nonnegative(),
+  }),
 ]);
 
 const adjustSchema = z.object({
@@ -414,6 +426,17 @@ export type AdjustBalanceInput = z.input<typeof adjustSchema>;
 
 export type AdjustBalanceResult =
   | { status: "ok"; diffCents: string; txId: number }
+  // #447 — dual-debt commit returns one entry per sub-account (ordered
+  // primary-then-sibling) so the UI can surface both diffs in a single toast.
+  | {
+      status: "ok_dual";
+      results: Array<{
+        accountId: number;
+        currency: "COP" | "USD";
+        diffCents: string;
+        txId: number;
+      }>;
+    }
   | { status: "noop" }
   | { status: "error"; message: string };
 
@@ -471,6 +494,157 @@ export async function adjustAccountBalance(
       return { status: "error", message: "Cuenta no encontrada." };
     }
     const account = { ...accountRow, balanceCents: BigInt(accountRow.balanceCents) };
+
+    // #447 — dual-debt is the only kind that applies changes to BOTH
+    // sub-accounts of a shared-cupo plastic atomically, so it branches OUT of
+    // the single-target flow below and returns directly.
+    if (parsed.data.declared.kind === "perCurrencyDualDebt") {
+      if (account.type !== "credit_card" || !account.physicalCardId) {
+        return {
+          status: "error",
+          message: "Las deudas por moneda solo aplican a tarjetas multi-moneda.",
+        };
+      }
+      const [pc] = await tx
+        .select({
+          id: physicalCards.id,
+          creditLimitCents: physicalCards.creditLimitCents,
+        })
+        .from(physicalCards)
+        .where(
+          and(eq(physicalCards.id, account.physicalCardId), eq(physicalCards.userId, session.id)),
+        );
+      if (!pc || pc.creditLimitCents <= BigInt(0)) {
+        return {
+          status: "error",
+          message:
+            "El plástico no tiene cupo configurado. Editá la tarjeta física y cargá el cupo primero.",
+        };
+      }
+      // Load BOTH sibling sub-accounts (including the target itself — simpler
+      // than conditional branching on which one the user opened the dialog
+      // from). Validate we have exactly one COP + one USD, otherwise reject.
+      const plasticRows = await tx
+        .select({
+          id: accounts.id,
+          currency: accounts.currency,
+          balanceCents: derivedBalanceCentsSql,
+          metadata: accounts.metadata,
+        })
+        .from(accounts)
+        .where(
+          and(
+            eq(accounts.userId, session.id),
+            eq(accounts.physicalCardId, account.physicalCardId),
+            notDeleted(accounts.deletedAt),
+          ),
+        );
+      const copRow = plasticRows.find((r) => r.currency === "COP");
+      const usdRow = plasticRows.find((r) => r.currency === "USD");
+      if (!copRow || !usdRow || plasticRows.length !== 2) {
+        return {
+          status: "error",
+          message:
+            "El plástico necesita exactamente una sub-cuenta COP y una USD para usar este flujo.",
+        };
+      }
+
+      const debtCopCents = BigInt(parsed.data.declared.debtCopCents);
+      const debtUsdCents = BigInt(parsed.data.declared.debtUsdCents);
+      // Sanity check: combined debt in COP must not exceed the plastic's
+      // credit limit. Uses the CURRENT TRM only for the sum check — the
+      // individual sub-account targets are stored in native currency so
+      // TRM drift never taints them post-commit.
+      const fx = await getCurrentFxRate();
+      const debtUsdInCop = convertCents(debtUsdCents, "USD", "COP", fx.rate);
+      if (debtCopCents + debtUsdInCop > pc.creditLimitCents) {
+        return {
+          status: "error",
+          message:
+            "La suma de deudas (COP + USD × TRM) supera el cupo total del plástico. Revisá los números.",
+        };
+      }
+
+      // Ensure adjustments category once (self-heal same as single-target path).
+      await tx
+        .insert(categories)
+        .values({
+          userId: session.id,
+          slug: ADJUSTMENT_CATEGORY_SLUG,
+          name: "Ajustes de saldo",
+          icon: "wrench",
+          color: "#475569",
+          sortOrder: 1000,
+        })
+        .onConflictDoNothing({ target: [categories.userId, categories.slug] });
+      await tx
+        .update(categories)
+        .set({ deletedAt: null, updatedAt: new Date() })
+        .where(
+          and(eq(categories.userId, session.id), eq(categories.slug, ADJUSTMENT_CATEGORY_SLUG)),
+        );
+
+      const today = new Date();
+      const ymd = today.toISOString().slice(0, 10);
+      const results: Array<{
+        accountId: number;
+        currency: "COP" | "USD";
+        diffCents: string;
+        txId: number;
+      }> = [];
+
+      for (const sub of [copRow, usdRow] as const) {
+        const currentBalance = BigInt(sub.balanceCents);
+        const targetBalance = sub.currency === "COP" ? -debtCopCents : -debtUsdCents;
+        const diff = targetBalance - currentBalance;
+        if (diff === BigInt(0)) continue;
+        const [inserted] = await tx
+          .insert(transactions)
+          .values({
+            userId: session.id,
+            accountId: sub.id,
+            occurredAt: today,
+            amountCents: diff,
+            currency: sub.currency,
+            descriptionRaw: `Ajuste de saldo (deuda declarada ${ymd})`,
+            categorySlug: ADJUSTMENT_CATEGORY_SLUG,
+            classificationMethod: "manual",
+            source: "balance_adjustment",
+            channel: "manual",
+            isAdjustment: true,
+            rawData: {
+              reason: parsed.data.reason ?? null,
+              declared: parsed.data.declared,
+              declaredBalanceCents: targetBalance.toString(),
+              previousBalanceCents: currentBalance.toString(),
+            },
+          })
+          .returning({ id: transactions.id });
+        results.push({
+          accountId: sub.id,
+          currency: sub.currency,
+          diffCents: diff.toString(),
+          txId: inserted.id,
+        });
+        // Strip stale `availableCreditCents` snapshot if present on this
+        // sub-account's metadata (same convergence pattern as other kinds).
+        if (sub.metadata?.availableCreditCents !== undefined) {
+          const { availableCreditCents: _drop, ...rest } = sub.metadata;
+          void _drop;
+          await tx
+            .update(accounts)
+            .set({ metadata: rest, updatedAt: today })
+            .where(eq(accounts.id, sub.id));
+        }
+      }
+
+      if (results.length === 0) {
+        revalidate();
+        return { status: "noop" };
+      }
+      revalidate();
+      return { status: "ok_dual", results };
+    }
 
     let targetBalanceCents: bigint;
     let nextMetadata: AccountMetadata = account.metadata;
