@@ -65,6 +65,7 @@ function makeEmptyPullResult(userId = 1): PullResult {
       apple: { pulled: 0, skipped: 0 },
       paypal: { pulled: 0, skipped: 0 },
       bancolombia: { pulled: 0, skipped: 0 },
+      arq: { pulled: 0, skipped: 0 },
     },
     errors: [],
     connectionId: 42,

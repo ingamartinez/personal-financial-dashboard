@@ -1,0 +1,1 @@
+ALTER TYPE "public"."email_receipt_gateway" ADD VALUE 'arq';

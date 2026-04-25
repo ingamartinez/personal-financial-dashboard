@@ -9,9 +9,12 @@ describe("gmail/registry", () => {
     expect(registryIds).toEqual(enumIds);
   });
 
-  it("marks bancolombia as ingest mode, all other gateways as enrich", () => {
+  it("marks bancolombia and arq as ingest mode, all other gateways as enrich", () => {
     const byId = new Map(GATEWAYS.map((g) => [g.id, g] as const));
     expect(byId.get("bancolombia")!.mode).toBe("ingest");
+    // ARQ is capture-only (#509 step 0): emails persisted but not processed
+    // until the real parser lands in #508.
+    expect(byId.get("arq")!.mode).toBe("ingest");
     expect(byId.get("mercado_pago")!.mode).toBe("enrich");
     expect(byId.get("payu")!.mode).toBe("enrich");
     expect(byId.get("wompi")!.mode).toBe("enrich");
@@ -45,9 +48,22 @@ describe("gmail/registry", () => {
   });
 
   it("ingest gateways expose bankDescriptionRegex=null (matcher skips them)", () => {
-    const cfg = getGatewayById("bancolombia");
-    expect(cfg.mode).toBe("ingest");
-    expect(cfg.bankDescriptionRegex).toBeNull();
+    const bancolombia = getGatewayById("bancolombia");
+    expect(bancolombia.mode).toBe("ingest");
+    expect(bancolombia.bankDescriptionRegex).toBeNull();
+
+    const arq = getGatewayById("arq");
+    expect(arq.mode).toBe("ingest");
+    expect(arq.bankDescriptionRegex).toBeNull();
+  });
+
+  // Sentinel — ARQ (#509): capture-only step 0 while #508 designs the real
+  // parser. Both current domain (@arqfinance.com) and legacy DolarApp domain
+  // (@dolarapp.com) must be present so emails from either brand are harvested.
+  it("arq covers both current arqfinance.com and legacy dolarapp.com domains", () => {
+    const cfg = getGatewayById("arq");
+    expect(cfg.senderQueries).toContain("from:(@arqfinance.com)");
+    expect(cfg.senderQueries).toContain("from:(@dolarapp.com)");
   });
 
   it("getGatewayById throws for an unknown id", () => {
