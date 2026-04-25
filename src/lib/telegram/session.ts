@@ -66,17 +66,22 @@ export async function upsertSession(opts: {
  */
 export async function getLatestSessionByUserId(userId: number): Promise<{
   chatId: bigint;
+  telegramUserId: bigint;
   state: TelegramSessionState;
 } | null> {
   const rows = await db
-    .select({ chatId: telegramSessions.chatId, state: telegramSessions.state })
+    .select({
+      chatId: telegramSessions.chatId,
+      telegramUserId: telegramSessions.telegramUserId,
+      state: telegramSessions.state,
+    })
     .from(telegramSessions)
     .where(eq(telegramSessions.userId, userId))
     .orderBy(desc(telegramSessions.updatedAt))
     .limit(1);
   const row = rows[0];
   if (!row) return null;
-  return { chatId: row.chatId, state: row.state };
+  return { chatId: row.chatId, telegramUserId: row.telegramUserId, state: row.state };
 }
 
 export async function clearSession(chatId: number): Promise<void> {
