@@ -37,11 +37,6 @@ const log = createLogger({ module: "gmail/pull" });
 const MAX_PAGES_PER_GATEWAY = 5;
 const PAGE_SIZE = 100;
 
-// Used when no previous pull watermark exists. Wider than the cron cadence
-// so users who connect mid-week can backfill the current billing period.
-// Manual backfills (#458) will pass sinceDays=180+ explicitly.
-const DEFAULT_SINCE_DAYS = 30;
-
 // Cron runs hourly, but Gmail's `after:` resolution is seconds so a small
 // overlap ensures we don't drop a message whose insertion we raced with.
 // Dedup on (user_id, gmail_msg_id) absorbs the overlap.
@@ -77,6 +72,9 @@ export interface PullOpts {
   sinceDays?: number;
   // When provided, only pulls the named gateways. Otherwise scans all.
   gateways?: GatewayId[];
+  // #498 — one-shot since-date override for re-bootstrap. Bypasses the
+  // cursor (lastPullAt) for this single run; cursor advances normally after.
+  overrideSince?: Date;
 }
 
 export interface PullDeps {
@@ -95,14 +93,34 @@ function sinceToQueryFragment(sinceDate: Date): string {
   return `after:${unixSeconds}`;
 }
 
-function computeSinceDate(opts: { now: Date; lastPullAt: Date | null; sinceDays?: number }): Date {
+export function computeSinceDate(opts: {
+  now: Date;
+  lastPullAt: Date | null;
+  bootstrapSinceDate?: Date | null;
+  sinceDays?: number;
+  overrideSince?: Date | null;
+}): Date {
+  // 1. Explicit one-shot override (re-bootstrap action) — highest priority.
+  if (opts.overrideSince != null) {
+    return opts.overrideSince;
+  }
+  // 2. Legacy sinceDays explicit override (manual backfill, tests).
   if (opts.sinceDays !== undefined) {
     return new Date(opts.now.getTime() - opts.sinceDays * 86_400_000);
   }
+  // 3. Normal watermark — cursor present, 30-min overlap to avoid gap races.
   if (opts.lastPullAt) {
     return new Date(opts.lastPullAt.getTime() - WATERMARK_OVERLAP_SECONDS * 1000);
   }
-  return new Date(opts.now.getTime() - DEFAULT_SINCE_DAYS * 86_400_000);
+  // 4. Per-connection bootstrap window set by the user.
+  if (opts.bootstrapSinceDate != null) {
+    return opts.bootstrapSinceDate;
+  }
+  // 5. Final fallback: Jan 1 of current year (replaces the old 30-day rolling
+  //    fallback so new connections don't silently re-ingest 30 days of history
+  //    after a reset).
+  const jan1 = new Date(opts.now.getFullYear(), 0, 1);
+  return jan1;
 }
 
 function getHttpStatus(err: unknown): number | null {
@@ -694,15 +712,20 @@ export async function pullForUser(
     throw err;
   }
 
-  // Read watermark for the since-date computation.
+  // Read watermark + bootstrap window for the since-date computation.
   const [connRow] = await db
-    .select({ lastPullAt: gmailConnections.lastPullAt })
+    .select({
+      lastPullAt: gmailConnections.lastPullAt,
+      bootstrapSinceDate: gmailConnections.bootstrapSinceDate,
+    })
     .from(gmailConnections)
     .where(eq(gmailConnections.id, authed.connection.id));
   const since = computeSinceDate({
     now,
     lastPullAt: connRow?.lastPullAt ?? null,
+    bootstrapSinceDate: connRow?.bootstrapSinceDate ?? null,
     sinceDays: opts.sinceDays,
+    overrideSince: opts.overrideSince,
   });
 
   const selectedGateways = opts.gateways

@@ -48,10 +48,11 @@ export const WIPE_ORDER: readonly SnapshotTable[] = SNAPSHOT_TABLES;
 export const RESTORE_ORDER: readonly SnapshotTable[] = [...SNAPSHOT_TABLES].reverse();
 
 // Columns on `gmail_connections` that track ingestion cursor state (what
-// messages we've already pulled). Reset nulls these out so re-ingest picks
-// up from scratch; snapshot captures them so restore can put the user back
-// exactly where they were. OAuth tokens, scopes, and the connection row
-// itself stay put — they're config.
+// messages we've already pulled). Snapshot captures them so restore can put
+// the user back exactly where they were. Reset NO LONGER nulls these out —
+// preserving the cursor prevents the next cron tick from re-ingesting
+// historical emails after a data reset (#498). OAuth tokens, scopes, and
+// the connection row itself are always preserved.
 export const GMAIL_CURSOR_COLUMNS = ["last_pull_at", "last_pull_history_id"] as const;
 
 export type GmailCursorColumn = (typeof GMAIL_CURSOR_COLUMNS)[number];
