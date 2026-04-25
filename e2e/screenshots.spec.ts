@@ -22,6 +22,8 @@ const pages = [
   },
   { name: "signup-missing", path: "/signup", hasDonut: false },
   { name: "signup-unknown", path: "/signup?code=__DOESNOTEXIST__", hasDonut: false },
+  // #455 (Epic G): disambiguation UX lives on the transactions page
+  { name: "transactions-disambiguation", path: "/transactions", hasDonut: false },
 ];
 
 const modes = ["light", "dark"] as const;
