@@ -90,6 +90,10 @@ export const GATEWAYS: readonly GatewayConfig[] = [
   },
 ] as const;
 
+// Tuple of all gateway IDs — used by the cron route for Zod enum validation.
+// Derived from GATEWAYS so it stays in lockstep automatically.
+export const GATEWAY_IDS = GATEWAYS.map((g) => g.id) as [GatewayId, ...GatewayId[]];
+
 export function getGatewayById(id: GatewayId): GatewayConfig {
   const cfg = GATEWAYS.find((g) => g.id === id);
   if (!cfg) throw new Error(`[gmail/registry] unknown gateway id: ${id}`);

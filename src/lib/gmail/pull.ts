@@ -812,8 +812,15 @@ export async function pullForUser(
  * Fan-out across every active Gmail connection. Used by the hourly cron
  * and the HTTP cron route. Per-user failures are logged and do NOT break
  * the loop.
+ *
+ * `opts` is forwarded verbatim to each `pullForUser` call so callers can
+ * override the pull window or restrict to specific gateways without touching
+ * the per-user logic.
  */
-export async function pullAllActiveConnections(deps: PullDeps = {}): Promise<PullResult[]> {
+export async function pullAllActiveConnections(
+  deps: PullDeps = {},
+  opts: PullOpts = {},
+): Promise<PullResult[]> {
   const rows = await db
     .select({ userId: gmailConnections.userId })
     .from(gmailConnections)
@@ -821,7 +828,7 @@ export async function pullAllActiveConnections(deps: PullDeps = {}): Promise<Pul
   const results: PullResult[] = [];
   for (const row of rows) {
     try {
-      const res = await pullForUser(row.userId, {}, deps);
+      const res = await pullForUser(row.userId, opts, deps);
       results.push(res);
     } catch (err) {
       log.error(
