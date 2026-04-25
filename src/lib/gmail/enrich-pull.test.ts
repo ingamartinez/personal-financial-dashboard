@@ -61,6 +61,9 @@ async function seedReceipt(opts: {
   merchant: string;
   matchStatus?: "pending" | "matched" | "ambiguous" | "unmatched";
 }): Promise<number> {
+  // parsedAt is set so the pull engine skips the parse step and goes straight
+  // to matching. Integration tests care about the match/enrich path, not the
+  // parse step (which is unit-tested in parsers/*.test.ts).
   const [row] = await db
     .insert(emailReceipts)
     .values({
@@ -72,6 +75,7 @@ async function seedReceipt(opts: {
       occurredAt: opts.occurredAt,
       merchant: opts.merchant,
       rawHtml: "<html>receipt</html>",
+      parsedAt: new Date(),
       matchStatus: opts.matchStatus ?? "pending",
     })
     .returning({ id: emailReceipts.id });

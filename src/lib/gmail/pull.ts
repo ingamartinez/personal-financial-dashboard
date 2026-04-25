@@ -19,6 +19,7 @@ import {
   type GatewayId,
 } from "@/lib/gmail/registry";
 import { parseBancolombiaEmail } from "@/lib/gmail/parsers/bancolombia";
+import { parseReceipt } from "@/lib/gmail/parsers";
 import { ingestParsedEmail } from "@/lib/ingestion/email-bancolombia";
 import { matchReceipt } from "@/lib/gmail/matcher";
 import { applyEnrichment } from "@/lib/gmail/enrich";
@@ -364,7 +365,14 @@ async function processPendingBancolombiaReceipts(userId: number): Promise<void> 
  */
 async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId): Promise<void> {
   const pending = await db
-    .select({ id: emailReceipts.id })
+    .select({
+      id: emailReceipts.id,
+      rawHtml: emailReceipts.rawHtml,
+      gateway: emailReceipts.gateway,
+      gmailMsgId: emailReceipts.gmailMsgId,
+      parsedAt: emailReceipts.parsedAt,
+      createdAt: emailReceipts.createdAt,
+    })
     .from(emailReceipts)
     .where(
       and(
@@ -377,6 +385,79 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
 
   for (const receipt of pending) {
     try {
+      // Parse step: run the gateway parser if this receipt hasn't been parsed yet.
+      // Receipts seeded with parsedAt already set (e.g. backfilled or pre-parsed
+      // rows) skip parsing and proceed directly to matching.
+      if (!receipt.parsedAt) {
+        const parseResult = parseReceipt(receipt.gateway, receipt.rawHtml, {
+          receivedAt: receipt.createdAt,
+        });
+
+        if (parseResult.kind === "parsed") {
+          const { merchant, amountCents, currency, occurredAt, referenceId } = parseResult.data;
+          const parsedPayload = {
+            merchant,
+            amountCents: amountCents.toString(),
+            currency,
+            occurredAt: occurredAt.toISOString(),
+            referenceId,
+          };
+          await db
+            .update(emailReceipts)
+            .set({
+              merchant,
+              amountCents,
+              currency,
+              occurredAt,
+              referenceId,
+              parsedPayload,
+              parsedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+          log.info(
+            {
+              userId,
+              receiptId: receipt.id,
+              gateway: receipt.gateway,
+              event: "gmail_receipt_parsed",
+            },
+            "receipt parsed successfully",
+          );
+        } else if (parseResult.kind === "skipped") {
+          await db
+            .update(emailReceipts)
+            .set({ matchStatus: "unmatched", updatedAt: new Date() })
+            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+          log.info(
+            {
+              userId,
+              receiptId: receipt.id,
+              gateway: receipt.gateway,
+              gmailMsgId: receipt.gmailMsgId,
+              reason: parseResult.reason,
+              event: "receipt_skipped",
+            },
+            "receipt skipped by parser; marked unmatched",
+          );
+          continue; // skip matcher — this receipt is intentionally non-transactional
+        } else {
+          // needs_review: leave as pending, do NOT call matcher
+          log.warn(
+            {
+              userId,
+              receiptId: receipt.id,
+              gateway: receipt.gateway,
+              gmailMsgId: receipt.gmailMsgId,
+              reason: parseResult.reason,
+              event: "receipt_needs_review",
+            },
+            "receipt parse needs review; leaving pending for retry",
+          );
+          continue;
+        }
+      }
+
       const result = await matchReceipt(userId, receipt.id);
 
       if (result.status === "matched") {
