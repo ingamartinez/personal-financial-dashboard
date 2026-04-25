@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { emailReceipts, transactions, accounts } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import type { DisambiguationCandidate } from "@/lib/telegram/formatter";
 
 const log = createLogger({ module: "telegram/disambiguation-query" });
@@ -86,6 +87,8 @@ export async function loadPendingAmbiguousReceipt(
       id: accounts.id,
       name: accounts.name,
       institution: accounts.institution,
+      currency: accounts.currency,
+      metadata: accounts.metadata,
     })
     .from(accounts)
     .where(and(eq(accounts.userId, userId), inArray(accounts.id, accountIds)));
@@ -94,14 +97,16 @@ export async function loadPendingAmbiguousReceipt(
 
   const candidates: DisambiguationCandidate[] = txRows.map((t) => {
     const acc = accountMap.get(t.accountId);
+    const accountLabel = acc
+      ? formatAccountLabel(acc, { withInstitution: true, withLast4: true })
+      : `cuenta #${t.accountId}`;
     return {
       id: t.id,
       occurredAt: t.occurredAt,
       amountCents: t.amountCents,
       currency: t.currency as "COP" | "USD",
       descriptionRaw: t.descriptionRaw,
-      accountName: acc?.name ?? `cuenta #${t.accountId}`,
-      accountInstitution: acc?.institution,
+      accountLabel,
     };
   });
 

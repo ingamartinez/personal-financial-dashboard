@@ -1,10 +1,10 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { telegramBots, telegramSessions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 import { createTelegramClient } from "@/lib/telegram/client";
 import { createLogger } from "@/lib/logger";
-import { desc } from "drizzle-orm";
 
 const log = createLogger({ module: "telegram/push" });
 
@@ -29,7 +29,7 @@ export async function pushToUser(
   const [bot] = await db
     .select()
     .from(telegramBots)
-    .where(eq(telegramBots.userId, userId))
+    .where(and(eq(telegramBots.userId, userId), notDeleted(telegramBots.deletedAt)))
     .limit(1);
   if (!bot) return { ok: false, reason: "no_bot" };
 

@@ -15,8 +15,8 @@ export type DisambiguationCandidate = {
   amountCents: bigint;
   currency: "COP" | "USD";
   descriptionRaw: string;
-  accountName: string;
-  accountInstitution: string | null | undefined;
+  /** Pre-formatted account label via formatAccountLabel (institution · name *last4 (currency)). */
+  accountLabel: string;
 };
 
 export function renderDisambiguationPrompt(opts: {
@@ -51,11 +51,8 @@ export function renderDisambiguationPrompt(opts: {
       month: "2-digit",
     });
     const desc = truncate(c.descriptionRaw, 40);
-    const account = c.accountInstitution
-      ? `${c.accountInstitution} · ${c.accountName}`
-      : c.accountName;
     lines.push(`*${i + 1}.*  ${amount} · ${desc}  [${date}]`);
-    lines.push(`      ${account}`);
+    lines.push(`      ${c.accountLabel}`);
   }
 
   lines.push("");

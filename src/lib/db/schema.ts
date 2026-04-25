@@ -1026,6 +1026,7 @@ export const telegramBots = pgTable("telegram_bots", {
   tokenEncrypted: text("token_encrypted").notNull(),
   username: varchar("username", { length: 64 }).notNull(),
   webhookSecret: varchar("webhook_secret", { length: 64 }).notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
