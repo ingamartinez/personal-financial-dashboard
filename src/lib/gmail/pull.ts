@@ -20,6 +20,8 @@ import {
 } from "@/lib/gmail/registry";
 import { parseBancolombiaEmail } from "@/lib/gmail/parsers/bancolombia";
 import { ingestParsedEmail } from "@/lib/ingestion/email-bancolombia";
+import { matchReceipt } from "@/lib/gmail/matcher";
+import { applyEnrichment } from "@/lib/gmail/enrich";
 
 const log = createLogger({ module: "gmail/pull" });
 
@@ -348,6 +350,83 @@ async function processPendingBancolombiaReceipts(userId: number): Promise<void> 
 }
 
 /**
+ * Match and enrich every pending receipt for an enrich-mode gateway. Called
+ * at the tail of `pullForUser` so freshly-inserted receipts are processed in
+ * the same cron tick AND stale pending rows from a previously-failed match are
+ * retried on every subsequent cron — no need for a separate reaper.
+ *
+ * Per-receipt errors are logged and do NOT interrupt the loop; the receipt
+ * stays pending for the next tick to retry.
+ *
+ * Unmatched receipts are persisted with match_status='unmatched' but are
+ * re-attempted on future pulls (the corresponding bank tx may not have arrived
+ * via SMS yet at the time of the first pull).
+ */
+async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId): Promise<void> {
+  const pending = await db
+    .select({ id: emailReceipts.id })
+    .from(emailReceipts)
+    .where(
+      and(
+        eq(emailReceipts.userId, userId),
+        eq(emailReceipts.gateway, gatewayId),
+        eq(emailReceipts.matchStatus, "pending"),
+        notDeleted(emailReceipts.deletedAt),
+      ),
+    );
+
+  for (const receipt of pending) {
+    try {
+      const result = await matchReceipt(userId, receipt.id);
+
+      if (result.status === "matched") {
+        await applyEnrichment(userId, result.transactionId, receipt.id);
+      } else if (result.status === "ambiguous") {
+        await db
+          .update(emailReceipts)
+          .set({
+            matchStatus: "ambiguous",
+            matchCandidates: result.candidateIds,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+        log.info(
+          {
+            userId,
+            receiptId: receipt.id,
+            candidateIds: result.candidateIds,
+            event: "gmail_enrich_ambiguous",
+          },
+          "receipt has ambiguous tx candidates; persisted for user disambiguation",
+        );
+      } else {
+        // unmatched: persist the status so it's queryable, but leave it
+        // eligible for re-attempt on future pulls.
+        await db
+          .update(emailReceipts)
+          .set({ matchStatus: "unmatched", updatedAt: new Date() })
+          .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+        log.info(
+          { userId, receiptId: receipt.id, gateway: gatewayId, event: "gmail_enrich_unmatched" },
+          "no tx candidate found for receipt; will retry on next pull",
+        );
+      }
+    } catch (err) {
+      log.error(
+        {
+          err,
+          userId,
+          receiptId: receipt.id,
+          gateway: gatewayId,
+          event: "gmail_enrich_receipt_failed",
+        },
+        "failed to match/enrich receipt; leaving as pending for retry",
+      );
+    }
+  }
+}
+
+/**
  * Pull new Gmail messages for one user, store them in `email_receipts`, and
  * update the connection's `last_pull_at` watermark.
  *
@@ -458,6 +537,14 @@ export async function pullForUser(
     if (g.id === "bancolombia") {
       await processPendingBancolombiaReceipts(userId);
     }
+  }
+
+  // Process enrich-mode receipts (#454 — mercado_pago, payu, wompi, apple,
+  // paypal). Stale pending receipts are retried on every pull — the bank tx
+  // may not have arrived via SMS yet on the first attempt.
+  const enrichGatewaysSelected = selectedGateways.filter((g) => g.mode === "enrich");
+  for (const g of enrichGatewaysSelected) {
+    await processPendingEnrichReceipts(userId, g.id);
   }
 
   // Only advance the watermark on fully successful pulls — partial failures
