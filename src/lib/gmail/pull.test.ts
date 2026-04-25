@@ -5,7 +5,7 @@ import { emailReceipts, gmailConnections, users } from "@/lib/db/schema";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 import type { AuthedGmailClient } from "./client";
 import { GmailConnectionUnusableError, GmailNotConnectedError } from "./client";
-import { pullForUser } from "./pull";
+import { pullForUser, computeSinceDate } from "./pull";
 
 const TAG = "GMAIL_PULL_TEST";
 
@@ -449,5 +449,67 @@ describe("gmail/pull", () => {
     expect(result.pulled).toBe(1);
     expect(listAttempts).toBe(2);
     expect(sleeps).toEqual([1000]);
+  });
+});
+
+// =============================================================================
+// computeSinceDate — unit tests for the since-date fallback chain (#498)
+// =============================================================================
+
+describe("computeSinceDate fallback chain", () => {
+  const NOW = new Date("2026-04-25T12:00:00Z");
+  const LAST_PULL = new Date("2026-04-24T10:00:00Z");
+  const BOOTSTRAP = new Date("2026-01-15T00:00:00Z");
+  const OVERRIDE = new Date("2025-12-01T00:00:00Z");
+
+  it("overrideSince wins over everything (re-bootstrap action)", () => {
+    const result = computeSinceDate({
+      now: NOW,
+      lastPullAt: LAST_PULL,
+      bootstrapSinceDate: BOOTSTRAP,
+      sinceDays: 7,
+      overrideSince: OVERRIDE,
+    });
+    expect(result).toEqual(OVERRIDE);
+  });
+
+  it("sinceDays wins when overrideSince is absent", () => {
+    const result = computeSinceDate({
+      now: NOW,
+      lastPullAt: LAST_PULL,
+      bootstrapSinceDate: BOOTSTRAP,
+      sinceDays: 7,
+    });
+    // 7 days before NOW
+    expect(result).toEqual(new Date(NOW.getTime() - 7 * 86_400_000));
+  });
+
+  it("lastPullAt wins over bootstrapSinceDate (normal watermark with 30-min overlap)", () => {
+    const result = computeSinceDate({
+      now: NOW,
+      lastPullAt: LAST_PULL,
+      bootstrapSinceDate: BOOTSTRAP,
+    });
+    const WATERMARK_OVERLAP_SECONDS = 30 * 60;
+    expect(result).toEqual(new Date(LAST_PULL.getTime() - WATERMARK_OVERLAP_SECONDS * 1000));
+  });
+
+  it("bootstrapSinceDate used when lastPullAt is null", () => {
+    const result = computeSinceDate({
+      now: NOW,
+      lastPullAt: null,
+      bootstrapSinceDate: BOOTSTRAP,
+    });
+    expect(result).toEqual(BOOTSTRAP);
+  });
+
+  it("falls back to Jan 1 of current year when both lastPullAt and bootstrapSinceDate are null", () => {
+    const result = computeSinceDate({
+      now: NOW,
+      lastPullAt: null,
+      bootstrapSinceDate: null,
+    });
+    const jan1 = new Date(NOW.getFullYear(), 0, 1);
+    expect(result).toEqual(jan1);
   });
 });

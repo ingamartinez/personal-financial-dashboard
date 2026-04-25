@@ -22,6 +22,7 @@ export default async function IntegrationsPage({
       status: gmailConnections.status,
       statusReason: gmailConnections.statusReason,
       lastPullAt: gmailConnections.lastPullAt,
+      bootstrapSinceDate: gmailConnections.bootstrapSinceDate,
       createdAt: gmailConnections.createdAt,
     })
     .from(gmailConnections)
@@ -36,6 +37,7 @@ export default async function IntegrationsPage({
           status: row.status,
           statusReason: row.statusReason,
           lastPullAt: row.lastPullAt ? row.lastPullAt.toISOString() : null,
+          bootstrapSinceDate: row.bootstrapSinceDate ? row.bootstrapSinceDate.toISOString() : null,
           connectedAt: row.createdAt.toISOString(),
         },
       }

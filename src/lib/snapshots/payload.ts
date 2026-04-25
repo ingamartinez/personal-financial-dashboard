@@ -86,10 +86,11 @@ export async function dumpUserPayload(
   };
 }
 
-// Hard-deletes every per-user row from the snapshot tables and nulls out
-// the Gmail ingestion cursor on each of the user's connections. The OAuth
-// tokens / connection rows themselves are preserved so the user doesn't
-// have to reauthorize.
+// Hard-deletes every per-user row from the snapshot tables. The OAuth
+// tokens, connection rows, and Gmail ingestion cursors are preserved so the
+// user doesn't have to reauthorize and the next cron tick resumes from where
+// it left off — NOT from a re-bootstrap window that would cause unintended
+// mass re-ingestion (#498).
 //
 // MUST run inside a transaction — caller is responsible.
 export async function wipeUserData(userId: number, tx: SnapshotTxn): Promise<void> {
@@ -98,13 +99,6 @@ export async function wipeUserData(userId: number, tx: SnapshotTxn): Promise<voi
       DELETE FROM ${sql.raw(table)} WHERE user_id = ${userId}
     `);
   }
-  await tx.execute(sql`
-    UPDATE gmail_connections
-    SET last_pull_at = NULL,
-        last_pull_history_id = NULL,
-        updated_at = NOW()
-    WHERE user_id = ${userId}
-  `);
   log.info({ userId, tables: WIPE_ORDER.length }, "wipe complete");
 }
 

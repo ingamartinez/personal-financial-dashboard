@@ -1,0 +1,1 @@
+ALTER TABLE "gmail_connections" ADD COLUMN "bootstrap_since_date" timestamp with time zone;

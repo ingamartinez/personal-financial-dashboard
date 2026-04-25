@@ -247,7 +247,9 @@ describe("#472 reset user transactional data", () => {
       expect(await countWhere(userA, sql.raw("recurring_transactions"))).toBe(recurringBefore);
     });
 
-    it("nulls the Gmail ingestion cursor but keeps the connection + tokens", async () => {
+    it("preserves the Gmail ingestion cursor and connection on reset", async () => {
+      // #498 — reset must NOT null the cursor. Nulling caused unintended mass
+      // re-ingestion on the next cron tick after a data reset.
       await resetUserData({ userId: userA });
 
       const [conn] = await db
@@ -265,9 +267,9 @@ describe("#472 reset user transactional data", () => {
       expect(conn.id).toBe(connA);
       expect(conn.accessTokenEnc).toBe("enc");
       expect(conn.refreshTokenEnc).toBe("enc");
-      // Cursor cleared.
-      expect(conn.lastPullAt).toBeNull();
-      expect(conn.lastPullHistoryId).toBeNull();
+      // Cursor preserved — matches the values seeded in beforeEach.
+      expect(conn.lastPullAt).toEqual(new Date("2026-04-01T00:00:00Z"));
+      expect(conn.lastPullHistoryId).toBe("hist-reset-123");
     });
   });
 

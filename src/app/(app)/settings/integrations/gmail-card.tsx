@@ -1,13 +1,31 @@
 "use client";
 
-import { useEffect, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Trash2Icon } from "lucide-react";
+import { CalendarIcon, Trash2Icon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+  setBootstrapSinceDateAction,
+  triggerIncrementalPullAction,
+  triggerRebootstrapAction,
+} from "./actions";
 
 type ConnectionStatus = "active" | "expired" | "revoked" | "error";
 
@@ -20,6 +38,7 @@ export type GmailCardState =
         status: ConnectionStatus;
         statusReason: string | null;
         lastPullAt: string | null;
+        bootstrapSinceDate: string | null;
         connectedAt: string;
       };
     };
@@ -48,9 +67,32 @@ const FEEDBACK_TOAST: Record<string, { kind: "success" | "error"; msg: string }>
   },
 };
 
+function formatBootstrapDate(iso: string | null): string {
+  if (!iso) {
+    return `1 de enero de ${new Date().getFullYear()}`;
+  }
+  return new Date(iso).toLocaleDateString("es-CO", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
 export function GmailCard({ state, feedback }: { state: GmailCardState; feedback: string | null }) {
   const router = useRouter();
   const [disconnecting, startDisconnect] = useTransition();
+  const [savingDate, startSaveDate] = useTransition();
+  const [pullingIncremental, startIncrementalPull] = useTransition();
+  const [pullingRebootstrap, startRebootstrapPull] = useTransition();
+
+  // Local state for the date picker — initialised from server prop.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => {
+    if (state.kind !== "connected") return undefined;
+    return state.connection.bootstrapSinceDate
+      ? new Date(state.connection.bootstrapSinceDate)
+      : undefined;
+  });
 
   // One-shot toast from ?gmail=<feedback>. Strip the query param after
   // showing it so a refresh doesn't re-fire the toast.
@@ -83,6 +125,43 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
       }
     });
   }
+
+  function onDateSelect(day: Date | undefined) {
+    setSelectedDate(day);
+    setPickerOpen(false);
+    startSaveDate(async () => {
+      await setBootstrapSinceDateAction(day ?? null);
+      toast.success("Fecha de importación guardada.");
+      router.refresh();
+    });
+  }
+
+  function onRefreshNow() {
+    startIncrementalPull(async () => {
+      await triggerIncrementalPullAction();
+      toast.success("Refrescando Gmail…");
+      setTimeout(() => router.refresh(), 8000);
+    });
+  }
+
+  function onRebootstrap() {
+    startRebootstrapPull(async () => {
+      await triggerRebootstrapAction();
+      toast.success("Refrescando Gmail…");
+      setTimeout(() => router.refresh(), 8000);
+    });
+  }
+
+  // Prefer local picker state over server prop so the label reflects the
+  // user's most recent selection immediately, even before router.refresh()
+  // settles the new server prop after setBootstrapSinceDateAction.
+  const effectiveBootstrapIso =
+    state.kind === "connected"
+      ? selectedDate
+        ? selectedDate.toISOString()
+        : state.connection.bootstrapSinceDate
+      : null;
+  const bootstrapLabel = formatBootstrapDate(effectiveBootstrapIso);
 
   return (
     <Card>
@@ -127,12 +206,78 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
               ) : null}
             </dl>
 
+            {/* Bootstrap date picker */}
+            <div className="flex flex-col gap-1">
+              <span className="text-muted-foreground text-xs">Importar desde</span>
+              <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="w-fit justify-start gap-2 font-normal"
+                    disabled={savingDate}
+                  >
+                    <CalendarIcon className="size-4" />
+                    {selectedDate ? (
+                      selectedDate.toLocaleDateString("es-CO", {
+                        day: "numeric",
+                        month: "long",
+                        year: "numeric",
+                      })
+                    ) : (
+                      <span className="text-muted-foreground italic">{bootstrapLabel}</span>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={selectedDate}
+                    onSelect={onDateSelect}
+                    disabled={(d) => d > new Date()}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            {/* Action buttons */}
             <div className="flex flex-wrap gap-2">
               {state.connection.status !== "active" ? (
                 <Button asChild variant="default">
                   <Link href="/api/integrations/gmail/oauth/start">Re-autorizar</Link>
                 </Button>
               ) : null}
+
+              <Button
+                variant="outline"
+                onClick={onRefreshNow}
+                disabled={pullingIncremental || pullingRebootstrap}
+              >
+                Refrescar ahora
+              </Button>
+
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" disabled={pullingRebootstrap || pullingIncremental}>
+                    Re-bootstrap desde {bootstrapLabel}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>¿Re-importar desde {bootstrapLabel}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Esto puede traer muchos emails y transacciones duplicadas si ya se importaron
+                      anteriormente. El deduplicador las filtra, pero el proceso puede tardar varios
+                      minutos. ¿Continuar?
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction onClick={onRebootstrap}>Continuar</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+
               <Button
                 variant="ghost"
                 onClick={onDisconnect}

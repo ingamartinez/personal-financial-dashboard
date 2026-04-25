@@ -1268,6 +1268,11 @@ export const gmailConnections = pgTable(
     // #456 — tracks when the last Telegram re-auth nudge was sent so we can
     // throttle to at most once per 24h regardless of how many pull cycles run.
     botNudgeSentAt: timestamp("bot_nudge_sent_at", { withTimezone: true }),
+    // #498 — per-connection bootstrap window. When lastPullAt is null (first
+    // pull or after a reconnect), computeSinceDate uses this date instead of
+    // the old 30-day rolling fallback. Application layer treats null as
+    // Jan 1 of the current year.
+    bootstrapSinceDate: timestamp("bootstrap_since_date", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
