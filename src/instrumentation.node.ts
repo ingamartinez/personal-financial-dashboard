@@ -153,7 +153,7 @@ export async function registerNode() {
   // others. Manual backfills go through /enriquecer (bot) or
   // POST /api/cron/gmail-pull.
   cron.schedule(
-    "0 * * * *",
+    "*/5 * * * *",
     async () => {
       try {
         const results = await pullAllActiveConnections();
