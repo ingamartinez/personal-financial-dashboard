@@ -88,6 +88,20 @@ export const GATEWAYS: readonly GatewayConfig[] = [
     bankDescriptionRegex: null,
     mode: "ingest",
   },
+  // ARQ (formerly DolarApp) — capture-only for now. See #508 for the real
+  // parser. Using `mode: "ingest"` here means the pull engine persists every
+  // matching email into email_receipts (raw_html intact, parsed_payload NULL)
+  // before any per-mode processing runs. The hardcoded `if (g.id ===
+  // "bancolombia")` block in pull.ts means ARQ emails are stored but never
+  // processed — intentional until #508 implements the parser. The accumulated
+  // raw_html corpus will drive the parser design for #508.
+  {
+    id: "arq",
+    senderQueries: ["from:(@arqfinance.com)", "from:(@dolarapp.com)"],
+    // Capture-only: matcher never runs for ingest gateways.
+    bankDescriptionRegex: null,
+    mode: "ingest",
+  },
 ] as const;
 
 // Tuple of all gateway IDs — used by the cron route for Zod enum validation.

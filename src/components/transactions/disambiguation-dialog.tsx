@@ -26,6 +26,7 @@ const GATEWAY_DISPLAY_NAME: Record<GmailAmbiguousReceipt["gateway"], string> = {
   apple: "Apple",
   paypal: "PayPal",
   bancolombia: "Bancolombia",
+  arq: "ARQ",
 };
 
 function formatReceiptDate(iso: string): string {

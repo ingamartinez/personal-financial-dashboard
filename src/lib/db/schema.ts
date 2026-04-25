@@ -251,6 +251,7 @@ export const emailReceiptGateway = pgEnum("email_receipt_gateway", [
   "apple",
   "paypal",
   "bancolombia",
+  "arq",
 ]);
 
 // #454 (Epic G): matcher outcome between an email receipt and existing
