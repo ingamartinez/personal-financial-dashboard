@@ -16,13 +16,25 @@ export async function setBootstrapSinceDateAction(
 ): Promise<SetBootstrapSinceDateResult> {
   const session = await getSessionUser();
 
+  // Server-side clamp: future dates make Gmail's `after:` filter silently
+  // return zero results. The picker disables future dates, but server actions
+  // are a public surface — coerce future dates to null instead of trusting
+  // the client.
+  const safeDate = date && date > new Date() ? null : date;
+  if (safeDate !== date) {
+    log.warn(
+      { userId: session.id, requested: date, event: "bootstrap_since_date_clamped" },
+      "rejected future bootstrap_since_date, coerced to null",
+    );
+  }
+
   await db
     .update(gmailConnections)
-    .set({ bootstrapSinceDate: date, updatedAt: new Date() })
+    .set({ bootstrapSinceDate: safeDate, updatedAt: new Date() })
     .where(and(eq(gmailConnections.userId, session.id), notDeleted(gmailConnections.deletedAt)));
 
   log.info(
-    { userId: session.id, bootstrapSinceDate: date, event: "bootstrap_since_date_set" },
+    { userId: session.id, bootstrapSinceDate: safeDate, event: "bootstrap_since_date_set" },
     "bootstrap_since_date updated",
   );
 
@@ -33,6 +45,10 @@ export async function triggerIncrementalPullAction(): Promise<TriggerPullResult>
   const session = await getSessionUser();
 
   // Fire-and-forget: pull runs in the background; action returns immediately.
+  // Best-effort trigger — if the Node process receives SIGTERM (deploy
+  // rollover) between this return and the microtask running, the pull is
+  // silently dropped. The 5-min cron in instrumentation.node.ts is the
+  // reliable fallback.
   queueMicrotask(async () => {
     try {
       await pullForUser(session.id);
@@ -62,7 +78,8 @@ export async function triggerRebootstrapAction(): Promise<TriggerPullResult> {
 
   const overrideSince: Date = conn?.bootstrapSinceDate ?? new Date(new Date().getFullYear(), 0, 1);
 
-  // Fire-and-forget.
+  // Fire-and-forget — same SIGTERM caveat as triggerIncrementalPullAction.
+  // The 5-min cron is the fallback for missed re-bootstraps.
   queueMicrotask(async () => {
     try {
       await pullForUser(session.id, { overrideSince });

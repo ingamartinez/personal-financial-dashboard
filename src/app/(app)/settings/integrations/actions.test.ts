@@ -144,6 +144,24 @@ describe("setBootstrapSinceDateAction", () => {
     // connB's bootstrap_since_date should NOT equal dateA.
     expect(rowB.bootstrapSinceDate).not.toEqual(dateA);
   });
+
+  it("clamps a future date to null (UI prevents this; server is defensive)", async () => {
+    mockGetSessionUser.mockResolvedValue({ id: userA });
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // +7 days
+
+    const result = await setBootstrapSinceDateAction(futureDate);
+
+    expect(result).toEqual({ ok: true });
+
+    const [row] = await db
+      .select({ bootstrapSinceDate: gmailConnections.bootstrapSinceDate })
+      .from(gmailConnections)
+      .where(eq(gmailConnections.id, connA));
+
+    // Future date is silently coerced to null — Gmail's `after:` filter would
+    // return zero results otherwise, masking the misuse.
+    expect(row.bootstrapSinceDate).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

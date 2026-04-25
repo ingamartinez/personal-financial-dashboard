@@ -152,10 +152,16 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
     });
   }
 
-  const bootstrapLabel =
+  // Prefer local picker state over server prop so the label reflects the
+  // user's most recent selection immediately, even before router.refresh()
+  // settles the new server prop after setBootstrapSinceDateAction.
+  const effectiveBootstrapIso =
     state.kind === "connected"
-      ? formatBootstrapDate(state.connection.bootstrapSinceDate)
-      : formatBootstrapDate(null);
+      ? selectedDate
+        ? selectedDate.toISOString()
+        : state.connection.bootstrapSinceDate
+      : null;
+  const bootstrapLabel = formatBootstrapDate(effectiveBootstrapIso);
 
   return (
     <Card>
