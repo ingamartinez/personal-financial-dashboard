@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { createManualTransferGroup } from "@/app/(app)/transactions/actions";
+import { resolveEffectiveAccountId } from "./account-selection";
 import type { Currency } from "@/lib/types";
 
 export type TransferAccountOption = {
@@ -93,6 +94,11 @@ export function TransferGroupDialog({ accounts }: { accounts: TransferAccountOpt
   const [originAccountId, setOriginAccountId] = useState<string>(
     defaultAccount?.id.toString() ?? "",
   );
+  const effectiveOriginAccountId = resolveEffectiveAccountId(
+    originAccountId,
+    accounts,
+    defaultAccount?.id.toString(),
+  );
   const [originAmount, setOriginAmount] = useState("");
   const [occurredOn, setOccurredOn] = useState(todayLocalISO());
   const [description, setDescription] = useState("");
@@ -101,14 +107,17 @@ export function TransferGroupDialog({ accounts }: { accounts: TransferAccountOpt
     { key: newKey(), accountId: "", amount: "" },
   ]);
 
-  const originAccount = accounts.find((a) => a.id.toString() === originAccountId);
+  const originAccount = accounts.find((a) => a.id.toString() === effectiveOriginAccountId);
   const currency: Currency = originAccount?.currency ?? "COP";
 
   // Only show destinations in the same currency as origin. Cross-currency
   // transfer groups are out of scope until we model the FX leg explicitly.
   const eligibleDestinations = useMemo(
-    () => accounts.filter((a) => a.currency === currency && a.id.toString() !== originAccountId),
-    [accounts, currency, originAccountId],
+    () =>
+      accounts.filter(
+        (a) => a.currency === currency && a.id.toString() !== effectiveOriginAccountId,
+      ),
+    [accounts, currency, effectiveOriginAccountId],
   );
 
   const originCents = parseToCents(originAmount) ?? BigInt(0);
@@ -156,7 +165,7 @@ export function TransferGroupDialog({ accounts }: { accounts: TransferAccountOpt
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!originAccountId) {
+    if (!effectiveOriginAccountId) {
       toast.error("Elegí la cuenta de origen");
       return;
     }
@@ -176,7 +185,7 @@ export function TransferGroupDialog({ accounts }: { accounts: TransferAccountOpt
     startTransition(async () => {
       const result = await createManualTransferGroup({
         origin: {
-          accountId: Number(originAccountId),
+          accountId: Number(effectiveOriginAccountId),
           amount: originAmount.trim(),
         },
         destinations: destinations.map((d) => ({
@@ -246,7 +255,7 @@ export function TransferGroupDialog({ accounts }: { accounts: TransferAccountOpt
                 <Label htmlFor="tg-origin">Cuenta</Label>
                 <select
                   id="tg-origin"
-                  value={originAccountId}
+                  value={effectiveOriginAccountId}
                   onChange={(e) => {
                     setOriginAccountId(e.target.value);
                     // When currency changes, any destinations in the old

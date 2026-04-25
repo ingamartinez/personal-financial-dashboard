@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { createManualExpense } from "@/app/(app)/transactions/actions";
+import { resolveEffectiveAccountId } from "./account-selection";
 import type { Currency } from "@/lib/types";
 
 export type AccountOption = {
@@ -49,7 +50,12 @@ export function QuickExpenseDialog({
   const [pending, startTransition] = useTransition();
   const defaultAccount = accounts.find((a) => a.currency === "COP") ?? accounts[0];
   const [accountId, setAccountId] = useState<string>(defaultAccount?.id.toString() ?? "");
-  const selectedAccount = accounts.find((a) => a.id.toString() === accountId);
+  const effectiveAccountId = resolveEffectiveAccountId(
+    accountId,
+    accounts,
+    defaultAccount?.id.toString(),
+  );
+  const selectedAccount = accounts.find((a) => a.id.toString() === effectiveAccountId);
   const currency = selectedAccount?.currency ?? "COP";
   const [amount, setAmount] = useState("");
   const [categorySlug, setCategorySlug] = useState("");
@@ -65,14 +71,14 @@ export function QuickExpenseDialog({
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!accountId) {
+    if (!effectiveAccountId) {
       toast.error("Pick an account");
       return;
     }
     startTransition(async () => {
       try {
         await createManualExpense({
-          accountId: Number(accountId),
+          accountId: Number(effectiveAccountId),
           amount: amount.trim(),
           categorySlug: categorySlug || null,
           occurredOn,
@@ -155,7 +161,7 @@ export function QuickExpenseDialog({
             <Label htmlFor="qe-account">Account</Label>
             <select
               id="qe-account"
-              value={accountId}
+              value={effectiveAccountId}
               onChange={(e) => setAccountId(e.target.value)}
               className="bg-background chevron-select h-9 rounded-md border text-sm"
               required
