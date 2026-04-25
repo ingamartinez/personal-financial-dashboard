@@ -22,7 +22,7 @@ export type AccountStatus = {
   balanceCents: bigint;
   /** Native-currency credit limit; populated only for credit_card accounts that
    * declare a limit (either via shared physical_card or per-account metadata).
-   * Used by the Editorial Calm reframe to show "cupo disponible" instead of
+   * Used by the Warm Paper reframe to show "cupo disponible" instead of
    * negative debt as the headline number. */
   creditLimitCents?: bigint;
 };
@@ -80,7 +80,7 @@ export type FinancialPicture = {
 };
 
 /**
- * Editorial Calm reframe (#491): primary KPI is "saldo líquido"
+ * Warm Paper reframe (#491): primary KPI is "saldo líquido"
  * (only savings balances, always non-negative for healthy accounts) and
  * "patrimonio neto" lives as a secondary line. Liabilities are surfaced
  * separately so the hero can render an assets-vs-debts mini bar without
@@ -164,7 +164,7 @@ export type MonthlyProgress = {
 };
 
 /**
- * Editorial Calm reframe (#491): "what did the user accomplish this month"
+ * Warm Paper reframe (#491): "what did the user accomplish this month"
  * — surfaces positive credit-card payments + positive cash flow as
  * encouragement, not just spend.
  *   debtPaid = SUM(positive transactions on credit_card accounts) this month
