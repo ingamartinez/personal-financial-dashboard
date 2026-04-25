@@ -393,6 +393,13 @@
       "when": 1777067342896,
       "tag": "0055_spicy_the_executioner",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1777096839227,
+      "tag": "0056_minor_tempest",
+      "breakpoints": true
     }
   ]
 }

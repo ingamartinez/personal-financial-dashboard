@@ -1312,6 +1312,12 @@ export const emailReceipts = pgTable(
       .on(t.userId, t.amountCents, t.occurredAt)
       .where(sql`${t.matchStatus} = 'pending' AND ${t.deletedAt} IS NULL`),
     index("email_receipts_connection_idx").on(t.gmailConnectionId),
+    // #455 (Epic G): GIN index on match_candidates for fast JSONB containment
+    // queries used by the disambiguation loader. Partial: only ambiguous rows
+    // carry a non-null candidates array, so this index stays small.
+    index("email_receipts_candidates_gin_idx")
+      .using("gin", t.matchCandidates)
+      .where(sql`${t.matchStatus} = 'ambiguous' AND ${t.deletedAt} IS NULL`),
   ],
 );
 
