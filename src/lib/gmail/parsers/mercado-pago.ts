@@ -147,7 +147,16 @@ export const mercadoPagoParser: GatewayParser = {
       );
       let occurredAt: Date;
       if (dateMatch) {
-        const year = opts?.receivedAt?.getUTCFullYear() ?? new Date().getUTCFullYear();
+        const bodyMonth = SPANISH_MONTHS[dateMatch[2].toLowerCase()];
+        const receivedYear = opts?.receivedAt?.getUTCFullYear() ?? new Date().getUTCFullYear();
+        // Year-boundary correction: if the email body says December (month=12) but
+        // receivedAt is already in January UTC (the email arrived just after midnight
+        // UTC on Jan 1), the payment was made at 23:xx Bogotá on Dec 31 of the prior
+        // year. Use receivedYear - 1 in that case.
+        const year =
+          bodyMonth === 12 && opts?.receivedAt?.getUTCMonth() === 0
+            ? receivedYear - 1
+            : receivedYear;
         const parsed = parseSpanishDate(
           dateMatch[1],
           dateMatch[2],

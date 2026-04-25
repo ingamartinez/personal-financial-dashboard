@@ -44,15 +44,11 @@ describe("wompiParser — approved transaction", () => {
     expect(r.data.occurredAt).toEqual(new Date("2026-04-19T12:00:00Z"));
   });
 
-  it("falls back to new Date() when receivedAt not provided", () => {
+  it("returns needs_review when receivedAt is absent (no wall-clock fallback)", () => {
     const html = wrapWompi(APPROVED_BODY);
-    const before = Date.now();
     const r = wompiParser.parse(html);
-    const after = Date.now();
-    if (r.kind !== "parsed")
-      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
-    expect(r.data.occurredAt.getTime()).toBeGreaterThanOrEqual(before);
-    expect(r.data.occurredAt.getTime()).toBeLessThanOrEqual(after);
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("missing_occurred_at");
   });
 
   it("handles decimal amounts (e.g. COP $1,234.56 = 123456 cents)", () => {

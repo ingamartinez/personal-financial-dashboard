@@ -427,7 +427,7 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
         } else if (parseResult.kind === "skipped") {
           await db
             .update(emailReceipts)
-            .set({ matchStatus: "unmatched", updatedAt: new Date() })
+            .set({ matchStatus: "unmatched", parsedAt: new Date(), updatedAt: new Date() })
             .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
           log.info(
             {

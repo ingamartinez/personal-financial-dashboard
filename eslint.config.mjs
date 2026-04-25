@@ -14,6 +14,12 @@ const eslintConfig = defineConfig([
   {
     rules: {
       "no-console": "error",
+      // Align with the TypeScript convention: identifiers prefixed with "_" are
+      // intentionally unused (e.g. interface-satisfying params in stub parsers).
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
     },
   },
   // Override default ignores of eslint-config-next.

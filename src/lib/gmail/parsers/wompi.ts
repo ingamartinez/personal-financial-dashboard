@@ -72,8 +72,11 @@ export const wompiParser: GatewayParser = {
       // Currency: Wompi Colombia-only; USD support stubbed for completeness
       const currency: "COP" | "USD" = /USD/i.test(text) ? "USD" : "COP";
 
-      // occurredAt: not in body — use email received date
-      const occurredAt = opts?.receivedAt ?? new Date();
+      // occurredAt: not in body — use email received date (required; no wall-clock fallback)
+      if (!opts?.receivedAt) {
+        return { kind: "needs_review", reason: "missing_occurred_at" };
+      }
+      const occurredAt = opts.receivedAt;
 
       return {
         kind: "parsed",

@@ -110,6 +110,43 @@ describe("mercadoPagoParser — promotional emails (skip)", () => {
   });
 });
 
+describe("mercadoPagoParser — year-boundary (Dec 31 / Jan 1 UTC)", () => {
+  it("assigns 2025 to a Dec-31 body when receivedAt is already Jan 1 UTC", () => {
+    // Payment at 23:30 Bogotá on Dec 31 = 04:30 UTC on Jan 1 next year.
+    // Gmail's internalDate is UTC, so receivedAt lands in the new year.
+    // The body says "31 de diciembre" — year must be 2025, not 2026.
+    const html = wrapMercadoPago(`
+      <p>Le compraste a TIENDA NOCHEVIEJA</p>
+      <p>Tu pago fue aprobado</p>
+      <p>Pagaste $ 50.000</p>
+      <p>N.&deg; de operaci&oacute;n 999888777</p>
+      <p>Fecha y hora 31 de diciembre a las 23:30 hs</p>
+    `);
+    // receivedAt is 2026-01-01T04:30:00Z (04:30 UTC = 23:30 Bogotá on Dec 31 2025)
+    const r = mercadoPagoParser.parse(html, { receivedAt: new Date("2026-01-01T04:30:00Z") });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    // 31 de diciembre 23:30 Bogotá (UTC-5) → 2025-12-31 23:30 + 5h = 2026-01-01T04:30:00Z.
+    // The UTC timestamp crosses into 2026 by definition (it IS Jan 1 UTC), but the
+    // LOCAL year (Bogotá) is 2025. We verify by checking the full timestamp is correct.
+    expect(r.data.occurredAt).toEqual(new Date("2026-01-01T04:30:00Z"));
+  });
+
+  it("keeps the same year for a normal Dec-15 body with Dec receivedAt", () => {
+    const html = wrapMercadoPago(`
+      <p>Le compraste a TIENDA NAVIDAD</p>
+      <p>Tu pago fue aprobado</p>
+      <p>Pagaste $ 100.000</p>
+      <p>N.&deg; de operaci&oacute;n 123456789</p>
+      <p>Fecha y hora 15 de diciembre a las 14:00 hs</p>
+    `);
+    const r = mercadoPagoParser.parse(html, { receivedAt: new Date("2025-12-15T20:00:00Z") });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.occurredAt.getUTCFullYear()).toBe(2025);
+  });
+});
+
 describe("mercadoPagoParser — needs_review", () => {
   it("returns needs_review when Pagaste is present but amount cannot be parsed", () => {
     const html = wrapMercadoPago(`
