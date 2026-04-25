@@ -21,6 +21,8 @@ If `PLAN.md` and an issue conflict, ask the user — do not silently pick.
 
 ## Issue-first rule (mandatory)
 
+> **gh CLI identity required** — all `gh` commands below must be prefixed with `GH_CONFIG_DIR=~/.config/gh-findash`. See [§ gh CLI identity](#gh-cli-identity) for the full rule.
+
 **No code changes without an open issue.** Before any work:
 
 1. Search existing issues: `gh issue list --search "<keywords>"`. If one exists, use it.
@@ -102,6 +104,47 @@ NEVER add `Co-Authored-By` or AI attribution lines.
 - Never force-push to `main`. Never bypass hooks.
 - If you discover a non-obvious gotcha, save it to engram (`mem_save`) AND add it to the relevant section of this file.
 - After running scaffolders or codegen (`shadcn init/add`, `bunx create-*`, drizzle generators, etc.), run `git log -1` BEFORE committing manually. Some tools auto-create commits with non-conventional messages (e.g. `shadcn init -y` produced `feat: initial commit` here). If you find an unauthorized commit on your branch, `git reset --soft HEAD~1` and rebuild it with the proper `<type>(<scope>): <subject> (#<issue>)` format. Never push these auto-commits.
+
+## gh CLI identity
+
+ia-server runs multiple agents under the same Linux user. The default `~/.config/gh/` belongs to `amartinezcb` (the cc agent). Every `gh` invocation in this repo MUST be prefixed with `GH_CONFIG_DIR=~/.config/gh-findash` — without it you silently authenticate as the wrong account.
+
+```bash
+# CORRECT — always prefix every gh call
+GH_CONFIG_DIR=~/.config/gh-findash gh issue list
+GH_CONFIG_DIR=~/.config/gh-findash gh pr create ...
+
+# WRONG — uses global config = amartinezcb's account
+gh issue list
+```
+
+**HTTPS push** — the global git credential helper points at the wrong account, so inline the token:
+
+```bash
+TOK=$(GH_CONFIG_DIR=~/.config/gh-findash gh auth token --user ingamartinez)
+git push "https://ingamartinez:${TOK}@github.com/ingamartinez/personal-financial-dashboard.git" HEAD
+```
+
+**NEVER run without the prefix:**
+
+```bash
+# These rewrite the global gitconfig and break the cc agent — always prefix them
+GH_CONFIG_DIR=~/.config/gh-findash gh auth switch ...
+GH_CONFIG_DIR=~/.config/gh-findash gh auth setup-git ...
+```
+
+**`workflow` scope** — the token may lack this scope (required to push changes to `.github/workflows/`). Fix once interactively:
+
+```bash
+GH_CONFIG_DIR=~/.config/gh-findash gh auth refresh -h github.com -s workflow
+```
+
+**Verify identity** at any time:
+
+```bash
+GH_CONFIG_DIR=~/.config/gh-findash gh auth status
+# Should show: Logged in to github.com account ingamartinez
+```
 
 ## Local commands
 
