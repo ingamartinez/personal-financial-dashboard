@@ -164,8 +164,7 @@ describe("handleUpdate — disambiguation reply intercept", () => {
           amountCents: BigInt(2000000),
           currency: "COP",
           descriptionRaw: "NETFLIX.COM",
-          accountName: "Visa",
-          accountInstitution: null,
+          accountLabel: "Visa (COP)",
         },
       ],
     };

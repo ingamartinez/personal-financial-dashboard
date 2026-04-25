@@ -88,8 +88,7 @@ const fakePending = (): PendingAmbiguousReceipt => ({
       amountCents: BigInt(1990000),
       currency: "COP",
       descriptionRaw: "SPOTIFY PREMIUM",
-      accountName: "Visa *1234",
-      accountInstitution: "Bancolombia",
+      accountLabel: "Bancolombia · Visa *1234 (COP)",
     },
     {
       id: 2,
@@ -97,8 +96,7 @@ const fakePending = (): PendingAmbiguousReceipt => ({
       amountCents: BigInt(1990000),
       currency: "COP",
       descriptionRaw: "SPOTIFY.COM",
-      accountName: "Mastercard *5678",
-      accountInstitution: "Davivienda",
+      accountLabel: "Davivienda · Mastercard *5678 (COP)",
     },
   ],
 });

@@ -109,4 +109,20 @@ describe("pushToUser", () => {
     const result = await pushToUser(userId, "test");
     expect(result).toEqual({ ok: false, reason: "send_failed" });
   });
+
+  // WARNING #2 regression: soft-deleted bot must not be selected.
+  it("returns no_bot when only a soft-deleted bot row exists", async () => {
+    // Insert a bot row that has been soft-deleted (simulate a disconnect).
+    await db.insert(telegramBots).values({
+      userId,
+      tokenEncrypted: telegramCipher.encrypt("revoked-token"),
+      username: `bot_${userId}`,
+      webhookSecret: "secret",
+      deletedAt: new Date(Date.now() - 3600_000), // deleted 1h ago
+    });
+    await seedSession(userId, 780);
+    const result = await pushToUser(userId, "hello");
+    expect(result).toEqual({ ok: false, reason: "no_bot" });
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+  });
 });
