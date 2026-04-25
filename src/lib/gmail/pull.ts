@@ -1,7 +1,7 @@
 import type { gmail_v1 } from "googleapis";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { emailReceipts, gmailConnections } from "@/lib/db/schema";
+import { emailReceipts, gmailConnections, telegramSessions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import {
@@ -23,6 +23,9 @@ import { parseReceipt } from "@/lib/gmail/parsers";
 import { ingestParsedEmail } from "@/lib/ingestion/email-bancolombia";
 import { matchReceipt } from "@/lib/gmail/matcher";
 import { applyEnrichment } from "@/lib/gmail/enrich";
+import { pushToUser } from "@/lib/telegram/push";
+import { renderReauthNudge } from "@/lib/telegram/formatter";
+import { loadPendingAmbiguousReceipt } from "@/lib/telegram/disambiguation-query";
 
 const log = createLogger({ module: "gmail/pull" });
 
@@ -507,6 +510,125 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
   }
 }
 
+const NUDGE_THROTTLE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Send a re-auth Telegram nudge to a user when their Gmail connection is
+ * expired or revoked. Throttled to at most once per 24h via `bot_nudge_sent_at`.
+ */
+async function maybeNudgeReauth(connectionId: number, userId: number): Promise<void> {
+  // Check throttle: read current bot_nudge_sent_at.
+  const [connRow] = await db
+    .select({ botNudgeSentAt: gmailConnections.botNudgeSentAt })
+    .from(gmailConnections)
+    .where(eq(gmailConnections.id, connectionId));
+
+  if (!connRow) return;
+
+  const lastNudge = connRow.botNudgeSentAt;
+  if (lastNudge && Date.now() - lastNudge.getTime() < NUDGE_THROTTLE_MS) {
+    log.info(
+      { userId, connectionId, event: "reauth_nudge_throttled" },
+      "re-auth nudge throttled — sent within last 24h",
+    );
+    return;
+  }
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.APP_URL ?? "";
+  const result = await pushToUser(userId, renderReauthNudge(appUrl));
+  if (!result.ok) {
+    log.info(
+      { userId, connectionId, reason: result.reason, event: "reauth_nudge_no_channel" },
+      "re-auth nudge not delivered — no bot/session",
+    );
+    return;
+  }
+
+  // Mark nudge as sent.
+  await db
+    .update(gmailConnections)
+    .set({ botNudgeSentAt: new Date() })
+    .where(eq(gmailConnections.id, connectionId));
+
+  log.info({ userId, connectionId, event: "reauth_nudge_sent" }, "re-auth nudge sent via Telegram");
+}
+
+/**
+ * After a successful pull, check whether any newly-ambiguous receipts need a
+ * Telegram push prompt. Sends at most one prompt per pull cycle. If an
+ * awaiting_disambiguation session already exists for the user, skips (the user
+ * is already working through one).
+ */
+async function maybePushDisambiguationPrompt(userId: number): Promise<void> {
+  // Load the most-recent session for this user — needed for chatId + telegramUserId
+  // to open a new awaiting_disambiguation session after the push.
+  const [sessionRow] = await db
+    .select({
+      chatId: telegramSessions.chatId,
+      telegramUserId: telegramSessions.telegramUserId,
+      state: telegramSessions.state,
+    })
+    .from(telegramSessions)
+    .where(eq(telegramSessions.userId, userId))
+    .limit(1);
+
+  if (!sessionRow) {
+    // User has no Telegram session — no channel to push to.
+    return;
+  }
+
+  if (sessionRow.state?.step === "awaiting_disambiguation") {
+    log.info(
+      { userId, event: "disambiguation_push_skipped" },
+      "disambiguation push skipped — session already open",
+    );
+    return;
+  }
+
+  const pending = await loadPendingAmbiguousReceipt(userId);
+  if (!pending) return;
+
+  const { renderDisambiguationPrompt } = await import("@/lib/telegram/formatter");
+  const text = renderDisambiguationPrompt({
+    receiptId: pending.receipt.id,
+    receiptMerchant: pending.receipt.merchant,
+    receiptOccurredAt: pending.receipt.occurredAt,
+    candidates: pending.candidates,
+  });
+
+  const result = await pushToUser(userId, text, "Markdown");
+  if (!result.ok) {
+    log.info(
+      { userId, reason: result.reason, event: "disambiguation_push_no_channel" },
+      "disambiguation push not delivered — no bot/session",
+    );
+    return;
+  }
+
+  // Open a 24h awaiting_disambiguation session so the user's reply is intercepted.
+  const { upsertSession } = await import("@/lib/telegram/session");
+  const chatId = Number(sessionRow.chatId);
+  const telegramUserId = Number(sessionRow.telegramUserId);
+  await upsertSession({
+    chatId,
+    userId,
+    telegramUserId,
+    state: {
+      step: "awaiting_disambiguation",
+      draft: {},
+      sourceChatId: chatId,
+      disambiguationReceiptId: pending.receipt.id,
+      disambiguationCandidates: pending.candidates.map((c) => c.id),
+    },
+    ttlMs: 24 * 60 * 60 * 1000,
+  });
+
+  log.info(
+    { userId, receiptId: pending.receipt.id, event: "disambiguation_push_sent" },
+    "disambiguation push sent via Telegram",
+  );
+}
+
 /**
  * Pull new Gmail messages for one user, store them in `email_receipts`, and
  * update the connection's `last_pull_at` watermark.
@@ -549,6 +671,23 @@ export async function pullForUser(
         code: err.status,
         message: err.message,
       });
+      // Send re-auth nudge for expired/revoked connections (throttled 24h).
+      // Look up the connection id to track botNudgeSentAt.
+      if (err.status === "expired" || err.status === "revoked") {
+        const [connRow] = await db
+          .select({ id: gmailConnections.id })
+          .from(gmailConnections)
+          .where(and(eq(gmailConnections.userId, userId), notDeleted(gmailConnections.deletedAt)))
+          .limit(1);
+        if (connRow) {
+          await maybeNudgeReauth(connRow.id, userId).catch((nudgeErr: unknown) => {
+            log.error(
+              { err: nudgeErr, userId, event: "reauth_nudge_failed" },
+              "re-auth nudge threw",
+            );
+          });
+        }
+      }
       return { userId, pulled: 0, skipped: 0, byGateway, errors, connectionId: null };
     }
     throw err;
@@ -596,6 +735,13 @@ export async function pullForUser(
         code: "invalid_grant",
         message: "refresh token revoked — connection marked revoked",
       });
+      // Send re-auth nudge (throttled 24h).
+      await maybeNudgeReauth(authed.connection.id, userId).catch((nudgeErr: unknown) => {
+        log.error(
+          { err: nudgeErr, userId, event: "reauth_nudge_failed" },
+          "re-auth nudge threw during invalid_grant handling",
+        );
+      });
       return {
         userId,
         pulled: totalPulled,
@@ -637,6 +783,15 @@ export async function pullForUser(
       .set({ lastPullAt: now, updatedAt: now })
       .where(eq(gmailConnections.id, authed.connection.id));
   }
+
+  // If any newly-ambiguous receipts exist and the user has no open
+  // disambiguation session, push a prompt (max 1 per pull cycle).
+  await maybePushDisambiguationPrompt(userId).catch((pushErr: unknown) => {
+    log.error(
+      { err: pushErr, userId, event: "disambiguation_push_failed" },
+      "disambiguation push threw — not blocking pull result",
+    );
+  });
 
   return {
     userId,
