@@ -4,6 +4,7 @@ import {
   counterpartyKeyKind,
   counterpartyType,
   currency,
+  emailReceiptGateway,
   txSource,
 } from "@/lib/db/schema";
 
@@ -16,6 +17,19 @@ export type TransactionSource = (typeof txSource.enumValues)[number];
 export type ClassificationMethod = (typeof classificationMethod.enumValues)[number];
 export type CounterpartyType = (typeof counterpartyType.enumValues)[number];
 export type CounterpartyKind = (typeof counterpartyKeyKind.enumValues)[number];
+export type EmailReceiptGateway = (typeof emailReceiptGateway.enumValues)[number];
+
+// #455 (Epic G): ambiguous email receipt candidate surfaced in /transactions
+// for user disambiguation. amountCents is a string for JSON serialization
+// (bigint is not JSON-serializable natively).
+export type GmailAmbiguousReceipt = {
+  id: number;
+  gateway: EmailReceiptGateway;
+  merchant: string | null;
+  amountCents: string;
+  currency: string;
+  occurredAt: string; // ISO timestamp
+};
 
 export type CounterpartyAlias = {
   id: number;
@@ -63,4 +77,7 @@ export type TxRow = {
   installmentRateEmX10k: number | null;
   counterparty: CounterpartyValue | null;
   deletedAt: Date | null;
+  // #455 (Epic G): populated by the sidecar query in /transactions page.tsx.
+  // Undefined when no ambiguous Gmail receipts point at this tx.
+  gmailAmbiguousReceipts?: GmailAmbiguousReceipt[];
 };

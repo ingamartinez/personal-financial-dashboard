@@ -1,0 +1,1 @@
+CREATE INDEX "email_receipts_candidates_gin_idx" ON "email_receipts" USING gin ("match_candidates") WHERE "email_receipts"."match_status" = 'ambiguous' AND "email_receipts"."deleted_at" IS NULL;

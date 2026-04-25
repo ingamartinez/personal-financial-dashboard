@@ -22,6 +22,7 @@ import { CategoryCell, type CategoryOption } from "./category-cell";
 import { ClassificationReasonDialog } from "./classification-reason-dialog";
 import { ConfidenceBadge, confidenceBand } from "./confidence-badge";
 import { CounterpartyDialog } from "./counterparty-dialog";
+import { NeedsReviewBadge } from "./needs-review-badge";
 import { TransactionRowActions } from "./transaction-row-actions";
 
 const ROW_CLASSES =
@@ -238,6 +239,15 @@ export function TransactionTable({
                             allCounterparties={allCounterparties}
                           />
                         ) : null}
+                        {tx.gmailAmbiguousReceipts && tx.gmailAmbiguousReceipts.length > 0 ? (
+                          <NeedsReviewBadge
+                            receipts={tx.gmailAmbiguousReceipts}
+                            transactionId={tx.id}
+                            txDescription={primaryDescription(tx)}
+                            txAmountCents={String(tx.amountCents)}
+                            txOccurredAt={tx.occurredAt.toISOString()}
+                          />
+                        ) : null}
                       </div>
                       <div className="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
                         <span className="truncate">{tx.accountName}</span>
@@ -340,6 +350,15 @@ export function TransactionTable({
                           counterparty={tx.counterparty}
                           categories={categories}
                           allCounterparties={allCounterparties}
+                        />
+                      ) : null}
+                      {tx.gmailAmbiguousReceipts && tx.gmailAmbiguousReceipts.length > 0 ? (
+                        <NeedsReviewBadge
+                          receipts={tx.gmailAmbiguousReceipts}
+                          transactionId={tx.id}
+                          txDescription={primaryDescription(tx)}
+                          txAmountCents={String(tx.amountCents)}
+                          txOccurredAt={tx.occurredAt.toISOString()}
                         />
                       ) : null}
                     </div>
