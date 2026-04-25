@@ -35,6 +35,6 @@ export default auth((req) => {
 // /login before their own handler (or Next.js's static handler) ever runs.
 export const config = {
   matcher: [
-    "/((?!api/auth|api/telegram/webhook|api/ingest|api/fx/refresh|api/health|api/widget|api/dev/login|login|signup|_next/static|_next/image|favicon.ico|widgets|.*\\.(?:png|svg|ico|webmanifest)$).*)",
+    "/((?!api/auth|api/cron|api/telegram/webhook|api/ingest|api/fx/refresh|api/health|api/widget|api/dev/login|login|signup|_next/static|_next/image|favicon.ico|widgets|.*\\.(?:png|svg|ico|webmanifest)$).*)",
   ],
 };
