@@ -8,6 +8,7 @@ import { insightsReports } from "@/lib/db/schema";
 import { getSessionUser } from "@/lib/auth/session";
 import { buildInsightsSummary, generateInsightsReport, hashSummary } from "@/lib/ai/insights";
 import { getCurrentFxRate } from "@/lib/fx/repo";
+import { getFinancialPeriod } from "@/lib/dashboard/period";
 
 const ymSchema = z.string().regex(/^\d{4}-\d{2}$/);
 
@@ -15,7 +16,17 @@ export async function generateInsight(ym: string) {
   const session = await getSessionUser();
   const parsed = ymSchema.parse(ym);
   const fx = await getCurrentFxRate();
-  const summary = await buildInsightsSummary(session.id, parsed, fx.rate);
+  // Resolve current + previous periods so the AI input matches the
+  // dashboard / page view exactly. Previous month uses the same cycle mode.
+  const [y, m] = parsed.split("-").map(Number);
+  const [currentPeriod, previousPeriod] = await Promise.all([
+    getFinancialPeriod(session.id, new Date(Date.UTC(y, m - 1, 15))),
+    getFinancialPeriod(session.id, new Date(Date.UTC(y, m - 2, 15))),
+  ]);
+  const summary = await buildInsightsSummary(session.id, parsed, fx.rate, undefined, {
+    currentRange: { start: currentPeriod.start, end: currentPeriod.end },
+    previousRange: { start: previousPeriod.start, end: previousPeriod.end },
+  });
   const inputHash = hashSummary(summary);
   const result = await generateInsightsReport({ summary });
 

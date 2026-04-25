@@ -114,6 +114,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
       cpId: counterparties.id,
       cpDisplayName: counterparties.displayName,
       cpType: counterparties.type,
+      cpIsSalary: counterparties.isSalary,
       cpDefaultCategorySlug: counterparties.defaultCategorySlug,
       cpNotes: counterparties.notes,
       cpAliases: sql<CounterpartyAlias[] | null>`(
@@ -161,6 +162,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
           id: r.cpId,
           displayName: r.cpDisplayName!,
           type: r.cpType!,
+          isSalary: r.cpIsSalary ?? false,
           defaultCategorySlug: r.cpDefaultCategorySlug,
           notes: r.cpNotes,
           aliases: r.cpAliases ?? [],

@@ -1,6 +1,11 @@
 import { AnimatedMoney } from "@/components/ui/animated-money";
 import { cn } from "@/lib/utils";
 import type { MonthlyFlow } from "@/lib/dashboard/queries";
+import {
+  formatPeriodDateRange,
+  periodFallbackNote,
+  type FinancialPeriod,
+} from "@/lib/dashboard/period-format";
 
 function pctOf(part: bigint, whole: bigint): number {
   if (whole <= BigInt(0)) return 0;
@@ -10,10 +15,12 @@ function pctOf(part: bigint, whole: bigint): number {
 export function MonthlyFlowCard({
   data,
   monthLabel,
+  period,
   isFuture = false,
 }: {
   data: MonthlyFlow;
   monthLabel: string;
+  period?: FinancialPeriod;
   isFuture?: boolean;
 }) {
   if (isFuture) {
@@ -29,12 +36,22 @@ export function MonthlyFlowCard({
   const positive = data.netCopCents >= BigInt(0);
   const total = data.incomeCopCents + data.expenseCopCents;
   const incomePct = pctOf(data.incomeCopCents, total);
+  const dateRange = period ? formatPeriodDateRange(period) : null;
+  const fallbackNote = period ? periodFallbackNote(period) : null;
 
   return (
     <article className="card-paper paper-rise-1 flex h-full flex-col gap-4 p-6">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-eyebrow">Flujo del mes</span>
-        <span className="text-ink-subtle text-xs capitalize">{monthLabel}</span>
+      <div className="flex flex-col items-end gap-0.5 sm:flex-row sm:items-baseline sm:justify-between">
+        <span className="text-eyebrow self-start">Flujo del mes</span>
+        <div className="flex flex-col items-end">
+          <span className="text-ink-subtle text-xs capitalize">
+            {monthLabel}
+            {dateRange ? <span className="lowercase"> · {dateRange}</span> : null}
+          </span>
+          {fallbackNote ? (
+            <span className="text-ink-subtle/80 text-[10px]">{fallbackNote}</span>
+          ) : null}
+        </div>
       </div>
 
       <div className="flex items-baseline gap-2">

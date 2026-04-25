@@ -446,6 +446,10 @@ const updateCounterpartySchema = z.object({
   id: z.coerce.number().int().positive(),
   displayName: z.string().trim().min(1).max(120),
   type: counterpartyTypeSchema,
+  // #493: orthogonal to `type` — flagging an employer as salary anchors the
+  // pay-period helper. Optional in the schema so existing callers (drag/drop
+  // rename, type-only edits) don't have to pass it explicitly.
+  isSalary: z.boolean().optional(),
   defaultCategorySlug: z.string().min(1).max(60).nullable(),
   notes: z.string().max(500).nullable(),
 });
@@ -492,6 +496,7 @@ export async function updateCounterparty(
       .set({
         displayName: parsed.displayName,
         type: parsed.type,
+        ...(parsed.isSalary !== undefined ? { isSalary: parsed.isSalary } : {}),
         defaultCategorySlug: parsed.defaultCategorySlug,
         notes: parsed.notes,
         updatedAt: new Date(),

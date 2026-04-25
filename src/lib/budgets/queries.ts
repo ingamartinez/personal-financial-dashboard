@@ -1,4 +1,4 @@
-import { aliasedTable, and, asc, eq, gte, lte, sql } from "drizzle-orm";
+import { aliasedTable, and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { budgets, categories, transactions } from "@/lib/db/schema";
 import { notAdjustment, notDeleted } from "@/lib/db/helpers";
@@ -24,18 +24,27 @@ export type BudgetsOverview = {
   items: BudgetOverviewItem[];
 };
 
-function monthRange(ym: string) {
+function defaultCalendarRange(ym: string) {
   const [y, m] = ym.split("-").map(Number);
   const start = new Date(Date.UTC(y, m - 1, 1));
-  const end = new Date(Date.UTC(y, m, 0, 23, 59, 59));
-  return { start, end, startIso: `${ym}-01` };
+  const end = new Date(Date.UTC(y, m, 1));
+  return { start, end };
 }
 
+/**
+ * Budget plans are anchored on calendar months (`budgets.periodStart` matches
+ * `${ym}-01`). Spend aggregation, however, can run over a different range so
+ * pay-period users see consistent numbers across the dashboard and budgets
+ * page. Pass `spendRange` resolved from `getFinancialPeriod` at the call
+ * site; omit it to fall back to the calendar month implied by `yearMonth`.
+ */
 export async function getBudgetsOverview(
   userId: number,
   yearMonth: string,
+  spendRange?: { start: Date; end: Date },
 ): Promise<BudgetsOverview> {
-  const { start, end, startIso } = monthRange(yearMonth);
+  const startIso = `${yearMonth}-01`;
+  const { start, end } = spendRange ?? defaultCalendarRange(yearMonth);
 
   const [cats, rows, spentRows] = await Promise.all([
     db
@@ -88,7 +97,7 @@ export async function getBudgetsOverview(
           and(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, start),
-            lte(transactions.occurredAt, end),
+            lt(transactions.occurredAt, end),
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),

@@ -5,13 +5,19 @@ import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import { groupCreditCards, listAccountsDetailed } from "@/lib/accounts/queries";
 import { computeNextPayment } from "@/lib/accounts/next-payment";
+import { currentCalendarMonth } from "@/lib/dashboard/period";
 import type { AccountType, CounterpartyType, Currency } from "@/lib/types";
 
+/** @deprecated Use `currentCalendarMonth` from `@/lib/dashboard/period` for
+ *  bank-truth ranges, or `getFinancialPeriod` for user-anchored pay periods. */
 export function currentMonthRange(now = new Date()): { start: Date; end: Date } {
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  return { start, end };
+  return currentCalendarMonth(now);
 }
+
+/** Range of dates covering the period a month-bound query should aggregate
+ *  over. Resolve via `getFinancialPeriod` (pay-period mode) or
+ *  `currentCalendarMonth` (bank truth) at the call site. */
+export type DateRange = { start: Date; end: Date };
 
 export type AccountStatus = {
   id: number;
@@ -122,9 +128,9 @@ export type MonthlyFlow = {
 export async function getMonthlyFlow(
   userId: number,
   copPerUsd: number,
-  now = new Date(),
+  range: DateRange = currentCalendarMonth(),
 ): Promise<MonthlyFlow> {
-  const { start, end } = currentMonthRange(now);
+  const { start, end } = range;
 
   const rows = await db
     .select({
@@ -174,9 +180,9 @@ export type MonthlyProgress = {
 export async function getMonthlyProgress(
   userId: number,
   copPerUsd: number,
-  now = new Date(),
+  range: DateRange = currentCalendarMonth(),
 ): Promise<MonthlyProgress> {
-  const { start, end } = currentMonthRange(now);
+  const { start, end } = range;
 
   const debtRows = await db
     .select({
@@ -202,7 +208,7 @@ export async function getMonthlyProgress(
     debtPaidCopCents += toCop(BigInt(r.paidCents), r.currency, copPerUsd);
   }
 
-  const flow = await getMonthlyFlow(userId, copPerUsd, now);
+  const flow = await getMonthlyFlow(userId, copPerUsd, range);
   const savingsCopCents = flow.netCopCents > BigInt(0) ? flow.netCopCents : BigInt(0);
 
   return {
@@ -222,9 +228,9 @@ export type CategorySlice = {
 export async function getCategoryBreakdown(
   userId: number,
   copPerUsd: number,
-  now = new Date(),
+  range: DateRange = currentCalendarMonth(),
 ): Promise<CategorySlice[]> {
-  const { start, end } = currentMonthRange(now);
+  const { start, end } = range;
 
   const rootCategories = aliasedTable(categories, "root_categories");
   const rootSlug = sql<string | null>`COALESCE(${categories.parentSlug}, ${categories.slug})`;
@@ -297,10 +303,10 @@ export type TopExpense = {
 export async function getTopExpenses(
   userId: number,
   copPerUsd: number,
-  now = new Date(),
+  range: DateRange = currentCalendarMonth(),
   limit = 5,
 ): Promise<TopExpense[]> {
-  const { start, end } = currentMonthRange(now);
+  const { start, end } = range;
   const rateMicros = Math.round(copPerUsd * 1_000_000);
   const rows = await db
     .select({

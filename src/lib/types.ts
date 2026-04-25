@@ -47,6 +47,7 @@ export type CounterpartyValue = {
   id: number;
   displayName: string;
   type: CounterpartyType;
+  isSalary: boolean;
   defaultCategorySlug: string | null;
   notes: string | null;
   aliases: CounterpartyAlias[];

@@ -25,8 +25,21 @@ export const DISPLAY_CURRENCY_MODES = ["native", "all-cop", "all-usd"] as const;
 export type DisplayCurrencyMode = (typeof DISPLAY_CURRENCY_MODES)[number];
 export const DEFAULT_DISPLAY_CURRENCY_MODE: DisplayCurrencyMode = "native";
 
+export const FINANCIAL_CYCLE_MODES = ["calendar", "pay_period"] as const;
+export type FinancialCycleMode = (typeof FINANCIAL_CYCLE_MODES)[number];
+export const DEFAULT_FINANCIAL_CYCLE_MODE: FinancialCycleMode = "calendar";
+
 export type UiPreferences = {
   displayCurrencyMode?: DisplayCurrencyMode;
+  // #493: opt-in toggle. When "pay_period" the dashboard / budgets / insights
+  // anchor month boundaries on detected salary income instead of the calendar
+  // month. Defaults to "calendar" — irregular-income users (freelancers, gig
+  // workers, multi-source) keep the original behavior.
+  financialCycleMode?: FinancialCycleMode;
+  // #493: dashboard one-time nudge dismissal. Once true the banner that
+  // suggests turning on pay_period mode never re-appears, even if the user
+  // later flips back to calendar mode.
+  payPeriodNudgeDismissed?: boolean;
 };
 
 // Per-user feature toggles. Default for every flag is "inherit from process
@@ -430,6 +443,11 @@ export const counterparties = pgTable(
     type: counterpartyType("type").notNull().default("unknown"),
     defaultCategorySlug: varchar("default_category_slug", { length: 60 }),
     notes: text("notes"),
+    // #493: orthogonal to `type` — your employer is a `merchant` AND
+    // `isSalary=true`. Drives the pay-period anchoring helper. A counterparty
+    // can be flagged regardless of `type`; the helper only looks at this flag
+    // plus the user's `financialCycleMode` preference.
+    isSalary: boolean("is_salary").notNull().default(false),
     hitCount: integer("hit_count").notNull().default(0),
     lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -437,6 +455,11 @@ export const counterparties = pgTable(
   },
   (t) => [
     index("counterparties_user_display_idx").on(t.userId, t.displayName),
+    // Partial index — most counterparties are NOT salary, so we only pay the
+    // index cost for the rows the period helper actually scans.
+    index("counterparties_user_salary_idx")
+      .on(t.userId)
+      .where(sql`${t.isSalary} = true`),
     foreignKey({
       columns: [t.userId, t.defaultCategorySlug],
       foreignColumns: [categories.userId, categories.slug],

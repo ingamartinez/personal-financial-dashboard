@@ -1,0 +1,2 @@
+ALTER TABLE "counterparties" ADD COLUMN "is_salary" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE INDEX "counterparties_user_salary_idx" ON "counterparties" USING btree ("user_id") WHERE "counterparties"."is_salary" = true;

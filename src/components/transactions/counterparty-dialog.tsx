@@ -8,6 +8,7 @@ import {
   CircleHelpIcon,
   MergeIcon,
   SplitIcon,
+  WalletIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -64,6 +65,7 @@ export function CounterpartyDialog({
   const [pending, startTransition] = useTransition();
   const [displayName, setDisplayName] = useState(counterparty.displayName);
   const [type, setType] = useState<CounterpartyValue["type"]>(counterparty.type);
+  const [isSalary, setIsSalary] = useState<boolean>(counterparty.isSalary);
   const [defaultCategorySlug, setDefaultCategorySlug] = useState<string>(
     counterparty.defaultCategorySlug ?? "",
   );
@@ -80,6 +82,7 @@ export function CounterpartyDialog({
   function reset() {
     setDisplayName(counterparty.displayName);
     setType(counterparty.type);
+    setIsSalary(counterparty.isSalary);
     setDefaultCategorySlug(counterparty.defaultCategorySlug ?? "");
     setNotes(counterparty.notes ?? "");
     setMergeTargetId("");
@@ -103,6 +106,7 @@ export function CounterpartyDialog({
           id: counterparty.id,
           displayName: displayName.trim(),
           type,
+          isSalary,
           defaultCategorySlug: defaultCategorySlug || null,
           notes: notes.trim() || null,
         });
@@ -261,6 +265,41 @@ export function CounterpartyDialog({
                 label="Unknown"
               />
             </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Sueldo / Nómina</Label>
+            <button
+              type="button"
+              onClick={() => setIsSalary((v) => !v)}
+              className={`flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors ${
+                isSalary
+                  ? "border-primary bg-primary/10 text-foreground"
+                  : "bg-background text-muted-foreground hover:bg-muted"
+              }`}
+              aria-pressed={isSalary}
+            >
+              <span className="flex items-center gap-2">
+                <WalletIcon className="size-3.5" />
+                Marcar como sueldo
+              </span>
+              <span
+                className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
+                  isSalary ? "bg-primary" : "bg-muted-foreground/30"
+                }`}
+                aria-hidden
+              >
+                <span
+                  className={`bg-background inline-block size-3 rounded-full transition-transform ${
+                    isSalary ? "translate-x-3.5" : "translate-x-0.5"
+                  }`}
+                />
+              </span>
+            </button>
+            <p className="text-muted-foreground text-xs">
+              Activá para que el flujo del mes se ancle en tus fechas reales de pago (Settings →
+              Período financiero).
+            </p>
           </div>
 
           <div className="flex flex-col gap-1.5">
