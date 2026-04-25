@@ -65,6 +65,9 @@ export async function matchReceipt(userId: number, receiptId: number): Promise<M
   // POSIX ERE — strip it so the pattern degrades gracefully to a substring
   // match (still accurate enough for bank description tokens like MERCADOPAGO,
   // PAYPAL, WOMPI which are unlikely to appear as sub-tokens in other words).
+  // PostgreSQL POSIX `~*` does not support `\b` as a word boundary (it means
+  // backspace). Strip `\b` from regex.source — assumes `\b` only appears as an
+  // anchor, never inside a character class (e.g. `[\b]` would break differently).
   const posixPattern = gateway.bankDescriptionRegex.source.replace(/\\b/g, "");
 
   const windowStart = new Date(receipt.occurredAt.getTime() - MATCH_WINDOW_MS);
