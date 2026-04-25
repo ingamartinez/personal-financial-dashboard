@@ -10,6 +10,7 @@ import {
   emailReceipts,
   gmailConnections,
   ingestionLogs,
+  recurringTransactions,
   transactions,
   userSnapshots,
   users,
@@ -167,6 +168,8 @@ describe("#472 reset user transactional data", () => {
     await db.delete(ingestionLogs).where(eq(ingestionLogs.userId, userB));
     await db.delete(budgets).where(eq(budgets.userId, userA));
     await db.delete(budgets).where(eq(budgets.userId, userB));
+    await db.delete(recurringTransactions).where(eq(recurringTransactions.userId, userA));
+    await db.delete(recurringTransactions).where(eq(recurringTransactions.userId, userB));
     // Keep at least one transaction + log for each user so reset has
     // something to delete.
     await createTransaction(userA, accountA, BigInt(-1000), `${TAG}-A-fixture`);
@@ -196,11 +199,24 @@ describe("#472 reset user transactional data", () => {
       expect(await countWhere(userA, sql.raw("ingestion_logs"))).toBe(0);
     });
 
-    it("preserves config (accounts, categories, rules, budgets, counterparties)", async () => {
+    it("preserves config (accounts, categories, rules, budgets, counterparties, recurring_transactions)", async () => {
       await db.insert(counterparties).values({
         userId: userA,
         displayName: `${TAG}-cp-preserve`,
         type: "unknown",
+      });
+      // #475: recurring_transactions is the user's forecast definition (config).
+      // recurring_gaps + skipped_consolidation_cycles are the derived state
+      // that DOES get wiped — but the parent definition must survive so the
+      // forecast keeps firing predictions after a reset.
+      await db.insert(recurringTransactions).values({
+        userId: userA,
+        accountId: accountA,
+        label: `${TAG}-recurring-preserve`,
+        amountCents: BigInt(-1_500_000),
+        currency: "COP",
+        categorySlug: "otros",
+        dayOfMonth: 15,
       });
 
       const accountsBefore = await countWhere(userA, sql.raw("accounts"));
@@ -212,6 +228,8 @@ describe("#472 reset user transactional data", () => {
       `);
       const budgetsBefore = await countWhere(userA, sql.raw("budgets"));
       const cpsBefore = await countWhere(userA, sql.raw("counterparties"));
+      const recurringBefore = await countWhere(userA, sql.raw("recurring_transactions"));
+      expect(recurringBefore).toBeGreaterThan(0);
 
       await resetUserData({ userId: userA });
 
@@ -226,6 +244,7 @@ describe("#472 reset user transactional data", () => {
       expect(rulesAfter).toBe(rulesBefore);
       expect(await countWhere(userA, sql.raw("budgets"))).toBe(budgetsBefore);
       expect(await countWhere(userA, sql.raw("counterparties"))).toBe(cpsBefore);
+      expect(await countWhere(userA, sql.raw("recurring_transactions"))).toBe(recurringBefore);
     });
 
     it("nulls the Gmail ingestion cursor but keeps the connection + tokens", async () => {
