@@ -133,6 +133,78 @@ describe("paypalParser — direct payment receipts (Template A)", () => {
     expect(r.kind).toBe("needs_review");
     if (r.kind === "needs_review") expect(r.reason).toBe("unsupported_currency");
   });
+
+  // USD Template A — not yet observed in prod; exercise the amount-parsing paths.
+
+  it("parses USD Template A with comma-decimal amount (Spanish-locale, validated assumption)", () => {
+    const html = buildDirectPaymentHtml({
+      merchant: "SomeMerchant",
+      amountFormatted: "$6,99 USD",
+      txId: "USDA1234567890ABC",
+      date: "15/04/2026",
+    });
+    const r = paypalParser.parse(html);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.amountCents).toBe(BigInt(699));
+    expect(r.data.currency).toBe("USD");
+    expect(r.data.merchant).toBe("SomeMerchant");
+    expect(r.data.occurredAt).toEqual(new Date("2026-04-15T00:00:00Z"));
+  });
+
+  it("parses USD Template A with whole-dollar amount (no cents)", () => {
+    const html = buildDirectPaymentHtml({
+      merchant: "SomeMerchant",
+      amountFormatted: "$10 USD",
+      txId: "USDA0000000010001",
+      date: "01/06/2026",
+    });
+    const r = paypalParser.parse(html);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.amountCents).toBe(BigInt(1000));
+    expect(r.data.currency).toBe("USD");
+  });
+
+  it("returns needs_review for USD Template A with period-decimal amount (unverified US-locale format)", () => {
+    // Period-decimal USD in Template A has zero prod samples. We intentionally
+    // surface it as needs_review so it can never silently miscalculate cents.
+    const html = buildDirectPaymentHtml({
+      merchant: "SomeMerchant",
+      amountFormatted: "$6.99 USD",
+      txId: "USDA9999999999999",
+      date: "15/04/2026",
+    });
+    const r = paypalParser.parse(html);
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("unverified_usd_template_a_decimal");
+  });
+
+  it("uses opts.receivedAt when body date is missing (Template A)", () => {
+    // Strip the date line from a valid COP receipt
+    const bodyWithoutDate = wrapPayPal(`
+      <p>Recibo de su pago a TIENDA TEST</p>
+      <p>Hola, Test User: Ha pagado $50.000 COP a TIENDA TEST Ver o administrar pago</p>
+      <p>Id. de transacci&oacute;n TXID123456789ABCD</p>
+      <p>Comercio TIENDA TEST billing@test.com</p>
+    `);
+    const receivedAt = new Date("2026-04-20T14:30:00Z");
+    const r = paypalParser.parse(bodyWithoutDate, { receivedAt });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.occurredAt).toEqual(receivedAt);
+    expect(r.data.amountCents).toBe(BigInt(5000000));
+  });
+
+  it("returns needs_review when body date AND opts.receivedAt are both absent (Template A)", () => {
+    const bodyWithoutDate = wrapPayPal(`
+      <p>Hola, Test User: Ha pagado $50.000 COP a TIENDA TEST Ver o administrar pago</p>
+      <p>Id. de transacci&oacute;n TXID123456789ABCD</p>
+    `);
+    const r = paypalParser.parse(bodyWithoutDate);
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("missing_occurred_at");
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -190,6 +262,56 @@ describe("paypalParser — automatic payment receipts (Template B)", () => {
     expect(r.data.amountCents).toBe(BigInt(1000));
     expect(r.data.currency).toBe("USD");
     expect(r.data.occurredAt).toEqual(new Date("2026-01-01T00:00:00Z"));
+  });
+
+  it("extracts merchant via primary lookahead regex when trailing sentence starts with 'Estos'", () => {
+    // The primary merchant regex uses (?=\.\s+(?:Estos|...)) as the lookahead —
+    // the period before the trailing sentence IS the lookahead anchor and is NOT
+    // captured, so the merchant name comes out without the trailing period.
+    // buildAutoPaymentHtml uses "Acerca de su pago" which falls through to the
+    // fallback regex. This fixture uses "Estos son los detalles" to exercise the
+    // primary lookahead path explicitly.
+    const html = wrapPayPal(`
+      <p>Envi&oacute; un pago autom&aacute;tico a PremiumSoft CyberTech Ltd.</p>
+      <p>Test User, aqu&iacute; tiene su recibo.</p>
+      <p>Hola, Test User: Gracias por su pago a PremiumSoft CyberTech Ltd. Estos son los detalles.</p>
+      <p>Id. de transacci&oacute;n 0B66726081324823W</p>
+      <p>Fecha de la transacci&oacute;n 11 de junio de 2025</p>
+      <p>Importe del pago $ 6,99 USD</p>
+    `);
+    const r = paypalParser.parse(html);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    // Lookahead stops before the "." — merchant is captured without trailing period
+    expect(r.data.merchant).toBe("PremiumSoft CyberTech Ltd");
+    expect(r.data.amountCents).toBe(BigInt(699));
+  });
+
+  it("uses opts.receivedAt when body date is missing (Template B)", () => {
+    const bodyWithoutDate = wrapPayPal(`
+      <p>Envi&oacute; un pago autom&aacute;tico a Some Service</p>
+      <p>Hola, Test User: Gracias por su pago a Some Service. Acerca de su pago</p>
+      <p>Id. de transacci&oacute;n TXIDABC123DEF456G</p>
+      <p>Importe del pago $ 9,99 USD</p>
+    `);
+    const receivedAt = new Date("2026-03-15T10:00:00Z");
+    const r = paypalParser.parse(bodyWithoutDate, { receivedAt });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.occurredAt).toEqual(receivedAt);
+    expect(r.data.amountCents).toBe(BigInt(999));
+  });
+
+  it("returns needs_review when body date AND opts.receivedAt are both absent (Template B)", () => {
+    const bodyWithoutDate = wrapPayPal(`
+      <p>Envi&oacute; un pago autom&aacute;tico a Some Service</p>
+      <p>Hola, Test User: Gracias por su pago a Some Service. Acerca de su pago</p>
+      <p>Id. de transacci&oacute;n TXIDABC123DEF456G</p>
+      <p>Importe del pago $ 9,99 USD</p>
+    `);
+    const r = paypalParser.parse(bodyWithoutDate);
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("missing_occurred_at");
   });
 });
 

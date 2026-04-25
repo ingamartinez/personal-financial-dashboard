@@ -30,8 +30,9 @@ const log = createLogger({ module: "gmail/parsers/paypal" });
 // Currency: COP and USD only. EUR → needs_review "unsupported_currency".
 //
 // All PayPal receipt dates include the full 4-digit year — no year-boundary risk.
-// No fallback to opts.receivedAt — if date is missing, return needs_review.
-// (Wompi-pattern: never fall back silently when the date is structural.)
+// occurredAt: prefer body date; fall back to opts.receivedAt when body date is absent.
+// Only return needs_review when BOTH the body date AND opts.receivedAt are absent.
+// (PayU-pattern: silent receivedAt fallback with a warn log, not a hard needs_review.)
 
 const SPANISH_MONTHS: Record<string, number> = {
   enero: 1,
@@ -110,7 +111,7 @@ function parseUsdAmount(raw: string): bigint | null {
 }
 
 export const paypalParser: GatewayParser = {
-  parse(html: string, _opts?: { receivedAt?: Date }): ParseResult {
+  parse(html: string, opts?: { receivedAt?: Date }): ParseResult {
     try {
       const text = extractVisibleText(html);
 
@@ -150,9 +151,22 @@ export const paypalParser: GatewayParser = {
           const amtMatch = text.match(/Ha\s+pagado\s+\$([\d.]+)\s+COP/i);
           if (amtMatch) amountCents = parseCopAmount(amtMatch[1]);
         } else {
-          // USD in direct payment template uses comma decimal
-          const amtMatch = text.match(/Ha\s+pagado\s+\$([\d,]+)\s+USD/i);
-          if (amtMatch) amountCents = parseUsdAmount(amtMatch[1]);
+          // USD in Template A: the only prod-validated decimal convention is the
+          // comma-decimal Spanish-locale format ("$6,99 USD"). Period-decimal
+          // (US-locale, e.g. "$6.99 USD") has not been observed in prod and is
+          // intentionally surfaced as needs_review until a real sample arrives.
+          const usdCommaMatch = text.match(/Ha\s+pagado\s+\$([\d,]+)\s+USD/i);
+          if (usdCommaMatch) {
+            amountCents = parseUsdAmount(usdCommaMatch[1]);
+          } else if (/Ha\s+pagado\s+\$[\d.,]+\s+USD/i.test(text)) {
+            // Defensive: period-decimal USD shape detected but unverified — flag
+            // for review rather than guess at the wrong number of cents.
+            log.warn(
+              { event: "paypal_usd_period_decimal_a" },
+              "period-decimal USD in Template A — needs real sample before parsing",
+            );
+            return { kind: "needs_review", reason: "unverified_usd_template_a_decimal" };
+          }
         }
 
         if (amountCents === null) {
@@ -164,26 +178,35 @@ export const paypalParser: GatewayParser = {
         const refMatch = text.match(/Id\.\s*de\s+transacci[oó]n\s+([A-Z0-9]+)/i);
         const referenceId = refMatch ? refMatch[1] : null;
 
-        // Date: "Fecha de la transacción DD/MM/YYYY"
-        const dateMatch = text.match(
+        // Date: prefer "Fecha de la transacción DD/MM/YYYY"; fall back to
+        // opts.receivedAt when body date is absent; needs_review only when both absent.
+        const dateMatchA = text.match(
           /Fecha\s+de\s+la\s+transacci[oó]n\s+(\d{1,2}\/\d{1,2}\/\d{4})/i,
         );
-        if (!dateMatch) {
+        let occurredAtA: Date | null = null;
+        if (dateMatchA) {
+          occurredAtA = parseShortDate(dateMatchA[1]);
+          if (!occurredAtA) {
+            log.warn(
+              { raw: dateMatchA[1], event: "paypal_date_parse_failed_a" },
+              "could not parse PayPal date (type A)",
+            );
+            return { kind: "needs_review", reason: "date_parse_failed" };
+          }
+        } else if (opts?.receivedAt) {
+          log.warn(
+            { event: "paypal_date_fallback_a" },
+            "PayPal Template A missing body date; using receivedAt",
+          );
+          occurredAtA = opts.receivedAt;
+        } else {
           log.warn({ event: "paypal_date_not_found_a" }, "could not extract date (type A)");
           return { kind: "needs_review", reason: "missing_occurred_at" };
-        }
-        const occurredAt = parseShortDate(dateMatch[1]);
-        if (!occurredAt) {
-          log.warn(
-            { raw: dateMatch[1], event: "paypal_date_parse_failed_a" },
-            "could not parse PayPal date (type A)",
-          );
-          return { kind: "needs_review", reason: "date_parse_failed" };
         }
 
         return {
           kind: "parsed",
-          data: { merchant, amountCents, currency, occurredAt, referenceId },
+          data: { merchant, amountCents, currency, occurredAt: occurredAtA, referenceId },
         };
       }
 
@@ -239,26 +262,35 @@ export const paypalParser: GatewayParser = {
         const refMatch = text.match(/Id\.\s*de\s+transacci[oó]n\s+([A-Z0-9]+)/i);
         const referenceId = refMatch ? refMatch[1] : null;
 
-        // Date: "Fecha de la transacción D de MES de YYYY"
-        const dateMatch = text.match(
+        // Date: prefer "Fecha de la transacción D de MES de YYYY"; fall back to
+        // opts.receivedAt when body date is absent; needs_review only when both absent.
+        const dateMatchB = text.match(
           /Fecha\s+de\s+la\s+transacci[oó]n\s+(\d{1,2}\s+de\s+[a-záéíóú]+\s+de\s+\d{4})/i,
         );
-        if (!dateMatch) {
+        let occurredAtB: Date | null = null;
+        if (dateMatchB) {
+          occurredAtB = parseSpanishLongDate(dateMatchB[1]);
+          if (!occurredAtB) {
+            log.warn(
+              { raw: dateMatchB[1], event: "paypal_date_parse_failed_b" },
+              "could not parse PayPal date (type B)",
+            );
+            return { kind: "needs_review", reason: "date_parse_failed" };
+          }
+        } else if (opts?.receivedAt) {
+          log.warn(
+            { event: "paypal_date_fallback_b" },
+            "PayPal Template B missing body date; using receivedAt",
+          );
+          occurredAtB = opts.receivedAt;
+        } else {
           log.warn({ event: "paypal_date_not_found_b" }, "could not extract date (type B)");
           return { kind: "needs_review", reason: "missing_occurred_at" };
-        }
-        const occurredAt = parseSpanishLongDate(dateMatch[1]);
-        if (!occurredAt) {
-          log.warn(
-            { raw: dateMatch[1], event: "paypal_date_parse_failed_b" },
-            "could not parse PayPal date (type B)",
-          );
-          return { kind: "needs_review", reason: "date_parse_failed" };
         }
 
         return {
           kind: "parsed",
-          data: { merchant, amountCents, currency, occurredAt, referenceId },
+          data: { merchant, amountCents, currency, occurredAt: occurredAtB, referenceId },
         };
       }
 
