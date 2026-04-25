@@ -7,6 +7,8 @@ import {
   getMonthlyProgress,
   getTopExpenses,
 } from "@/lib/dashboard/queries";
+import { getFinancialPeriod, getPayPeriodReadiness } from "@/lib/dashboard/period";
+import { getUiPreferences } from "@/lib/preferences/repo";
 import { SaldoLiquidoCard } from "@/components/dashboard/saldo-liquido-card";
 import { MonthlyFlowCard } from "@/components/dashboard/monthly-flow-card";
 import { ProgressCard } from "@/components/dashboard/progress-card";
@@ -19,6 +21,7 @@ import { RecurringInboxCard } from "@/components/dashboard/recurring-inbox-card"
 import { SmsHealthCard } from "@/components/dashboard/sms-health-card";
 import { CreditCardsCard } from "@/components/dashboard/credit-cards-card";
 import { PendingConsolidationBanner } from "@/components/dashboard/pending-consolidation-banner";
+import { PayPeriodNudge } from "@/components/dashboard/pay-period-nudge";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
 import { getOpenGaps } from "@/lib/recurring/gap-queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
@@ -48,6 +51,25 @@ export default async function DashboardPage({
 
   const session = await getSessionUser();
   const fx = await getCurrentFxRate();
+
+  // Resolve the financial period ONCE and pass it to every month-bound
+  // query — this guarantees all dashboard cards aggregate over the same
+  // boundaries (calendar OR salary-anchored). Fallback semantics live in
+  // the `mode`/`fallbackReason` fields so cards can render the right
+  // subtitle and inline notes. See #493 + src/lib/dashboard/period.ts.
+  const period = await getFinancialPeriod(session.id, refDate);
+  const range = { start: period.start, end: period.end };
+
+  const [prefs, readiness] = await Promise.all([
+    getUiPreferences(session.id),
+    getPayPeriodReadiness(session.id),
+  ]);
+  // Show the dashboard nudge when the user is eligible for pay_period mode
+  // (≥1 salary flag + ≥2 paychecks) but still on calendar AND has not
+  // dismissed the banner before. One-shot opt-in surface.
+  const showPayPeriodNudge =
+    prefs.financialCycleMode === "calendar" && readiness.ready && !prefs.payPeriodNudgeDismissed;
+
   const [
     picture,
     flow,
@@ -61,10 +83,10 @@ export default async function DashboardPage({
     creditCards,
   ] = await Promise.all([
     getFinancialPicture(session.id, fx.rate),
-    getMonthlyFlow(session.id, fx.rate, refDate),
-    getMonthlyProgress(session.id, fx.rate, refDate),
-    getCategoryBreakdown(session.id, fx.rate, refDate),
-    getTopExpenses(session.id, fx.rate, refDate, 5),
+    getMonthlyFlow(session.id, fx.rate, range),
+    getMonthlyProgress(session.id, fx.rate, range),
+    getCategoryBreakdown(session.id, fx.rate, range),
+    getTopExpenses(session.id, fx.rate, range, 5),
     getAccountStatuses(session.id),
     getUpcomingForMonth({
       userId: session.id,
@@ -75,6 +97,7 @@ export default async function DashboardPage({
     }),
     getOpenGaps(session.id),
     getSmsHealthSnapshot(session.id, now),
+    // Bank truth — TC summary stays on calendar regardless of cycle mode.
     getCreditCardsSummary(session.id, fx.rate, now),
   ]);
 
@@ -118,13 +141,25 @@ export default async function DashboardPage({
 
         <PendingConsolidationBanner userId={session.id} />
 
+        {showPayPeriodNudge ? <PayPeriodNudge /> : null}
+
         <section>
           <SaldoLiquidoCard data={picture} fx={fx} monthLabel={monthLabel} />
         </section>
 
         <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <MonthlyFlowCard data={flow} monthLabel={monthLabel} isFuture={isFuture} />
-          <ProgressCard data={progress} monthLabel={monthLabel} isFuture={isFuture} />
+          <MonthlyFlowCard
+            data={flow}
+            monthLabel={monthLabel}
+            period={period}
+            isFuture={isFuture}
+          />
+          <ProgressCard
+            data={progress}
+            monthLabel={monthLabel}
+            period={period}
+            isFuture={isFuture}
+          />
         </section>
 
         {creditCards.cardCount > 0 ? (
@@ -134,12 +169,23 @@ export default async function DashboardPage({
         ) : null}
 
         <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <TopExpensesCard rows={top} monthLabel={monthLabel} ym={ym} isFuture={isFuture} />
+          <TopExpensesCard
+            rows={top}
+            monthLabel={monthLabel}
+            ym={ym}
+            period={period}
+            isFuture={isFuture}
+          />
           <UpcomingCard items={upcomingItems} monthLabel={monthLabel} />
         </section>
 
         <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <CategoryDonut slices={donutSlices} monthLabel={monthLabel} isFuture={isFuture} />
+          <CategoryDonut
+            slices={donutSlices}
+            monthLabel={monthLabel}
+            period={period}
+            isFuture={isFuture}
+          />
           <SmsHealthCard snapshot={smsHealth} />
         </section>
 

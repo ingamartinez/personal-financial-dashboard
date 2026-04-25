@@ -414,6 +414,13 @@
       "when": 1777100613720,
       "tag": "0058_nebulous_amphibian",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1777134354131,
+      "tag": "0059_naive_silver_surfer",
+      "breakpoints": true
     }
   ]
 }

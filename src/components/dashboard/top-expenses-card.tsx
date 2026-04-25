@@ -9,6 +9,11 @@ import { useNewIds } from "@/lib/hooks/use-new-ids";
 import { Money } from "@/components/display/money";
 import { hasSecondaryDescription, primaryDescription } from "@/lib/transactions/description";
 import type { TopExpense } from "@/lib/dashboard/queries";
+import {
+  formatPeriodDateRange,
+  periodFallbackNote,
+  type FinancialPeriod,
+} from "@/lib/dashboard/period-format";
 
 const dateFmt = new Intl.DateTimeFormat("es-CO", { day: "2-digit", month: "short" });
 
@@ -31,11 +36,13 @@ export function TopExpensesCard({
   rows,
   monthLabel,
   ym,
+  period,
   isFuture = false,
 }: {
   rows: TopExpense[];
   monthLabel: string;
   ym: string;
+  period?: FinancialPeriod;
   isFuture?: boolean;
 }) {
   const shouldReduceMotion = useReducedMotion();
@@ -44,11 +51,19 @@ export function TopExpensesCard({
   const enterInitial = shouldReduceMotion ? false : { opacity: 0, y: -8 };
   const enterAnimate = { opacity: 1, y: 0 };
   const enterTransition = { duration: 0.25, ease: "easeOut" as const };
+  const dateRange = period ? formatPeriodDateRange(period) : null;
+  const fallbackNote = period ? periodFallbackNote(period) : null;
 
   return (
     <Card>
       <CardHeader>
-        <CardDescription>Top expenses · {monthLabel}</CardDescription>
+        <CardDescription>
+          Top expenses · {monthLabel}
+          {dateRange ? <span className="lowercase"> · {dateRange}</span> : null}
+          {fallbackNote ? (
+            <span className="text-muted-foreground/70 ml-2 text-[10px]">{fallbackNote}</span>
+          ) : null}
+        </CardDescription>
         <CardTitle className="text-base">{rows.length} of top 5</CardTitle>
       </CardHeader>
       <CardContent>

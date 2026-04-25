@@ -5,6 +5,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Money } from "@/components/display/money";
 import { useMoneyMode } from "@/components/display/money-mode-provider";
 import { convertCents, displayCurrencyFor, formatMoney } from "@/lib/money";
+import {
+  formatPeriodDateRange,
+  periodFallbackNote,
+  type FinancialPeriod,
+} from "@/lib/dashboard/period-format";
 
 const PALETTE = [
   "var(--chart-1)",
@@ -24,10 +29,12 @@ export type DonutSlice = {
 export function CategoryDonut({
   slices,
   monthLabel,
+  period,
   isFuture = false,
 }: {
   slices: DonutSlice[];
   monthLabel: string;
+  period?: FinancialPeriod;
   isFuture?: boolean;
 }) {
   const total = slices.reduce((acc, s) => acc + s.value, 0);
@@ -38,11 +45,19 @@ export function CategoryDonut({
     if (target === "COP" || fxRate === null) return formatMoney(copCents, "COP");
     return formatMoney(convertCents(copCents, "COP", target, fxRate.rate), target);
   };
+  const dateRange = period ? formatPeriodDateRange(period) : null;
+  const fallbackNote = period ? periodFallbackNote(period) : null;
 
   return (
     <Card className="lg:col-span-2">
       <CardHeader>
-        <CardDescription>Expenses by category · {monthLabel}</CardDescription>
+        <CardDescription>
+          Expenses by category · {monthLabel}
+          {dateRange ? <span className="lowercase"> · {dateRange}</span> : null}
+          {fallbackNote ? (
+            <span className="text-muted-foreground/70 ml-2 text-[10px]">{fallbackNote}</span>
+          ) : null}
+        </CardDescription>
         <CardTitle className="text-2xl tabular-nums">
           <Money cents={BigInt(Math.round(total))} currency="COP" />
         </CardTitle>

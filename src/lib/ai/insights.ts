@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { aliasedTable, and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { aliasedTable, and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import {
   accounts,
@@ -58,11 +58,11 @@ function shiftMonth(ym: string, delta: number): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-function monthBounds(ym: string) {
+function calendarBounds(ym: string) {
   const [y, m] = ym.split("-").map(Number);
   return {
     start: new Date(Date.UTC(y, m - 1, 1)),
-    end: new Date(Date.UTC(y, m, 0, 23, 59, 59)),
+    end: new Date(Date.UTC(y, m, 1)),
     startIso: `${ym}-01`,
   };
 }
@@ -72,15 +72,31 @@ function toCopNumber(cents: bigint, currency: Currency, copPerUsd: number): numb
   return currency === "USD" ? pesos * copPerUsd : pesos;
 }
 
+/**
+ * Build the structured summary that feeds Claude. Spend/income aggregations
+ * respect the optional `currentRange` / `previousRange` overrides — pass the
+ * resolved `getFinancialPeriod` ranges from the call site so insights match
+ * the dashboard's "Flujo del mes". Budget plans stay calendar-anchored
+ * (`budgets.periodStart` is calendar) regardless of cycle mode.
+ */
 export async function buildInsightsSummary(
   userId: number,
   ym: string,
   copPerUsd: number,
   db: DB = defaultDb,
+  ranges?: {
+    currentRange?: { start: Date; end: Date };
+    previousRange?: { start: Date; end: Date };
+  },
 ): Promise<InsightsSummary> {
   const prevYm = shiftMonth(ym, -1);
-  const cur = monthBounds(ym);
-  const prev = monthBounds(prevYm);
+  const calCur = calendarBounds(ym);
+  const calPrev = calendarBounds(prevYm);
+  const cur = {
+    ...(ranges?.currentRange ?? calCur),
+    startIso: calCur.startIso, // budget plan period is always calendar-anchored
+  };
+  const prev = ranges?.previousRange ?? calPrev;
 
   const [accs, curTxTotals, prevTxTotals, curCats, prevCats, topMer, budgetRows, recRows] =
     await Promise.all([
@@ -112,7 +128,7 @@ export async function buildInsightsSummary(
           and(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, cur.start),
-            lte(transactions.occurredAt, cur.end),
+            lt(transactions.occurredAt, cur.end),
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),
@@ -129,7 +145,7 @@ export async function buildInsightsSummary(
           and(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, prev.start),
-            lte(transactions.occurredAt, prev.end),
+            lt(transactions.occurredAt, prev.end),
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),
@@ -157,7 +173,7 @@ export async function buildInsightsSummary(
             and(
               eq(transactions.userId, userId),
               gte(transactions.occurredAt, cur.start),
-              lte(transactions.occurredAt, cur.end),
+              lt(transactions.occurredAt, cur.end),
               notAdjustment(transactions.isAdjustment),
               notDeleted(transactions.deletedAt),
             ),
@@ -182,7 +198,7 @@ export async function buildInsightsSummary(
             and(
               eq(transactions.userId, userId),
               gte(transactions.occurredAt, prev.start),
-              lte(transactions.occurredAt, prev.end),
+              lt(transactions.occurredAt, prev.end),
               notAdjustment(transactions.isAdjustment),
               notDeleted(transactions.deletedAt),
             ),
@@ -201,7 +217,7 @@ export async function buildInsightsSummary(
           and(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, cur.start),
-            lte(transactions.occurredAt, cur.end),
+            lt(transactions.occurredAt, cur.end),
             sql`${transactions.merchant} IS NOT NULL`,
             sql`${transactions.amountCents} < 0`,
             notAdjustment(transactions.isAdjustment),

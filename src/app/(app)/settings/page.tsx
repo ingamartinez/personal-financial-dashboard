@@ -16,6 +16,12 @@ const LINKS = [
       "Tu taxonomía personal: agregá, renombrá o archivá categorías. Cada usuario tiene la suya.",
   },
   {
+    href: "/settings/period",
+    title: "Período financiero",
+    description:
+      "Mes calendario o anclado en tu sueldo. Marcá tus fuentes de ingreso fijo para que el flujo del mes refleje tu ciclo real.",
+  },
+  {
     href: "/settings/rules",
     title: "Reglas de clasificación",
     description:

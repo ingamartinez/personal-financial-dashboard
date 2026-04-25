@@ -1,13 +1,20 @@
 import { AnimatedMoney } from "@/components/ui/animated-money";
 import type { MonthlyProgress } from "@/lib/dashboard/queries";
+import {
+  formatPeriodDateRange,
+  periodFallbackNote,
+  type FinancialPeriod,
+} from "@/lib/dashboard/period-format";
 
 export function ProgressCard({
   data,
   monthLabel,
+  period,
   isFuture = false,
 }: {
   data: MonthlyProgress;
   monthLabel: string;
+  period?: FinancialPeriod;
   isFuture?: boolean;
 }) {
   if (isFuture) {
@@ -25,11 +32,22 @@ export function ProgressCard({
     );
   }
 
+  const dateRange = period ? formatPeriodDateRange(period) : null;
+  const fallbackNote = period ? periodFallbackNote(period) : null;
+
   return (
     <article className="card-paper paper-rise-2 flex h-full flex-col gap-5 p-6">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-eyebrow">Progreso</span>
-        <span className="text-ink-subtle text-xs capitalize">{monthLabel}</span>
+      <div className="flex flex-col items-end gap-0.5 sm:flex-row sm:items-baseline sm:justify-between">
+        <span className="text-eyebrow self-start">Progreso</span>
+        <div className="flex flex-col items-end">
+          <span className="text-ink-subtle text-xs capitalize">
+            {monthLabel}
+            {dateRange ? <span className="lowercase"> · {dateRange}</span> : null}
+          </span>
+          {fallbackNote ? (
+            <span className="text-ink-subtle/80 text-[10px]">{fallbackNote}</span>
+          ) : null}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">

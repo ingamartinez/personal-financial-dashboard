@@ -2,14 +2,19 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   DEFAULT_DISPLAY_CURRENCY_MODE,
+  DEFAULT_FINANCIAL_CYCLE_MODE,
   DISPLAY_CURRENCY_MODES,
+  FINANCIAL_CYCLE_MODES,
   type DisplayCurrencyMode,
+  type FinancialCycleMode,
   type UiPreferences,
   users,
 } from "@/lib/db/schema";
 
 export type ResolvedUiPreferences = {
   displayCurrencyMode: DisplayCurrencyMode;
+  financialCycleMode: FinancialCycleMode;
+  payPeriodNudgeDismissed: boolean;
 };
 
 export async function getUiPreferences(userId: number): Promise<ResolvedUiPreferences> {
@@ -38,11 +43,17 @@ export async function updateUiPreferences(
 }
 
 function resolvePreferences(raw: UiPreferences): ResolvedUiPreferences {
-  const mode = raw.displayCurrencyMode;
+  const currencyMode = raw.displayCurrencyMode;
+  const cycleMode = raw.financialCycleMode;
   return {
     displayCurrencyMode:
-      mode && (DISPLAY_CURRENCY_MODES as readonly string[]).includes(mode)
-        ? mode
+      currencyMode && (DISPLAY_CURRENCY_MODES as readonly string[]).includes(currencyMode)
+        ? currencyMode
         : DEFAULT_DISPLAY_CURRENCY_MODE,
+    financialCycleMode:
+      cycleMode && (FINANCIAL_CYCLE_MODES as readonly string[]).includes(cycleMode)
+        ? cycleMode
+        : DEFAULT_FINANCIAL_CYCLE_MODE,
+    payPeriodNudgeDismissed: raw.payPeriodNudgeDismissed === true,
   };
 }

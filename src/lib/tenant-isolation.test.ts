@@ -306,14 +306,19 @@ describe("#183 tenant isolation", () => {
     expect(statusesA).toHaveLength(1);
     expect(statusesA[0].id).toBe(accountA);
 
-    const flowA = await getMonthlyFlow(userA, 4000, new Date("2026-04-15"));
+    const aprilRange = {
+      start: new Date(Date.UTC(2026, 3, 1)),
+      end: new Date(Date.UTC(2026, 4, 1)),
+    };
+
+    const flowA = await getMonthlyFlow(userA, 4000, aprilRange);
     // Sum of -1000 + -2000 = -3000 for userA, so expense=3000.
     expect(flowA.expenseCopCents).toBe(BigInt(3000));
 
-    const flowB = await getMonthlyFlow(userB, 4000, new Date("2026-04-15"));
+    const flowB = await getMonthlyFlow(userB, 4000, aprilRange);
     expect(flowB.expenseCopCents).toBe(BigInt(3000));
 
-    const catA = await getCategoryBreakdown(userA, 4000, new Date("2026-04-15"));
+    const catA = await getCategoryBreakdown(userA, 4000, aprilRange);
     expect(catA.every((c) => c.amountCopCents >= BigInt(0))).toBe(true);
     // #336: categories is per-user, but getCategoryBreakdown joined it only
     // by slug — every user sharing the "otros" slug compounded the fanout
@@ -326,7 +331,7 @@ describe("#183 tenant isolation", () => {
     const totalCatA = catA.reduce((s, c) => s + c.amountCopCents, BigInt(0));
     expect(totalCatA).toBe(BigInt(3000));
 
-    const topA = await getTopExpenses(userA, 4000, new Date("2026-04-15"), 10);
+    const topA = await getTopExpenses(userA, 4000, aprilRange, 10);
     expect(topA.every((t) => t.descriptionRaw.includes(`${TAG}-A`))).toBe(true);
     // #336: the categories slug join fanout also duplicates rows in top
     // expenses — userA has exactly 2 fixture transactions, not 4.

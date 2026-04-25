@@ -1,5 +1,6 @@
 import { getSessionUser } from "@/lib/auth/session";
 import { getBudgetsOverview } from "@/lib/budgets/queries";
+import { getFinancialPeriod } from "@/lib/dashboard/period";
 import { BudgetsManager } from "./budgets-manager";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,18 @@ export default async function BudgetsPage({
   const params = await searchParams;
   const ym = params.ym && /^\d{4}-\d{2}$/.test(params.ym) ? params.ym : currentYearMonth();
 
-  const { categories: cats, items } = await getBudgetsOverview(session.id, ym);
+  // #493: budget plans stay calendar-anchored (a budget is "April 2026"),
+  // but spend aggregation respects the user's financial cycle so the bar
+  // matches the dashboard's "Flujo del mes". Bank-truth views (cuotas,
+  // statements) are NOT in scope here.
+  const [y, m] = ym.split("-").map(Number);
+  const refDate = new Date(Date.UTC(y, m - 1, 15));
+  const period = await getFinancialPeriod(session.id, refDate);
+
+  const { categories: cats, items } = await getBudgetsOverview(session.id, ym, {
+    start: period.start,
+    end: period.end,
+  });
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
