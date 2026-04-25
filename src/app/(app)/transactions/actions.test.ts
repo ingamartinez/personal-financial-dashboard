@@ -35,7 +35,7 @@ const {
   updateCounterparty,
   mergeCounterparty,
   splitCounterparty,
-  createManualExpense,
+  createManualEntry,
   classifySingleWithAi,
   updateTransactionCategory,
   confirmClassification,
@@ -617,7 +617,7 @@ describe("splitCounterparty", () => {
   });
 });
 
-describe("createManualExpense", () => {
+describe("createManualEntry", () => {
   async function testAccountId(): Promise<number> {
     const [acc] = await db.execute<{ id: number }>(sql`
       SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
@@ -625,48 +625,124 @@ describe("createManualExpense", () => {
     return acc.id;
   }
 
-  async function cleanupManualExpenses() {
+  async function cleanupManualEntries() {
     await db.execute(sql`
       DELETE FROM transactions
-      WHERE source = 'manual' AND description_raw LIKE 'test-manual-expense%'
+      WHERE source = 'manual' AND description_raw LIKE 'test-manual-entry%'
     `);
   }
 
-  afterEach(cleanupManualExpenses);
-  beforeEach(cleanupManualExpenses);
+  afterEach(cleanupManualEntries);
+  beforeEach(cleanupManualEntries);
 
-  it("stores amount_cents as an exact bigint with no float rounding drift", async () => {
+  it("stores amount_cents as an exact bigint with no float rounding drift (expense)", async () => {
     const accountId = await testAccountId();
 
     // 1000.99 * 100 === 100099.00000000001 under IEEE-754; the old code
     // could have stored 100098 for certain similar values. Confirm the
     // cents value lands exactly.
-    await createManualExpense({
+    await createManualEntry({
+      kind: "expense",
       accountId,
       amount: "1000.99",
       categorySlug: null,
       occurredOn: "2026-04-10",
-      notes: "test-manual-expense exact cents",
+      notes: "test-manual-entry exact cents",
     });
 
     const rows = await db.execute<{ amount_cents: string }>(sql`
       SELECT amount_cents::text AS amount_cents
       FROM transactions
-      WHERE description_raw = 'test-manual-expense exact cents'
+      WHERE description_raw = 'test-manual-entry exact cents'
     `);
     expect(rows).toHaveLength(1);
     expect(rows[0].amount_cents).toBe("-100099");
   });
 
+  it("stores a positive amount_cents when kind=income", async () => {
+    const accountId = await testAccountId();
+
+    await createManualEntry({
+      kind: "income",
+      accountId,
+      amount: "250000",
+      categorySlug: null,
+      occurredOn: "2026-04-10",
+      notes: "test-manual-entry income deposit",
+    });
+
+    const rows = await db.execute<{ amount_cents: string }>(sql`
+      SELECT amount_cents::text AS amount_cents
+      FROM transactions
+      WHERE description_raw = 'test-manual-entry income deposit'
+    `);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amount_cents).toBe("25000000");
+  });
+
+  it("uses 'Manual income' as the default description when notes are null (income)", async () => {
+    const accountId = await testAccountId();
+
+    await createManualEntry({
+      kind: "income",
+      accountId,
+      amount: "100",
+      categorySlug: null,
+      occurredOn: "2026-04-10",
+      notes: null,
+    });
+
+    // Scope by the default-description path so parallel cleanup doesn't eat
+    // this row mid-test — seeded txns never use "Manual income".
+    const rows = await db.execute<{ amount_cents: string }>(sql`
+      SELECT amount_cents::text AS amount_cents
+      FROM transactions
+      WHERE description_raw = 'Manual income' AND source = 'manual'
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+    expect(rows[0]?.amount_cents).toBe("10000");
+
+    await db.execute(sql`
+      DELETE FROM transactions
+      WHERE description_raw = 'Manual income' AND source = 'manual'
+    `);
+  });
+
+  it("logs entryKind in ingestion_logs.payload", async () => {
+    const accountId = await testAccountId();
+
+    await createManualEntry({
+      kind: "income",
+      accountId,
+      amount: "42",
+      categorySlug: null,
+      occurredOn: "2026-04-10",
+      notes: "test-manual-entry ingestion log",
+    });
+
+    const [row] = await db.execute<{ payload: { kind: string; entryKind: string } }>(sql`
+      SELECT payload
+      FROM ingestion_logs
+      WHERE source = 'manual'
+        AND (payload->>'accountId')::int = ${accountId}
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+    expect(row.payload.kind).toBe("manual-create");
+    expect(row.payload.entryKind).toBe("income");
+  });
+
   it("rejects amounts with more than two decimal places", async () => {
     const accountId = await testAccountId();
     await expect(
-      createManualExpense({
+      createManualEntry({
+        kind: "expense",
         accountId,
         amount: "9.995",
         categorySlug: null,
         occurredOn: "2026-04-10",
-        notes: "test-manual-expense bad-decimals",
+        notes: "test-manual-entry bad-decimals",
       }),
     ).rejects.toThrow(/positive decimal/);
   });
@@ -675,12 +751,13 @@ describe("createManualExpense", () => {
     const accountId = await testAccountId();
     for (const bad of ["-5", "abc", ""]) {
       await expect(
-        createManualExpense({
+        createManualEntry({
+          kind: "expense",
           accountId,
           amount: bad,
           categorySlug: null,
           occurredOn: "2026-04-10",
-          notes: "test-manual-expense bad-amount",
+          notes: "test-manual-entry bad-amount",
         }),
       ).rejects.toThrow(/positive decimal/);
     }
@@ -689,12 +766,13 @@ describe("createManualExpense", () => {
   it("rejects zero amount", async () => {
     const accountId = await testAccountId();
     await expect(
-      createManualExpense({
+      createManualEntry({
+        kind: "expense",
         accountId,
         amount: "0",
         categorySlug: null,
         occurredOn: "2026-04-10",
-        notes: "test-manual-expense zero",
+        notes: "test-manual-entry zero",
       }),
     ).rejects.toThrow(/greater than zero/);
   });
@@ -703,12 +781,13 @@ describe("createManualExpense", () => {
     const accountId = await testAccountId();
     const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     await expect(
-      createManualExpense({
+      createManualEntry({
+        kind: "expense",
         accountId,
         amount: "100",
         categorySlug: null,
         occurredOn: future,
-        notes: "test-manual-expense future",
+        notes: "test-manual-entry future",
       }),
     ).rejects.toThrow(/future/);
   });
@@ -716,34 +795,36 @@ describe("createManualExpense", () => {
   it("accepts today and past dates", async () => {
     const accountId = await testAccountId();
     const today = new Date().toISOString().slice(0, 10);
-    await createManualExpense({
+    await createManualEntry({
+      kind: "expense",
       accountId,
       amount: "50",
       categorySlug: null,
       occurredOn: today,
-      notes: "test-manual-expense today",
+      notes: "test-manual-entry today",
     });
     const rows = await db.execute<{ amount_cents: string }>(sql`
       SELECT amount_cents::text AS amount_cents
       FROM transactions
-      WHERE description_raw = 'test-manual-expense today'
+      WHERE description_raw = 'test-manual-entry today'
     `);
     expect(rows[0].amount_cents).toBe("-5000");
   });
 
   it("handles the max-cents boundary used in the form ceiling", async () => {
     const accountId = await testAccountId();
-    await createManualExpense({
+    await createManualEntry({
+      kind: "expense",
       accountId,
       amount: "9999999.99",
       categorySlug: null,
       occurredOn: "2026-04-10",
-      notes: "test-manual-expense large",
+      notes: "test-manual-entry large",
     });
     const rows = await db.execute<{ amount_cents: string }>(sql`
       SELECT amount_cents::text AS amount_cents
       FROM transactions
-      WHERE description_raw = 'test-manual-expense large'
+      WHERE description_raw = 'test-manual-entry large'
     `);
     expect(rows[0].amount_cents).toBe("-999999999");
   });

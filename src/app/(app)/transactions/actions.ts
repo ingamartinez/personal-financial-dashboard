@@ -193,7 +193,8 @@ export async function confirmClassification(input: {
 // Amount arrives as a decimal STRING so we can parse to bigint cents via
 // integer arithmetic (see `decimalStringToCents`). Never accept a number
 // here — `number * 100` loses precision for values like 9.995.
-const expenseSchema = z.object({
+const entrySchema = z.object({
+  kind: z.enum(["expense", "income"]),
   accountId: z.coerce.number().int().positive(),
   amount: z
     .string()
@@ -227,7 +228,8 @@ const expenseSchema = z.object({
   notes: z.string().max(500).nullable(),
 });
 
-export async function createManualExpense(input: {
+export async function createManualEntry(input: {
+  kind: "expense" | "income";
   accountId: number;
   amount: string;
   categorySlug: string | null;
@@ -238,7 +240,7 @@ export async function createManualExpense(input: {
   const startedAt = new Date();
   // Server actions serialize errors to the client — ZodError.message is a
   // JSON blob. Flatten to the first issue so the form can toast it cleanly.
-  const result = expenseSchema.safeParse(input);
+  const result = entrySchema.safeParse(input);
   if (!result.success) {
     throw new Error(result.error.issues[0]?.message ?? "Invalid input");
   }
@@ -274,6 +276,8 @@ export async function createManualExpense(input: {
   }
 
   const occurredAt = new Date(`${parsed.occurredOn}T12:00:00Z`);
+  const signedAmountCents = parsed.kind === "income" ? parsed.amount : -parsed.amount;
+  const defaultDescription = parsed.kind === "income" ? "Manual income" : "Manual expense";
 
   const [inserted] = await db
     .insert(transactions)
@@ -281,9 +285,9 @@ export async function createManualExpense(input: {
       userId: session.id,
       accountId: account.id,
       occurredAt,
-      amountCents: -parsed.amount,
+      amountCents: signedAmountCents,
       currency: account.currency,
-      descriptionRaw: parsed.notes ?? "Manual expense",
+      descriptionRaw: parsed.notes ?? defaultDescription,
       descriptionClean: null,
       merchant: null,
       categorySlug: parsed.categorySlug,
@@ -306,6 +310,7 @@ export async function createManualExpense(input: {
     errorMessage: null,
     payload: {
       kind: "manual-create",
+      entryKind: parsed.kind,
       accountId: account.id,
       amountCents: parsed.amount.toString(),
       categorySlug: parsed.categorySlug,

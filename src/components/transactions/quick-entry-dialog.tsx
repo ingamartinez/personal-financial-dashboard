@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -17,8 +17,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { formatAccountLabel } from "@/lib/accounts/format";
-import { createManualExpense } from "@/app/(app)/transactions/actions";
+import { createManualEntry } from "@/app/(app)/transactions/actions";
 import { resolveEffectiveAccountId } from "./account-selection";
+import { filterCategoriesByKind } from "./category-filter";
 import type { Currency } from "@/lib/types";
 
 export type AccountOption = {
@@ -33,13 +34,15 @@ export type CategoryOption = {
   parentSlug: string | null;
 };
 
+type EntryKind = "expense" | "income";
+
 function todayLocalISO(): string {
   const d = new Date();
   const tz = d.getTimezoneOffset() * 60000;
   return new Date(d.getTime() - tz).toISOString().slice(0, 10);
 }
 
-export function QuickExpenseDialog({
+export function QuickEntryDialog({
   accounts,
   categories,
 }: {
@@ -48,6 +51,7 @@ export function QuickExpenseDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
+  const [kind, setKind] = useState<EntryKind>("expense");
   const defaultAccount = accounts.find((a) => a.currency === "COP") ?? accounts[0];
   const [accountId, setAccountId] = useState<string>(defaultAccount?.id.toString() ?? "");
   const effectiveAccountId = resolveEffectiveAccountId(
@@ -62,11 +66,24 @@ export function QuickExpenseDialog({
   const [occurredOn, setOccurredOn] = useState(todayLocalISO());
   const [notes, setNotes] = useState("");
 
+  const visibleCategories = useMemo(
+    () => filterCategoriesByKind(categories, kind),
+    [categories, kind],
+  );
+
   function reset() {
     setAmount("");
     setCategorySlug("");
     setNotes("");
     setOccurredOn(todayLocalISO());
+  }
+
+  function switchKind(next: EntryKind) {
+    if (next === kind) return;
+    setKind(next);
+    // Category lists for expense vs income don't overlap — keeping a stale
+    // selection would silently send an income tx with an expense category.
+    setCategorySlug("");
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -77,14 +94,15 @@ export function QuickExpenseDialog({
     }
     startTransition(async () => {
       try {
-        await createManualExpense({
+        await createManualEntry({
+          kind,
           accountId: Number(effectiveAccountId),
           amount: amount.trim(),
           categorySlug: categorySlug || null,
           occurredOn,
           notes: notes.trim() || null,
         });
-        toast.success("Expense added");
+        toast.success(kind === "income" ? "Income added" : "Expense added");
         reset();
         setOpen(false);
       } catch (err) {
@@ -95,24 +113,66 @@ export function QuickExpenseDialog({
 
   if (accounts.length === 0) return null;
 
+  const triggerLabel = "Add entry";
+  const submitLabel = kind === "income" ? "Add income" : "Add expense";
+  const dialogTitle = kind === "income" ? "Quick income" : "Quick expense";
+  const dialogDescription =
+    kind === "income"
+      ? "Record a deposit, reimbursement, or any cash that came in."
+      : "Add a cash expense or anything not auto-imported.";
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button
           size="lg"
           className="fixed right-6 bottom-6 z-30 h-14 w-14 rounded-full p-0 shadow-lg sm:w-auto sm:px-6"
-          aria-label="Add expense"
+          aria-label={triggerLabel}
         >
           <PlusIcon className="size-5" />
-          <span className="ml-1 hidden sm:inline">Expense</span>
+          <span className="ml-1 hidden sm:inline">Entry</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Quick expense</DialogTitle>
-          <DialogDescription>Add a cash expense or anything not auto-imported.</DialogDescription>
+          <DialogTitle>{dialogTitle}</DialogTitle>
+          <DialogDescription>{dialogDescription}</DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
+          <div
+            role="radiogroup"
+            aria-label="Entry kind"
+            className="bg-muted text-muted-foreground grid grid-cols-2 rounded-md p-0.5 text-sm font-medium"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={kind === "expense"}
+              onClick={() => switchKind("expense")}
+              className={cn(
+                "rounded px-3 py-1.5 transition-colors",
+                kind === "expense"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "hover:text-foreground",
+              )}
+            >
+              Expense
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={kind === "income"}
+              onClick={() => switchKind("income")}
+              className={cn(
+                "rounded px-3 py-1.5 transition-colors",
+                kind === "income"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "hover:text-foreground",
+              )}
+            >
+              Income
+            </button>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="qe-amount">Amount</Label>
@@ -183,7 +243,7 @@ export function QuickExpenseDialog({
               className="bg-background chevron-select h-9 rounded-md border text-sm"
             >
               <option value="">— unclassified —</option>
-              {categories.map((c) => (
+              {visibleCategories.map((c) => (
                 <option key={c.slug} value={c.slug}>
                   {c.parentSlug ? `↳ ${c.name}` : c.name}
                 </option>
@@ -212,7 +272,7 @@ export function QuickExpenseDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>
-              {pending ? "Saving…" : "Add expense"}
+              {pending ? "Saving…" : submitLabel}
             </Button>
           </DialogFooter>
         </form>
