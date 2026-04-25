@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { accounts, categories } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUserOrNull } from "@/lib/auth/session";
-import { QuickExpenseDialog } from "./quick-expense-dialog";
+import { QuickEntryDialog } from "./quick-entry-dialog";
 
 export async function QuickExpenseFab() {
   const session = await getSessionUserOrNull();
@@ -32,5 +32,5 @@ export async function QuickExpenseFab() {
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
   ]);
 
-  return <QuickExpenseDialog accounts={accs} categories={cats} />;
+  return <QuickEntryDialog accounts={accs} categories={cats} />;
 }

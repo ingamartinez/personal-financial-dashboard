@@ -113,7 +113,16 @@ export const categorySeedRows: CategorySeed[] = [
   },
   { slug: "transferencia-persona", name: "A persona", parentSlug: "transferencias" },
   { slug: "ingresos", name: "Ingresos", icon: "wallet", color: "#16a34a", sortOrder: 150 },
-  { slug: "salario", name: "Salario", parentSlug: "ingresos" },
+  { slug: "salario", name: "Salario", parentSlug: "ingresos", icon: "briefcase" },
+  { slug: "freelance", name: "Freelance / Proyecto", parentSlug: "ingresos", icon: "laptop" },
+  { slug: "reembolso", name: "Reembolso", parentSlug: "ingresos", icon: "undo-2" },
+  {
+    slug: "regalo-recibido",
+    name: "Regalo / Préstamo recibido",
+    parentSlug: "ingresos",
+    icon: "gift",
+  },
+  { slug: "otros-ingresos", name: "Otros ingresos", parentSlug: "ingresos", icon: "coins" },
   { slug: "otros", name: "Otros", icon: "ellipsis", color: "#6b7280", sortOrder: 999 },
   // Reserved for reconciliation balance adjustments — excluded from spend/insights
   // queries via transactions.is_adjustment. Sort-ordered last so it sinks to the
