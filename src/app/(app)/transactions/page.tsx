@@ -16,6 +16,7 @@ import {
   listTransactions,
   PAGE_SIZE,
 } from "@/lib/transactions/queries";
+import { loadAmbiguousReceiptsForTxIds } from "@/lib/gmail/ambiguous";
 
 export const dynamic = "force-dynamic";
 
@@ -89,6 +90,21 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     listCounterparties(session.id),
     countNeedingRate(session.id),
   ]);
+
+  // #455 (Epic G): sidecar query — attach ambiguous Gmail receipts to each
+  // row without touching listTransactions (keeps it pure). The Map is keyed
+  // by tx.id; rows without matches get undefined (undefined is stripped by
+  // JSON serialization, matching the optional field on TxRow).
+  const txIds = rows.map((r) => r.id);
+  const ambiguousMap = await loadAmbiguousReceiptsForTxIds(session.id, txIds);
+  if (ambiguousMap.size > 0) {
+    for (const row of rows) {
+      const receipts = ambiguousMap.get(row.id);
+      if (receipts && receipts.length > 0) {
+        row.gmailAmbiguousReceipts = receipts;
+      }
+    }
+  }
 
   const baseQuery = {
     from: sp.from,
