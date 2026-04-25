@@ -17,6 +17,9 @@ import {
   PAGE_SIZE,
 } from "@/lib/transactions/queries";
 import { loadAmbiguousReceiptsForTxIds } from "@/lib/gmail/ambiguous";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "transactions/page" });
 
 export const dynamic = "force-dynamic";
 
@@ -95,8 +98,17 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   // row without touching listTransactions (keeps it pure). The Map is keyed
   // by tx.id; rows without matches get undefined (undefined is stripped by
   // JSON serialization, matching the optional field on TxRow).
+  // Failure here degrades to "no badges" — it must NOT crash the primary view.
   const txIds = rows.map((r) => r.id);
-  const ambiguousMap = await loadAmbiguousReceiptsForTxIds(session.id, txIds);
+  let ambiguousMap: Awaited<ReturnType<typeof loadAmbiguousReceiptsForTxIds>> = new Map();
+  try {
+    ambiguousMap = await loadAmbiguousReceiptsForTxIds(session.id, txIds);
+  } catch (err) {
+    log.error(
+      { err, event: "gmail_ambiguous_load_failed", userId: session.id, txCount: rows.length },
+      "gmail ambiguous sidecar failed — degrading to no badges",
+    );
+  }
   if (ambiguousMap.size > 0) {
     for (const row of rows) {
       const receipts = ambiguousMap.get(row.id);

@@ -6,14 +6,16 @@ import userEvent from "@testing-library/user-event";
 import type { GmailAmbiguousReceipt } from "@/lib/types";
 
 // Shared fetch mock — hoisted so vi.mock factories can reference it
-const { fetchMock, toastSuccess, toastError } = vi.hoisted(() => ({
+const { fetchMock, toastSuccess, toastError, routerRefresh } = vi.hoisted(() => ({
   fetchMock: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  routerRefresh: vi.fn(),
 }));
 
 vi.stubGlobal("fetch", fetchMock);
 vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: routerRefresh }) }));
 
 // Import component AFTER stubs are registered
 import { NeedsReviewBadge } from "./needs-review-badge";
@@ -33,6 +35,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   toastSuccess.mockReset();
   toastError.mockReset();
+  routerRefresh.mockReset();
 });
 
 afterEach(() => {

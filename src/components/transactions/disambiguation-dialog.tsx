@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { ExternalLinkIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -79,11 +80,11 @@ export function DisambiguationDialog({
   txAmountCents,
   txOccurredAt,
 }: DisambiguationDialogProps) {
+  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [localReceipts, setLocalReceipts] = useState(receipts);
 
-  // Sync local state when the parent changes (e.g. page refresh).
-  // We track receipts locally so we can do optimistic removal.
+  // We track receipts locally for optimistic removal while the server re-renders.
   const effectiveReceipts = localReceipts;
 
   async function handleConfirm(receiptId: number) {
@@ -101,6 +102,8 @@ export function DisambiguationDialog({
           throw new Error(body.error ?? `HTTP ${res.status}`);
         }
         toast.success("Merchant confirmado — el email quedó vinculado a la transacción.");
+        // Refresh the server component so the badge clears on the re-render.
+        router.refresh();
       } catch (err) {
         // Rollback: reopen the dialog
         onOpenChange(true);
@@ -124,8 +127,10 @@ export function DisambiguationDialog({
           const body = (await res.json().catch(() => ({}))) as { error?: string };
           throw new Error(body.error ?? `HTTP ${res.status}`);
         }
-        // Locally remove all receipts so the badge disappears on next render.
+        // Locally remove all receipts so the badge disappears instantly,
+        // then refresh the server component for server-truth consistency.
         setLocalReceipts([]);
+        router.refresh();
         toast.success("Candidatos descartados — esta transacción ya no tiene sugerencias.");
       } catch (err) {
         onOpenChange(true);
