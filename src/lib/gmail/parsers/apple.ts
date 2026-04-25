@@ -1,4 +1,5 @@
 import { createLogger } from "@/lib/logger";
+import { extractVisibleText } from "./_text";
 import type { GatewayParser, ParseResult } from "./types";
 
 const log = createLogger({ module: "gmail/parsers/apple" });
@@ -49,18 +50,6 @@ const ENGLISH_MONTHS: Record<string, number> = {
   december: 12,
   dec: 12,
 };
-
-function extractVisibleText(rawHtml: string): string {
-  let t = rawHtml;
-  t = t.replace(/<style[^>]*>[\s\S]*?<\/style[^>]*>/gi, " ");
-  t = t.replace(/<script[^>]*>[\s\S]*?<\/script[^>]*>/gi, " ");
-  t = t.replace(/<!--[\s\S]*?-->/g, " ");
-  t = t.replace(/<[^>]+>/g, " ");
-  // Normalise non-breaking spaces and other whitespace-like chars
-  t = t.replace(/ /g, " ").replace(/&nbsp;/gi, " ");
-  t = t.replace(/\s+/g, " ").trim();
-  return t;
-}
 
 function parseAppleDate(dateStr: string): Date | null {
   // Formats observed in prod:

@@ -1,4 +1,5 @@
 import { createLogger } from "@/lib/logger";
+import { extractVisibleText } from "./_text";
 import type { GatewayParser, ParseResult } from "./types";
 
 const log = createLogger({ module: "gmail/parsers/mercado-pago" });
@@ -33,47 +34,6 @@ const SPANISH_MONTHS: Record<string, number> = {
   noviembre: 11,
   diciembre: 12,
 };
-
-const NAMED_ENTITIES: Record<string, string> = {
-  nbsp: " ",
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  zwnj: "",
-  deg: "°",
-  aacute: "á",
-  eacute: "é",
-  iacute: "í",
-  oacute: "ó",
-  uacute: "ú",
-  ntilde: "ñ",
-};
-
-function decodeHtmlEntities(s: string): string {
-  return s
-    .replace(/&([A-Za-z]+);/g, (match, name) => NAMED_ENTITIES[name] ?? match)
-    .replace(/&#(\d+);/g, (_, code) => {
-      const n = Number.parseInt(code, 10);
-      return Number.isFinite(n) ? String.fromCodePoint(n) : "";
-    })
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => {
-      const n = Number.parseInt(code, 16);
-      return Number.isFinite(n) ? String.fromCodePoint(n) : "";
-    });
-}
-
-function extractVisibleText(rawHtml: string): string {
-  let t = rawHtml;
-  t = t.replace(/<style[^>]*>[\s\S]*?<\/style[^>]*>/gi, " ");
-  t = t.replace(/<script[^>]*>[\s\S]*?<\/script[^>]*>/gi, " ");
-  t = t.replace(/<!--[\s\S]*?-->/g, " ");
-  t = t.replace(/<[^>]+>/g, " ");
-  t = decodeHtmlEntities(t);
-  t = t.replace(/\s+/g, " ").trim();
-  return t;
-}
 
 function parseMpAmount(intStr: string, decStr?: string): bigint {
   // Remove period thousands separators → integer COP

@@ -1,4 +1,5 @@
 import { createLogger } from "@/lib/logger";
+import { extractVisibleText } from "./_text";
 import type { GatewayParser, ParseResult } from "./types";
 
 const log = createLogger({ module: "gmail/parsers/payu" });
@@ -16,30 +17,6 @@ const log = createLogger({ module: "gmail/parsers/payu" });
 // Stored as UTC by subtracting 5 hours.
 
 const BOGOTA_OFFSET_MS = 5 * 60 * 60 * 1000; // UTC-5 in ms
-
-function extractVisibleText(rawHtml: string): string {
-  let t = rawHtml;
-  t = t.replace(/<style[^>]*>[\s\S]*?<\/style[^>]*>/gi, " ");
-  t = t.replace(/<script[^>]*>[\s\S]*?<\/script[^>]*>/gi, " ");
-  t = t.replace(/<!--[\s\S]*?-->/g, " ");
-  t = t.replace(/<[^>]+>/g, " ");
-  // Decode common HTML entities before further processing
-  t = t
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&aacute;/gi, "á")
-    .replace(/&eacute;/gi, "é")
-    .replace(/&iacute;/gi, "í")
-    .replace(/&oacute;/gi, "ó")
-    .replace(/&uacute;/gi, "ú")
-    .replace(/&ntilde;/gi, "ñ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(parseInt(code, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)));
-  t = t.replace(/\s+/g, " ").trim();
-  return t;
-}
 
 function parseBogotaDate(dateStr: string, timeStr: string): Date {
   // dateStr: "2026-04-22", timeStr: "13:11:21"

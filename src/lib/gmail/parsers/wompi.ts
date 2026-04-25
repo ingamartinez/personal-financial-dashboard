@@ -1,4 +1,5 @@
 import { createLogger } from "@/lib/logger";
+import { extractVisibleText } from "./_text";
 import type { GatewayParser, ParseResult } from "./types";
 
 const log = createLogger({ module: "gmail/parsers/wompi" });
@@ -12,17 +13,6 @@ const log = createLogger({ module: "gmail/parsers/wompi" });
 //
 // occurredAt: Wompi emails do not include a date in the body — we use
 // opts.receivedAt (Gmail internalDate) as a reliable stand-in.
-
-function extractVisibleText(rawHtml: string): string {
-  let t = rawHtml;
-  t = t.replace(/<style[^>]*>[\s\S]*?<\/style[^>]*>/gi, " ");
-  t = t.replace(/<script[^>]*>[\s\S]*?<\/script[^>]*>/gi, " ");
-  t = t.replace(/<!--[\s\S]*?-->/g, " ");
-  t = t.replace(/<[^>]+>/g, " ");
-  t = t.replace(/&nbsp;/gi, " ");
-  t = t.replace(/\s+/g, " ").trim();
-  return t;
-}
 
 function parseCopAmount(intPart: string, decPart?: string): bigint {
   // Remove comma thousands separators → integer COP value
