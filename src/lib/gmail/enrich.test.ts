@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -12,6 +12,29 @@ import {
 } from "@/lib/db/schema";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 import { applyEnrichment } from "./enrich";
+
+// Controls whether reclassifyTransaction should throw. Shared via vi.hoisted
+// so the factory inside vi.mock() can read it before top-level consts are set.
+const { shouldReclassifyThrow } = vi.hoisted(() => ({ shouldReclassifyThrow: { value: false } }));
+
+vi.mock("@/lib/classification/reclassify", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/lib/classification/reclassify")>();
+  return {
+    ...original,
+    reclassifyTransaction: vi.fn(
+      async (
+        userId: number,
+        txId: number,
+        database?: import("@/lib/classification/reclassify").ReclassifyDb,
+      ) => {
+        if (shouldReclassifyThrow.value) {
+          throw new Error("injected reclassify failure for rollback test");
+        }
+        return original.reclassifyTransaction(userId, txId, database);
+      },
+    ),
+  };
+});
 
 const TAG = "VITEST_ENRICH_";
 const GMAIL_KEY_ENV = "GMAIL_TOKEN_ENCRYPTION_KEY";
@@ -244,23 +267,47 @@ describe("applyEnrichment — functional", () => {
     expect(tx.classificationMethod).toBe("rule_retroactive");
   });
 
-  it("is atomic: if reclassify step fails, neither tx nor receipt is modified", async () => {
-    // We simulate atomicity by verifying a failing classification rule
-    // insertion doesn't corrupt the row states. However, testing a true
-    // mid-transaction failure requires injecting a mock. Here we test the
-    // observable guarantee: without a failure, both writes land or neither
-    // does. We verify via a cross-tenant throw that rolls back both writes.
+  it("throws on cross-tenant attempt before issuing any write", async () => {
+    // The cross-tenant check in enrich.ts runs before the first UPDATE, so the
+    // throw happens before any write — this test validates the guard, NOT rollback.
     const txId = await createTx(userA, accountA, "MERCADOPAGO COLOMBIA atomic");
     const receiptIdWrong = await createReceipt(userB, connB, "Rappi", "atomic-wrong");
 
     await expect(applyEnrichment(userA, txId, receiptIdWrong)).rejects.toThrow(/cross-tenant/);
 
-    // Neither row should be modified.
+    // Neither row should be modified (no write was ever issued).
     const tx = await getTxState(txId);
     expect(tx.enrichedMerchant).toBeNull();
 
     const receipt = await getReceiptState(receiptIdWrong);
     expect(receipt.matchStatus).toBe("pending");
+  });
+
+  it("rolls back tx update if reclassify step fails mid-transaction", async () => {
+    // Both updates (transactions + email_receipts) execute inside db.transaction
+    // before reclassifyTransaction is called. Injecting a failure in reclassify
+    // proves Drizzle rolls back both — if the transaction were absent, both UPDATEs
+    // would persist.
+    const txId = await createTx(userA, accountA, "MERCADOPAGO COLOMBIA rollback");
+    const receiptId = await createReceipt(userA, connA, "Rappi", "rollback");
+
+    shouldReclassifyThrow.value = true;
+    try {
+      await expect(applyEnrichment(userA, txId, receiptId)).rejects.toThrow(
+        /injected reclassify failure/,
+      );
+    } finally {
+      shouldReclassifyThrow.value = false;
+    }
+
+    // Re-query outside the failed transaction scope — both rows must be pristine.
+    const tx = await getTxState(txId);
+    expect(tx.enrichedMerchant).toBeNull();
+    expect(tx.enrichmentSource).toBeNull();
+
+    const receipt = await getReceiptState(receiptId);
+    expect(receipt.matchStatus).toBe("pending");
+    expect(receipt.matchedTransactionId).toBeNull();
   });
 });
 
