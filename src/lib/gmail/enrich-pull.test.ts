@@ -61,6 +61,9 @@ async function seedReceipt(opts: {
   merchant: string;
   matchStatus?: "pending" | "matched" | "ambiguous" | "unmatched";
 }): Promise<number> {
+  // parsedAt is set so the pull engine skips the parse step and goes straight
+  // to matching. Integration tests care about the match/enrich path, not the
+  // parse step (which is unit-tested in parsers/*.test.ts).
   const [row] = await db
     .insert(emailReceipts)
     .values({
@@ -72,6 +75,7 @@ async function seedReceipt(opts: {
       occurredAt: opts.occurredAt,
       merchant: opts.merchant,
       rawHtml: "<html>receipt</html>",
+      parsedAt: new Date(),
       matchStatus: opts.matchStatus ?? "pending",
     })
     .returning({ id: emailReceipts.id });
@@ -327,6 +331,60 @@ describe("processPendingEnrichReceipts (via pullForUser)", () => {
     expect(receipt.matchStatus).toBe("ambiguous");
     expect(Array.isArray(receipt.matchCandidates)).toBe(true);
     expect((receipt.matchCandidates as number[]).length).toBe(2);
+  });
+
+  it("skipped receipt (non-transactional) gets parsedAt set so it is not re-parsed on subsequent pulls", async () => {
+    // A non-transactional MP email: no "Pagaste" / "Le compraste a" → parser
+    // returns { kind: "skipped", reason: "non_transactional" }.
+    const promotionalHtml = `<!DOCTYPE html><html><body>
+      <p>Con Mercado Pago aprovecha 3 cuotas sin interes en muchas marcas.</p>
+      <p>#LoMejorEstaLlegando</p>
+    </body></html>`;
+
+    // Insert the receipt WITHOUT parsedAt so the pull engine enters the parse step.
+    const [receiptRow] = await db
+      .insert(emailReceipts)
+      .values({
+        userId,
+        gmailConnectionId: connId,
+        gmailMsgId: `${TAG}skipped-${Date.now()}`,
+        gateway: "mercado_pago",
+        rawHtml: promotionalHtml,
+        matchStatus: "pending",
+        // parsedAt intentionally omitted (null)
+      })
+      .returning({ id: emailReceipts.id });
+    const receiptId = receiptRow.id;
+
+    // First pull: parser sees the promo email, returns "skipped".
+    // Fix under test: parsedAt must be set alongside matchStatus="unmatched".
+    await pullForUser(userId, {}, { getClient: async () => makeNoopClient() });
+
+    const [afterFirst] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        parsedAt: emailReceipts.parsedAt,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receiptId));
+
+    expect(afterFirst.matchStatus).toBe("unmatched");
+    expect(afterFirst.parsedAt).not.toBeNull();
+
+    const parsedAtAfterFirst = afterFirst.parsedAt!.getTime();
+
+    // Second pull: receipt is still in the WHERE clause (matchStatus="unmatched")
+    // but parsedAt is now set — so the parse step (and parseReceipt call) is
+    // skipped entirely. parsedAt must remain exactly the same value.
+    await pullForUser(userId, {}, { getClient: async () => makeNoopClient() });
+
+    const [afterSecond] = await db
+      .select({ parsedAt: emailReceipts.parsedAt })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receiptId));
+
+    // parsedAt must not have been refreshed (i.e. parseReceipt was not called again).
+    expect(afterSecond.parsedAt!.getTime()).toBe(parsedAtAfterFirst);
   });
 
   it("all enrich gateways in GATEWAYS registry have mode=enrich (registry coverage)", () => {
