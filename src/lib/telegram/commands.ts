@@ -10,11 +10,16 @@ import {
   renderBackfillResult,
   renderBackfillStarting,
   renderCanceled,
+  renderDisambiguationPrompt,
+  renderDisambiguationRejected,
   renderEnrichConnectPrompt,
   renderEnrichFailed,
   renderEnrichProcessing,
   renderEnrichResult,
   renderHelp,
+  renderOmitirNada,
+  renderRevisarEmpty,
+  renderRevisarPending,
   renderStart,
 } from "@/lib/telegram/formatter";
 import { pullForUser } from "@/lib/gmail/pull";
@@ -23,15 +28,26 @@ import {
   backfillBancolombiaDryRun,
   BackfillConnectionError,
 } from "@/lib/gmail/backfill";
+import { applyRejection } from "@/lib/gmail/disambiguate";
+import { loadPendingAmbiguousReceipt } from "@/lib/telegram/disambiguation-query";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "telegram/commands" });
 
-export type CommandName = "/start" | "/help" | "/cancel" | "/enriquecer" | "/backfill" | "/si";
+export type CommandName =
+  | "/start"
+  | "/help"
+  | "/cancel"
+  | "/enriquecer"
+  | "/backfill"
+  | "/si"
+  | "/revisar"
+  | "/omitir";
 
 // Maps aliases to canonical command names. `/enrich` is the English alias
 // requested by #452. `/backfill-gmail` maps to the canonical `/backfill`.
 // `/sí`, `/yes` map to `/si` for confirmation flows (#458).
+// `/revisar` and `/omitir` are the disambiguation commands (#456).
 const COMMAND_ALIASES: Record<string, CommandName> = {
   "/start": "/start",
   "/help": "/help",
@@ -43,6 +59,10 @@ const COMMAND_ALIASES: Record<string, CommandName> = {
   "/si": "/si",
   "/sí": "/si",
   "/yes": "/si",
+  "/revisar": "/revisar",
+  "/review": "/revisar",
+  "/omitir": "/omitir",
+  "/skip": "/omitir",
 };
 
 export function parseCommand(text: string): CommandName | null {
@@ -79,6 +99,12 @@ export async function handleCommand(opts: {
       return;
     case "/si":
       await handleBackfillConfirm({ chatId, client, userId, telegramUserId });
+      return;
+    case "/revisar":
+      await handleRevisar({ chatId, client, userId, telegramUserId });
+      return;
+    case "/omitir":
+      await handleOmitir({ chatId, client, userId, telegramUserId });
       return;
   }
 }
@@ -264,4 +290,118 @@ async function handleBackfillConfirm(opts: {
     // A /cancel mid-flight has already deleted it; clearSession is idempotent.
     await clearSession(chatId);
   }
+}
+
+// ---------------------------------------------------------------------------
+// /revisar — list and begin resolving ambiguous receipts (#456)
+// ---------------------------------------------------------------------------
+
+export async function openDisambiguationSession(opts: {
+  chatId: number;
+  client: TelegramClient;
+  userId: number;
+  telegramUserId: number;
+  /** When true, do NOT send the empty-queue message if there are no pending receipts.
+   *  Used for auto-chaining after a resolution so we don't spam the user. */
+  silent?: boolean;
+}): Promise<void> {
+  const { chatId, client, userId, telegramUserId, silent } = opts;
+  const pending = await loadPendingAmbiguousReceipt(userId);
+  if (!pending) {
+    if (!silent) {
+      await client.sendMessage({ chat_id: chatId, text: renderRevisarEmpty() });
+    }
+    return;
+  }
+
+  const state: TelegramSessionState = {
+    step: "awaiting_disambiguation",
+    draft: {},
+    sourceChatId: chatId,
+    disambiguationReceiptId: pending.receipt.id,
+    disambiguationCandidates: pending.candidates.map((c) => c.id),
+  };
+  // Use 24h TTL — disambiguation sessions persist across bot restarts and
+  // cron cycles; the user may not respond immediately.
+  await upsertSession({
+    chatId,
+    userId,
+    telegramUserId,
+    state,
+    ttlMs: 24 * 60 * 60 * 1000,
+  });
+
+  await client.sendMessage({
+    chat_id: chatId,
+    text: renderDisambiguationPrompt({
+      receiptId: pending.receipt.id,
+      receiptMerchant: pending.receipt.merchant,
+      receiptOccurredAt: pending.receipt.occurredAt,
+      candidates: pending.candidates,
+    }),
+    parse_mode: "Markdown",
+  });
+}
+
+async function handleRevisar(opts: {
+  chatId: number;
+  client: TelegramClient;
+  userId: number;
+  telegramUserId: number;
+}): Promise<void> {
+  const { chatId, client, userId, telegramUserId } = opts;
+  const session = await getSession(chatId);
+
+  // If there's already an awaiting_disambiguation session, tell the user.
+  if (session?.step === "awaiting_disambiguation" && session.disambiguationReceiptId) {
+    await client.sendMessage({
+      chat_id: chatId,
+      text: renderRevisarPending(session.disambiguationReceiptId),
+    });
+    return;
+  }
+
+  await openDisambiguationSession({ chatId, client, userId, telegramUserId });
+}
+
+async function handleOmitir(opts: {
+  chatId: number;
+  client: TelegramClient;
+  userId: number;
+  telegramUserId: number;
+}): Promise<void> {
+  const { chatId, client, userId, telegramUserId } = opts;
+  const session = await getSession(chatId);
+
+  if (!session || session.step !== "awaiting_disambiguation") {
+    await client.sendMessage({ chat_id: chatId, text: renderOmitirNada() });
+    return;
+  }
+
+  const receiptId = session.disambiguationReceiptId;
+  if (typeof receiptId !== "number") {
+    await clearSession(chatId);
+    await client.sendMessage({ chat_id: chatId, text: renderOmitirNada() });
+    return;
+  }
+
+  // Find all candidate txIds from the session and reject each one.
+  const candidates = session.disambiguationCandidates ?? [];
+  for (const txId of candidates) {
+    try {
+      await applyRejection(userId, txId);
+    } catch (err) {
+      log.error(
+        { err, userId, txId, receiptId, event: "telegram_omitir_rejection_failed" },
+        "applyRejection threw during /omitir",
+      );
+    }
+  }
+
+  await clearSession(chatId);
+  await client.sendMessage({ chat_id: chatId, text: renderDisambiguationRejected() });
+
+  // Auto-chain: if more pending receipts exist, open the next one.
+  // Use silent=true so no message fires when the queue is now empty.
+  await openDisambiguationSession({ chatId, client, userId, telegramUserId, silent: true });
 }
