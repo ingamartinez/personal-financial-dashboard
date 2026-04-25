@@ -238,24 +238,58 @@ describe("processPendingEnrichReceipts (via pullForUser)", () => {
     expect(receipt.matchStatus).toBe("pending");
   });
 
-  it("unmatched receipt gets status=unmatched and is eligible for re-attempt", async () => {
+  it("unmatched receipt gets status=unmatched and is re-attempted on the next pull", async () => {
     const DATE = new Date("2026-04-19T10:00:00Z");
-    // No corresponding tx — should result in unmatched.
+    const AMOUNT = BigInt(99999);
+
+    // First pull: no corresponding tx exists → receipt becomes unmatched.
     const receiptId = await seedReceipt({
       gateway: "mercado_pago",
-      amountCents: BigInt(99999),
+      amountCents: AMOUNT,
       occurredAt: DATE,
-      merchant: "NoMatchMerchant",
+      merchant: "RetryMerchant",
     });
 
     await pullForUser(userId, {}, { getClient: async () => makeNoopClient() });
 
-    const [receipt] = await db
+    const [afterFirst] = await db
       .select({ matchStatus: emailReceipts.matchStatus })
       .from(emailReceipts)
       .where(eq(emailReceipts.id, receiptId));
 
-    expect(receipt.matchStatus).toBe("unmatched");
+    expect(afterFirst.matchStatus).toBe("unmatched");
+
+    // Bank tx arrives later (e.g. via SMS ingestion). Seed it now.
+    const txId = await seedTx({
+      descriptionRaw: "MERCADOPAGO COLOMBIA retry-test",
+      amountCents: -AMOUNT,
+      occurredAt: DATE,
+    });
+
+    // Second pull: the unmatched receipt is re-selected and matched this time.
+    await pullForUser(userId, {}, { getClient: async () => makeNoopClient() });
+
+    const [afterSecond] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        matchedTransactionId: emailReceipts.matchedTransactionId,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receiptId));
+
+    expect(afterSecond.matchStatus).toBe("matched");
+    expect(afterSecond.matchedTransactionId).toBe(txId);
+
+    const [tx] = await db
+      .select({
+        enrichedMerchant: transactions.enrichedMerchant,
+        enrichmentSource: transactions.enrichmentSource,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+
+    expect(tx.enrichedMerchant).toBe("RetryMerchant");
+    expect(tx.enrichmentSource).toBe("gmail");
   });
 
   it("ambiguous receipt gets status=ambiguous with matchCandidates populated", async () => {

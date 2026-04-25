@@ -370,7 +370,7 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
       and(
         eq(emailReceipts.userId, userId),
         eq(emailReceipts.gateway, gatewayId),
-        eq(emailReceipts.matchStatus, "pending"),
+        inArray(emailReceipts.matchStatus, ["pending", "unmatched"]),
         notDeleted(emailReceipts.deletedAt),
       ),
     );
