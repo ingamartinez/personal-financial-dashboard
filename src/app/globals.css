@@ -13,7 +13,7 @@
   --font-display: var(--font-geist-sans);
   --font-numeric: var(--font-jetbrains-mono);
 
-  /* Editorial Calm — paper / ink / botanical accent tokens (dashboard) */
+  /* Warm Paper — paper / ink / botanical accent tokens (dashboard) */
   --color-paper: var(--paper);
   --color-paper-elevated: var(--paper-elevated);
   --color-ink: var(--ink);
@@ -96,7 +96,7 @@
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.63 0.18 45);
 
-  /* Editorial Calm — light paper palette */
+  /* Warm Paper — light paper palette */
   --paper: oklch(0.973 0.008 80);
   --paper-elevated: oklch(0.99 0.005 80);
   --ink: oklch(0.18 0.008 60);
@@ -142,7 +142,7 @@
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.75 0.15 50);
 
-  /* Editorial Calm — dark warm palette */
+  /* Warm Paper — dark palette */
   --paper: oklch(0.13 0.006 60);
   --paper-elevated: oklch(0.185 0.008 60);
   --ink: oklch(0.93 0.012 80);
@@ -167,9 +167,6 @@
   }
 }
 
-@utility text-display {
-  @apply text-3xl leading-tight font-semibold tracking-tight;
-}
 @utility text-h1 {
   @apply text-2xl leading-tight font-semibold tracking-tight;
 }
@@ -221,8 +218,8 @@
   animation: tx-row-highlight 2.5s ease-out forwards;
 }
 
-/* === Editorial Calm — typography utilities === */
-@utility text-serif-display {
+/* === Warm Paper — typography utilities === */
+@utility text-display {
   font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
   letter-spacing: -0.03em;
   @apply font-semibold;
@@ -239,7 +236,7 @@
   @apply font-semibold;
 }
 
-/* === Editorial Calm — paper surface (dashboard only) === */
+/* === Warm Paper — paper surface (dashboard only) === */
 @utility surface-paper {
   background-color: var(--paper);
   color: var(--ink);
@@ -267,7 +264,7 @@
   opacity: 0.06;
 }
 
-/* === Editorial Calm — card surface override === */
+/* === Warm Paper — card surface override === */
 @utility card-paper {
   background-color: var(--paper-elevated);
   color: var(--ink);
@@ -282,7 +279,7 @@
   border-color: var(--ink-subtle);
 }
 
-/* === Editorial Calm — meter (progress bar) === */
+/* === Warm Paper — meter (progress bar) === */
 @utility meter-track {
   background-color: var(--rule);
   border-radius: 9999px;
@@ -300,7 +297,7 @@
   transition: width 600ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* === Editorial Calm — staggered reveal on page load === */
+/* === Warm Paper — staggered reveal on page load === */
 @keyframes paper-rise {
   from {
     opacity: 0;

@@ -108,7 +108,7 @@ export default async function DashboardPage({
         <header className="paper-rise flex flex-wrap items-end justify-between gap-3">
           <div className="flex flex-col gap-1">
             <span className="text-eyebrow">Findash</span>
-            <h1 className="text-serif-display text-ink text-4xl font-semibold sm:text-5xl">
+            <h1 className="text-display text-ink text-4xl font-semibold sm:text-5xl">
               Tu mes en una hoja
             </h1>
             <p className="text-ink-muted text-sm capitalize">{monthLabel}</p>
