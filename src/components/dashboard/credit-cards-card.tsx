@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Money } from "@/components/display/money";
 import { cn } from "@/lib/utils";
 import type { CreditCardsSummary } from "@/lib/dashboard/queries";
@@ -21,75 +20,77 @@ function formatDaysUntil(days: number): string {
 
 export function CreditCardsCard({ data }: { data: CreditCardsSummary }) {
   if (data.cardCount === 0) return null;
-  const negative = data.debtCopCents < BigInt(0);
   const showMeter = data.limitCopCents > BigInt(0);
   const usedPctLabel = `${Math.round(data.usedPct)}%`;
-  const high = data.usedPct >= 80;
+  const heavyUse = data.usedPct >= 80;
+  const cardWord = data.cardCount === 1 ? "tarjeta" : "tarjetas";
 
   return (
-    <Card>
-      <CardHeader>
-        <CardDescription className="flex items-center justify-between gap-2">
-          <span>Credit cards</span>
-          <Link
-            href="/accounts"
-            className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
-          >
-            Ver detalle →
-          </Link>
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="flex flex-col gap-1">
-          <div className="text-muted-foreground text-xs">Deuda total</div>
-          <div
-            className={cn(
-              "text-2xl font-semibold tabular-nums",
-              negative ? "text-rose-600" : "text-foreground",
-            )}
-          >
-            <Money cents={data.debtCopCents} currency="COP" />
-          </div>
+    <article className="card-paper paper-rise-2 p-7 sm:p-8">
+      <header className="border-rule flex items-center justify-between gap-2 border-b pb-5">
+        <div className="flex items-baseline gap-3">
+          <span className="text-eyebrow">Crédito disponible</span>
+          <span className="text-ink-subtle text-xs">
+            · {data.cardCount} {cardWord}
+          </span>
         </div>
+        <Link
+          href="/accounts"
+          className="text-ink-muted hover:text-ink text-xs underline-offset-4 hover:underline"
+        >
+          Ver detalle →
+        </Link>
+      </header>
 
-        <div className="flex flex-col gap-1.5">
-          <div className="text-muted-foreground text-xs">Cupo disponible</div>
+      <div className="grid grid-cols-1 gap-7 pt-6 sm:grid-cols-3 sm:gap-5">
+        <section className="flex flex-col gap-2">
+          <span className="text-ink-subtle text-[11px] tracking-wider uppercase">
+            Cupo disponible
+          </span>
           {showMeter ? (
             <>
-              <div className="text-2xl font-semibold tabular-nums">
+              <div className="money-hero text-botanical-fg text-3xl">
                 <Money cents={data.availableCopCents} currency="COP" />
               </div>
-              <div className="bg-muted h-1.5 overflow-hidden rounded-full">
+              <div className="meter-track mt-1 h-1.5">
                 <div
-                  className={cn("h-full transition-all", high ? "bg-rose-600" : "bg-emerald-600")}
+                  className={cn(heavyUse ? "meter-fill-amber" : "meter-fill")}
                   style={{ width: `${data.usedPct}%` }}
                 />
               </div>
-              <div className="text-muted-foreground text-xs tabular-nums">
-                {usedPctLabel} usado de <Money cents={data.limitCopCents} currency="COP" />
+              <div className="text-ink-subtle text-[11px] tabular-nums">
+                Usaste {usedPctLabel} de <Money cents={data.limitCopCents} currency="COP" />
               </div>
             </>
           ) : (
-            <div className="text-muted-foreground text-base">—</div>
+            <div className="text-ink-subtle text-base">—</div>
           )}
-        </div>
+        </section>
 
-        <div className="flex flex-col gap-1">
-          <div className="text-muted-foreground text-xs">Próximo pago</div>
+        <section className="flex flex-col gap-2">
+          <span className="text-ink-subtle text-[11px] tracking-wider uppercase">Próximo pago</span>
           {data.nextPayment ? (
             <>
-              <div className="text-2xl font-semibold tabular-nums">
+              <div className="money-hero text-ink text-3xl">
                 {formatNextPayment(data.nextPayment.date)}
               </div>
-              <div className="text-muted-foreground text-xs">
+              <div className="text-ink-muted text-xs">
                 {formatDaysUntil(data.nextPayment.daysUntil)}
               </div>
             </>
           ) : (
-            <div className="text-muted-foreground text-base">—</div>
+            <div className="text-ink-subtle text-base">—</div>
           )}
-        </div>
-      </CardContent>
-    </Card>
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <span className="text-ink-subtle text-[11px] tracking-wider uppercase">Deuda actual</span>
+          <div className="money-hero text-ink-muted text-2xl">
+            <Money cents={data.debtCopCents} currency="COP" />
+          </div>
+          <div className="text-ink-subtle text-[11px]">A pagar el próximo ciclo</div>
+        </section>
+      </div>
+    </article>
   );
 }

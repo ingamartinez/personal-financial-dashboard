@@ -2,12 +2,14 @@ import {
   getAccountStatuses,
   getCategoryBreakdown,
   getCreditCardsSummary,
+  getFinancialPicture,
   getMonthlyFlow,
-  getNetWorth,
+  getMonthlyProgress,
   getTopExpenses,
 } from "@/lib/dashboard/queries";
-import { NetWorthCard } from "@/components/dashboard/net-worth-card";
+import { SaldoLiquidoCard } from "@/components/dashboard/saldo-liquido-card";
 import { MonthlyFlowCard } from "@/components/dashboard/monthly-flow-card";
+import { ProgressCard } from "@/components/dashboard/progress-card";
 import { CategoryDonut } from "@/components/dashboard/category-donut";
 import { TopExpensesCard } from "@/components/dashboard/top-expenses-card";
 import { AccountsGrid } from "@/components/dashboard/accounts-grid";
@@ -46,24 +48,35 @@ export default async function DashboardPage({
 
   const session = await getSessionUser();
   const fx = await getCurrentFxRate();
-  const [netWorth, flow, slices, top, accounts, upcoming, openGaps, smsHealth, creditCards] =
-    await Promise.all([
-      getNetWorth(session.id, fx.rate),
-      getMonthlyFlow(session.id, fx.rate, refDate),
-      getCategoryBreakdown(session.id, fx.rate, refDate),
-      getTopExpenses(session.id, fx.rate, refDate, 5),
-      getAccountStatuses(session.id),
-      getUpcomingForMonth({
-        userId: session.id,
-        year: refYear,
-        month: refMonth,
-        includeDismissed: true,
-        today: now,
-      }),
-      getOpenGaps(session.id),
-      getSmsHealthSnapshot(session.id, now),
-      getCreditCardsSummary(session.id, fx.rate, now),
-    ]);
+  const [
+    picture,
+    flow,
+    progress,
+    slices,
+    top,
+    accounts,
+    upcoming,
+    openGaps,
+    smsHealth,
+    creditCards,
+  ] = await Promise.all([
+    getFinancialPicture(session.id, fx.rate),
+    getMonthlyFlow(session.id, fx.rate, refDate),
+    getMonthlyProgress(session.id, fx.rate, refDate),
+    getCategoryBreakdown(session.id, fx.rate, refDate),
+    getTopExpenses(session.id, fx.rate, refDate, 5),
+    getAccountStatuses(session.id),
+    getUpcomingForMonth({
+      userId: session.id,
+      year: refYear,
+      month: refMonth,
+      includeDismissed: true,
+      today: now,
+    }),
+    getOpenGaps(session.id),
+    getSmsHealthSnapshot(session.id, now),
+    getCreditCardsSummary(session.id, fx.rate, now),
+  ]);
 
   const upcomingItems = upcoming.map((u) => ({
     ...u,
@@ -90,45 +103,57 @@ export default async function DashboardPage({
   }));
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 sm:p-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-h1">Dashboard</h1>
-          <p className="text-body text-muted-foreground capitalize">{monthLabel}</p>
-        </div>
-        <MonthSwitcher ym={ym} />
-      </header>
+    <main className="surface-paper-grain min-h-screen">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-7 p-4 sm:p-6 lg:gap-9 lg:p-10">
+        <header className="paper-rise flex flex-wrap items-end justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-eyebrow">Findash</span>
+            <h1 className="text-serif-display text-ink text-4xl font-semibold sm:text-5xl">
+              Tu mes en una hoja
+            </h1>
+            <p className="text-ink-muted text-sm capitalize">{monthLabel}</p>
+          </div>
+          <MonthSwitcher ym={ym} />
+        </header>
 
-      <PendingConsolidationBanner userId={session.id} />
+        <PendingConsolidationBanner userId={session.id} />
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-4">
-        <NetWorthCard data={netWorth} fx={fx} />
-        <MonthlyFlowCard data={flow} monthLabel={monthLabel} isFuture={isFuture} />
-        <CategoryDonut slices={donutSlices} monthLabel={monthLabel} isFuture={isFuture} />
-        <SmsHealthCard snapshot={smsHealth} />
-      </section>
-
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TopExpensesCard rows={top} monthLabel={monthLabel} ym={ym} isFuture={isFuture} />
-        <UpcomingCard items={upcomingItems} monthLabel={monthLabel} />
-      </section>
-
-      {gapItems.length > 0 ? (
         <section>
-          <RecurringInboxCard gaps={gapItems} />
+          <SaldoLiquidoCard data={picture} fx={fx} monthLabel={monthLabel} />
         </section>
-      ) : null}
 
-      {creditCards.cardCount > 0 ? (
-        <section>
-          <CreditCardsCard data={creditCards} />
+        <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <MonthlyFlowCard data={flow} monthLabel={monthLabel} isFuture={isFuture} />
+          <ProgressCard data={progress} monthLabel={monthLabel} isFuture={isFuture} />
         </section>
-      ) : null}
 
-      <section className="flex flex-col gap-3">
-        <h2 className="text-h2">Accounts</h2>
-        <AccountsGrid accounts={accounts} />
-      </section>
+        {creditCards.cardCount > 0 ? (
+          <section>
+            <CreditCardsCard data={creditCards} />
+          </section>
+        ) : null}
+
+        <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <TopExpensesCard rows={top} monthLabel={monthLabel} ym={ym} isFuture={isFuture} />
+          <UpcomingCard items={upcomingItems} monthLabel={monthLabel} />
+        </section>
+
+        <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <CategoryDonut slices={donutSlices} monthLabel={monthLabel} isFuture={isFuture} />
+          <SmsHealthCard snapshot={smsHealth} />
+        </section>
+
+        {gapItems.length > 0 ? (
+          <section>
+            <RecurringInboxCard gaps={gapItems} />
+          </section>
+        ) : null}
+
+        <section className="flex flex-col gap-4">
+          <h2 className="text-eyebrow">Cuentas</h2>
+          <AccountsGrid accounts={accounts} />
+        </section>
+      </div>
     </main>
   );
 }

@@ -1,13 +1,9 @@
-import { aliasedTable, and, asc, eq, gte, lt, sql } from "drizzle-orm";
+import { aliasedTable, and, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
 import { notAdjustment, notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
-import {
-  derivedBalanceCentsSql,
-  groupCreditCards,
-  listAccountsDetailed,
-} from "@/lib/accounts/queries";
+import { groupCreditCards, listAccountsDetailed } from "@/lib/accounts/queries";
 import { computeNextPayment } from "@/lib/accounts/next-payment";
 import type { AccountType, CounterpartyType, Currency } from "@/lib/types";
 
@@ -24,32 +20,37 @@ export type AccountStatus = {
   type: AccountType;
   currency: Currency;
   balanceCents: bigint;
+  /** Native-currency credit limit; populated only for credit_card accounts that
+   * declare a limit (either via shared physical_card or per-account metadata).
+   * Used by the Editorial Calm reframe to show "cupo disponible" instead of
+   * negative debt as the headline number. */
+  creditLimitCents?: bigint;
 };
 
 export async function getAccountStatuses(userId: number): Promise<AccountStatus[]> {
-  const rows = await db
-    .select({
-      id: accounts.id,
-      name: accounts.name,
-      institution: accounts.institution,
-      type: accounts.type,
-      currency: accounts.currency,
-      balanceCents: derivedBalanceCentsSql,
-    })
-    .from(accounts)
-    .where(
-      and(eq(accounts.userId, userId), eq(accounts.active, true), notDeleted(accounts.deletedAt)),
-    )
-    .orderBy(asc(accounts.name));
-
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    institution: r.institution,
-    type: r.type,
-    currency: r.currency,
-    balanceCents: BigInt(r.balanceCents),
-  }));
+  const detailed = await listAccountsDetailed(userId);
+  return detailed
+    .filter((d) => d.active)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((d) => {
+      let creditLimitCents: bigint | undefined;
+      if (d.type === "credit_card") {
+        if (d.physicalCard && d.physicalCard.creditLimitCents > BigInt(0)) {
+          creditLimitCents = d.physicalCard.creditLimitCents;
+        } else if (d.metadata.creditLimitCents && d.metadata.creditLimitCents > 0) {
+          creditLimitCents = BigInt(d.metadata.creditLimitCents);
+        }
+      }
+      return {
+        id: d.id,
+        name: d.name,
+        institution: d.institution,
+        type: d.type,
+        currency: d.currency,
+        balanceCents: d.balanceCents,
+        creditLimitCents,
+      };
+    });
 }
 
 export type NetWorth = {
@@ -68,6 +69,48 @@ export async function getNetWorth(userId: number, copPerUsd: number): Promise<Ne
   }
   const totalCopCents = copCents + toCop(usdCents, "USD", copPerUsd);
   return { totalCopCents, copCents, usdCents };
+}
+
+export type FinancialPicture = {
+  liquidCopCents: bigint;
+  liquidCopOnlyCents: bigint;
+  liquidUsdCents: bigint;
+  liabilitiesCopCents: bigint;
+  netWorthCopCents: bigint;
+};
+
+/**
+ * Editorial Calm reframe (#491): primary KPI is "saldo líquido"
+ * (only savings balances, always non-negative for healthy accounts) and
+ * "patrimonio neto" lives as a secondary line. Liabilities are surfaced
+ * separately so the hero can render an assets-vs-debts mini bar without
+ * recomputing on the client.
+ */
+export async function getFinancialPicture(
+  userId: number,
+  copPerUsd: number,
+): Promise<FinancialPicture> {
+  const list = await getAccountStatuses(userId);
+  let liquidCopOnlyCents = BigInt(0);
+  let liquidUsdCents = BigInt(0);
+  let liabilitiesCopCents = BigInt(0);
+  for (const a of list) {
+    if (a.type === "savings") {
+      if (a.currency === "USD") liquidUsdCents += a.balanceCents;
+      else liquidCopOnlyCents += a.balanceCents;
+    } else if (a.balanceCents < BigInt(0)) {
+      liabilitiesCopCents += -toCop(a.balanceCents, a.currency, copPerUsd);
+    }
+  }
+  const liquidCopCents = liquidCopOnlyCents + toCop(liquidUsdCents, "USD", copPerUsd);
+  const netWorthCopCents = liquidCopCents - liabilitiesCopCents;
+  return {
+    liquidCopCents,
+    liquidCopOnlyCents,
+    liquidUsdCents,
+    liabilitiesCopCents,
+    netWorthCopCents,
+  };
 }
 
 export type MonthlyFlow = {
@@ -111,6 +154,61 @@ export async function getMonthlyFlow(
     incomeCopCents,
     expenseCopCents,
     netCopCents: incomeCopCents - expenseCopCents,
+  };
+}
+
+export type MonthlyProgress = {
+  debtPaidCopCents: bigint;
+  savingsCopCents: bigint;
+  hasAny: boolean;
+};
+
+/**
+ * Editorial Calm reframe (#491): "what did the user accomplish this month"
+ * — surfaces positive credit-card payments + positive cash flow as
+ * encouragement, not just spend.
+ *   debtPaid = SUM(positive transactions on credit_card accounts) this month
+ *   savings = max(0, income - expense) this month
+ * Both are expressed in COP cents.
+ */
+export async function getMonthlyProgress(
+  userId: number,
+  copPerUsd: number,
+  now = new Date(),
+): Promise<MonthlyProgress> {
+  const { start, end } = currentMonthRange(now);
+
+  const debtRows = await db
+    .select({
+      currency: transactions.currency,
+      paidCents: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} > 0 THEN ${transactions.amountCents} ELSE 0 END), 0)`,
+    })
+    .from(transactions)
+    .innerJoin(accounts, eq(accounts.id, transactions.accountId))
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(accounts.type, "credit_card"),
+        gte(transactions.occurredAt, start),
+        lt(transactions.occurredAt, end),
+        notAdjustment(transactions.isAdjustment),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
+    .groupBy(transactions.currency);
+
+  let debtPaidCopCents = BigInt(0);
+  for (const r of debtRows) {
+    debtPaidCopCents += toCop(BigInt(r.paidCents), r.currency, copPerUsd);
+  }
+
+  const flow = await getMonthlyFlow(userId, copPerUsd, now);
+  const savingsCopCents = flow.netCopCents > BigInt(0) ? flow.netCopCents : BigInt(0);
+
+  return {
+    debtPaidCopCents,
+    savingsCopCents,
+    hasAny: debtPaidCopCents > BigInt(0) || savingsCopCents > BigInt(0),
   };
 }
 
