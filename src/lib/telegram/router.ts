@@ -5,7 +5,7 @@ import type { NluAccountOption, NluCategoryOption, NluResult } from "@/lib/ai/tr
 import type { TelegramBatchItem, TelegramDraft, TelegramSessionState } from "@/lib/db/schema";
 import type { OcrMediaType, OcrResult } from "@/lib/ingestion/ocr";
 import { createLogger } from "@/lib/logger";
-import { handleCommand, parseCommand } from "@/lib/telegram/commands";
+import { handleCommand, openDisambiguationSession, parseCommand } from "@/lib/telegram/commands";
 import { clearSession, getSession, mergeDraft, upsertSession } from "@/lib/telegram/session";
 
 const log = createLogger({ module: "telegram/router" });
@@ -25,6 +25,10 @@ import {
   renderBatchSummary,
   renderCanceled,
   renderConfirmCard,
+  renderDisambiguationConfirmed,
+  renderDisambiguationError,
+  renderDisambiguationPrompt,
+  renderDisambiguationReprompt,
   renderError,
   renderInserted,
   renderNoAccounts,
@@ -38,6 +42,9 @@ import { insertBatch, insertFromDraft, isDraftComplete } from "@/lib/telegram/co
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { buildDraftFromParsedSms } from "@/lib/telegram/sms-draft";
 import { buildDraftFromOcrRow } from "@/lib/telegram/ocr-draft";
+import { applyEnrichment } from "@/lib/gmail/enrich";
+import { applyRejection } from "@/lib/gmail/disambiguate";
+import { loadPendingAmbiguousReceipt } from "@/lib/telegram/disambiguation-query";
 
 export type RouterDeps = {
   userId: number;
@@ -357,6 +364,111 @@ async function handleVoice(
   await handleText({ ...message, text: transcribed }, client, deps);
 }
 
+async function handleDisambiguationReply(opts: {
+  text: string;
+  chatId: number;
+  client: TelegramClient;
+  deps: RouterDeps;
+  session: import("@/lib/db/schema").TelegramSessionState;
+  telegramUserId: number;
+}): Promise<void> {
+  const { text, chatId, client, deps, session, telegramUserId } = opts;
+  const receiptId = session.disambiguationReceiptId;
+  const candidateIds = session.disambiguationCandidates ?? [];
+
+  if (typeof receiptId !== "number" || candidateIds.length === 0) {
+    await clearSession(chatId);
+    await client.sendMessage({ chat_id: chatId, text: renderDisambiguationError() });
+    return;
+  }
+
+  // /omitir is handled by handleCommand → handleOmitir, which was already
+  // processed above before we entered this function. This branch only fires
+  // for non-command text like "1", "2", "3".
+  const trimmed = text.trim();
+  const numChoice = Number.parseInt(trimmed, 10);
+  const isValidChoice =
+    Number.isInteger(numChoice) && numChoice >= 1 && numChoice <= candidateIds.length;
+
+  if (!isValidChoice) {
+    // Re-prompt with the same options.
+    const pending = await loadPendingAmbiguousReceipt(deps.userId);
+    if (pending && pending.receipt.id === receiptId) {
+      await client.sendMessage({
+        chat_id: chatId,
+        text:
+          renderDisambiguationReprompt() +
+          "\n\n" +
+          renderDisambiguationPrompt({
+            receiptId: pending.receipt.id,
+            receiptMerchant: pending.receipt.merchant,
+            receiptOccurredAt: pending.receipt.occurredAt,
+            candidates: pending.candidates,
+          }),
+        parse_mode: "Markdown",
+      });
+    } else {
+      await client.sendMessage({ chat_id: chatId, text: renderDisambiguationReprompt() });
+    }
+    return;
+  }
+
+  const chosenTxId = candidateIds[numChoice - 1]!;
+
+  try {
+    await applyEnrichment(deps.userId, chosenTxId, receiptId);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("cross-tenant attempt")) {
+      log.error(
+        { err, userId: deps.userId, chosenTxId, receiptId, event: "disambiguation_cross_tenant" },
+        "cross-tenant disambiguation attempt — skipping",
+      );
+      await clearSession(chatId);
+      await client.sendMessage({ chat_id: chatId, text: renderDisambiguationError() });
+      return;
+    }
+    log.error(
+      { err, userId: deps.userId, chosenTxId, receiptId, event: "disambiguation_enrich_failed" },
+      "applyEnrichment threw during disambiguation",
+    );
+    await client.sendMessage({ chat_id: chatId, text: renderDisambiguationError() });
+    return;
+  }
+
+  await clearSession(chatId);
+  await client.sendMessage({ chat_id: chatId, text: renderDisambiguationConfirmed(chosenTxId) });
+
+  // Also reject all OTHER candidate txIds for this receipt to clean up
+  // ambiguous candidate lists across remaining receipts.
+  for (const txId of candidateIds) {
+    if (txId === chosenTxId) continue;
+    try {
+      await applyRejection(deps.userId, txId);
+    } catch (err) {
+      log.warn(
+        {
+          err,
+          userId: deps.userId,
+          txId,
+          receiptId,
+          event: "disambiguation_cleanup_reject_failed",
+        },
+        "best-effort candidate cleanup failed",
+      );
+    }
+  }
+
+  // Auto-chain: if more pending receipts exist, open the next prompt.
+  // Use silent=true so no message fires when the queue is now empty.
+  await openDisambiguationSession({
+    chatId,
+    client,
+    userId: deps.userId,
+    telegramUserId,
+    silent: true,
+  });
+}
+
 async function handleText(
   message: TelegramMessage,
   client: TelegramClient,
@@ -380,6 +492,21 @@ async function handleText(
   }
 
   const existing = await getSession(chatId);
+
+  // awaiting_disambiguation: the user is resolving an ambiguous receipt.
+  // Intercept AFTER commands (so /cancel, /omitir, /revisar still work) but
+  // BEFORE NLU — a number like "1" or "2" must not be misread as an amount.
+  if (existing?.step === "awaiting_disambiguation") {
+    await handleDisambiguationReply({
+      text,
+      chatId,
+      client,
+      deps,
+      session: existing,
+      telegramUserId: userId,
+    });
+    return;
+  }
 
   // awaiting_amount: treat text as amount first, fall back to full re-parse.
   if (existing?.step === "awaiting_amount") {

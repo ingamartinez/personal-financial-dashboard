@@ -5,6 +5,112 @@ import type { BackfillDryRunReport, BackfillReport } from "@/lib/gmail/backfill"
 import type { GatewayId } from "@/lib/gmail/registry";
 import { formatAccountLabel } from "@/lib/accounts/format";
 
+// ---------------------------------------------------------------------------
+// Disambiguation prompts (#456)
+// ---------------------------------------------------------------------------
+
+export type DisambiguationCandidate = {
+  id: number;
+  occurredAt: Date;
+  amountCents: bigint;
+  currency: "COP" | "USD";
+  descriptionRaw: string;
+  /** Pre-formatted account label via formatAccountLabel (institution · name *last4 (currency)). */
+  accountLabel: string;
+};
+
+export function renderDisambiguationPrompt(opts: {
+  receiptId: number;
+  receiptMerchant: string | null | undefined;
+  receiptOccurredAt: Date | null | undefined;
+  candidates: DisambiguationCandidate[];
+}): string {
+  const { receiptId, receiptMerchant, receiptOccurredAt, candidates } = opts;
+
+  const merchantLabel = receiptMerchant ?? "desconocido";
+  const dateLabel = receiptOccurredAt
+    ? receiptOccurredAt.toLocaleDateString("es-CO", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      })
+    : "?";
+
+  const lines: string[] = [
+    `🔍 Recibo ambiguo #${receiptId}: *${merchantLabel}* (${dateLabel})`,
+    "",
+    "Estas transacciones podrían corresponder a ese recibo. Elegí una:",
+    "",
+  ];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const amount = formatCandidateAmount(c.amountCents, c.currency);
+    const date = c.occurredAt.toLocaleDateString("es-CO", {
+      day: "2-digit",
+      month: "2-digit",
+    });
+    const desc = truncate(c.descriptionRaw, 40);
+    lines.push(`*${i + 1}.*  ${amount} · ${desc}  [${date}]`);
+    lines.push(`      ${c.accountLabel}`);
+  }
+
+  lines.push("");
+  lines.push("Respondé con el número (1, 2, …) o /omitir para descartar este recibo.");
+  return lines.join("\n");
+}
+
+export function renderDisambiguationConfirmed(txId: number): string {
+  return `✅ Recibo vinculado a la transacción #${txId}. ¡Gracias!`;
+}
+
+export function renderDisambiguationRejected(): string {
+  return "🗑️ Recibo descartado.";
+}
+
+export function renderRevisarEmpty(): string {
+  return "✅ No tenés transacciones ambiguas pendientes.";
+}
+
+export function renderRevisarPending(receiptId: number): string {
+  return `Ya tenés una consulta de desambiguación abierta (recibo #${receiptId}). Respondela primero o usá /cancel para descartarla.`;
+}
+
+export function renderOmitirNada(): string {
+  return "Nada para omitir. No hay una consulta de desambiguación abierta.";
+}
+
+export function renderDisambiguationReprompt(): string {
+  return "No entendí. Respondé con el número (1, 2, …) o /omitir para descartar este recibo.";
+}
+
+export function renderDisambiguationError(): string {
+  return "⚠️ Algo falló procesando tu respuesta. Probá de nuevo.";
+}
+
+export function renderReauthNudge(appUrl: string): string {
+  return [
+    "🔌 Tu conexión Gmail expiró (Google testing mode renueva cada 7 días).",
+    "",
+    `Reconectá: ${appUrl}/settings/integrations`,
+  ].join("\n");
+}
+
+function formatCandidateAmount(amountCents: bigint, currency: "COP" | "USD"): string {
+  const HUNDRED = BigInt(100);
+  if (currency === "COP") {
+    const whole = Number(amountCents / HUNDRED);
+    return `${whole.toLocaleString("es-CO")} COP`;
+  }
+  const major = Number(amountCents / HUNDRED);
+  const frac = Number(amountCents % HUNDRED);
+  return `${major.toLocaleString("en-US")}.${String(frac).padStart(2, "0")} USD`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
 function formatAmount(amountCentsStr: string, currency: "COP" | "USD"): string {
   const cents = BigInt(amountCentsStr);
   const HUNDRED = BigInt(100);

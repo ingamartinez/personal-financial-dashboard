@@ -6,9 +6,10 @@ import { emailReceipts } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUserOrNull } from "@/lib/auth/session";
 import { applyEnrichment } from "@/lib/gmail/enrich";
+import { applyRejection } from "@/lib/gmail/disambiguate";
 import { createLogger } from "@/lib/logger";
 
-const log = createLogger({ module: "gmail/disambiguate" });
+const log = createLogger({ module: "gmail/disambiguate-route" });
 
 const bodySchema = z.discriminatedUnion("decision", [
   z.object({
@@ -92,39 +93,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  // decision === "reject": remove transactionId from match_candidates of every
-  // ambiguous receipt that still lists it. If the resulting array becomes
-  // empty, flip match_status to 'unmatched'.
+  // decision === "reject": delegate to applyRejection service.
   try {
-    // Fetch all ambiguous receipts referencing this tx (scoped to user).
-    const candidates = await db
-      .select({ id: emailReceipts.id, matchCandidates: emailReceipts.matchCandidates })
-      .from(emailReceipts)
-      .where(
-        and(
-          eq(emailReceipts.userId, userId),
-          eq(emailReceipts.matchStatus, "ambiguous"),
-          notDeleted(emailReceipts.deletedAt),
-          sql`${emailReceipts.matchCandidates} @> ${JSON.stringify([transactionId])}::jsonb`,
-        ),
-      );
-
-    for (const row of candidates) {
-      const remaining = (row.matchCandidates ?? []).filter((id) => id !== transactionId);
-      await db
-        .update(emailReceipts)
-        .set({
-          matchCandidates: remaining.length > 0 ? remaining : [],
-          matchStatus: remaining.length === 0 ? "unmatched" : "ambiguous",
-          updatedAt: new Date(),
-        })
-        .where(and(eq(emailReceipts.id, row.id), eq(emailReceipts.userId, userId)));
-    }
-
-    log.info(
-      { userId, transactionId, count: candidates.length, event: "disambiguate_rejected" },
-      "disambiguation rejected — candidates released",
-    );
+    await applyRejection(userId, transactionId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     log.error(

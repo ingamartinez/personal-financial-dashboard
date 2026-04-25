@@ -1,4 +1,4 @@
-import { eq, lt } from "drizzle-orm";
+import { desc, eq, lt } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { telegramSessions, type TelegramSessionState, type TelegramDraft } from "@/lib/db/schema";
 
@@ -33,8 +33,10 @@ export async function upsertSession(opts: {
   userId: number;
   telegramUserId: number;
   state: TelegramSessionState;
+  /** Override the session TTL. Defaults to SESSION_TTL_MS (30min). */
+  ttlMs?: number;
 }): Promise<void> {
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const expiresAt = new Date(Date.now() + (opts.ttlMs ?? SESSION_TTL_MS));
   await db
     .insert(telegramSessions)
     .values({
@@ -55,6 +57,31 @@ export async function upsertSession(opts: {
         expiresAt,
       },
     });
+}
+
+/**
+ * Get the most recent active session for a user, across all chats.
+ * Used by push triggers that need to know a user's current chatId.
+ * Returns null if no active session exists.
+ */
+export async function getLatestSessionByUserId(userId: number): Promise<{
+  chatId: bigint;
+  telegramUserId: bigint;
+  state: TelegramSessionState;
+} | null> {
+  const rows = await db
+    .select({
+      chatId: telegramSessions.chatId,
+      telegramUserId: telegramSessions.telegramUserId,
+      state: telegramSessions.state,
+    })
+    .from(telegramSessions)
+    .where(eq(telegramSessions.userId, userId))
+    .orderBy(desc(telegramSessions.updatedAt))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return { chatId: row.chatId, telegramUserId: row.telegramUserId, state: row.state };
 }
 
 export async function clearSession(chatId: number): Promise<void> {

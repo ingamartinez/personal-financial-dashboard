@@ -1,5 +1,5 @@
 import type { gmail_v1 } from "googleapis";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { emailReceipts, gmailConnections } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
@@ -23,6 +23,9 @@ import { parseReceipt } from "@/lib/gmail/parsers";
 import { ingestParsedEmail } from "@/lib/ingestion/email-bancolombia";
 import { matchReceipt } from "@/lib/gmail/matcher";
 import { applyEnrichment } from "@/lib/gmail/enrich";
+import { pushToUser } from "@/lib/telegram/push";
+import { renderReauthNudge } from "@/lib/telegram/formatter";
+import { loadPendingAmbiguousReceipt } from "@/lib/telegram/disambiguation-query";
 
 const log = createLogger({ module: "gmail/pull" });
 
@@ -508,6 +511,126 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
 }
 
 /**
+ * Send a re-auth Telegram nudge to a user when their Gmail connection is
+ * expired or revoked. Throttled to at most once per 24h via `bot_nudge_sent_at`.
+ *
+ * The throttle check is a single atomic UPDATE with RETURNING so concurrent
+ * pulls (manual /enriquecer + hourly cron) cannot both win the race and
+ * deliver duplicate nudges within seconds of each other.
+ */
+async function maybeNudgeReauth(connectionId: number, userId: number): Promise<void> {
+  // Atomic claim: only one concurrent pull wins the race. The WHERE clause
+  // checks the 24h window atomically — if updated.length === 0, another
+  // concurrent call already won or the throttle window hasn't elapsed.
+  const updated = await db
+    .update(gmailConnections)
+    .set({ botNudgeSentAt: new Date() })
+    .where(
+      and(
+        eq(gmailConnections.id, connectionId),
+        or(
+          isNull(gmailConnections.botNudgeSentAt),
+          lt(gmailConnections.botNudgeSentAt, sql`now() - interval '24 hours'`),
+        ),
+      ),
+    )
+    .returning({ id: gmailConnections.id });
+
+  if (updated.length === 0) {
+    log.info(
+      { userId, connectionId, event: "reauth_nudge_throttled" },
+      "re-auth nudge throttled — sent within last 24h",
+    );
+    return;
+  }
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.APP_URL ?? "";
+  const result = await pushToUser(userId, renderReauthNudge(appUrl));
+  if (!result.ok) {
+    // We burned the throttle slot; log the failure clearly so on-call can
+    // notice the user never saw the nudge (they'll get one on next 24h cycle).
+    log.warn(
+      { userId, connectionId, reason: result.reason, event: "reauth_nudge_no_channel" },
+      "re-auth nudge throttle claimed but delivery failed — no bot/session",
+    );
+    return;
+  }
+
+  log.info({ userId, connectionId, event: "reauth_nudge_sent" }, "re-auth nudge sent via Telegram");
+}
+
+/**
+ * After a successful pull, check whether any newly-ambiguous receipts need a
+ * Telegram push prompt. Sends at most one prompt per pull cycle. If an
+ * awaiting_disambiguation session already exists for the user, skips (the user
+ * is already working through one).
+ */
+async function maybePushDisambiguationPrompt(userId: number): Promise<void> {
+  // Use the helper that orders by updatedAt DESC so we always get the most
+  // recent session when a user has multiple rows (e.g. different chat IDs
+  // from re-installs). An inline query without orderBy would return an
+  // arbitrary row and the push could reach a stale chat.
+  const { getLatestSessionByUserId } = await import("@/lib/telegram/session");
+  const sessionRow = await getLatestSessionByUserId(userId);
+
+  if (!sessionRow) {
+    // User has no Telegram session — no channel to push to.
+    return;
+  }
+
+  if (sessionRow.state?.step === "awaiting_disambiguation") {
+    log.info(
+      { userId, event: "disambiguation_push_skipped" },
+      "disambiguation push skipped — session already open",
+    );
+    return;
+  }
+
+  const pending = await loadPendingAmbiguousReceipt(userId);
+  if (!pending) return;
+
+  const { renderDisambiguationPrompt } = await import("@/lib/telegram/formatter");
+  const text = renderDisambiguationPrompt({
+    receiptId: pending.receipt.id,
+    receiptMerchant: pending.receipt.merchant,
+    receiptOccurredAt: pending.receipt.occurredAt,
+    candidates: pending.candidates,
+  });
+
+  const result = await pushToUser(userId, text, "Markdown");
+  if (!result.ok) {
+    log.info(
+      { userId, reason: result.reason, event: "disambiguation_push_no_channel" },
+      "disambiguation push not delivered — no bot/session",
+    );
+    return;
+  }
+
+  // Open a 24h awaiting_disambiguation session so the user's reply is intercepted.
+  const { upsertSession } = await import("@/lib/telegram/session");
+  const chatId = Number(sessionRow.chatId);
+  const telegramUserId = Number(sessionRow.telegramUserId);
+  await upsertSession({
+    chatId,
+    userId,
+    telegramUserId,
+    state: {
+      step: "awaiting_disambiguation",
+      draft: {},
+      sourceChatId: chatId,
+      disambiguationReceiptId: pending.receipt.id,
+      disambiguationCandidates: pending.candidates.map((c) => c.id),
+    },
+    ttlMs: 24 * 60 * 60 * 1000,
+  });
+
+  log.info(
+    { userId, receiptId: pending.receipt.id, event: "disambiguation_push_sent" },
+    "disambiguation push sent via Telegram",
+  );
+}
+
+/**
  * Pull new Gmail messages for one user, store them in `email_receipts`, and
  * update the connection's `last_pull_at` watermark.
  *
@@ -549,6 +672,23 @@ export async function pullForUser(
         code: err.status,
         message: err.message,
       });
+      // Send re-auth nudge for expired/revoked connections (throttled 24h).
+      // Look up the connection id to track botNudgeSentAt.
+      if (err.status === "expired" || err.status === "revoked") {
+        const [connRow] = await db
+          .select({ id: gmailConnections.id })
+          .from(gmailConnections)
+          .where(and(eq(gmailConnections.userId, userId), notDeleted(gmailConnections.deletedAt)))
+          .limit(1);
+        if (connRow) {
+          await maybeNudgeReauth(connRow.id, userId).catch((nudgeErr: unknown) => {
+            log.error(
+              { err: nudgeErr, userId, event: "reauth_nudge_failed" },
+              "re-auth nudge threw",
+            );
+          });
+        }
+      }
       return { userId, pulled: 0, skipped: 0, byGateway, errors, connectionId: null };
     }
     throw err;
@@ -596,6 +736,13 @@ export async function pullForUser(
         code: "invalid_grant",
         message: "refresh token revoked — connection marked revoked",
       });
+      // Send re-auth nudge (throttled 24h).
+      await maybeNudgeReauth(authed.connection.id, userId).catch((nudgeErr: unknown) => {
+        log.error(
+          { err: nudgeErr, userId, event: "reauth_nudge_failed" },
+          "re-auth nudge threw during invalid_grant handling",
+        );
+      });
       return {
         userId,
         pulled: totalPulled,
@@ -636,6 +783,19 @@ export async function pullForUser(
       .update(gmailConnections)
       .set({ lastPullAt: now, updatedAt: now })
       .where(eq(gmailConnections.id, authed.connection.id));
+  }
+
+  // Only push a disambiguation prompt on fully clean pulls. If there were
+  // errors the watermark stayed put, so the same receipts get retried next
+  // cycle — we want to defer the push until a successful run to avoid
+  // duplicate prompts on back-to-back cron ticks.
+  if (errors.length === 0) {
+    await maybePushDisambiguationPrompt(userId).catch((pushErr: unknown) => {
+      log.error(
+        { err: pushErr, userId, event: "disambiguation_push_failed" },
+        "disambiguation push threw — not blocking pull result",
+      );
+    });
   }
 
   return {

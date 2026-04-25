@@ -963,7 +963,8 @@ export type TelegramSessionStep =
   | "awaiting_photo_account"
   | "awaiting_batch_confirm"
   | "awaiting_backfill_confirm"
-  | "backfill_running";
+  | "backfill_running"
+  | "awaiting_disambiguation";
 
 export type TelegramBatchItem = {
   draft: TelegramDraft;
@@ -1010,6 +1011,10 @@ export type TelegramSessionState = {
   photoFileId?: string;
   batch?: TelegramBatchItem[];
   backfill?: TelegramBackfillState;
+  // #456 — when `step` is `awaiting_disambiguation`, these fields identify the
+  // receipt being resolved and the candidate transaction ids.
+  disambiguationReceiptId?: number;
+  disambiguationCandidates?: number[];
 };
 
 export const telegramBots = pgTable("telegram_bots", {
@@ -1021,6 +1026,7 @@ export const telegramBots = pgTable("telegram_bots", {
   tokenEncrypted: text("token_encrypted").notNull(),
   username: varchar("username", { length: 64 }).notNull(),
   webhookSecret: varchar("webhook_secret", { length: 64 }).notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -1236,6 +1242,9 @@ export const gmailConnections = pgTable(
     lastPullHistoryId: text("last_pull_history_id"),
     status: gmailConnectionStatus("status").notNull().default("active"),
     statusReason: text("status_reason"),
+    // #456 — tracks when the last Telegram re-auth nudge was sent so we can
+    // throttle to at most once per 24h regardless of how many pull cycles run.
+    botNudgeSentAt: timestamp("bot_nudge_sent_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

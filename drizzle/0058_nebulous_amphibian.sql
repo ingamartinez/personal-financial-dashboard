@@ -1,0 +1,1 @@
+ALTER TABLE "telegram_bots" ADD COLUMN "deleted_at" timestamp with time zone;
