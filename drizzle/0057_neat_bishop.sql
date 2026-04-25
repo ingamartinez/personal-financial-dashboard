@@ -1,0 +1,1 @@
+ALTER TABLE "gmail_connections" ADD COLUMN "bot_nudge_sent_at" timestamp with time zone;
