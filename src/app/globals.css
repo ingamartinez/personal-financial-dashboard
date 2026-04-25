@@ -10,7 +10,7 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-geist-sans);
-  --font-display: var(--font-fraunces);
+  --font-display: var(--font-geist-sans);
   --font-numeric: var(--font-jetbrains-mono);
 
   /* Editorial Calm — paper / ink / botanical accent tokens (dashboard) */
@@ -223,19 +223,19 @@
 
 /* === Editorial Calm — typography utilities === */
 @utility text-serif-display {
-  font-family: var(--font-display), ui-serif, Georgia, serif;
-  font-feature-settings: "ss01", "ss02";
-  letter-spacing: -0.02em;
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.03em;
+  @apply font-semibold;
 }
 @utility text-eyebrow {
   @apply text-xs font-medium tracking-[0.18em] uppercase;
   color: var(--ink-muted);
 }
 @utility money-hero {
-  font-family: var(--font-display), ui-serif, Georgia, serif;
-  font-feature-settings: "tnum", "ss01";
+  font-family: var(--font-numeric), ui-monospace, monospace;
+  font-feature-settings: "tnum";
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.02em;
   @apply font-semibold;
 }
 
