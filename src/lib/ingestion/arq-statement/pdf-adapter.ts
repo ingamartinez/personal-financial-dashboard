@@ -265,17 +265,41 @@ interface ParsedHeader {
 /**
  * Extract the header block from the raw PDF text.
  *
- * Expected structure (from discovery):
- *   Account holder name
- *   US - Número de cuenta:  211215197073
- *   Número de ruta:  101019644
- *   Fecha de inicio  1 January 2026
- *   Fecha de fin  31 January 2026
- *   Duración  31 days
- *   Balance de inicio  $262.96
- *   Total ingresos  $2,060.00
- *   Total retiros  $1,594.01
- *   Balance final  $..
+ * Real ARQ statements (Jan/Feb/Mar 2026) use a multi-column PDF layout where
+ * pdfjs extracts labels and values into separate runs of lines:
+ *
+ *   ALEJANDRO RAFAEL MARTINEZ
+ *   MALDONADO
+ *   US - Número de cuenta: 211215197073
+ *   US - Número de ruteo: 101019644
+ *   Fechas de Estado de Cuenta
+ *   Detalle de
+ *   Transacciones
+ *   ...
+ *   Fecha Tipo Monto Moneda Local Equivalente Monto Local Equivalente Descripción
+ *   <transaction rows>
+ *   ...
+ *   Fecha de inicio
+ *   Fecha de fin
+ *   Duración
+ *   1 January 2026
+ *   31 January 2026
+ *   (31 Días)
+ *   Resumen de Cuenta
+ *   Balance de inicio
+ *   Ingresos
+ *   Retiros
+ *   Balance Final
+ *   $ 2,542.46
+ *   $ 4,170.00
+ *   $ 6,449.50
+ *   $ 262.96
+ *
+ * The parser handles two block-style label/value layouts:
+ *   - period: 3 labels (Fecha de inicio / Fecha de fin / Duración) followed
+ *     by 3 values (date / date / "(N Días)")
+ *   - summary: 4 labels (Balance de inicio / Ingresos / Retiros / Balance Final)
+ *     followed by 4 dollar amounts.
  */
 function parseHeader(text: string): ParsedHeader {
   const extract = (pattern: RegExp, label: string): string => {
@@ -286,20 +310,71 @@ function parseHeader(text: string): ParsedHeader {
     return match[1].trim();
   };
 
-  const accountHolder = extract(/^([A-Z][A-Z\s]+[A-Z])$/m, "accountHolder");
+  const accountHolderRaw = extract(/^([A-Z][A-Z\s]+[A-Z])$/m, "accountHolder");
+  // Real PDFs split long names across two lines (e.g. "MARTINEZ\nMALDONADO").
+  // The /m anchored regex captures only the first segment; if a second uppercase
+  // line follows, take it too.
+  const holderTailMatch = text.match(
+    new RegExp(
+      `^${accountHolderRaw.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*\\n([A-Z][A-Z\\s]+[A-Z])\\s*\\n`,
+      "m",
+    ),
+  );
+  const accountHolder = (
+    holderTailMatch ? `${accountHolderRaw} ${holderTailMatch[1].trim()}` : accountHolderRaw
+  ).replace(/\s+/g, " ");
 
   const accountNumber = extract(/US\s*[-–]\s*N[uú]mero de cuenta[:\s]+(\d+)/i, "accountNumber");
 
-  const routingNumber = extract(/N[uú]mero de ruta[:\s]+(\d+)/i, "routingNumber");
+  // ARQ writes "Número de ruteo" (with -o), not "ruta". Accept both.
+  const routingNumber = extract(/N[uú]mero de rute[ao][:\s]+(\d+)/i, "routingNumber");
 
-  const periodStartRaw = extract(/Fecha de inicio\s+([\s\S]+?)(?:\n|Fecha de fin)/i, "periodStart");
-  const periodEndRaw = extract(/Fecha de fin\s+([\s\S]+?)(?:\n|Duraci)/i, "periodEnd");
-  const durationRaw = extract(/Duraci[oó]n\s+(\d+)\s+days?/i, "duration");
+  // The period values block: two dates and "(N Días)" appear IMMEDIATELY
+  // before "Resumen de Cuenta". The labels (Fecha de inicio / Fecha de fin /
+  // Duración) appear much earlier — pdfjs interleaves the label column and
+  // value column with the entire transaction table between them. Anchoring on
+  // "Resumen de Cuenta" is the only reliable way to locate the values.
+  //
+  // pdfjs sometimes splits a date across line breaks (e.g. "28 February\n2026"
+  // vs "31 January 2026" on one line). To tolerate both, capture the freeform
+  // text segment that precedes "(N Días)\nResumen de Cuenta" and re-extract the
+  // two dates from inside, collapsing internal whitespace.
+  const periodValuesBlock = text.match(
+    /([\s\S]+?)\(\s*(\d+)\s*[Dd][ií]as?\s*\)\s*\n\s*Resumen de Cuenta/,
+  );
+  if (!periodValuesBlock) {
+    throw new ArqParseError(
+      "Header field not found: period values block before 'Resumen de Cuenta'",
+    );
+  }
+  const segment = periodValuesBlock[1].replace(/\s+/g, " ").trim();
+  const dateMatches = [...segment.matchAll(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/g)];
+  if (dateMatches.length < 2) {
+    throw new ArqParseError(
+      `Header field not found: two period dates before "(N Días)" — segment="${segment.slice(-200)}"`,
+    );
+  }
+  // The last two date matches in the segment are periodStart and periodEnd.
+  const [startMatch, endMatch] = dateMatches.slice(-2);
+  const periodStartRaw = `${startMatch[1]} ${startMatch[2]} ${startMatch[3]}`;
+  const periodEndRaw = `${endMatch[1]} ${endMatch[2]} ${endMatch[3]}`;
+  const durationRaw = periodValuesBlock[2];
 
-  const balanceStartRaw = extract(/Balance de inicio\s+\$?([\d,.-]+)/i, "balanceStart");
-  const totalCreditsRaw = extract(/Total ingresos\s+\$?([\d,.-]+)/i, "totalCredits");
-  const totalDebitsRaw = extract(/Total retiros\s+\$?([\d,.-]+)/i, "totalDebits");
-  const balanceEndRaw = extract(/Balance final\s+\$?([\d,.-]+)/i, "balanceEnd");
+  // Summary block: anchored on "Resumen de Cuenta" header, then 4 labels
+  // (Balance de inicio / Ingresos / Retiros / Balance Final) and 4 dollar
+  // values in two consecutive runs.
+  const summaryBlock = text.match(
+    /Resumen de Cuenta\s*\n\s*Balance de inicio\s*\n\s*Ingresos\s*\n\s*Retiros\s*\n\s*Balance Final\s*\n\s*\$?\s*([\d,.-]+)\s*\n\s*\$?\s*([\d,.-]+)\s*\n\s*\$?\s*([\d,.-]+)\s*\n\s*\$?\s*([\d,.-]+)/i,
+  );
+  if (!summaryBlock) {
+    throw new ArqParseError(
+      "Header field not found: summary block (Balance de inicio / Ingresos / Retiros / Balance Final)",
+    );
+  }
+  const balanceStartRaw = summaryBlock[1];
+  const totalCreditsRaw = summaryBlock[2];
+  const totalDebitsRaw = summaryBlock[3];
+  const balanceEndRaw = summaryBlock[4];
 
   return {
     accountHolder,
@@ -319,15 +394,28 @@ function parseHeader(text: string): ParsedHeader {
 // Transaction table parser
 // ---------------------------------------------------------------------------
 
-// Short month names appear in the date column: "Jan 01", "Feb 13", "Mar 14"
-const TX_DATE_RE = /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})$/;
-
-// Amount column: optional sign, digits, optional comma-thousands, mandatory
-// decimal part (e.g. "-18.03", "+2,060", "-67,440", "-1,594.01")
-const AMOUNT_RE = /^([+-])?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)$/;
-
 // Equivalent currency column values
 const EQUIV_CURRENCIES = new Set<string>(["COP", "USD", "USDc"]);
+
+/**
+ * Whole-line regex for a single transaction row in the real ARQ statement PDF.
+ *
+ * Real text shape (single-space separated, sign and number are SEPARATE tokens):
+ *
+ *   Jan 01 Pago con tarjeta - 18.03 COP - 67,440 TIENDA D1 BODEGA ESTRE
+ *   Jan 13 Compra USDc + 2,060 USD + 2,060 CODEBRANCH LLC
+ *   Jan 12 Comisión - 6.99 N/A N/A DolarApp subscription
+ *   Feb 12 Cashback + 32.48 USDc + 32.48 Cashback
+ *   Feb 28 Beneficio + 6.48 N/A N/A Pago beneficio mensual
+ *
+ * The 7 known type strings are alternated in the regex — anything else on a
+ * line that starts with a date is treated as not-a-tx (parser returns null).
+ *
+ * Number format: signed (with space between sign and digits), comma-thousands,
+ * up to 2 decimals.
+ */
+const TX_LINE_RE =
+  /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(Pago con tarjeta|Compra USDc|Venta USDc|Transferencia P2P|Comisi[oó]n|Cashback|Beneficio)\s+([+-])\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s+(COP|USD|USDc|N\/A)\s+(?:N\/A|([+-])\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?))\s+(.+)$/;
 
 /**
  * Parse a transaction date using only month+day from the PDF, deriving the
@@ -428,61 +516,42 @@ function parseTxAmountCents(raw: string): bigint {
  * Returns null if the line does not look like a transaction.
  */
 function parseTxLine(line: string, periodStart: Date, periodEnd: Date): PendingTx | null {
-  const tokens = line.trim().split(/\s{2,}/);
-  if (tokens.length < 5) return null;
+  const trimmed = line.trim();
 
-  // --- 1. Date ---
-  const dateMatch = tokens[0].match(TX_DATE_RE);
-  if (!dateMatch) return null;
+  // Whole-line regex match: date + type + signed-amount + currency +
+  // (signed-equiv | N/A) + description.
+  const m = trimmed.match(TX_LINE_RE);
+  if (!m) return null;
 
-  const [, monthStr, dayStr] = dateMatch;
+  const [, monthStr, dayStr, typeRaw, sign, amountBody, currencyTok, eqSign, eqBody, descStart] = m;
+
   const date = resolveTxDate(monthStr, dayStr, periodStart, periodEnd);
 
-  // --- 2. Find Monto column: first token after date that looks like an amount ---
-  let amountIdx = -1;
-  for (let i = 1; i < tokens.length; i++) {
-    if (AMOUNT_RE.test(tokens[i].trim())) {
-      amountIdx = i;
-      break;
-    }
-  }
-  if (amountIdx < 0) return null;
+  // Normalise the type: strip accents on Comisión so downstream handlers can
+  // match a single canonical string. The other types are accent-free already.
+  const type = typeRaw === "Comisión" ? "Comisión" : typeRaw;
 
-  const type = tokens.slice(1, amountIdx).join(" ").trim();
-  if (!type) return null;
+  // Reassemble the signed amount as one token, then parse via the existing
+  // helper. parseTxAmountCents accepts the "<sign><body>" form.
+  const amountCents = parseTxAmountCents(`${sign}${amountBody}`);
 
-  const amountCents = parseTxAmountCents(tokens[amountIdx]);
-
-  // --- 3. Currency ---
-  const currencyToken = tokens[amountIdx + 1]?.trim();
-  if (!currencyToken) return null;
-
-  const isNA = currencyToken === "N/A";
-  const isValidCurrency = EQUIV_CURRENCIES.has(currencyToken);
-  if (!isNA && !isValidCurrency) return null;
-
-  const equivalentCurrency: ArqEquivalentCurrency | null = isNA
-    ? null
-    : (currencyToken as ArqEquivalentCurrency);
-
-  // --- 4. Equivalent amount ---
-  const equivToken = tokens[amountIdx + 2]?.trim();
-  if (!equivToken) return null;
-
+  let equivalentCurrency: ArqEquivalentCurrency | null;
   let equivalentAmountCents: bigint | null;
-  if (equivToken === "N/A") {
+
+  if (currencyTok === "N/A") {
+    equivalentCurrency = null;
     equivalentAmountCents = null;
-  } else if (AMOUNT_RE.test(equivToken)) {
-    equivalentAmountCents = parseTxAmountCents(equivToken);
+  } else if (EQUIV_CURRENCIES.has(currencyTok)) {
+    equivalentCurrency = currencyTok as ArqEquivalentCurrency;
+    if (eqSign === undefined || eqBody === undefined) {
+      // Equivalent slot was the literal "N/A" — currency exists but no value.
+      equivalentAmountCents = null;
+    } else {
+      equivalentAmountCents = parseTxAmountCents(`${eqSign}${eqBody}`);
+    }
   } else {
     return null;
   }
-
-  // --- 5. Description start (continuation lines will be appended by caller) ---
-  const descriptionStart = tokens
-    .slice(amountIdx + 3)
-    .join(" ")
-    .trim();
 
   return {
     date,
@@ -490,7 +559,7 @@ function parseTxLine(line: string, periodStart: Date, periodEnd: Date): PendingT
     amountCents,
     equivalentCurrency,
     equivalentAmountCents,
-    descriptionStart,
+    descriptionStart: descStart.trim(),
   };
 }
 
@@ -515,6 +584,54 @@ function pendingToRawTxLine(p: PendingTx): RawTxLine {
 }
 
 /**
+ * Patterns for lines that look like document furniture rather than a real
+ * transaction-description continuation. The PDF layout is multi-page: the
+ * period values + summary block appears at the end of page 1, but txs
+ * continue on pages 2-N. Cutting the table at "Resumen de Cuenta" would
+ * truncate to ~20 txs instead of the real ~80-110.
+ *
+ * Instead, the parser keeps walking lines and *rejects* concatenation when
+ * a line matches one of these "definitely not a description" patterns:
+ *   - bare period dates  ("1 January 2026")
+ *   - duration parens     ("(31 Días)")
+ *   - summary header      ("Resumen de Cuenta")
+ *   - dollar values       ("$ 2,542.46")
+ *   - column header words ("Fecha Tipo Monto", "Moneda", "Local", etc)
+ *   - page footers        ("Si necesita ayuda...", "Página N de M")
+ *   - corporate footer    ("DÓLARAPP MÉXICO...", phone/address fragments)
+ *   - balance/section labels ("Balance de inicio", "Ingresos", "Retiros", "Balance Final")
+ */
+const NON_DESCRIPTION_PATTERNS: RegExp[] = [
+  /^\d{1,2}\s+\w+\s+\d{4}$/,
+  /^\(\s*\d+\s*[Dd][ií]as?\s*\)$/,
+  /^Resumen de Cuenta$/i,
+  /^Balance (?:de inicio|Final)$/i,
+  /^Ingresos$/i,
+  /^Retiros$/i,
+  /^\$\s*[\d,.-]+$/,
+  /^Fecha\b/i,
+  /^Moneda$/i,
+  /^Local$/i,
+  /^Equivalente(?:\s+Descripci[oó]n)?$/i,
+  /^Monto(?:\s+Local)?$/i,
+  /^Si necesita ayuda/i,
+  /^Página \d+ de \d+/i,
+  /^Generado el /i,
+  /^D[oóÓ]LARAPP /i,
+  /^\+\d/,
+  /^Colombia$/i,
+  /^M[eé]xico$/i,
+  /^Fechas de Estado de Cuenta$/i,
+  /^Detalle de$/i,
+  /^Transacciones$/i,
+];
+
+function isObviouslyNotDescription(line: string): boolean {
+  const trimmed = line.trim();
+  return NON_DESCRIPTION_PATTERNS.some((re) => re.test(trimmed));
+}
+
+/**
  * Parse the transaction table from the full PDF text, re-joining multi-line
  * description rows.
  */
@@ -526,6 +643,7 @@ function parseTxTable(text: string, periodStart: Date, periodEnd: Date): RawTxLi
 
   for (const rawLine of lines) {
     const line = rawLine.trimEnd();
+
     if (!line.trim()) {
       // Blank line: flush pending
       if (pending) {
@@ -551,7 +669,15 @@ function parseTxTable(text: string, periodStart: Date, periodEnd: Date): RawTxLi
         descriptionStart: parsed.descriptionStart,
       };
     } else if (pending) {
-      // Continuation of previous transaction's description
+      // Continuation of the previous transaction's description ONLY if the
+      // line is plausibly a description fragment. Document furniture (period
+      // dates, summary, page footers, column headers) gets flushed and
+      // discarded — pdfjs interleaves these between txs across page breaks.
+      if (isObviouslyNotDescription(line)) {
+        result.push(pendingToRawTxLine(pending));
+        pending = null;
+        continue;
+      }
       pending = {
         date: pending.date,
         type: pending.type,
