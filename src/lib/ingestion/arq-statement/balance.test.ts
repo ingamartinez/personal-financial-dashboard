@@ -162,20 +162,26 @@ describe("reconcileStatement — happy path", () => {
     expect(result.declaredDebitsCents).toBe(BigInt(159401));
   });
 
-  it("tolerates a 1-cent rounding difference (ok=true)", () => {
-    // One cent debit less than declared — closing balance 1 cent off
+  it("tolerates per-line display rounding within proportional tolerance", () => {
+    // Real ARQ PDFs display some USDc amounts with one decimal place,
+    // accumulating 50-100 cents of drift across 100+ transactions.
+    // Tolerance is 0.1% of the declared total (max(credits, debits)),
+    // floored at $1.00. For declared credits=$2,060.00, tolerance is
+    // max(100c, 206c) = 206c. A 50-cent drift is well within that.
     const txs: ParsedStatementTx[] = [
       parsedCredit(BigInt(206000)),
-      parsedDebit(BigInt(159400)), // one cent less
+      parsedDebit(BigInt(159350)), // 51c less than declared (mimics Ene 2026)
     ];
     const result = reconcileStatement(JAN_2026, txs);
     expect(result.ok).toBe(true);
   });
 
-  it("returns ok=false when difference is exactly 2 cents", () => {
+  it("returns ok=false when difference exceeds the proportional tolerance", () => {
+    // Tolerance for JAN_2026 (declared credits=$2,060.00) is $2.06.
+    // A $5 (500c) drift clears the threshold and fails the gate.
     const txs: ParsedStatementTx[] = [
       parsedCredit(BigInt(206000)),
-      parsedDebit(BigInt(159399)), // two cents less
+      parsedDebit(BigInt(158901)), // 500c less — well over tolerance
     ];
     const result = reconcileStatement(JAN_2026, txs);
     expect(result.ok).toBe(false);
