@@ -195,6 +195,11 @@ export const txSource = pgEnum("tx_source", [
   // #508 (Epic ARQ): tx ingested from ARQ (formerly DolarApp) notification
   // email — USD transfers (salary + outgoing). No SMS parallel channel.
   "gmail_arq",
+  // #517 (Epic ARQ): tx inserted from ARQ monthly statement PDF — covers
+  // purchases, fees, cashback, and p2p transfers that email did NOT capture.
+  // Txs already present via gmail_arq are MERGED (not duplicated); this source
+  // is only written on INSERTs (statement-only events).
+  "arq_statement",
 ]);
 
 export const txChannel = pgEnum("tx_channel", ["bank", "manual", "transfer"]);
@@ -570,6 +575,25 @@ export const transactions = pgTable(
     // #454 (Epic G): which pipeline produced the enrichment. Currently only
     // 'gmail' — extensible for future sources (e.g. 'manual_correction').
     enrichmentSource: varchar("enrichment_source", { length: 40 }),
+    // #517 (Epic ARQ): set when a gmail_arq email tx is merged with an ARQ
+    // statement row. Stores the reconciling source label (e.g. 'arq_statement')
+    // without mutating the primary `source` column (first-in wins).
+    // Design decision: a separate nullable text column is safer than converting
+    // `source` to a comma-separated string or JSON array — it keeps the enum
+    // constraint on the primary source, avoids array parsing, and is trivially
+    // queryable. See #517 implementer notes.
+    secondarySource: varchar("secondary_source", { length: 40 }),
+    // #517 (Epic ARQ): the externalId assigned by the statement parser
+    // (arq-stmt-<hash>) for the matched statement line. Used for idempotency:
+    // if this column is already set, re-running the reconciler skips the merge.
+    externalIdStatement: varchar("external_id_statement", { length: 200 }),
+    // #517 (Epic ARQ): FK to arq_statement_imports. Populated on both MERGE
+    // (existing gmail_arq tx updated) and INSERT (new arq_statement tx). Null
+    // means the tx pre-dates statement import or has not been reconciled yet.
+    arqStatementImportId: integer("arq_statement_import_id").references(
+      (): AnyPgColumn => arqStatementImports.id,
+      { onDelete: "set null" },
+    ),
     // #457 (Epic G): set by A+ dedup when SMS and Email Bancolombia describe
     // the same event with diverging fields. See SourceMismatchDetails type.
     sourceMismatch: boolean("source_mismatch").notNull().default(false),

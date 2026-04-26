@@ -41,6 +41,7 @@ const sourceLabel: Record<TxRow["source"], string> = {
   gmail_bancolombia: "Email BC",
   gmail_enrichment: "Email",
   gmail_arq: "Email ARQ",
+  arq_statement: "ARQ Statement",
 };
 
 const methodVariant: Record<
