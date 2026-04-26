@@ -34,6 +34,7 @@ import { transactions, type SourceMismatchDetails } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
 import { levenshteinRatio } from "@/lib/text/levenshtein";
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
+import type { FxMetadata } from "@/lib/types/fx-metadata";
 
 import type {
   FeeTx,
@@ -188,7 +189,7 @@ function channelFromKind(kind: ParsedStatementTx["kind"]): "bank" | "transfer" {
  */
 function buildFxBlock(
   tx: PurchaseTx | TransferSentTx | TransferReceivedTx | P2PTransferTx | FeeTx | RewardTx,
-): Record<string, unknown> {
+): FxMetadata {
   if (tx.kind === "fee" || tx.kind === "reward") {
     // Fees and rewards are USDc-denominated — no FX conversion.
     return {
@@ -201,7 +202,7 @@ function buildFxBlock(
 
   if (tx.kind === "transfer_received") {
     return {
-      originalCurrency: tx.originalCurrency,
+      originalCurrency: tx.originalCurrency as "USD" | "USDc" | "COP",
       originalAmountCents: tx.originalAmount.toString(),
       trmToAccountCurrency: 1,
       trmSource: "1_to_1",
@@ -211,7 +212,7 @@ function buildFxBlock(
   if (tx.kind === "transfer_sent" || tx.kind === "purchase") {
     const trm = tx.trmCopPerUsdc;
     return {
-      originalCurrency: tx.originalCurrency,
+      originalCurrency: tx.originalCurrency as "USD" | "USDc" | "COP",
       originalAmountCents: tx.originalAmount.toString(),
       trmToAccountCurrency: trm ?? 1,
       trmSource: trm !== null ? "statement_frozen" : "1_to_1",
@@ -221,7 +222,7 @@ function buildFxBlock(
   // p2p_transfer
   const p2p = tx as P2PTransferTx;
   return {
-    originalCurrency: p2p.originalCurrency,
+    originalCurrency: p2p.originalCurrency as "USD" | "USDc" | "COP",
     originalAmountCents: p2p.originalAmount.toString(),
     trmToAccountCurrency: 1,
     trmSource: "1_to_1",

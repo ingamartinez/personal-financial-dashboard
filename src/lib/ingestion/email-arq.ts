@@ -7,6 +7,7 @@ import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { parseArqEmail, type ArqParseResult, type ParsedArqTx } from "@/lib/gmail/parsers/arq";
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
+import type { FxMetadata } from "@/lib/types/fx-metadata";
 
 const log = createLogger({ module: "ingestion/email-arq" });
 
@@ -71,7 +72,7 @@ function resolveArqAccount(allAccounts: ArqAccount[]): ArqAccount | null {
  * This shape is canonical per the #508 design — #519 will consume it uniformly
  * regardless of whether it is a trivial 1:1 case or has a real TRM.
  */
-function buildFxMetadata(parsed: ParsedArqTx): Record<string, unknown> {
+function buildFxMetadata(parsed: ParsedArqTx): FxMetadata {
   if (parsed.txKind === "transfer_received") {
     return {
       originalCurrency: "USD",
@@ -82,7 +83,7 @@ function buildFxMetadata(parsed: ParsedArqTx): Record<string, unknown> {
   }
 
   // transfer_sent
-  const fx: Record<string, unknown> = {
+  const fx: FxMetadata = {
     originalCurrency: "USD",
     originalAmountCents: parsed.amountUsdcCents.toString(),
     trmToAccountCurrency: parsed.impliedTrmCopPerUsdc ?? 1,

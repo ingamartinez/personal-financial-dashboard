@@ -22,6 +22,12 @@ const LINKS = [
       "Mes calendario o anclado en tu sueldo. Marcá tus fuentes de ingreso fijo para que el flujo del mes refleje tu ciclo real.",
   },
   {
+    href: "/settings/display",
+    title: "Moneda de visualización",
+    description:
+      "Nativo, todo en COP, o todo en USD. Las conversiones usan la TRM histórica de cada transacción, no la de hoy.",
+  },
+  {
     href: "/settings/rules",
     title: "Reglas de clasificación",
     description:

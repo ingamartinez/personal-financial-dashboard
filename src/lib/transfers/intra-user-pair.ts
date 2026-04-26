@@ -29,6 +29,7 @@ import type { DB } from "@/lib/db";
 import { db as defaultDb } from "@/lib/db";
 import { transactions, counterparties, fiatPartners, userAliases, users } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
+import { parseFxMetadata } from "@/lib/types/fx-metadata";
 
 const log = createLogger({ module: "transfers/intra-user-pair" });
 
@@ -581,17 +582,26 @@ export function extractArqMeta(rawData: Record<string, unknown> | null): ArqMeta
     (arqBlock?.recipient_name as string | undefined) ??
     null;
 
-  // COP amount can live in:
-  //   - rawData.fx.copAmountCents (email parser — fx block)
-  //   - rawData.merged_statement.fx.copAmountCents (statement merge)
-  const fxBlock = rawData.fx as Record<string, unknown> | undefined;
-  const mergedFxBlock = (rawData.merged_statement as Record<string, unknown> | undefined)?.fx as
+  // COP amount resolution.
+  // Resolution order: merged_statement.fx → rawData.fx.
+  // We first try FxMetadataSchema (type-safe parsing). If the block is present
+  // but partial (e.g. has copAmountCents only — legacy test shape or early writes),
+  // fall back to direct property access to preserve backward compatibility.
+  const mergedFxRaw = (rawData.merged_statement as Record<string, unknown> | undefined)?.fx as
     | Record<string, unknown>
     | undefined;
+  const primaryFxRaw = rawData.fx as Record<string, unknown> | undefined;
 
-  const rawCop =
-    (mergedFxBlock?.copAmountCents as string | undefined) ??
-    (fxBlock?.copAmountCents as string | undefined) ??
+  const mergedFx = mergedFxRaw !== undefined ? parseFxMetadata(mergedFxRaw) : null;
+  const primaryFx = primaryFxRaw !== undefined ? parseFxMetadata(primaryFxRaw) : null;
+
+  // copAmountCents resolution: prefer schema-parsed value, then raw property fallback
+  // (for legacy partial blocks that only have copAmountCents without the full schema fields).
+  const rawCop: string | null =
+    mergedFx?.copAmountCents ??
+    (mergedFxRaw?.copAmountCents as string | undefined) ??
+    primaryFx?.copAmountCents ??
+    (primaryFxRaw?.copAmountCents as string | undefined) ??
     null;
 
   const copAmountCents = rawCop !== null ? BigInt(rawCop) : null;
