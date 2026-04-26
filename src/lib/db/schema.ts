@@ -192,6 +192,9 @@ export const txSource = pgEnum("tx_source", [
   // gateways). For enrichment of existing txs, see `enrichment_source`
   // column on transactions.
   "gmail_enrichment",
+  // #508 (Epic ARQ): tx ingested from ARQ (formerly DolarApp) notification
+  // email — USD transfers (salary + outgoing). No SMS parallel channel.
+  "gmail_arq",
 ]);
 
 export const txChannel = pgEnum("tx_channel", ["bank", "manual", "transfer"]);
