@@ -33,6 +33,7 @@ import { db } from "@/lib/db";
 import { transactions, type SourceMismatchDetails } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
 import { levenshteinRatio } from "@/lib/text/levenshtein";
+import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 
 import type {
   FeeTx,
@@ -722,6 +723,23 @@ export async function reconcileEmailVsStatement(
       if (newTxId !== null) {
         details.push({ kind: "insert", statementTx: tx, newTxId });
         insertedCount++;
+        // #518: attempt pairing for transfer_sent/transfer_received statement txs.
+        if (tx.kind === "transfer_sent" || tx.kind === "transfer_received") {
+          await pairIntraUserTransfer(
+            { database: dbc },
+            {
+              id: newTxId,
+              userId,
+              accountId,
+              channel: channelFromKind(tx.kind),
+              amountCents: tx.amountUsdc,
+              currency: "USD",
+              occurredAt: tx.occurredAt,
+              counterparty: counterpartyFromStatement(tx),
+              rawData: buildRawData(tx, importId),
+            },
+          );
+        }
       } else {
         // Insert returned null → onConflictDoNothing hit (already imported by
         // a prior run). Count as a merge/skip for idempotency — no re-insert.
@@ -799,6 +817,26 @@ export async function reconcileEmailVsStatement(
     await mergeTx(dbc, userId, existing, tx, importId, mismatchReason);
 
     mergedCount++;
+    // #518: after merge, the existing email tx now has cop_amount_cents from the
+    // statement. Attempt pairing on the existing tx (which is the ARQ leg).
+    // The pairer reads rawData from the DB to get the merged metadata.
+    if (tx.kind === "transfer_sent" || tx.kind === "transfer_received") {
+      await pairIntraUserTransfer(
+        { database: dbc },
+        {
+          id: existing.id,
+          userId,
+          accountId,
+          channel: channelFromKind(tx.kind),
+          amountCents: existing.amountCents,
+          currency: "USD",
+          occurredAt: existing.occurredAt,
+          counterparty: existing.merchant,
+          rawData: existing.rawData,
+        },
+      );
+    }
+
     if (mismatchReason !== null) {
       flaggedCount++;
       log.warn(

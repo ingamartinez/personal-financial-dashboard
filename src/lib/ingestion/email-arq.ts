@@ -6,6 +6,7 @@ import { createLogger } from "@/lib/logger";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { parseArqEmail, type ArqParseResult, type ParsedArqTx } from "@/lib/gmail/parsers/arq";
+import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 
 const log = createLogger({ module: "ingestion/email-arq" });
 
@@ -267,6 +268,25 @@ export async function ingestArqEmail(
     await markReceiptMatched(receiptId, userId, txId, parsed);
     await autoLinkTransaction(userId, txId);
     emit({ type: "transaction:created", id: txId, source: ARQ_SOURCE, timestamp: Date.now() });
+
+    // #518: attempt intra-user transfer pairing. ARQ transfer_sent (USD debit)
+    // is the origin leg of a cross-currency self-transfer via PEXTO COLOMBIA.
+    // ARQ transfer_received is the USD credit leg (rare — direct USD deposit from
+    // another ARQ user, not the PEXTO path). Both participate in the pairer.
+    await pairIntraUserTransfer(
+      {},
+      {
+        id: txId,
+        userId,
+        accountId: account.id,
+        channel: "transfer",
+        amountCents: signedAmountCents,
+        currency: "USD",
+        occurredAt: parsed.occurredAt,
+        counterparty: parsed.counterpartyName,
+        rawData,
+      },
+    );
 
     log.info(
       {
