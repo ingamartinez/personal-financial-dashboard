@@ -138,6 +138,10 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
   const last = page.at(-1);
   const nextCursor = hasMore && last ? encodeCursor(last.occurredAt, last.id) : null;
 
+  // TODO(#528): SELECT transactions.raw_data and add it to TxRow so the
+  // MoneyFrozen component (#519) can display amounts with the historical
+  // TRM tooltip when display_currency_mode != native. The component is
+  // already in src/components/display/money.tsx waiting for this hookup.
   const shaped: TxRow[] = page.map((r) => ({
     id: r.id,
     occurredAt: r.occurredAt,
