@@ -112,10 +112,8 @@ const TITLED_SENT_RE = /^You\s+sent\s+([\d,]+(?:\.\d+)?)\s+(COP|USD|USDc)\s+to\s
 const TITLED_RECEIVED_RE = /^You\s+received\s+([\d,]+(?:\.\d+)?)\s+(COP|USD|USDc)\s+from\s+(.+)$/i;
 
 // Body patterns present in all transfer emails.
-const DEBITED_RE =
-  /[Ww]e[''’]ve\s+debited\s+([\d,]+(?:\.\d+)?)\s+USDc\s+from\s+your\s+balance/i;
-const CREDITED_RE =
-  /[Ww]e[''’]ve\s+credited\s+([\d,]+(?:\.\d+)?)\s+USDc\s+to\s+your\s+balance/i;
+const DEBITED_RE = /[Ww]e[''’]ve\s+debited\s+([\d,]+(?:\.\d+)?)\s+USDc\s+from\s+your\s+balance/i;
+const CREDITED_RE = /[Ww]e[''’]ve\s+credited\s+([\d,]+(?:\.\d+)?)\s+USDc\s+to\s+your\s+balance/i;
 
 // COP amount in transfer_sent emails.
 const AMOUNT_SENT_RE = /Amount\s+sent\s*:\s*([\d,]+(?:\.\d+)?)\s+(COP|USD|USDc)/i;
@@ -193,11 +191,7 @@ function parseNoTitleSent(visibleText: string, occurredAt: Date): ArqParseResult
  * Parse template 2 — titled transfer_sent.
  * <title>You sent {amount} COP to {name}</title>
  */
-function parseTitledSent(
-  title: string,
-  visibleText: string,
-  occurredAt: Date,
-): ArqParseResult {
+function parseTitledSent(title: string, visibleText: string, occurredAt: Date): ArqParseResult {
   const m = title.match(TITLED_SENT_RE);
   if (!m) {
     return { kind: "needs_review", reason: "titled_sent_no_match", raw: visibleText };
@@ -214,8 +208,10 @@ function parseTitledSent(
   }
 
   // Fallback: if title is USD/USDc-denominated, use title amount.
-  if ((amountUsdcCents === null || amountUsdcCents <= BigInt(0)) &&
-    (titleCurrency === "USDC" || titleCurrency === "USD")) {
+  if (
+    (amountUsdcCents === null || amountUsdcCents <= BigInt(0)) &&
+    (titleCurrency === "USDC" || titleCurrency === "USD")
+  ) {
     amountUsdcCents = parseAmountToCents(titleAmountStr);
   }
 
@@ -254,11 +250,7 @@ function parseTitledSent(
  * Parse template 3 — transfer_received.
  * <title>You received {amount} USD from {name}</title>
  */
-function parseTitledReceived(
-  title: string,
-  visibleText: string,
-  occurredAt: Date,
-): ArqParseResult {
+function parseTitledReceived(title: string, visibleText: string, occurredAt: Date): ArqParseResult {
   const m = title.match(TITLED_RECEIVED_RE);
   if (!m) {
     return { kind: "needs_review", reason: "titled_received_no_match", raw: visibleText };
@@ -275,8 +267,10 @@ function parseTitledReceived(
   }
 
   // Fallback to title amount.
-  if ((amountUsdcCents === null || amountUsdcCents <= BigInt(0)) &&
-    (titleCurrency === "USD" || titleCurrency === "USDC")) {
+  if (
+    (amountUsdcCents === null || amountUsdcCents <= BigInt(0)) &&
+    (titleCurrency === "USD" || titleCurrency === "USDC")
+  ) {
     amountUsdcCents = parseAmountToCents(titleAmountStr);
   }
 

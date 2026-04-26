@@ -21,8 +21,7 @@ function makeReceivedEmail(
   usdcCreditedLine?: string,
 ): string {
   const creditedLine =
-    usdcCreditedLine ??
-    `<p>We&#39;ve credited ${amountUsd} USDc to your balance</p>`;
+    usdcCreditedLine ?? `<p>We&#39;ve credited ${amountUsd} USDc to your balance</p>`;
   return `<!DOCTYPE html><html>
 <head>
   <meta charset="UTF-8">
@@ -44,11 +43,7 @@ function makeReceivedEmail(
  * Build a minimal ARQ email with <title>You sent {amount} COP to {name}</title>.
  * Template 2 — the titled transfer_sent variant.
  */
-function makeTitledSentEmail(
-  copAmount: string,
-  counterparty: string,
-  usdcDebited: string,
-): string {
+function makeTitledSentEmail(copAmount: string, counterparty: string, usdcDebited: string): string {
   return `<!DOCTYPE html><html>
 <head>
   <meta charset="UTF-8">
@@ -113,9 +108,14 @@ describe("parseArqEmail — transfer_received (template 3)", () => {
   it("parses the salary sample: 2,060 USD from CODEBRANCH LLC (body has credited line)", () => {
     // Mirrors the real prod email id=800 (CODEBRANCH LLC salary, 2026-04-13).
     // Amount, counterparty, and structure are real; display name is redacted.
-    const html = makeReceivedEmail("2,060", "CODEBRANCH LLC", "We&#39;ve credited 2,060 USDc to your balance");
+    const html = makeReceivedEmail(
+      "2,060",
+      "CODEBRANCH LLC",
+      "We&#39;ve credited 2,060 USDc to your balance",
+    );
     const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
-    if (r.kind !== "parsed") throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
     expect(r.txKind).toBe("transfer_received");
     // 2,060 USD × 100 = 206000 cents
     expect(r.amountUsdcCents).toBe(BigInt(206000));
@@ -129,7 +129,8 @@ describe("parseArqEmail — transfer_received (template 3)", () => {
     // Some templates omit the "We've credited" body line — the title is enough.
     const html = makeReceivedEmail("500", "ACME CORP", "");
     const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
-    if (r.kind !== "parsed") throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
     expect(r.txKind).toBe("transfer_received");
     // 500 USD × 100 = 50000 cents
     expect(r.amountUsdcCents).toBe(BigInt(50000));
@@ -161,7 +162,8 @@ describe("parseArqEmail — transfer_sent (template 2 — titled)", () => {
     // Mirrors real prod email id=815 (COP transfer to recipient).
     const html = makeTitledSentEmail("1,200,000", "REDACTED RECIPIENT", "337.05");
     const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
-    if (r.kind !== "parsed") throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
     expect(r.txKind).toBe("transfer_sent");
     // USDc debited: 337.05 × 100 = 33705 cents
     expect(r.amountUsdcCents).toBe(BigInt(33705));
@@ -186,7 +188,8 @@ describe("parseArqEmail — transfer_sent (template 1 — no-title h1/h2 ladder)
   it("parses no-title sent: h1=COP transfer sent + h2=RecipientName", () => {
     const html = makeNoTitleSentEmail("REDACTED RECIPIENT", "2,104,000", "563.81");
     const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
-    if (r.kind !== "parsed") throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
     expect(r.txKind).toBe("transfer_sent");
     // USDc: 563.81 × 100 = 56381 cents
     expect(r.amountUsdcCents).toBe(BigInt(56381));

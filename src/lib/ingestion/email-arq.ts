@@ -206,9 +206,7 @@ export async function ingestArqEmail(
   // --- Build tx fields ---
   // Amount sign: positive for received (income), negative for sent (expense).
   const signedAmountCents =
-    parsed.txKind === "transfer_received"
-      ? parsed.amountUsdcCents
-      : -parsed.amountUsdcCents;
+    parsed.txKind === "transfer_received" ? parsed.amountUsdcCents : -parsed.amountUsdcCents;
 
   const fxMetadata = buildFxMetadata(parsed);
 
