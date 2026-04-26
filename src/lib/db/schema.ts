@@ -1425,6 +1425,63 @@ export const userSnapshots = pgTable(
 // import row must be superseded (manual correction), insert a new row for the
 // same (user_id, account_id, period_start) — the UNIQUE constraint will reject
 // duplicates, which is intentional: force explicit cleanup before re-import.
+// #518 (Epic ARQ Phase 4): extensible registry of fiat on/off-ramp partners
+// used by ARQ to disburse COP to Colombian bank accounts. When ARQ disperses
+// via PEXTO COLOMBIA, the Bancolombia leg arrives as a credit from PEXTO
+// rather than from the user themselves. This table allows the transfer pairer
+// to recognise PEXTO-initiated credits as self-transfers rather than external
+// income — without hard-coding the partner name in application logic.
+//
+// No soft-delete: partners are either active=true (considered for pairing) or
+// active=false (ignored). Deactivation is manual DB edit + reload; no UI in scope.
+export const fiatPartners = pgTable(
+  "fiat_partners",
+  {
+    id: serial("id").primaryKey(),
+    // 'arq', 'wise', etc. — discriminates partners by the off-ramp system that
+    // generates them so a single query can filter by source_system without
+    // touching unrelated rows.
+    sourceSystem: varchar("source_system", { length: 40 }).notNull(),
+    // The counterparty name exactly as it appears in the Bancolombia notification
+    // (SMS or email). Comparison is case-insensitive ILIKE in the pairer.
+    partnerName: varchar("partner_name", { length: 200 }).notNull(),
+    description: text("description"),
+    active: boolean("active").notNull().default(true),
+  },
+  (t) => [
+    uniqueIndex("fiat_partners_system_name_unique").on(t.sourceSystem, t.partnerName),
+    index("fiat_partners_source_active_idx")
+      .on(t.sourceSystem)
+      .where(sql`${t.active} = true`),
+  ],
+);
+
+// #518 (Epic ARQ Phase 4): name variants for a user used by the cross-currency
+// transfer pairer. ARQ emails include a `recipient_name` field (e.g.
+// "Alejandro Rafael Martinez Maldonado", "Alejandro Martinez") that must be
+// matched against `users.name` or an alias to confirm the transfer was a
+// self-transfer and not a payment to a third party.
+//
+// Tenant safety: every query MUST scope alias lookup to the same user_id as the
+// candidate transfer — never join on alias alone (memory per-user-table-join-tenant-safety).
+export const userAliases = pgTable(
+  "user_aliases",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // The alias text as it appears in the source (e.g. "Alejandro Martinez").
+    // Stored as-is; comparison in the pairer uses case-insensitive normalisation.
+    alias: varchar("alias", { length: 200 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("user_aliases_user_alias_unique").on(t.userId, t.alias),
+    index("user_aliases_user_idx").on(t.userId),
+  ],
+);
+
 export const arqStatementImports = pgTable(
   "arq_statement_imports",
   {

@@ -6,6 +6,7 @@ import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { insertTransferGroup } from "@/lib/transactions/transfer-groups";
+import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 import {
   resolveAccountFromLast4,
   type ParseResult,
@@ -269,14 +270,36 @@ async function ingestParsedBancolombia(
       .returning({ id: transactions.id });
 
     if (result.length === 0) return { status: "duplicated" };
-    await autoLinkTransaction(userId, result[0].id);
+    const txId = result[0].id;
+    await autoLinkTransaction(userId, txId);
     emit({
       type: "transaction:created",
-      id: result[0].id,
+      id: txId,
       source: cfg.source,
       timestamp: Date.now(),
     });
-    return { status: "inserted", txId: result[0].id };
+    // #518: attempt intra-user transfer pairing for transfer_sent / transfer_received.
+    // Only these two kinds can be part of a self-transfer pair. Other kinds (purchase,
+    // provider_payment, atm_withdrawal, etc.) are never paired here.
+    if (parsed.kind === "transfer_sent" || parsed.kind === "transfer_received") {
+      await pairIntraUserTransfer(
+        {},
+        {
+          id: txId,
+          userId,
+          accountId: account.id,
+          channel: "transfer",
+          amountCents,
+          currency: parsed.currency,
+          occurredAt,
+          counterpartyId: cp.counterpartyId,
+          // merchant is the parsed counterparty name in these SMS kinds.
+          counterparty: merchant,
+          rawData: { kind: parsed.kind, ...cfg.rawDataExtras },
+        },
+      );
+    }
+    return { status: "inserted", txId };
   } catch (err) {
     return {
       status: "error",

@@ -33,6 +33,7 @@ import { db } from "@/lib/db";
 import { transactions, type SourceMismatchDetails } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
 import { levenshteinRatio } from "@/lib/text/levenshtein";
+import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 
 import type {
   FeeTx,
@@ -448,7 +449,7 @@ async function mergeTx(
   statementTx: Exclude<ParsedStatementTx, { kind: "skip" }>,
   importId: number,
   mismatchReason: MismatchReason | null,
-): Promise<void> {
+): Promise<{ mergedRawData: Record<string, unknown> }> {
   const statementMetadata: Record<string, unknown> = {
     arq_statement_import_id: importId,
     statement_kind: statementTx.kind,
@@ -508,6 +509,11 @@ async function mergeTx(
       })
       .where(and(eq(transactions.userId, userId), eq(transactions.id, existing.id)));
   }
+
+  // Return the merged shape so the caller can pass it to downstream pairing
+  // (#518) without re-reading from the DB. existing.rawData is the pre-merge
+  // snapshot and would miss the new copAmountCents from the statement.
+  return { mergedRawData };
 }
 
 async function insertStatementTx(
@@ -722,6 +728,23 @@ export async function reconcileEmailVsStatement(
       if (newTxId !== null) {
         details.push({ kind: "insert", statementTx: tx, newTxId });
         insertedCount++;
+        // #518: attempt pairing for transfer_sent/transfer_received statement txs.
+        if (tx.kind === "transfer_sent" || tx.kind === "transfer_received") {
+          await pairIntraUserTransfer(
+            { database: dbc },
+            {
+              id: newTxId,
+              userId,
+              accountId,
+              channel: channelFromKind(tx.kind),
+              amountCents: tx.amountUsdc,
+              currency: "USD",
+              occurredAt: tx.occurredAt,
+              counterparty: counterpartyFromStatement(tx),
+              rawData: buildRawData(tx, importId),
+            },
+          );
+        }
       } else {
         // Insert returned null → onConflictDoNothing hit (already imported by
         // a prior run). Count as a merge/skip for idempotency — no re-insert.
@@ -796,9 +819,30 @@ export async function reconcileEmailVsStatement(
 
     const mismatchReason = detectMismatch(existing, tx, counterpartyRatio);
 
-    await mergeTx(dbc, userId, existing, tx, importId, mismatchReason);
+    const { mergedRawData } = await mergeTx(dbc, userId, existing, tx, importId, mismatchReason);
 
     mergedCount++;
+    // #518: after merge, the existing email tx now has copAmountCents from the
+    // statement (in rawData.merged_statement.fx). Pass the in-memory merged
+    // snapshot to the pairer — existing.rawData is the pre-merge value and
+    // would miss the cross-currency metadata we just wrote.
+    if (tx.kind === "transfer_sent" || tx.kind === "transfer_received") {
+      await pairIntraUserTransfer(
+        { database: dbc },
+        {
+          id: existing.id,
+          userId,
+          accountId,
+          channel: channelFromKind(tx.kind),
+          amountCents: existing.amountCents,
+          currency: "USD",
+          occurredAt: existing.occurredAt,
+          counterparty: existing.merchant,
+          rawData: mergedRawData,
+        },
+      );
+    }
+
     if (mismatchReason !== null) {
       flaggedCount++;
       log.warn(
