@@ -309,6 +309,73 @@ describe("reconcileEmailVsStatement", () => {
     });
   });
 
+  describe("Ambiguous email match — multiple equally-close candidates", () => {
+    it("inserts the statement tx flagged source_mismatch instead of dropping it", async () => {
+      // Two email candidates equidistant from the statement occurredAt and
+      // identical amount/counterparty → ambiguous. The reconciler must NOT
+      // silently drop the statement line; it must INSERT it flagged for review.
+      const stmtOccurredAt = new Date(Date.UTC(2026, 2, 8, 12, 0, 0));
+      const amountCents = BigInt(-44400);
+
+      // Candidate A: 1 hour before
+      await insertEmailTx({
+        userId,
+        accountId,
+        amountCents,
+        occurredAt: new Date(stmtOccurredAt.getTime() - 60 * 60 * 1000),
+        merchant: "ambiguous-payee",
+        externalId: "arq-email-ambig-A",
+      });
+      // Candidate B: 1 hour after — same delta as A
+      await insertEmailTx({
+        userId,
+        accountId,
+        amountCents,
+        occurredAt: new Date(stmtOccurredAt.getTime() + 60 * 60 * 1000),
+        merchant: "ambiguous-payee",
+        externalId: "arq-email-ambig-B",
+      });
+
+      const stmtExternalId = "arq-stmt-ambig-test-1234567";
+      const stmtTx = makeTransferSentTx({
+        occurredAt: stmtOccurredAt,
+        amountUsdc: amountCents,
+        recipientName: "ambiguous-payee",
+        externalId: stmtExternalId,
+      });
+
+      const result = await reconcileEmailVsStatement(
+        { db },
+        {
+          userId,
+          accountId,
+          importId,
+          period: PERIOD,
+          parsedTxs: [stmtTx],
+        },
+      );
+
+      expect(result.insertedCount).toBe(1);
+      expect(result.mergedCount).toBe(0);
+      // 1 from the ambiguous-insert + 2 from email-orphan flags on the
+      // unmatched candidates (they fall in PERIOD without a counterpart).
+      expect(result.flaggedCount).toBeGreaterThanOrEqual(1);
+
+      const decision = result.details.find(
+        (d) => d.kind === "insert" && (d as { mismatchReason?: string }).mismatchReason,
+      ) as { kind: "insert"; newTxId: number; mismatchReason?: string } | undefined;
+      expect(decision).toBeDefined();
+      expect(decision!.mismatchReason).toBe("ambiguous_email_match");
+
+      const inserted = await db.query.transactions.findFirst({
+        where: eq(transactions.id, decision!.newTxId),
+      });
+      expect(inserted!.source).toBe("arq_statement");
+      expect(inserted!.sourceMismatch).toBe(true);
+      expect(inserted!.sourceMismatchDetails!.diffs[0]!.field).toBe("ambiguous_email_match");
+    });
+  });
+
   describe("FLAG — amount mismatch > 1 cent", () => {
     it("merges but flags source_mismatch when amounts diverge > 1 cent", async () => {
       const occurredAt = new Date(Date.UTC(2026, 2, 15, 10, 0, 0));

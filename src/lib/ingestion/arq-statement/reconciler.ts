@@ -97,7 +97,12 @@ export interface ReconcilerDeps {
 }
 
 export type ReconcileDecision =
-  | { kind: "insert"; statementTx: ParsedStatementTx; newTxId: number }
+  | {
+      kind: "insert";
+      statementTx: ParsedStatementTx;
+      newTxId: number;
+      mismatchReason?: string;
+    }
   | {
       kind: "merge";
       statementTx: ParsedStatementTx;
@@ -438,6 +443,7 @@ function detectMismatch(
 
 async function mergeTx(
   dbc: typeof db,
+  userId: number,
   existing: ExistingEmailTx,
   statementTx: Exclude<ParsedStatementTx, { kind: "skip" }>,
   importId: number,
@@ -462,6 +468,10 @@ async function mergeTx(
     merged_statement: statementMetadata,
   };
 
+  // Tenant-safe write: pair user_id and id in the WHERE clause so this UPDATE
+  // can never land on another user's row even if `existing.id` were ever
+  // returned in error by a future change to candidate retrieval.
+  // Memory: per-user-table-join-tenant-safety.
   if (mismatchReason === null) {
     await dbc
       .update(transactions)
@@ -472,7 +482,7 @@ async function mergeTx(
         rawData: mergedRawData,
         updatedAt: new Date(),
       })
-      .where(eq(transactions.id, existing.id));
+      .where(and(eq(transactions.userId, userId), eq(transactions.id, existing.id)));
   } else {
     const mismatchDetails: SourceMismatchDetails = {
       fromSource: "gmail_arq",
@@ -496,7 +506,7 @@ async function mergeTx(
         sourceMismatchDetails: mismatchDetails,
         updatedAt: new Date(),
       })
-      .where(eq(transactions.id, existing.id));
+      .where(and(eq(transactions.userId, userId), eq(transactions.id, existing.id)));
   }
 }
 
@@ -506,11 +516,20 @@ async function insertStatementTx(
   accountId: number,
   importId: number,
   tx: Exclude<ParsedStatementTx, { kind: "skip" }>,
+  flag?: { reason: string; fromSource: "gmail_arq" | "arq_statement" },
 ): Promise<number | null> {
   const descriptionRaw = buildDescriptionRaw(tx);
   const rawData = buildRawData(tx, importId);
   const counterparty = counterpartyFromStatement(tx);
   const channel = channelFromKind(tx.kind);
+
+  const sourceMismatchDetails: SourceMismatchDetails | null = flag
+    ? {
+        fromSource: flag.fromSource,
+        toSource: "arq_statement",
+        diffs: [{ field: flag.reason, fromValue: "email", toValue: "statement" }],
+      }
+    : null;
 
   try {
     const [row] = await dbc
@@ -529,6 +548,8 @@ async function insertStatementTx(
         externalIdStatement: tx.externalId,
         arqStatementImportId: importId,
         rawData,
+        sourceMismatch: flag !== undefined,
+        sourceMismatchDetails: sourceMismatchDetails ?? undefined,
         // categorySlug: intentionally null — rules engine / user assigns later.
         // Defaulting to null avoids the pago-tc double-count pattern (memory).
       })
@@ -711,7 +732,9 @@ export async function reconcileEmailVsStatement(
 
     if (match.ambiguous) {
       // Multiple equally-close candidates: cannot confidently pick one.
-      // Leave for manual review.
+      // INSERT the statement tx with sourceMismatch=true so the ledger still
+      // reflects the line — the user resolves the ambiguity in /transactions.
+      // Skipping silently would lose a financial line from the audit (review).
       log.warn(
         {
           userId,
@@ -721,13 +744,29 @@ export async function reconcileEmailVsStatement(
           candidateCount: candidates.length,
           event: "arq_reconciler_ambiguous_match",
         },
-        "multiple equally-close email candidates — skipping for manual review",
+        "multiple equally-close email candidates — inserting flagged for manual review",
       );
-      details.push({
-        kind: "skip",
-        statementTx: tx,
-        reason: "multiple_match_ambiguous",
+      const newTxId = await insertStatementTx(dbc, userId, accountId, importId, tx, {
+        reason: "ambiguous_email_match",
+        fromSource: "gmail_arq",
       });
+
+      if (newTxId !== null) {
+        details.push({
+          kind: "insert",
+          statementTx: tx,
+          newTxId,
+          mismatchReason: "ambiguous_email_match",
+        });
+        insertedCount++;
+        flaggedCount++;
+      } else {
+        details.push({
+          kind: "skip",
+          statementTx: tx,
+          reason: "idempotent_already_inserted_ambiguous",
+        });
+      }
       continue;
     }
 
@@ -757,7 +796,7 @@ export async function reconcileEmailVsStatement(
 
     const mismatchReason = detectMismatch(existing, tx, counterpartyRatio);
 
-    await mergeTx(dbc, existing, tx, importId, mismatchReason);
+    await mergeTx(dbc, userId, existing, tx, importId, mismatchReason);
 
     mergedCount++;
     if (mismatchReason !== null) {
