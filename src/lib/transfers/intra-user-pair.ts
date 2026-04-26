@@ -24,7 +24,7 @@
 // Tenant safety: ALL queries scope on user_id. Memory: per-user-table-join-tenant-safety.
 
 import { randomUUID } from "node:crypto";
-import { and, eq, gte, lte, isNull, sql } from "drizzle-orm";
+import { and, eq, gte, lte, isNull, sql, inArray } from "drizzle-orm";
 import type { DB } from "@/lib/db";
 import { db as defaultDb } from "@/lib/db";
 import { transactions, counterparties, fiatPartners, userAliases, users } from "@/lib/db/schema";
@@ -66,10 +66,15 @@ export type PairResult = {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** ±10 min window for real-time sources (SMS, email). */
-const REALTIME_WINDOW_MS = 10 * 60 * 1000;
-
-/** ±24 h window for batch/statement sources. */
+/**
+ * ±24 h window for all sources today.
+ *
+ * The spec separates real-time (±10 min for SMS/email) from batch (±24h
+ * for statement). v1 collapses to 24h for both — it is symmetric and avoids
+ * a source-classification dependency in the matcher. If the wider window
+ * surfaces false matches in production, split this back into two constants
+ * and gate by `source` in pairSameCurrency.
+ */
 const BATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 // Tolerance for COP amount comparison in cross-currency case is 0.5% (computed
@@ -426,11 +431,62 @@ async function applyGroupId(
   txIdA: number,
   txIdB: number,
 ): Promise<PairResult> {
-  const groupId = randomUUID();
-
   try {
-    await dbc.transaction(async (trx) => {
-      // Update both legs atomically. Tenant-safe: WHERE includes userId.
+    const result = await dbc.transaction(async (trx) => {
+      // Re-read both rows inside the transaction WITH FOR UPDATE so concurrent
+      // pair calls serialize at this point. Without the lock, a double-arrival
+      // race (both legs ingested in the same batch — e.g. statement reconciler
+      // processing transfer_sent and transfer_received in sequence) produces
+      // two orphan singletons because each call's idempotency guard
+      // (isNull(transferGroupId)) sees the partner already stamped.
+      const rows = await trx
+        .select({
+          id: transactions.id,
+          transferGroupId: transactions.transferGroupId,
+        })
+        .from(transactions)
+        .where(and(eq(transactions.userId, userId), inArray(transactions.id, [txIdA, txIdB])))
+        .for("update");
+
+      if (rows.length !== 2) {
+        return { groupId: null as string | null, pairedTxId: null as number | null };
+      }
+
+      const existingA = rows.find((r) => r.id === txIdA)?.transferGroupId ?? null;
+      const existingB = rows.find((r) => r.id === txIdB)?.transferGroupId ?? null;
+
+      // Adopt-or-create the groupId. If either leg is already grouped, the
+      // current call adopts that groupId — the partner just arrived later.
+      let groupId: string;
+      if (existingA && existingB) {
+        if (existingA === existingB) {
+          // Already paired to the same group — fully idempotent.
+          return { groupId: existingA, pairedTxId: txIdB };
+        }
+        // Both grouped but to DIFFERENT groups — conflict. Bail without writes.
+        log.error(
+          {
+            txIdA,
+            txIdB,
+            userId,
+            existingGroupA: existingA,
+            existingGroupB: existingB,
+            event: "pair_conflict_distinct_groups",
+          },
+          "both legs already paired to different groups — refusing to merge",
+        );
+        return { groupId: null, pairedTxId: null };
+      } else if (existingA) {
+        groupId = existingA;
+      } else if (existingB) {
+        groupId = existingB;
+      } else {
+        groupId = randomUUID();
+      }
+
+      // Update only the legs that don't have a group yet. The isNull guard
+      // is a belt-and-suspenders check — the SELECT FOR UPDATE above already
+      // serialized us, so the DB state cannot have changed.
       for (const txId of [txIdA, txIdB]) {
         await trx
           .update(transactions)
@@ -444,18 +500,21 @@ async function applyGroupId(
             and(
               eq(transactions.id, txId),
               eq(transactions.userId, userId),
-              // Idempotency guard: don't overwrite an already-set group.
               isNull(transactions.transferGroupId),
             ),
           );
       }
+
+      return { groupId, pairedTxId: txIdB };
     });
 
-    log.info(
-      { txIdA, txIdB, userId, groupId, event: "pair_success" },
-      "intra-user transfer legs paired",
-    );
-    return { groupId, pairedTxId: txIdB === txIdA ? null : txIdB };
+    if (result.groupId !== null) {
+      log.info(
+        { txIdA, txIdB, userId, groupId: result.groupId, event: "pair_success" },
+        "intra-user transfer legs paired",
+      );
+    }
+    return result;
   } catch (err) {
     log.error(
       { err, txIdA, txIdB, userId, event: "pair_error" },
@@ -669,4 +728,4 @@ function pickClosest<T extends { occurredAt: Date }>(candidates: T[], target: Da
 }
 
 // Re-export constants for use in the migration script.
-export { REALTIME_WINDOW_MS, BATCH_WINDOW_MS };
+export { BATCH_WINDOW_MS };

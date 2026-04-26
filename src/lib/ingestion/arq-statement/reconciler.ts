@@ -449,7 +449,7 @@ async function mergeTx(
   statementTx: Exclude<ParsedStatementTx, { kind: "skip" }>,
   importId: number,
   mismatchReason: MismatchReason | null,
-): Promise<void> {
+): Promise<{ mergedRawData: Record<string, unknown> }> {
   const statementMetadata: Record<string, unknown> = {
     arq_statement_import_id: importId,
     statement_kind: statementTx.kind,
@@ -509,6 +509,11 @@ async function mergeTx(
       })
       .where(and(eq(transactions.userId, userId), eq(transactions.id, existing.id)));
   }
+
+  // Return the merged shape so the caller can pass it to downstream pairing
+  // (#518) without re-reading from the DB. existing.rawData is the pre-merge
+  // snapshot and would miss the new copAmountCents from the statement.
+  return { mergedRawData };
 }
 
 async function insertStatementTx(
@@ -814,12 +819,13 @@ export async function reconcileEmailVsStatement(
 
     const mismatchReason = detectMismatch(existing, tx, counterpartyRatio);
 
-    await mergeTx(dbc, userId, existing, tx, importId, mismatchReason);
+    const { mergedRawData } = await mergeTx(dbc, userId, existing, tx, importId, mismatchReason);
 
     mergedCount++;
-    // #518: after merge, the existing email tx now has cop_amount_cents from the
-    // statement. Attempt pairing on the existing tx (which is the ARQ leg).
-    // The pairer reads rawData from the DB to get the merged metadata.
+    // #518: after merge, the existing email tx now has copAmountCents from the
+    // statement (in rawData.merged_statement.fx). Pass the in-memory merged
+    // snapshot to the pairer — existing.rawData is the pre-merge value and
+    // would miss the cross-currency metadata we just wrote.
     if (tx.kind === "transfer_sent" || tx.kind === "transfer_received") {
       await pairIntraUserTransfer(
         { database: dbc },
@@ -832,7 +838,7 @@ export async function reconcileEmailVsStatement(
           currency: "USD",
           occurredAt: existing.occurredAt,
           counterparty: existing.merchant,
-          rawData: existing.rawData,
+          rawData: mergedRawData,
         },
       );
     }
