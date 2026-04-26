@@ -2,9 +2,9 @@
  * Backfill script: ensure all transactions have a valid rawData.fx block.
  *
  * For txs missing or with invalid fx metadata, writes a default canonical block:
- *   - tx.currency === COP (COP account): originalCurrency='COP', trmToAccountCurrency=null, trmSource='1_to_1'
- *   - tx.currency === USD (USD account): originalCurrency='USD', trmToAccountCurrency=null, trmSource='1_to_1'
- *   - cross-currency txs with no derivable TRM: trmSource='unknown' (logged)
+ *   - tx.currency === COP (COP account): originalCurrency='COP', trmToAccountCurrency=1, trmSource='1_to_1'
+ *   - tx.currency === USD (USD account): originalCurrency='USD', trmToAccountCurrency=1, trmSource='1_to_1'
+ *   - cross-currency txs with no derivable TRM: skipped with a warning (no fallback brand)
  *
  * Idempotent: re-running skips txs that already have a valid FxMetadata block.
  *
@@ -67,11 +67,16 @@ function buildDefaultFx(tx: TxRow): FxMetadata | null {
   const currency = tx.currency;
   const absAmountCents = tx.amount_cents < BigInt(0) ? -tx.amount_cents : tx.amount_cents;
 
+  // 1:1 cases use trmToAccountCurrency=1 (NOT null) to match the live
+  // producers in email-arq.ts and reconciler.ts:buildFxBlock. The conversion
+  // function in src/lib/fx/convert.ts treats null as "TRM unavailable" and
+  // falls through to a no-op warning — a backfilled USD tx with null would
+  // then never display in COP under "all-cop" mode.
   if (currency === "COP") {
     return {
       originalCurrency: "COP",
       originalAmountCents: absAmountCents.toString(),
-      trmToAccountCurrency: null,
+      trmToAccountCurrency: 1,
       trmSource: "1_to_1",
     };
   }
@@ -80,26 +85,23 @@ function buildDefaultFx(tx: TxRow): FxMetadata | null {
     return {
       originalCurrency: currency as "USD" | "USDc",
       originalAmountCents: absAmountCents.toString(),
-      trmToAccountCurrency: null,
+      trmToAccountCurrency: 1,
       trmSource: "1_to_1",
     };
   }
 
-  // Unknown / cross-currency — cannot determine TRM without statement data.
+  // Unknown / cross-currency without derivable TRM — return null to skip the
+  // row instead of branding a wrong originalCurrency. Idempotent re-runs would
+  // otherwise lock in the bad guess.
   log.warn(
     {
       txId: tx.id,
       currency,
       event: "backfill_fx_unknown_currency",
     },
-    "tx has an unsupported currency for automatic fx backfill; marking as unknown",
+    "tx has an unsupported currency for automatic fx backfill; skipping",
   );
-  return {
-    originalCurrency: "COP", // best guess fallback
-    originalAmountCents: absAmountCents.toString(),
-    trmToAccountCurrency: null,
-    trmSource: "unknown",
-  };
+  return null;
 }
 
 async function main() {
