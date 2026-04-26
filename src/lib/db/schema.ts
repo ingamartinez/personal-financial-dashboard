@@ -1385,3 +1385,63 @@ export const userSnapshots = pgTable(
   },
   (t) => [index("user_snapshots_user_created_idx").on(t.userId, t.createdAt.desc())],
 );
+
+// #515 (Epic ARQ sub-issue C): audit + idempotency table for ARQ statement
+// imports. One row per processed statement; written after parse + reconcile.
+//
+// Tenant safety: always filter by BOTH user_id AND account_id when querying.
+// JOINing on account_id alone can produce cross-tenant leaks — the accounts
+// table does NOT enforce a global unique constraint on id independently of
+// user ownership. Every query that touches this table must include
+//   WHERE arq_statement_imports.user_id = $userId
+// in addition to any account_id predicate.
+//
+// No soft-delete: this is an audit table. Re-importing the same PDF is
+// detected via raw_pdf_hash (idempotency check in runStatementImport). If an
+// import row must be superseded (manual correction), insert a new row for the
+// same (user_id, account_id, period_start) — the UNIQUE constraint will reject
+// duplicates, which is intentional: force explicit cleanup before re-import.
+export const arqStatementImports = pgTable(
+  "arq_statement_imports",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "restrict" }),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    /** Opening balance declared in the PDF header, in USDc cents. */
+    declaredStartCents: bigint("declared_start_cents", { mode: "bigint" }).notNull(),
+    /** Closing balance declared in the PDF header, in USDc cents. */
+    declaredEndCents: bigint("declared_end_cents", { mode: "bigint" }).notNull(),
+    /** Number of parsed (non-skip) transactions in this statement. */
+    parsedCount: integer("parsed_count").notNull(),
+    /** Net signed sum of parsed transactions in USDc cents (credits − debits). */
+    parsedSumCents: bigint("parsed_sum_cents", { mode: "bigint" }).notNull(),
+    /** True when |calcEnd − declaredEnd| ≤ 1 cent. False means import was aborted. */
+    reconciled: boolean("reconciled").notNull(),
+    /** Signed cents difference (calcEnd − declaredEnd). Null when reconciled=true. */
+    reconcileDiffCents: bigint("reconcile_diff_cents", { mode: "bigint" }),
+    /**
+     * Inter-month chain check result. Null on the first imported statement for
+     * this (user_id, account_id). False is a soft warn (gap or correction) —
+     * it does NOT abort the import.
+     */
+    chainOk: boolean("chain_ok"),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+    /** SHA-256 hex hash of the raw PDF bytes — used for idempotent re-import detection. */
+    rawPdfHash: varchar("raw_pdf_hash", { length: 64 }).notNull(),
+  },
+  (t) => [
+    // One row per (user, account, period). Re-importing requires explicit
+    // cleanup. Paired user_id + account_id enforces tenant safety at the DB level.
+    uniqueIndex("arq_statement_imports_period_unique").on(t.userId, t.accountId, t.periodStart),
+    // Fast idempotency lookup by PDF hash (scoped to user for tenant safety).
+    uniqueIndex("arq_statement_imports_user_hash_unique").on(t.userId, t.rawPdfHash),
+    // Used by the inter-month chain check: find the most-recent prior statement.
+    index("arq_statement_imports_account_period_idx").on(t.userId, t.accountId, t.periodEnd),
+  ],
+);
