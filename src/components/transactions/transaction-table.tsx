@@ -40,6 +40,7 @@ const sourceLabel: Record<TxRow["source"], string> = {
   csv_reconcile: "CSV (recon)",
   gmail_bancolombia: "Email BC",
   gmail_enrichment: "Email",
+  gmail_arq: "Email ARQ",
 };
 
 const methodVariant: Record<

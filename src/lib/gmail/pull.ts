@@ -21,6 +21,7 @@ import {
 import { parseBancolombiaEmail } from "@/lib/gmail/parsers/bancolombia";
 import { parseReceipt } from "@/lib/gmail/parsers";
 import { ingestParsedEmail } from "@/lib/ingestion/email-bancolombia";
+import { processPendingArqReceipts } from "@/lib/ingestion/email-arq";
 import { matchReceipt } from "@/lib/gmail/matcher";
 import { applyEnrichment } from "@/lib/gmail/enrich";
 import { pushToUser } from "@/lib/telegram/push";
@@ -787,6 +788,8 @@ export async function pullForUser(
   for (const g of ingestGatewaysSelected) {
     if (g.id === "bancolombia") {
       await processPendingBancolombiaReceipts(userId);
+    } else if (g.id === "arq") {
+      await processPendingArqReceipts(userId);
     }
   }
 
