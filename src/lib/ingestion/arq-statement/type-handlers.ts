@@ -156,8 +156,10 @@ function buildExternalId(
  */
 function calcTrm(originalAmountCents: bigint, amountUsdcCents: bigint): number {
   if (amountUsdcCents === BigInt(0)) return 0;
-  return Number(originalAmountCents < BigInt(0) ? -originalAmountCents : originalAmountCents) /
-    Number(amountUsdcCents < BigInt(0) ? -amountUsdcCents : amountUsdcCents);
+  return (
+    Number(originalAmountCents < BigInt(0) ? -originalAmountCents : originalAmountCents) /
+    Number(amountUsdcCents < BigInt(0) ? -amountUsdcCents : amountUsdcCents)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +186,9 @@ function handlePagoConTarjeta(
       merchant: normalise(raw.description),
       originalCurrency: "COP",
       originalAmount:
-        raw.equivalentAmountCents < BigInt(0) ? -raw.equivalentAmountCents : raw.equivalentAmountCents,
+        raw.equivalentAmountCents < BigInt(0)
+          ? -raw.equivalentAmountCents
+          : raw.equivalentAmountCents,
       trmCopPerUsdc: calcTrm(raw.equivalentAmountCents, raw.amountCents),
     };
   }
@@ -268,7 +272,9 @@ function handleVentaUsdc(
     kind: "transfer_sent",
     originalCurrency: "COP",
     originalAmount:
-      raw.equivalentAmountCents < BigInt(0) ? -raw.equivalentAmountCents : raw.equivalentAmountCents,
+      raw.equivalentAmountCents < BigInt(0)
+        ? -raw.equivalentAmountCents
+        : raw.equivalentAmountCents,
     recipientName: normalise(raw.description),
     trmCopPerUsdc: calcTrm(raw.equivalentAmountCents, raw.amountCents),
   };
@@ -310,7 +316,9 @@ function handleTransferenciaP2P(
       kind: "p2p_transfer",
       originalCurrency: "COP",
       originalAmount:
-        raw.equivalentAmountCents < BigInt(0) ? -raw.equivalentAmountCents : raw.equivalentAmountCents,
+        raw.equivalentAmountCents < BigInt(0)
+          ? -raw.equivalentAmountCents
+          : raw.equivalentAmountCents,
       counterparty: normalise(raw.description),
     };
   }
