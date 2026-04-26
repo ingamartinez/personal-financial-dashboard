@@ -4,6 +4,60 @@ import { createLogger } from "@/lib/logger";
 
 import type { ArqEquivalentCurrency, RawStatement, RawTxLine } from "./types";
 
+// ---------------------------------------------------------------------------
+// pdfjs-dist browser-globals shim — MUST run before any code path that may
+// load the pdfjs-dist module graph. Turbopack/Next standalone evaluate
+// dynamic imports eagerly when bundling for Server Components, so installing
+// the shim inside the loader function is too late under Turbopack.
+//
+// pdfjs-dist's legacy build still references DOMMatrix / Path2D / ImageData
+// at module-evaluation time (used by canvas rendering paths we never hit).
+// Stub classes are sufficient because we only extract text — never render.
+//
+// In jsdom (test) these globals exist natively, which is why tests passed
+// while production crashed on the first PDF upload.
+// ---------------------------------------------------------------------------
+{
+  const g = globalThis as unknown as Record<string, unknown>;
+  if (typeof g.DOMMatrix === "undefined") {
+    class StubDOMMatrix {
+      constructor() {}
+      multiplySelf() {
+        return this;
+      }
+      multiply() {
+        return this;
+      }
+      invertSelf() {
+        return this;
+      }
+      translateSelf() {
+        return this;
+      }
+      scaleSelf() {
+        return this;
+      }
+    }
+    g.DOMMatrix = StubDOMMatrix;
+  }
+  if (typeof g.Path2D === "undefined") {
+    class StubPath2D {
+      constructor() {}
+      addPath() {}
+      moveTo() {}
+      lineTo() {}
+      closePath() {}
+    }
+    g.Path2D = StubPath2D;
+  }
+  if (typeof g.ImageData === "undefined") {
+    class StubImageData {
+      constructor() {}
+    }
+    g.ImageData = StubImageData;
+  }
+}
+
 const log = createLogger({ module: "arq-statement-pdf" });
 
 // ---------------------------------------------------------------------------
