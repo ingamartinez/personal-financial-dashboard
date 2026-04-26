@@ -1,11 +1,7 @@
 // ARQ statement import orchestrator.
 //
-// Wraps: PDF buffer → parse → reconcile → chain check → persist arq_statement_imports.
-//
-// This PR (#515) implements the **preview** path (parse + reconcile + chain check)
-// and the **commit** path that records the arq_statement_imports audit row.
-// Actual transaction insertion into the `transactions` table is deferred to
-// #517 (cross-channel reconciler). The commit path leaves a TODO there.
+// Wraps: PDF buffer → parse → reconcile → chain check → persist arq_statement_imports
+//        → cross-channel dedup via reconcileEmailVsStatement (#517).
 //
 // Idempotency: if the same PDF hash was already imported for this user, the
 // function returns early with the existing import row. Callers can force a
@@ -25,6 +21,8 @@ import { createLogger } from "@/lib/logger";
 
 import { buildChainCheck, reconcileStatement } from "./balance";
 import type { ChainCheck, ReconcileResult } from "./balance";
+import { reconcileEmailVsStatement } from "./reconciler";
+import type { ReconcilerDeps } from "./reconciler";
 import { parseStatementTransactions } from "./type-handlers";
 import type { ParsedStatementTx } from "./type-handlers";
 import type { RawStatement } from "./types";
@@ -54,8 +52,14 @@ export type RunStatementImportResult =
       status: "committed";
       importId: number;
       preview: StatementImportPreview;
-      /** TODO (#517): actual tx rows inserted. Always 0 in this PR. */
+      /** Tx rows newly inserted (statement-only events with no email counterpart). */
       insertedTxCount: number;
+      /** Existing gmail_arq rows updated with statement metadata. */
+      mergedTxCount: number;
+      /** Rows flagged source_mismatch (diverged merges + email orphans). */
+      flaggedTxCount: number;
+      /** gmail_arq txs in the period that had no statement counterpart. */
+      emailOrphanCount: number;
     }
   | { status: "error"; error: string };
 
@@ -69,6 +73,12 @@ export interface RunStatementImportDeps {
    * Injected so callers can swap in a fake adapter in tests.
    */
   parsePdf: (buffer: Buffer) => Promise<RawStatement>;
+  /**
+   * Reconciler dependencies (primarily the db handle). Injected so tests can
+   * stub the reconciler without mocking module globals.
+   * Defaults to `{}` which uses the global db.
+   */
+  reconcilerDeps?: ReconcilerDeps;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,10 +281,21 @@ export async function runStatementImport(
   }
 
   // ------------------------------------------------------------------
-  // Step 8: TODO (#517) — insert transactions into the transactions table.
-  // The cross-channel reconciler will handle dedup, category assignment,
-  // and the actual upsert. For now we record 0 insertedTxCount.
+  // Step 8 (#517): cross-channel dedup reconciler.
+  // Merges statement txs with existing gmail_arq email rows; inserts
+  // statement-only events; flags email orphans and diverged merges.
   // ------------------------------------------------------------------
+  const periodStart = rawStatement.header.periodStart;
+  const periodEnd = rawStatement.header.periodEnd;
+
+  const reconcilerResult = await reconcileEmailVsStatement(deps.reconcilerDeps ?? {}, {
+    userId,
+    accountId,
+    importId,
+    period: { start: periodStart, end: periodEnd },
+    parsedTxs,
+  });
+
   log.info(
     {
       event: "arq_import_committed",
@@ -283,14 +304,21 @@ export async function runStatementImport(
       accountId,
       parsedCount: activeTxs.length,
       chainOk: chainCheck.chainOk,
+      insertedTxCount: reconcilerResult.insertedCount,
+      mergedTxCount: reconcilerResult.mergedCount,
+      flaggedTxCount: reconcilerResult.flaggedCount,
+      emailOrphanCount: reconcilerResult.emailOrphanCount,
     },
-    "ARQ statement import committed — tx insertion deferred to #517",
+    "ARQ statement import committed",
   );
 
   return {
     status: "committed",
     importId,
     preview,
-    insertedTxCount: 0,
+    insertedTxCount: reconcilerResult.insertedCount,
+    mergedTxCount: reconcilerResult.mergedCount,
+    flaggedTxCount: reconcilerResult.flaggedCount,
+    emailOrphanCount: reconcilerResult.emailOrphanCount,
   };
 }
