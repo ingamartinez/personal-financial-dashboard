@@ -72,12 +72,28 @@ const log = createLogger({ module: "arq-statement-pdf" });
 // We resolve that path at module-init time so it survives cwd changes.
 //
 // createRequire resolves relative to THIS source file, so it correctly finds
-// the package regardless of cwd at invocation time.
-const _require = createRequire(import.meta.url);
-const PDFJS_WORKER_PATH: string = _require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
+// the package in pure Node + Bun. Under Next.js standalone + Turbopack,
+// `import.meta.url` points at the bundled chunk and the resolution may fail —
+// fall back to an empty string so pdfjs's type check passes. In Node, pdfjs
+// uses an in-process LoopbackPort fake worker regardless of workerSrc value,
+// so the actual path is irrelevant for our text-only extraction path.
+function resolvePdfjsWorkerPath(): string {
+  try {
+    const _require = createRequire(import.meta.url);
+    const resolved: unknown = _require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
+    return typeof resolved === "string" ? resolved : "";
+  } catch {
+    // Turbopack may stub createRequire entirely or have it throw under the
+    // bundled standalone runtime — fall back to empty string.
+    return "";
+  }
+}
+const PDFJS_WORKER_PATH: string = resolvePdfjsWorkerPath();
 
 async function getPdfjsLib() {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // pdfjs's setter rejects non-string assignments with "Invalid workerSrc type".
+  // resolvePdfjsWorkerPath() guarantees a string return.
   pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_PATH;
   return pdfjs;
 }
