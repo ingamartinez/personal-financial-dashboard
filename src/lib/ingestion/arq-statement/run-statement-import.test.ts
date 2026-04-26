@@ -494,6 +494,56 @@ describe("chain mismatch — skip Feb, import directly to Mar", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Chain check skips failed-reconcile prior rows
+// ---------------------------------------------------------------------------
+
+describe("chain check ignores reconcile_failed prior rows", () => {
+  it("chainOk is null when the only prior import has reconciled=false", async () => {
+    const uid = await createUser("chain-skip-failed");
+    const aid = await createAccount(uid, "chain-skip-failed-acct");
+
+    // Jan with declared balances that don't match — reconcile fails.
+    const JAN_BROKEN = makeStatement({
+      periodStart: new Date(Date.UTC(2026, 0, 1)),
+      periodEnd: new Date(Date.UTC(2026, 0, 31)),
+      balanceStartCents: BigInt(26296),
+      totalCreditsCents: BigInt(206000),
+      totalDebitsCents: BigInt(159401),
+      balanceEndCents: BigInt(99999), // wrong: should be 72895
+    });
+    const JAN_BROKEN_REAL = stmtWithRealLines(JAN_BROKEN, BigInt(206000), BigInt(159401));
+
+    const janResult = await runStatementImport(
+      { parsePdf: fakeParsePdf(JAN_BROKEN_REAL, JAN_TXS) },
+      {
+        userId: uid,
+        accountId: aid,
+        pdfBuffer: Buffer.from("jan-broken"),
+        pdfHash: `${TAG}-chain-skip-jan`,
+      },
+    );
+    expect(janResult.status).toBe("reconcile_failed");
+
+    // Now import Feb — chainCheck should treat this user as "no prior verified
+    // statement" and return chainOk=null, NOT chainOk=false from the broken Jan.
+    const febResult = await runStatementImport(
+      { parsePdf: fakeParsePdf(FEB_REAL, FEB_TXS) },
+      {
+        userId: uid,
+        accountId: aid,
+        pdfBuffer: Buffer.from("feb-after-broken-jan"),
+        pdfHash: `${TAG}-chain-skip-feb`,
+      },
+    );
+
+    expect(febResult.status).toBe("committed");
+    if (febResult.status !== "committed") return;
+    expect(febResult.preview.reconcile.ok).toBe(true);
+    expect(febResult.preview.chainCheck.chainOk).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Idempotency: same PDF hash → early return, no duplicate row
 // ---------------------------------------------------------------------------
 
@@ -547,6 +597,44 @@ describe("idempotency — re-import same PDF hash", () => {
 
     const rows = await db.query.arqStatementImports.findMany({
       where: and(eq(arqStatementImports.userId, uid), eq(arqStatementImports.rawPdfHash, hash)),
+    });
+    expect(rows.length).toBe(1);
+  });
+
+  it("different PDF for the same period returns status=error (period unique constraint)", async () => {
+    // The hash-based idempotency catches identical PDFs. A user uploading an
+    // amended statement (different bytes, same period) hits the
+    // (user_id, account_id, period_start) unique constraint instead.
+    const uid = await createUser("period-conflict");
+    const aid = await createAccount(uid, "period-conflict-acct");
+
+    const first = await runStatementImport(
+      { parsePdf: fakeParsePdf(JAN_REAL, JAN_TXS) },
+      {
+        userId: uid,
+        accountId: aid,
+        pdfBuffer: Buffer.from("first"),
+        pdfHash: `${TAG}-period-hash-1`,
+      },
+    );
+    expect(first.status).toBe("committed");
+
+    const second = await runStatementImport(
+      { parsePdf: fakeParsePdf(JAN_REAL, JAN_TXS) },
+      {
+        userId: uid,
+        accountId: aid,
+        pdfBuffer: Buffer.from("second-different"),
+        pdfHash: `${TAG}-period-hash-2`,
+      },
+    );
+
+    expect(second.status).toBe("error");
+    if (second.status !== "error") return;
+    expect(second.error).toMatch(/already been imported/i);
+
+    const rows = await db.query.arqStatementImports.findMany({
+      where: eq(arqStatementImports.userId, uid),
     });
     expect(rows.length).toBe(1);
   });

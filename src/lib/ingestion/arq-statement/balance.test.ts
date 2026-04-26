@@ -350,6 +350,8 @@ describe("reconcileStatement — credits/debits cross-check", () => {
     // end: 0 + 11000 - 6000 = 5000 = declared → end ok
     // but credits: 11000 ≠ 10000 → error
     // and debits: 6000 ≠ 5000 → error
+    // Cross-check failures are HARD errors (ok=false), not warnings.
+    expect(result.ok).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
     const combined = result.errors.join(" ");
     expect(combined).toContain("Credits mismatch");

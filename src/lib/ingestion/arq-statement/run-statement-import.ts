@@ -184,6 +184,9 @@ export async function runStatementImport(
       eq(arqStatementImports.accountId, accountId),
       // period_end < current period_start
       lt(arqStatementImports.periodEnd, currentPeriodStart.toISOString().slice(0, 10)),
+      // Only chain off verified prior statements — a row with reconciled=false
+      // has unreliable balances and would produce a misleading chain mismatch.
+      eq(arqStatementImports.reconciled, true),
     ),
     orderBy: [desc(arqStatementImports.periodEnd)],
     columns: { declaredEndCents: true },
@@ -201,23 +204,47 @@ export async function runStatementImport(
   // ------------------------------------------------------------------
   const activeTxs = parsedTxs.filter((tx) => tx.kind !== "skip");
 
-  const [insertedRow] = await db
-    .insert(arqStatementImports)
-    .values({
-      userId,
-      accountId,
-      periodStart: rawStatement.header.periodStart.toISOString().slice(0, 10),
-      periodEnd: rawStatement.header.periodEnd.toISOString().slice(0, 10),
-      declaredStartCents: reconcile.declaredStartCents,
-      declaredEndCents: reconcile.declaredEndCents,
-      parsedCount: activeTxs.length,
-      parsedSumCents: reconcile.parsedSumCents,
-      reconciled: reconcile.ok,
-      reconcileDiffCents: reconcile.ok ? null : reconcile.diffCents,
-      chainOk: chainCheck.chainOk,
-      rawPdfHash: pdfHash,
-    })
-    .returning({ id: arqStatementImports.id });
+  let insertedRow: { id: number } | undefined;
+  try {
+    [insertedRow] = await db
+      .insert(arqStatementImports)
+      .values({
+        userId,
+        accountId,
+        periodStart: rawStatement.header.periodStart.toISOString().slice(0, 10),
+        periodEnd: rawStatement.header.periodEnd.toISOString().slice(0, 10),
+        declaredStartCents: reconcile.declaredStartCents,
+        declaredEndCents: reconcile.declaredEndCents,
+        parsedCount: activeTxs.length,
+        parsedSumCents: reconcile.parsedSumCents,
+        reconciled: reconcile.ok,
+        reconcileDiffCents: reconcile.ok ? null : reconcile.diffCents,
+        chainOk: chainCheck.chainOk,
+        rawPdfHash: pdfHash,
+      })
+      .returning({ id: arqStatementImports.id });
+  } catch (err) {
+    // Postgres unique_violation. Two paths land here:
+    //   - (user_id, account_id, period_start) collision — a different PDF
+    //     covering an already-imported period (e.g. amended statement).
+    //     The hash-based idempotency check above only catches identical bytes.
+    //   - (user_id, raw_pdf_hash) collision — extremely unlikely race after
+    //     the early-return guard, but defended here too.
+    // Drizzle wraps the original error, so the pg code lives on err.cause.
+    const errObj = err as { code?: string; cause?: { code?: string } } | null;
+    const code = errObj?.code ?? errObj?.cause?.code;
+    if (code === "23505") {
+      log.warn(
+        { event: "arq_import_period_conflict", userId, accountId },
+        "statement for this period is already imported",
+      );
+      return {
+        status: "error",
+        error: "A statement for this period has already been imported.",
+      };
+    }
+    throw err;
+  }
 
   if (!insertedRow) {
     log.error(
