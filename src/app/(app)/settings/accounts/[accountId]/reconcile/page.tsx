@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, desc, eq, max, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, max, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, statementImports, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
@@ -74,6 +74,9 @@ export default async function ReconcilePage({
     merchant: r.merchant,
   }));
 
+  // Include `matched` candidates so a flagged row whose statement counterpart
+  // was already consumed by a prior reconcile run still surfaces in the merge
+  // picker (#544).
   const mergeCandidateRows =
     flagged.length > 0
       ? await db
@@ -89,7 +92,7 @@ export default async function ReconcilePage({
             and(
               eq(transactions.userId, session.id),
               eq(transactions.accountId, accountId),
-              eq(transactions.reconciliationStatus, "imported_from_statement"),
+              inArray(transactions.reconciliationStatus, ["imported_from_statement", "matched"]),
               notDeleted(transactions.deletedAt),
             ),
           )
@@ -104,6 +107,51 @@ export default async function ReconcilePage({
     currency: r.currency,
     descriptionRaw: r.descriptionRaw,
   }));
+
+  // For the suggestion engine (#544) we need every period that's been
+  // reconciled for this account so we can decide whether a flagged row falls
+  // inside any of them. A flagged row outside every period is recommended as
+  // Keep (it's real, just missed by the statements you've uploaded so far).
+  const accountPeriods =
+    flagged.length > 0
+      ? await db
+          .select({
+            periodStart: statementImports.periodStart,
+            periodEnd: statementImports.periodEnd,
+          })
+          .from(statementImports)
+          .where(
+            and(eq(statementImports.userId, session.id), eq(statementImports.accountId, accountId)),
+          )
+      : [];
+
+  const SIBLING_TOLERANCE_MS = 3 * 86_400_000;
+  const periodBounds = accountPeriods.map((p) => ({
+    start: new Date(p.periodStart).getTime(),
+    // periodEnd is a date, expand to end-of-day so a tx at 23:59 of the last
+    // day still counts as "inside the period".
+    end: new Date(p.periodEnd).getTime() + 86_400_000 - 1,
+  }));
+
+  const enrichedFlagged = flagged.map((f) => {
+    const fAmount = BigInt(f.amountCents);
+    const fMs = new Date(f.occurredAt).getTime();
+    const sibling = mergeCandidates.find((c) => {
+      if (BigInt(c.amountCents) !== fAmount) return false;
+      if (c.currency !== f.currency) return false;
+      const cMs = new Date(c.occurredAt).getTime();
+      return Math.abs(cMs - fMs) <= SIBLING_TOLERANCE_MS;
+    });
+    const inAnyPeriod = periodBounds.some((p) => fMs >= p.start && fMs <= p.end);
+    let suggestedAction: "archive" | "keep" | null = null;
+    if (sibling) suggestedAction = "archive";
+    else if (!inAnyPeriod && periodBounds.length > 0) suggestedAction = "keep";
+    return {
+      ...f,
+      suggestedSiblingId: sibling?.id ?? null,
+      suggestedAction,
+    };
+  });
 
   // #434: load ALL balance_adjustment txs for this account (live + soft-deleted).
   // The cleanup UI filters client-side via a "Mostrar borrados" toggle so the
@@ -186,9 +234,9 @@ export default async function ReconcilePage({
         />
       )}
 
-      {flagged.length > 0 ? (
+      {enrichedFlagged.length > 0 ? (
         <FlaggedReview
-          rows={flagged}
+          rows={enrichedFlagged}
           currency={account.currency}
           mergeCandidates={mergeCandidates}
         />

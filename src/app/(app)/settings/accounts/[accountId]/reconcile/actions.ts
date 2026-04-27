@@ -299,7 +299,11 @@ export async function previewReconcile(formData: FormData): Promise<ReconcilePre
     ? await loadExistingTxns(session.id, dispatch.sibling.id, parsed.periodStart, parsed.periodEnd)
     : [];
   const existing: ExistingTxnForMatch[] = [...existingOrigin, ...existingSibling];
-  const plan = matchStatement({ parsedRows: parsed.rows, existingTxns: existing });
+  const plan = matchStatement({
+    parsedRows: parsed.rows,
+    existingTxns: existing,
+    period: { start: parsed.periodStart, end: parsed.periodEnd },
+  });
 
   const multiCurrency: MultiCurrencyDispatchInfo | null = dispatch.sibling
     ? {

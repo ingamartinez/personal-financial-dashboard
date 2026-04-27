@@ -164,8 +164,15 @@ export function matchStatement(input: MatchingInput): MatchingPlan {
     }
   }
 
+  const periodStartMs = input.period?.start.getTime();
+  const periodEndMs = input.period?.end.getTime();
   const flaggedExisting = eligibleExisting
     .filter((e) => !consumed.has(e.id) && e.reconciliationStatus === "unreconciled")
+    .filter((e) => {
+      if (periodStartMs === undefined || periodEndMs === undefined) return true;
+      const ms = e.occurredAt.getTime();
+      return ms >= periodStartMs && ms <= periodEndMs;
+    })
     .map((e) => ({ txnId: e.id, reason: "no_statement_match" as const }));
 
   const matched = decisions.filter((d) => d.action === "match").length;
