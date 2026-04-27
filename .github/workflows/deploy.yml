@@ -98,11 +98,15 @@ jobs:
           # Overlay migrate-prod + backfill scripts under scripts/ preserving
           # dev layout so their relative `../src/...` imports resolve the same
           # way on prod as in local runs.
-          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/lib/auth"
+          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/lib/auth" "$STAGE/src/lib/gmail" "$STAGE/src/lib/crypto"
           cp scripts/migrate-prod.ts "$STAGE/scripts/migrate-prod.ts"
           cp scripts/backfill-users-reference.ts "$STAGE/scripts/backfill-users-reference.ts"
           # #405: migrate-prod also calls the pago-tc → transfer-group backfill.
           cp scripts/migrate-pago-tc-to-transfer.ts "$STAGE/scripts/migrate-pago-tc-to-transfer.ts"
+          # #545/#551: one-shot backfill for legacy email_receipts that were
+          # inserted before the internalDate fix landed. Idempotent — re-runs
+          # are no-ops once email_received_at is populated.
+          cp scripts/backfill-email-received-at.ts "$STAGE/scripts/backfill-email-received-at.ts"
           # migrate-prod imports these for reference-data seeding + per-user
           # backfill; they live under src/ and are NOT traced by Next
           # standalone, so overlay them explicitly.
@@ -113,6 +117,12 @@ jobs:
           cp src/lib/db/seed-user-aliases.ts "$STAGE/src/lib/db/seed-user-aliases.ts"
           cp src/lib/auth/signup.ts "$STAGE/src/lib/auth/signup.ts"
           cp src/lib/logger.ts "$STAGE/src/lib/logger.ts"
+          # #551: backfill-email-received-at imports gmail/client (which
+          # transitively pulls db/helpers + crypto/gmail-cipher + crypto/symmetric).
+          cp src/lib/gmail/client.ts "$STAGE/src/lib/gmail/client.ts"
+          cp src/lib/db/helpers.ts "$STAGE/src/lib/db/helpers.ts"
+          cp src/lib/crypto/gmail-cipher.ts "$STAGE/src/lib/crypto/gmail-cipher.ts"
+          cp src/lib/crypto/symmetric.ts "$STAGE/src/lib/crypto/symmetric.ts"
           echo "$GIT_SHA" > "$STAGE/GIT_SHA"
           tar -czf release.tar.gz -C "$STAGE" .
           ls -lh release.tar.gz
