@@ -65,7 +65,7 @@ export default async function ReconcilePage({
     .orderBy(desc(transactions.occurredAt))
     .limit(200);
 
-  const flagged: FlaggedRow[] = flaggedRows.map((r) => ({
+  const flagged = flaggedRows.map((r) => ({
     id: r.id,
     occurredAt: r.occurredAt.toISOString(),
     amountCents: r.amountCents.toString(),
