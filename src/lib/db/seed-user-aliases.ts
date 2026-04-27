@@ -13,7 +13,7 @@
 // Tenant safety: all queries scope to userId — never operate on alias alone.
 
 import { and, eq, inArray } from "drizzle-orm";
-import { createLogger } from "@/lib/logger";
+import { createLogger } from "../logger";
 import type { DB } from "./index";
 import { userAliases, users } from "./schema";
 
@@ -118,15 +118,22 @@ export async function seedUserAliases(
       .onConflictDoNothing()
       .returning({ alias: userAliases.alias });
 
-    log.info(
-      {
-        userId,
-        email,
-        totalAliases: aliases.length,
-        insertedCount: inserted.length,
-        event: "seed_user_aliases_done",
-      },
-      "seeded user aliases",
-    );
+    if (inserted.length > 0) {
+      log.info(
+        {
+          userId,
+          email,
+          totalAliases: aliases.length,
+          insertedCount: inserted.length,
+          event: "seed_user_aliases_done",
+        },
+        "seeded user aliases",
+      );
+    } else {
+      log.debug(
+        { userId, email, event: "seed_user_aliases_already_seeded" },
+        "user aliases already seeded; no inserts",
+      );
+    }
   }
 }
