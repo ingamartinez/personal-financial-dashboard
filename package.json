@@ -19,6 +19,7 @@
     "db:backfill:users": "bun run scripts/backfill-users-reference.ts",
     "db:migrate:pago-tc": "bun run scripts/migrate-pago-tc-to-transfer.ts",
     "intereses:run": "bun run scripts/run-intereses-causados.ts",
+    "backfill:arq-snapshots": "bun run scripts/backfill-arq-snapshots.ts",
     "statement:parse": "bun run scripts/parse-bancolombia-statement.ts",
     "statement:apply": "bun run scripts/consolidate-statement.ts",
     "db:bootstrap:invites": "bun run scripts/bootstrap-invites.ts",

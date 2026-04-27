@@ -13,10 +13,10 @@
 //     not belong to user_id the function rejects with an error before parsing.
 //   - Never rely on account_id alone when querying arq_statement_imports.
 
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts, arqStatementImports } from "@/lib/db/schema";
+import { accountSnapshots, accounts, arqStatementImports } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
 
 import { buildChainCheck, reconcileStatement } from "./balance";
@@ -281,7 +281,53 @@ export async function runStatementImport(
   }
 
   // ------------------------------------------------------------------
-  // Step 8 (#517): cross-channel dedup reconciler.
+  // Step 8 (#562c): upsert account_snapshots row.
+  // Records the opening balance for this statement period so that
+  // derivedBalanceCentsSql can anchor on it instead of summing all
+  // transactions from the beginning of time.
+  // Gate: reconcile.ok is guaranteed true here (we returned early above
+  // if it was false).
+  // ------------------------------------------------------------------
+  const snapshotDate = rawStatement.header.periodStart.toISOString().slice(0, 10);
+  try {
+    await db
+      .insert(accountSnapshots)
+      .values({
+        userId,
+        accountId,
+        snapshotDate,
+        balanceCents: reconcile.declaredStartCents,
+        metadata: { source: "arq_statement_import", importId },
+      })
+      .onConflictDoUpdate({
+        target: [accountSnapshots.accountId, accountSnapshots.snapshotDate],
+        set: {
+          balanceCents: sql`excluded.balance_cents`,
+          metadata: sql`excluded.metadata`,
+        },
+      });
+    log.info(
+      {
+        event: "arq_import_snapshot_upserted",
+        importId,
+        userId,
+        accountId,
+        snapshotDate,
+        balanceCents: reconcile.declaredStartCents.toString(),
+      },
+      "account_snapshots upserted for period start",
+    );
+  } catch (err) {
+    // Non-fatal: snapshot write failure should not abort the import.
+    // The import row is already committed and the reconciler will still run.
+    log.error(
+      { event: "arq_import_snapshot_failed", importId, userId, accountId, err },
+      "failed to upsert account_snapshots — balance derivation will fall back to SUM(all txs)",
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Step 9 (#517): cross-channel dedup reconciler.
   // Merges statement txs with existing gmail_arq email rows; inserts
   // statement-only events; flags email orphans and diverged merges.
   // ------------------------------------------------------------------
