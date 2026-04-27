@@ -362,6 +362,10 @@ describe("parseBancolombiaStatement (synthetic fixture)", () => {
     expect(parsed.summary.paymentsCents).toBe(BigInt(10000000));
     expect(parsed.summary.minPaymentCents).toBe(BigInt(10000000));
     expect(parsed.summary.totalPaymentCents).toBe(BigInt(50000000));
+    // #563 — currentBalanceCents = "Pago total" (cycle-end balance).
+    // Bancolombia XLSX has no separate "Nuevo saldo" row; pago total IS the
+    // current balance. Verified against 7291+2575 MAR2026 real extractos.
+    expect(parsed.summary.currentBalanceCents).toBe(BigInt(50000000));
   });
 
   it("extracts current rates", () => {
@@ -493,6 +497,8 @@ describeIfFixture("parseBancolombiaStatement (real fixture 202603 Visa 2575)", (
     expect(parsed.summary.purchasesCents).toBe(BigInt(360129100));
     expect(parsed.summary.minPaymentCents).toBe(BigInt(435143100));
     expect(parsed.summary.totalPaymentCents).toBe(BigInt(774466500));
+    // #563 — currentBalanceCents mirrors totalPaymentCents (same XLSX row).
+    expect(parsed.summary.currentBalanceCents).toBe(BigInt(774466500));
   });
 
   it("matches acceptance rate (2-36 meses === 19110)", () => {

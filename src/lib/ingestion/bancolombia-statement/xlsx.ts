@@ -344,13 +344,22 @@ function extractSummary(rows: SheetRows): StatementSummary {
   const interestRaw = findSummaryValueByLabel(rows, "intereses corrientes", 3, 4);
   const paymentsRaw = findSummaryValueByLabel(rows, "pagos / abonos", 3, 4);
 
+  // "Pago total" (col A / col B header row) is what the bank declares as the
+  // cycle-end balance — the amount you owe. No separate "Nuevo saldo" / "Saldo
+  // nuevo" label exists in Bancolombia XLSX extractos (verified against
+  // 7291_MAR2026 PESOS+DOLARES and 2575_MAR2026 PESOS — issue #563).
+  // currentBalanceCents is an alias for totalPaymentCents; both use the same
+  // source row so they are always equal. The separate field exists for semantic
+  // clarity when writing balance_at_end_cents on statement_imports.
+  const totalPayCents = parseCopAmount(totalPayRaw);
   return {
     previousBalanceCents: parseCopAmount(previousRaw),
     purchasesCents: parseCopAmount(purchasesRaw),
     interestCorrientesCents: parseCopAmount(interestRaw),
     paymentsCents: parseCopAmount(paymentsRaw),
     minPaymentCents: parseCopAmount(minPayRaw),
-    totalPaymentCents: parseCopAmount(totalPayRaw),
+    totalPaymentCents: totalPayCents,
+    currentBalanceCents: totalPayCents,
   };
 }
 

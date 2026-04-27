@@ -29,6 +29,11 @@ export type StatementSummary = {
   paymentsCents: bigint;
   minPaymentCents: bigint;
   totalPaymentCents: bigint;
+  // Cycle-end balance ("Pago total" on the XLSX — the amount the bank says
+  // you owe at end of cycle). Equals totalPaymentCents in the Bancolombia
+  // extracto format (both come from the same "Pago total" row). Persisted
+  // as balance_at_end_cents on statement_imports for backfill use (#562).
+  currentBalanceCents: bigint;
 };
 
 // Rates are stored as EM (mes vencido) × 10_000 per project convention
