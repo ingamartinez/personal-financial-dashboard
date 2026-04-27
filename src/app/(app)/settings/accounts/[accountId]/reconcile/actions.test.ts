@@ -23,7 +23,8 @@ vi.mock("@/lib/auth/session", () => ({
   getSessionUser: vi.fn().mockImplementation(async () => sessionMock),
 }));
 
-const { previewReconcile, applyReconcile, expandReconcileWindow } = await import("./actions");
+const { previewReconcile, applyReconcile } = await import("./actions");
+const { expandReconcileWindow } = await import("./window");
 
 describe("expandReconcileWindow (#543)", () => {
   it("expands the period boundary by the match-engine tolerance on both sides", () => {

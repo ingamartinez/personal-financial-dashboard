@@ -13,10 +13,11 @@ import {
   recordReconciliationDecision,
 } from "@/lib/reconciliation/commit";
 import { parseAny } from "@/lib/reconciliation/dispatch";
-import { DEFAULT_DATE_TOLERANCE_DAYS, matchStatement } from "@/lib/reconciliation/engine/match";
+import { matchStatement } from "@/lib/reconciliation/engine/match";
 import type { ExistingTxnForMatch, MatchingPlan } from "@/lib/reconciliation/engine/types";
 import type { ParsedStatement } from "@/lib/reconciliation/parsers/types";
 import { createLogger } from "@/lib/logger";
+import { expandReconcileWindow } from "./window";
 
 const log = createLogger({ module: "reconciliation-actions" });
 
@@ -207,23 +208,6 @@ function rowsByCurrencyCount(parsed: ParsedStatement): Record<"COP" | "USD", num
   const counts: Record<"COP" | "USD", number> = { COP: 0, USD: 0 };
   for (const row of parsed.rows) counts[row.currency] += 1;
   return counts;
-}
-
-// The XLSX parser anchors every row at midnight Bogotá (05:00 UTC), so a
-// real tx recorded at 21:33 Bogotá the same day lives at 02:33 UTC the next
-// day — outside the raw [periodStart, periodEnd] range and therefore
-// invisible to the matcher, which then duplicates it. Three days of slack
-// also covers the legitimate gap between bank-side accounting date and
-// Gmail notification date.
-export function expandReconcileWindow(
-  periodStart: Date,
-  periodEnd: Date,
-): { windowStart: Date; windowEnd: Date } {
-  const toleranceMs = DEFAULT_DATE_TOLERANCE_DAYS * 86_400_000;
-  return {
-    windowStart: new Date(periodStart.getTime() - toleranceMs),
-    windowEnd: new Date(periodEnd.getTime() + toleranceMs),
-  };
 }
 
 async function loadExistingTxns(
