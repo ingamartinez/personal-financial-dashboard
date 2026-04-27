@@ -1,7 +1,7 @@
 import type { ParsedStatementRow } from "../parsers/types";
 import type { ExistingTxnForMatch, MatchDecision, MatchingInput, MatchingPlan } from "./types";
 
-const DEFAULT_DATE_TOLERANCE_DAYS = 3;
+export const DEFAULT_DATE_TOLERANCE_DAYS = 3;
 const DEFAULT_MERCHANT_FUZZ_THRESHOLD = 0.5;
 const MS_PER_DAY = 86_400_000;
 
