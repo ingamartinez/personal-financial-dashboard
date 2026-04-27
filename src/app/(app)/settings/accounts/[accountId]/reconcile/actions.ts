@@ -17,6 +17,7 @@ import { matchStatement } from "@/lib/reconciliation/engine/match";
 import type { ExistingTxnForMatch, MatchingPlan } from "@/lib/reconciliation/engine/types";
 import type { ParsedStatement } from "@/lib/reconciliation/parsers/types";
 import { createLogger } from "@/lib/logger";
+import { expandReconcileWindow } from "./window";
 
 const log = createLogger({ module: "reconciliation-actions" });
 
@@ -215,6 +216,7 @@ async function loadExistingTxns(
   periodStart: Date,
   periodEnd: Date,
 ): Promise<ExistingTxnForMatch[]> {
+  const { windowStart, windowEnd } = expandReconcileWindow(periodStart, periodEnd);
   const rows = await db
     .select({
       id: transactions.id,
@@ -232,8 +234,8 @@ async function loadExistingTxns(
       and(
         eq(transactions.userId, userId),
         eq(transactions.accountId, accountId),
-        gte(transactions.occurredAt, periodStart),
-        lte(transactions.occurredAt, periodEnd),
+        gte(transactions.occurredAt, windowStart),
+        lte(transactions.occurredAt, windowEnd),
         notDeleted(transactions.deletedAt),
       ),
     );
