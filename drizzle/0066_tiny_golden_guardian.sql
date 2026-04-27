@@ -1,0 +1,1 @@
+ALTER TABLE "email_receipts" ADD COLUMN "email_received_at" timestamp with time zone;
