@@ -472,7 +472,11 @@ describe("gmail/pull", () => {
           internalDate: String(messageEpochMs),
         }),
     });
-    const result = await pullForUser(userA, "arq", { getClient: async () => authed });
+    const result = await pullForUser(
+      userA,
+      { gateways: ["arq"] },
+      { getClient: async () => authed },
+    );
     expect(result.pulled).toBe(1);
     const [row] = await db
       .select({
@@ -493,7 +497,11 @@ describe("gmail/pull", () => {
       onList: () => ({ messageIds: ["msg-no-date"] }),
       onGet: () => fakeMessage("msg-no-date", "<html><body>x</body></html>"),
     });
-    const result = await pullForUser(userA, "arq", { getClient: async () => authed });
+    const result = await pullForUser(
+      userA,
+      { gateways: ["arq"] },
+      { getClient: async () => authed },
+    );
     expect(result.pulled).toBe(1);
     const [row] = await db
       .select({
