@@ -16,6 +16,7 @@ import { parseAny } from "@/lib/reconciliation/dispatch";
 import { matchStatement } from "@/lib/reconciliation/engine/match";
 import type { ExistingTxnForMatch, MatchingPlan } from "@/lib/reconciliation/engine/types";
 import type { ParsedStatement } from "@/lib/reconciliation/parsers/types";
+import { applyPagoTcRouting } from "@/lib/reconciliation/pago-tc-router";
 import { createLogger } from "@/lib/logger";
 import { expandReconcileWindow } from "./window";
 
@@ -380,6 +381,28 @@ export async function applyReconcile(input: ApplyReconcileInput) {
     },
     "reconciliation applied",
   );
+
+  // #567 — after committing a savings extract, run Pago TC twin routing.
+  // Savings descriptions carry DOLAR/PESOS distinction that gmail/SMS lack,
+  // so this step corrects any misrouted destination legs and inserts any
+  // missing transfer pairs. Only runs when the uploaded file is a savings
+  // statement (not a TC statement).
+  if (result.status === "applied" && parsedStatement.format === "bancolombia_savings") {
+    const pagoResult = await applyPagoTcRouting({
+      userId: session.id,
+      savingsAccountId: account.id,
+      rows: parsedStatement.rows,
+    });
+    log.info(
+      {
+        event: "pago_tc_routing_result",
+        userId: session.id,
+        accountId: account.id,
+        ...pagoResult,
+      },
+      "pago tc routing completed after savings reconciliation",
+    );
+  }
 
   revalidatePath("/");
   revalidatePath("/transactions");
