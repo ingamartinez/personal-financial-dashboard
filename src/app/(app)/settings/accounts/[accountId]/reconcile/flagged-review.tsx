@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -17,6 +18,10 @@ import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { Currency } from "@/lib/types";
 import { reviewReconciliationDecision } from "./actions";
+
+function absBig(n: bigint): bigint {
+  return n < BigInt(0) ? -n : n;
+}
 
 export type FlaggedRow = {
   id: number;
@@ -193,6 +198,12 @@ export function FlaggedReview({
   );
 }
 
+type RankedCandidate = MergeCandidate & {
+  amountDiffPct: number;
+  isProbableMatch: boolean;
+  isNoise: boolean;
+};
+
 function MergePickerDialog({
   open,
   flagged,
@@ -210,19 +221,38 @@ function MergePickerDialog({
   onClose: () => void;
   onPick: (flaggedId: number, targetId: number) => void;
 }) {
-  const sorted = useMemo(() => {
-    if (!flagged) return candidates;
+  const [showAll, setShowAll] = useState(false);
+
+  const ranked = useMemo<RankedCandidate[]>(() => {
+    if (!flagged) return [];
+    const flaggedAbs = absBig(BigInt(flagged.amountCents));
     const flaggedMs = new Date(flagged.occurredAt).getTime();
-    return [...candidates].sort((a, b) => {
-      const da = Math.abs(new Date(a.occurredAt).getTime() - flaggedMs);
-      const db = Math.abs(new Date(b.occurredAt).getTime() - flaggedMs);
+    const withDiff = candidates.map((c) => {
+      const candAbs = absBig(BigInt(c.amountCents));
+      const diff = candAbs > flaggedAbs ? candAbs - flaggedAbs : flaggedAbs - candAbs;
+      const pct = flaggedAbs === BigInt(0) ? 1 : Number(diff) / Number(flaggedAbs);
+      return { c, candAbs, pct };
+    });
+    withDiff.sort((a, b) => {
+      if (a.pct !== b.pct) return a.pct - b.pct;
+      const da = Math.abs(new Date(a.c.occurredAt).getTime() - flaggedMs);
+      const db = Math.abs(new Date(b.c.occurredAt).getTime() - flaggedMs);
       return da - db;
     });
+    return withDiff.map(({ c, pct }, idx) => ({
+      ...c,
+      amountDiffPct: pct,
+      isProbableMatch: idx === 0 && pct < 0.02,
+      isNoise: pct > 0.5,
+    }));
   }, [flagged, candidates]);
+
+  const visible = showAll ? ranked : ranked.filter((r) => !r.isNoise);
+  const hiddenCount = ranked.length - visible.length;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>Merge flagged into…</DialogTitle>
           <DialogDescription>
@@ -232,7 +262,13 @@ function MergePickerDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-[60vh] overflow-y-auto rounded-md border">
-          <table className="w-full text-sm">
+          <table className="w-full table-fixed text-sm">
+            <colgroup>
+              <col className="w-36" />
+              <col />
+              <col className="w-32" />
+              <col className="w-24" />
+            </colgroup>
             <thead className="bg-muted/50 text-muted-foreground text-xs uppercase">
               <tr>
                 <th className="p-2 text-left">Date</th>
@@ -242,12 +278,30 @@ function MergePickerDialog({
               </tr>
             </thead>
             <tbody>
-              {sorted.map((c) => {
+              {visible.map((c) => {
                 const cents = BigInt(c.amountCents);
                 return (
-                  <tr key={c.id} className="border-t">
-                    <td className="p-2 tabular-nums">{dateFmt.format(new Date(c.occurredAt))}</td>
-                    <td className="max-w-[22rem] truncate p-2">{c.descriptionRaw}</td>
+                  <tr
+                    key={c.id}
+                    className={cn(
+                      "border-t",
+                      c.isProbableMatch && "bg-emerald-50/60 dark:bg-emerald-950/20",
+                    )}
+                  >
+                    <td className="p-2 whitespace-nowrap tabular-nums">
+                      {dateFmt.format(new Date(c.occurredAt))}
+                    </td>
+                    <td className="min-w-0 truncate p-2">
+                      {c.descriptionRaw}
+                      {c.isProbableMatch ? (
+                        <Badge
+                          variant="outline"
+                          className="ml-2 border-emerald-500 text-emerald-700 dark:text-emerald-400"
+                        >
+                          Match probable
+                        </Badge>
+                      ) : null}
+                    </td>
                     <td
                       className={cn(
                         "p-2 text-right font-medium tabular-nums",
@@ -259,7 +313,7 @@ function MergePickerDialog({
                     <td className="p-2 text-right">
                       <Button
                         size="sm"
-                        variant="outline"
+                        variant={c.isProbableMatch ? "default" : "outline"}
                         disabled={disabled}
                         onClick={() => flagged && onPick(flagged.id, c.id)}
                       >
@@ -272,6 +326,14 @@ function MergePickerDialog({
             </tbody>
           </table>
         </div>
+        {hiddenCount > 0 ? (
+          <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
+            <span>{hiddenCount} candidatos ocultos por diferencia de monto &gt; 50%.</span>
+            <Button variant="ghost" size="sm" onClick={() => setShowAll(true)}>
+              Ver todos ({ranked.length})
+            </Button>
+          </div>
+        ) : null}
       </DialogContent>
     </Dialog>
   );
