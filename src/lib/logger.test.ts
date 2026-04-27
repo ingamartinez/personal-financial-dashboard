@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createLogger, logger } from "./logger";
+import { createLogger, logger, shouldPrettyPrint } from "./logger";
 
 describe("logger", () => {
   it("exposes the standard pino level methods", () => {
@@ -26,5 +26,19 @@ describe("logger", () => {
     const b = a.child({ userId: 42 });
     expect(b.bindings()).toMatchObject({ module: "telegram", userId: 42 });
     expect(a.bindings()).not.toHaveProperty("userId");
+  });
+
+  it("shouldPrettyPrint survives Edge runtime where process.stdout is undefined", () => {
+    // Auth.js v5 middleware (proxy.ts) bundles into Edge runtime, where
+    // `process.stdout` is undefined. Without optional chaining the dev server
+    // crashes the first time the logger module is touched.
+    const descriptor = Object.getOwnPropertyDescriptor(process, "stdout");
+    Object.defineProperty(process, "stdout", { value: undefined, configurable: true });
+    try {
+      expect(() => shouldPrettyPrint()).not.toThrow();
+      expect(shouldPrettyPrint()).toBe(false);
+    } finally {
+      if (descriptor) Object.defineProperty(process, "stdout", descriptor);
+    }
   });
 });

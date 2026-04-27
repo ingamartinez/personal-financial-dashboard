@@ -2,10 +2,10 @@ import pino, { type Logger, type LoggerOptions } from "pino";
 
 type Bindings = Record<string, unknown>;
 
-function shouldPrettyPrint(): boolean {
+export function shouldPrettyPrint(): boolean {
   if (process.env.NODE_ENV === "production") return false;
   if (process.env.CI) return false;
-  return Boolean(process.stdout.isTTY);
+  return Boolean(process.stdout?.isTTY);
 }
 
 function resolveLevel(): string {
