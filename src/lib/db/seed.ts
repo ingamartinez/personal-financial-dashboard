@@ -25,6 +25,7 @@ import {
 } from "./schema";
 import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "@/lib/auth/signup";
 import { seedReferenceData } from "./seed-reference-data";
+import { seedUserAliases } from "./seed-user-aliases";
 import type { AccountType, Currency } from "@/lib/types";
 
 const log = createLogger({ module: "seed" });
@@ -268,6 +269,13 @@ export async function runSeed() {
       `${existingRuleCount} classification rules already present — skipping`,
     );
   }
+
+  // #538: seed canonical user aliases for cross-currency transfer pairing.
+  // Idempotent: skips if no matching email, removes deprecated aliases,
+  // inserts canonical ones via ON CONFLICT DO NOTHING.
+  log.info({ event: "seed_user_aliases_start" }, "seeding user aliases");
+  await seedUserAliases(db);
+  log.info({ event: "seed_user_aliases_done" }, "user aliases seeded");
 
   log.info({ event: "seed_done" }, "done");
 }

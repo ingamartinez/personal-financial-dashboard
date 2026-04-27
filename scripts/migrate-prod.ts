@@ -17,6 +17,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 // layout so dev and prod resolve these identically.
 import { db } from "../src/lib/db";
 import { seedReferenceData } from "../src/lib/db/seed-reference-data";
+import { seedUserAliases } from "../src/lib/db/seed-user-aliases";
 import { createLogger } from "../src/lib/logger";
 import { backfillUsersReferenceData } from "./backfill-users-reference";
 import { migratePagoTcToTransfer } from "./migrate-pago-tc-to-transfer";
@@ -74,5 +75,11 @@ log.info(
   { ...pagoTcReport, event: "migrate_prod_pago_tc_done" },
   "pago-tc transfer-group backfill complete",
 );
+
+// #538: permanent seed for user_aliases (cross-currency transfer pairing).
+// Idempotent: inserts canonical aliases, removes deprecated ones.
+log.info({ event: "migrate_prod_user_aliases_start" }, "seeding user aliases");
+await seedUserAliases(db);
+log.info({ event: "migrate_prod_user_aliases_done" }, "user aliases seeded");
 
 await db.$client.end();

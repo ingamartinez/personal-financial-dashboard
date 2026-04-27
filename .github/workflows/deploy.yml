@@ -109,6 +109,8 @@ jobs:
           cp src/lib/db/index.ts "$STAGE/src/lib/db/index.ts"
           cp src/lib/db/schema.ts "$STAGE/src/lib/db/schema.ts"
           cp src/lib/db/seed-reference-data.ts "$STAGE/src/lib/db/seed-reference-data.ts"
+          # #538: migrate-prod now calls seedUserAliases — overlay the module.
+          cp src/lib/db/seed-user-aliases.ts "$STAGE/src/lib/db/seed-user-aliases.ts"
           cp src/lib/auth/signup.ts "$STAGE/src/lib/auth/signup.ts"
           cp src/lib/logger.ts "$STAGE/src/lib/logger.ts"
           echo "$GIT_SHA" > "$STAGE/GIT_SHA"
