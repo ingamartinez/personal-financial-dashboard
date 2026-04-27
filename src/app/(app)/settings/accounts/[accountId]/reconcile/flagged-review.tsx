@@ -93,12 +93,12 @@ export function FlaggedReview({
         await reviewReconciliationDecision({ txnId: rowId, action });
         toast.success(
           action === "archived"
-            ? "Transaction archived (won't show in spend anymore)"
-            : "Transaction kept as real (status reset to unreconciled)",
+            ? "Transacción archivada — ya no aparece en el gasto"
+            : "Transacción mantenida como real",
         );
         router.refresh();
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Action failed");
+        toast.error(err instanceof Error ? err.message : "No se pudo aplicar la acción");
       } finally {
         setBusy(null);
       }
@@ -143,11 +143,11 @@ export function FlaggedReview({
           action: "merged_into",
           mergedIntoTxnId: targetId,
         });
-        toast.success("Merged — flagged row inherits the statement amount & date");
+        toast.success("Fusionada — la fila adopta el monto y fecha del extracto");
         setMergePicker(null);
         router.refresh();
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Merge failed");
+        toast.error(err instanceof Error ? err.message : "No se pudo fusionar");
       } finally {
         setBusy(null);
       }

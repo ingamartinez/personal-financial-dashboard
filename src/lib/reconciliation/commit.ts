@@ -315,9 +315,13 @@ export async function recordReconciliationDecision(input: ReviewInput): Promise<
       note: input.note ?? null,
     });
     if (input.action === "archived") {
+      // Soft-delete so the row drops out of every spend/balance query that
+      // honors notDeleted(). The audit trail lives in reconciliation_decisions
+      // above; we don't lose history. Without setting deletedAt the row stayed
+      // visible as flagged forever, which broke the Archive button entirely.
       await tx
         .update(transactions)
-        .set({ updatedAt: new Date() })
+        .set({ deletedAt: new Date(), updatedAt: new Date() })
         .where(and(eq(transactions.id, input.txnId), eq(transactions.userId, input.userId)));
     } else if (input.action === "kept") {
       await tx
