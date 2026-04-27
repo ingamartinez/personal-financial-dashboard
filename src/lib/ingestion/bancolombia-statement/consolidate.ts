@@ -932,6 +932,10 @@ export async function consolidateCycleFromStatement(
         txnCount: 0,
         kind: "extracto_detallado",
         cycle: opts.cycle,
+        // #563 — persist the cycle-end balance from the extracto summary so
+        // the snapshot backfill (#562) can use it as an opening-balance anchor.
+        // currentBalanceCents = "Pago total" = what the bank says you owe.
+        balanceAtEndCents: opts.parsed.summary.currentBalanceCents,
         report: null,
       })
       .returning({ id: statementImports.id });

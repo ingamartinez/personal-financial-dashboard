@@ -27,6 +27,7 @@ function buildStatement(rows: StatementRow[]): ParsedStatement {
       paymentsCents: BigInt(0),
       minPaymentCents: BigInt(0),
       totalPaymentCents: BigInt(0),
+      currentBalanceCents: BigInt(0),
     },
     currentRates: { oneMonth: 0, months2to36: 19110, advances: 19110 },
     rows,

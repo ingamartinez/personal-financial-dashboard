@@ -84,6 +84,7 @@ function buildParsed(
       paymentsCents: BigInt(0),
       minPaymentCents: BigInt(0),
       totalPaymentCents: BigInt(0),
+      currentBalanceCents: BigInt(0),
     },
     currentRates: { oneMonth: 0, months2to36: 19110, advances: 19110 },
     rows,
@@ -335,6 +336,9 @@ describe("consolidateCycleFromStatement — integration against findash_test", (
       expect(imp.syntheticTxId).toBe(report.intereses.txId);
     }
     expect(imp.txnCount).toBe(4); // 3 UPDATEd + 1 INSERTed.
+    // #563 — balance_at_end_cents must be persisted from summary.currentBalanceCents.
+    // buildParsed uses totalPaymentCents=0 so the fixture yields 0 here.
+    expect(imp.balanceAtEndCents).toBe(BigInt(0));
 
     // The ghost tx stays untouched but surfaces as unmatched in the report.
     expect(report.unmatchedInLedgerIds).toContain(txUnmatched);
@@ -1295,5 +1299,77 @@ describe("consolidateCycleFromStatement — cross-twin reconciliation (#555)", (
       await db.delete(physicalCards).where(eq(physicalCards.id, physicalCardIdemUUID));
       await db.delete(users).where(eq(users.id, userIdIdem));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// balance_at_end_cents persistence (#563)
+// ---------------------------------------------------------------------------
+// Verifies that consolidate writes parsed.summary.currentBalanceCents to the
+// statement_imports.balance_at_end_cents column on first consolidation.
+describe("consolidateCycleFromStatement — balance_at_end_cents persistence (#563)", () => {
+  const BALANCE_CYCLE = "2026-06";
+  const TAG_BAL = "STMT_BAL_TEST";
+  let userIdBal!: number;
+  let accountIdBal!: number;
+
+  beforeAll(async () => {
+    userIdBal = await createUser(`${TAG_BAL.toLowerCase()}.${Date.now()}@test.local`);
+    accountIdBal = await createTCAccount(userIdBal);
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userIdBal);
+  });
+
+  it("persists a non-zero currentBalanceCents as balance_at_end_cents on statement_imports", async () => {
+    // Simulate a cycle-end balance of $7,744,665 COP (real value from 2575_MAR2026).
+    const CURRENT_BALANCE = BigInt(774466500); // cents
+
+    const parsed = buildParsed(
+      [
+        row({
+          authorizationNumber: "BALTEST1",
+          merchant: "BALANCE TEST MERCHANT",
+          occurredAt: utcDate(2026, 6, 15),
+          amountCents: BigInt(100000),
+        }),
+      ],
+      {
+        period: {
+          startDate: utcDate(2026, 6, 1),
+          endDate: utcDate(2026, 6, 30),
+          dueDate: utcDate(2026, 7, 16),
+        },
+        summary: {
+          previousBalanceCents: BigInt(0),
+          purchasesCents: BigInt(100000),
+          interestCorrientesCents: BigInt(0),
+          paymentsCents: BigInt(0),
+          minPaymentCents: BigInt(0),
+          totalPaymentCents: CURRENT_BALANCE,
+          currentBalanceCents: CURRENT_BALANCE,
+        },
+      },
+    );
+
+    const report = await consolidateCycleFromStatement({
+      userId: userIdBal,
+      accountId: accountIdBal,
+      cycle: BALANCE_CYCLE,
+      parsed,
+      fileHash: "bal563".repeat(10).slice(0, 64),
+      dryRun: false,
+    });
+
+    expect(report.status).toBe("consolidated");
+    expect(report.statementImportId).not.toBeNull();
+
+    const [imp] = await db
+      .select()
+      .from(statementImports)
+      .where(eq(statementImports.id, report.statementImportId!));
+    // Round-trip: balance_at_end_cents must equal the parsed summary value.
+    expect(imp.balanceAtEndCents).toBe(CURRENT_BALANCE);
   });
 });
