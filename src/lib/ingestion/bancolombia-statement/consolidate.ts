@@ -181,7 +181,43 @@ export function hashStatementBuffer(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-function externalIdFor(accountId: number, cycle: string, authCode: string): string {
+// Bancolombia uses "000000" as a placeholder authorizationNumber for synthetic
+// bank operations (refinanciación, AMPLIACION DE PLAZO, ABONO AMPLIACION, etc.)
+// where no real merchant authorization was issued. Multiple such rows can appear
+// in the same cycle with inverse amounts — they must each get a unique externalId
+// so the onConflictDoNothing dedup in insertMissingRowInTx doesn't collapse the
+// second row into silence.
+//
+// For real auth codes (non-000000) we keep the auth-only key for dedup stability
+// (already in prod). For placeholder rows we extend the key with a normalized
+// merchant slug + amount so the pair (AMPLIACION/+4M) and (ABONO/-4M) never
+// share an externalId. The merchant slug is lowercased and stripped of
+// non-alphanumeric chars so minor extracto formatting differences don't produce
+// phantom duplicates across cycles.
+const PLACEHOLDER_AUTH = "000000";
+
+function normalizeMerchantSlug(merchant: string): string {
+  return merchant
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function externalIdFor(
+  accountId: number,
+  cycle: string,
+  authCode: string,
+  row: { merchant: string; amountCents: bigint },
+): string {
+  if (authCode === PLACEHOLDER_AUTH) {
+    const slug = normalizeMerchantSlug(row.merchant);
+    // Include the ledger-sign amount so AMPLIACION (+4M → ledger -4M) and
+    // ABONO (-4M → ledger +4M) produce distinct keys even on the same date.
+    const amount = row.amountCents.toString();
+    return `bancolombia-stmt:${accountId}:${cycle}:${authCode}:${slug}:${amount}`;
+  }
   return `bancolombia-stmt:${accountId}:${cycle}:${authCode}`;
 }
 
@@ -899,7 +935,7 @@ async function insertMissingRowInTx(
   txDb: Parameters<Parameters<DB["transaction"]>[0]>[0],
   { opts, account, row, statementImportId }: InsertMissingArgs,
 ): Promise<number | null> {
-  const external = externalIdFor(opts.accountId, opts.cycle, row.authorizationNumber!);
+  const external = externalIdFor(opts.accountId, opts.cycle, row.authorizationNumber!, row);
   const result = await txDb
     .insert(transactions)
     .values({

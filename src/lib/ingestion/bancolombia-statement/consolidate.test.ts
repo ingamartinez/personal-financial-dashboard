@@ -382,3 +382,105 @@ describe("consolidateCycleFromStatement — integration against findash_test", (
     ).rejects.toThrow(/cycle must be YYYY-MM/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Refinanciación pairs — auth=000000 externalId collision regression (#556)
+// ---------------------------------------------------------------------------
+// AMPLIACION DE PLAZO + ABONO AMPLIACION share authorizationNumber="000000".
+// Before the fix, externalIdFor generated the same key for both rows causing
+// the second onConflictDoNothing to silently discard it. Both must land.
+describe("consolidateCycleFromStatement — refinanciación pair (auth=000000)", () => {
+  const REFINANCIACION_CYCLE = "2026-05";
+  const TAG2 = "STMT_REFIN_TEST";
+  let userId2!: number;
+  let accountId2!: number;
+
+  beforeAll(async () => {
+    userId2 = await createUser(`${TAG2.toLowerCase()}.${Date.now()}@test.local`);
+    accountId2 = await createTCAccount(userId2);
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userId2);
+  });
+
+  it("inserts BOTH refinanciación rows despite sharing auth=000000", async () => {
+    const AMOUNT = BigInt(409952337);
+    const parsed = buildParsed(
+      [
+        // ABONO: credita el viejo saldo (extracto sign = negative)
+        row({
+          authorizationNumber: "000000",
+          merchant: "ABONO AMPLIACION DE PLA",
+          occurredAt: utcDate(2026, 3, 24),
+          amountCents: -AMOUNT,
+          installments: null,
+          rateEmX10k: null,
+        }),
+        // AMPLIACION: carga el nuevo plazo (extracto sign = positive)
+        row({
+          authorizationNumber: "000000",
+          merchant: "AMPLIACION DE PLAZO",
+          occurredAt: utcDate(2026, 3, 24),
+          amountCents: AMOUNT,
+          installments: { paid: 1, total: 60 },
+          rateEmX10k: 19110,
+        }),
+      ],
+      {
+        period: {
+          startDate: utcDate(2026, 5, 1),
+          endDate: utcDate(2026, 5, 31),
+          dueDate: utcDate(2026, 6, 16),
+        },
+      },
+    );
+
+    const report = await consolidateCycleFromStatement({
+      userId: userId2,
+      accountId: accountId2,
+      cycle: REFINANCIACION_CYCLE,
+      parsed,
+      fileHash: "refin".repeat(12).slice(0, 64),
+      dryRun: false,
+    });
+
+    expect(report.status).toBe("consolidated");
+    // Both rows must have been inserted — not 1.
+    expect(report.insertedTxIds).toHaveLength(2);
+
+    // Fetch only the two insertedTxIds from the report (not all user txs which
+    // may include a synthetic intereses row inserted by applyInteresesCausadosForCycle).
+    const [firstTx, secondTx] = await Promise.all(
+      report.insertedTxIds.map((id) =>
+        db
+          .select()
+          .from(transactions)
+          .where(eq(transactions.id, id))
+          .then((rows) => rows[0]),
+      ),
+    );
+    const insertedTxs = [firstTx, secondTx].filter(Boolean);
+    expect(insertedTxs).toHaveLength(2);
+
+    const merchants = insertedTxs.map((t) => t.merchant).sort();
+    expect(merchants).toEqual(["ABONO AMPLIACION DE PLA", "AMPLIACION DE PLAZO"].sort());
+
+    // AMPLIACION DE PLAZO: extracto +4M → ledger −4M (expense)
+    const ampliacion = insertedTxs.find((t) => t.merchant === "AMPLIACION DE PLAZO");
+    expect(ampliacion).toBeDefined();
+    expect(ampliacion!.amountCents).toBe(-AMOUNT);
+    expect(ampliacion!.installmentsTotal).toBe(60);
+    expect(ampliacion!.installmentRateEmX10k).toBe(19110);
+
+    // ABONO AMPLIACION: extracto −4M → ledger +4M (credit)
+    const abono = insertedTxs.find((t) => t.merchant === "ABONO AMPLIACION DE PLA");
+    expect(abono).toBeDefined();
+    expect(abono!.amountCents).toBe(AMOUNT);
+
+    // Both externalIds must be distinct (the whole point of the fix).
+    expect(ampliacion!.externalId).not.toBe(abono!.externalId);
+    expect(ampliacion!.externalId).toContain("000000");
+    expect(abono!.externalId).toContain("000000");
+  });
+});
