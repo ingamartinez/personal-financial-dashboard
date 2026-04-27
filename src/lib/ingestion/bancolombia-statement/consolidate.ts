@@ -26,6 +26,7 @@ const ADJUSTMENTS_CATEGORY_SLUG = "adjustments";
 import {
   isBankInterestRow,
   matchStatementAgainstLedger,
+  merchantSimilarity,
   statementAmountToLedger,
   type MatchResult,
   type TxRowForMatch,
@@ -55,6 +56,10 @@ export type MatchStats = {
   insertedMissing: number;
   skippedMissingBefore: number;
   unmatchedInLedger: number;
+  // #555 — how many COP-twin txs were reassigned to this (USD) account
+  // because the USD statement matched them via merchantSimilarity + date window.
+  // Zero on accounts without a physicalCardId sibling.
+  crossTwinReassigned: number;
 };
 
 // #432 — projection of how the account's saldo disponible will change when
@@ -280,9 +285,13 @@ async function loadAccount(
   database: DB,
   userId: number,
   accountId: number,
-): Promise<{ id: number; currency: "COP" | "USD" }> {
+): Promise<{ id: number; currency: "COP" | "USD"; physicalCardId: string | null }> {
   const [row] = await database
-    .select({ id: accounts.id, currency: accounts.currency })
+    .select({
+      id: accounts.id,
+      currency: accounts.currency,
+      physicalCardId: accounts.physicalCardId,
+    })
     .from(accounts)
     .where(
       and(eq(accounts.userId, userId), eq(accounts.id, accountId), notDeleted(accounts.deletedAt)),
@@ -294,6 +303,72 @@ async function loadAccount(
     );
   }
   return row;
+}
+
+// #555 — if the account being consolidated has a physicalCardId, find the
+// sibling account (same physicalCardId, same user, different currency, not
+// soft-deleted). Returns null when no sibling exists (single-currency TC or no
+// physicalCardId). Used by the cross-twin reconciliation pass.
+async function loadSiblingTwinAccount(
+  database: DB,
+  userId: number,
+  physicalCardId: string,
+  excludeAccountId: number,
+): Promise<{ id: number; currency: "COP" | "USD" } | null> {
+  const [row] = await database
+    .select({ id: accounts.id, currency: accounts.currency })
+    .from(accounts)
+    .where(
+      and(
+        eq(accounts.userId, userId),
+        eq(accounts.physicalCardId, physicalCardId),
+        sql`${accounts.id} != ${excludeAccountId}`,
+        notDeleted(accounts.deletedAt),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+// #555 — shape of sibling twin txs fetched for cross-twin candidate matching.
+// We only load txs with sources that a gmail/sms parser would have created —
+// never csv_reconcile (those are already statement-sourced, no need to move them).
+export type SiblingTxForCrossTwin = {
+  id: number;
+  occurredAt: Date;
+  amountCents: bigint;
+  currency: "COP" | "USD";
+  merchant: string | null;
+  descriptionRaw: string;
+};
+
+async function loadSiblingTxsForCrossTwin(
+  database: DB,
+  userId: number,
+  siblingAccountId: number,
+  fromDate: Date,
+  toDate: Date,
+): Promise<SiblingTxForCrossTwin[]> {
+  return database
+    .select({
+      id: transactions.id,
+      occurredAt: transactions.occurredAt,
+      amountCents: transactions.amountCents,
+      currency: transactions.currency,
+      merchant: transactions.merchant,
+      descriptionRaw: transactions.descriptionRaw,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.accountId, siblingAccountId),
+        gte(transactions.occurredAt, fromDate),
+        lte(transactions.occurredAt, toDate),
+        notDeleted(transactions.deletedAt),
+        sql`${transactions.source} IN ('gmail_bancolombia', 'sms')`,
+      ),
+    );
 }
 
 // #432 — inputs for BalanceProjection. Split out so tests can unit-feed the
@@ -646,12 +721,18 @@ async function loadExistingTxs(
   return rows;
 }
 
-function buildMatchStats(match: MatchResult, insertedBeforePeriodCount = 0): MatchStats {
+function buildMatchStats(
+  match: MatchResult,
+  insertedBeforePeriodCount = 0,
+  crossTwinReassigned = 0,
+): MatchStats {
   const matchedWillChange = match.matched.filter((m) => m.willChange).length;
   // `insertedMissing` counts during-period inserts + before-period installment
   // inserts (added in #557) so the UI "Nuevas" stat reflects everything landed.
+  // Cross-twin reassigned rows are NOT counted here — they are moves, not inserts.
   const insertedMissing =
-    match.missingInLedger.filter((r) => r.kind === "during-period").length +
+    match.missingInLedger.filter((r) => r.kind === "during-period").length -
+    crossTwinReassigned +
     insertedBeforePeriodCount;
   // `skippedMissingBefore` = before-period rows that did NOT qualify for insert
   // (1-cuota, missing rate, credit/abono, or no authCode).
@@ -664,6 +745,7 @@ function buildMatchStats(match: MatchResult, insertedBeforePeriodCount = 0): Mat
     insertedMissing,
     skippedMissingBefore,
     unmatchedInLedger: match.unmatchedInLedger.length,
+    crossTwinReassigned,
   };
 }
 
@@ -765,10 +847,28 @@ export async function consolidateCycleFromStatement(
   }
 
   const earliest = minRowDate(opts.parsed);
-  const fromDate = earliest ? addDays(earliest, -2) : addDays(opts.parsed.period.startDate, -2);
-  const toDate = addDays(opts.parsed.period.endDate, 2);
+  // #555: cross-twin window is ±3 Bogota days — wider than the same-account
+  // window (±1 day) because the email is ingested in real-time with a slight
+  // timezone skew vs. the statement's calendar date. The same fromDate/toDate
+  // expansion is re-used for both the same-account and cross-twin tx loads.
+  const CROSS_TWIN_DAYS = 3;
+  const fromDate = earliest
+    ? addDays(earliest, -CROSS_TWIN_DAYS)
+    : addDays(opts.parsed.period.startDate, -CROSS_TWIN_DAYS);
+  const toDate = addDays(opts.parsed.period.endDate, CROSS_TWIN_DAYS);
   const txs = await loadExistingTxs(database, opts.userId, opts.accountId, fromDate, toDate);
   const match = matchStatementAgainstLedger(opts.parsed, txs);
+
+  // #555 — load sibling twin account + its ledger txs for cross-twin pass.
+  // Both are null when the account has no physicalCardId (single-currency TC).
+  const siblingAccount =
+    account.physicalCardId !== null
+      ? await loadSiblingTwinAccount(database, opts.userId, account.physicalCardId, opts.accountId)
+      : null;
+  const siblingTxs: SiblingTxForCrossTwin[] =
+    siblingAccount !== null
+      ? await loadSiblingTxsForCrossTwin(database, opts.userId, siblingAccount.id, fromDate, toDate)
+      : [];
 
   // #432 — snapshot saldo + plugs BEFORE any mutation so the projection
   // reflects the pre-commit state in both dry-run and commit paths.
@@ -814,106 +914,275 @@ export async function consolidateCycleFromStatement(
   // outside this tx avoids the drizzle DB-vs-Transaction type mismatch and
   // makes partial-failure semantics sane (ledger fix commits even if the
   // intereses job fails; user can retry).
-  const { imp, matchedIdsToUpdate, insertedTxIds, insertedBeforePeriodCount } =
-    await database.transaction(async (txDb) => {
-      const [imp] = await txDb
-        .insert(statementImports)
-        .values({
-          userId: opts.userId,
-          accountId: opts.accountId,
-          fileHash: opts.fileHash,
-          periodStart: toIsoDate(opts.parsed.period.startDate),
-          periodEnd: toIsoDate(opts.parsed.period.endDate),
-          txnCount: 0,
-          kind: "extracto_detallado",
-          cycle: opts.cycle,
-          report: null,
-        })
-        .returning({ id: statementImports.id });
+  const {
+    imp,
+    matchedIdsToUpdate,
+    insertedTxIds,
+    insertedBeforePeriodCount,
+    crossTwinReassignedIds,
+  } = await database.transaction(async (txDb) => {
+    const [imp] = await txDb
+      .insert(statementImports)
+      .values({
+        userId: opts.userId,
+        accountId: opts.accountId,
+        fileHash: opts.fileHash,
+        periodStart: toIsoDate(opts.parsed.period.startDate),
+        periodEnd: toIsoDate(opts.parsed.period.endDate),
+        txnCount: 0,
+        kind: "extracto_detallado",
+        cycle: opts.cycle,
+        report: null,
+      })
+      .returning({ id: statementImports.id });
 
-      const matchedIdsToUpdate: number[] = [];
-      for (const m of match.matched) {
-        if (!m.willChange) continue;
+    const matchedIdsToUpdate: number[] = [];
+    for (const m of match.matched) {
+      if (!m.willChange) continue;
+      await txDb
+        .update(transactions)
+        .set({
+          installmentsTotal: m.diff.installmentsTotalAfter,
+          ...(m.diff.rateEmX10kAfter !== null && {
+            installmentRateEmX10k: m.diff.rateEmX10kAfter,
+          }),
+          reconciliationStatus: "matched",
+          reconciledAt: new Date(),
+          statementImportId: imp.id,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(transactions.id, m.txId), eq(transactions.userId, opts.userId)));
+      matchedIdsToUpdate.push(m.txId);
+    }
+
+    // #555 — cross-twin reconciliation pass.
+    // For each during-period row that is missing from this account's ledger,
+    // look in the sibling twin (COP) account for a gmail_bancolombia/sms tx
+    // that matches on merchant similarity + date proximity. When found, move
+    // the tx to this (USD) account with the statement amount/currency, marking
+    // source_mismatch so the divergence is auditable.
+    //
+    // This runs AFTER the same-account match loop so that txs already matched
+    // within the same account are never considered for cross-twin.
+    //
+    // Security: every query in this block is scoped by opts.userId — the
+    // sibling query (loadSiblingTwinAccount) also filters by userId, so a
+    // different user's physicalCardId would never be reachable.
+    const crossTwinReassignedIds: number[] = [];
+    const crossTwinReassignedRowIndices = new Set<number>();
+    const CROSS_TWIN_SIMILARITY_THRESHOLD = 0.3;
+    const CROSS_TWIN_DATE_TOLERANCE_DAYS = 3;
+
+    if (siblingAccount !== null && siblingTxs.length > 0) {
+      // Build a mutable pool of sibling candidates so each tx is picked at
+      // most once (prevents double-reassignment if two statement rows happen
+      // to match the same sibling tx).
+      const siblingPool = new Map<number, SiblingTxForCrossTwin>(siblingTxs.map((t) => [t.id, t]));
+
+      for (let rowIdx = 0; rowIdx < match.missingInLedger.length; rowIdx++) {
+        const row = match.missingInLedger[rowIdx];
+        if (row.kind !== "during-period") continue;
+        if (isBankInterestRow(row)) continue;
+        if (row.authorizationNumber === null) continue;
+
+        // The statement row uses extracto sign (compra = positive). We want
+        // to find a sibling tx that represents the same expenditure regardless
+        // of the amount — the COP tx and the USD statement row will have
+        // completely different magnitudes, so we do NOT filter by amount.
+        // We rely solely on merchant similarity + date proximity.
+        const candidates = Array.from(siblingPool.values()).filter((sibling) => {
+          const dateDelta = Math.abs(
+            Math.floor(
+              (sibling.occurredAt.getTime() - 5 * 60 * 60 * 1000) / (24 * 60 * 60 * 1000),
+            ) - Math.floor((row.occurredAt.getTime() - 5 * 60 * 60 * 1000) / (24 * 60 * 60 * 1000)),
+          );
+          if (dateDelta > CROSS_TWIN_DATE_TOLERANCE_DAYS) return false;
+          const label = sibling.merchant ?? sibling.descriptionRaw;
+          return merchantSimilarity(row.merchant, label) > CROSS_TWIN_SIMILARITY_THRESHOLD;
+        });
+
+        if (candidates.length === 0) continue;
+
+        // Among candidates, pick by: smallest date delta → highest merchant
+        // similarity → smallest tx id (same tiebreak as pickBestCandidate in
+        // match.ts, adapted for SiblingTxForCrossTwin shape).
+        const best = candidates
+          .map((sibling) => {
+            const label = sibling.merchant ?? sibling.descriptionRaw;
+            return {
+              sibling,
+              dateDelta: Math.abs(
+                Math.floor(
+                  (sibling.occurredAt.getTime() - 5 * 60 * 60 * 1000) / (24 * 60 * 60 * 1000),
+                ) -
+                  Math.floor(
+                    (row.occurredAt.getTime() - 5 * 60 * 60 * 1000) / (24 * 60 * 60 * 1000),
+                  ),
+              ),
+              similarity: merchantSimilarity(row.merchant, label),
+            };
+          })
+          .sort((a, b) => {
+            if (a.dateDelta !== b.dateDelta) return a.dateDelta - b.dateDelta;
+            if (a.similarity !== b.similarity) return b.similarity - a.similarity;
+            return a.sibling.id - b.sibling.id;
+          })[0].sibling;
+
+        siblingPool.delete(best.id);
+
+        const originalAmountCents = best.amountCents;
+        const originalCurrency = best.currency;
+        const originalAccountId = siblingAccount.id;
+        const newAmountCents = statementAmountToLedger(row.amountCents);
+        const impliedTrm =
+          row.amountCents > BigInt(0) && newAmountCents !== BigInt(0)
+            ? (
+                Number(
+                  originalAmountCents < BigInt(0) ? -originalAmountCents : originalAmountCents,
+                ) / Number(newAmountCents < BigInt(0) ? -newAmountCents : newAmountCents)
+              ).toFixed(2)
+            : null;
+
         await txDb
           .update(transactions)
           .set({
-            installmentsTotal: m.diff.installmentsTotalAfter,
-            ...(m.diff.rateEmX10kAfter !== null && {
-              installmentRateEmX10k: m.diff.rateEmX10kAfter,
-            }),
+            accountId: opts.accountId,
+            currency: account.currency,
+            amountCents: newAmountCents,
             reconciliationStatus: "matched",
             reconciledAt: new Date(),
             statementImportId: imp.id,
+            sourceMismatch: true,
+            sourceMismatchDetails: {
+              fromSource: "gmail_bancolombia",
+              toSource: "csv_reconcile",
+              diffs: [
+                {
+                  field: "accountId",
+                  fromValue: String(originalAccountId),
+                  toValue: String(opts.accountId),
+                },
+                {
+                  field: "amountCents",
+                  fromValue: originalAmountCents.toString(),
+                  toValue: newAmountCents.toString(),
+                },
+                {
+                  field: "currency",
+                  fromValue: originalCurrency,
+                  toValue: account.currency,
+                },
+                {
+                  field: "impliedTrm",
+                  fromValue: null,
+                  toValue: impliedTrm,
+                },
+              ],
+            },
             updatedAt: new Date(),
           })
-          .where(and(eq(transactions.id, m.txId), eq(transactions.userId, opts.userId)));
-        matchedIdsToUpdate.push(m.txId);
-      }
+          // Tenant-safety: must match BOTH id AND userId — never rely on id alone.
+          .where(and(eq(transactions.id, best.id), eq(transactions.userId, opts.userId)));
 
-      const insertedTxIds: number[] = [];
-      let insertedBeforePeriodCount = 0;
-      for (const row of match.missingInLedger) {
-        if (row.kind === "before-period") {
-          // #557: insert missing before-period multi-cuota purchases so the
-          // intereses-causados job can price them in the current cycle.
-          // Non-qualifying rows (credits, 1-cuota, missing rate, no authCode)
-          // are skipped silently — they are either not installment purchases or
-          // already have no interest potential.
-          if (!isInsertableBeforePeriodRow(row)) continue;
-          const inserted = await insertMissingBeforePeriodRowInTx(txDb, {
-            opts,
-            account,
-            row,
-            statementImportId: imp.id,
-          });
-          if (inserted !== null) {
-            insertedTxIds.push(inserted);
-            insertedBeforePeriodCount += 1;
-            log.info(
-              {
-                accountId: opts.accountId,
-                cycle: opts.cycle,
-                merchant: row.merchant,
-                installmentsTotal: row.installments?.total,
-                rateEmX10k: row.rateEmX10k,
-                txId: inserted,
-                event: "before_period_installment_inserted",
-              },
-              "consolidate: inserted missing before-period installment purchase",
-            );
-          }
-          continue;
-        }
-        // during-period
-        if (isBankInterestRow(row)) continue;
-        if (row.authorizationNumber === null) {
-          log.warn(
-            {
-              accountId: opts.accountId,
-              cycle: opts.cycle,
-              merchant: row.merchant,
-              event: "missing_auth_skip",
-            },
-            "consolidate: skipping missing row without authorizationNumber",
-          );
-          continue;
-        }
-        const inserted = await insertMissingRowInTx(txDb, {
+        crossTwinReassignedIds.push(best.id);
+        crossTwinReassignedRowIndices.add(rowIdx);
+
+        log.info(
+          {
+            userId: opts.userId,
+            accountId: opts.accountId,
+            cycle: opts.cycle,
+            siblingAccountId: originalAccountId,
+            txId: best.id,
+            merchant: row.merchant,
+            originalAmountCents: originalAmountCents.toString(),
+            newAmountCents: newAmountCents.toString(),
+            originalCurrency,
+            newCurrency: account.currency,
+            impliedTrm,
+            event: "cross_twin_reassigned",
+          },
+          "consolidate: cross-twin reassignment — moved tx from COP sibling to USD account",
+        );
+      }
+    }
+
+    const insertedTxIds: number[] = [];
+    let insertedBeforePeriodCount = 0;
+    for (let rowIdx = 0; rowIdx < match.missingInLedger.length; rowIdx++) {
+      const row = match.missingInLedger[rowIdx];
+      // #555 — skip rows already handled by the cross-twin pass above.
+      if (crossTwinReassignedRowIndices.has(rowIdx)) continue;
+
+      if (row.kind === "before-period") {
+        // #557: insert missing before-period multi-cuota purchases so the
+        // intereses-causados job can price them in the current cycle.
+        // Non-qualifying rows (credits, 1-cuota, missing rate, no authCode)
+        // are skipped silently — they are either not installment purchases or
+        // already have no interest potential.
+        if (!isInsertableBeforePeriodRow(row)) continue;
+        const inserted = await insertMissingBeforePeriodRowInTx(txDb, {
           opts,
           account,
           row,
           statementImportId: imp.id,
         });
-        if (inserted !== null) insertedTxIds.push(inserted);
+        if (inserted !== null) {
+          insertedTxIds.push(inserted);
+          insertedBeforePeriodCount += 1;
+          log.info(
+            {
+              accountId: opts.accountId,
+              cycle: opts.cycle,
+              merchant: row.merchant,
+              installmentsTotal: row.installments?.total,
+              rateEmX10k: row.rateEmX10k,
+              txId: inserted,
+              event: "before_period_installment_inserted",
+            },
+            "consolidate: inserted missing before-period installment purchase",
+          );
+        }
+        continue;
       }
+      // during-period
+      if (isBankInterestRow(row)) continue;
+      if (row.authorizationNumber === null) {
+        log.warn(
+          {
+            accountId: opts.accountId,
+            cycle: opts.cycle,
+            merchant: row.merchant,
+            event: "missing_auth_skip",
+          },
+          "consolidate: skipping missing row without authorizationNumber",
+        );
+        continue;
+      }
+      const inserted = await insertMissingRowInTx(txDb, {
+        opts,
+        account,
+        row,
+        statementImportId: imp.id,
+      });
+      if (inserted !== null) insertedTxIds.push(inserted);
+    }
 
-      await txDb
-        .update(statementImports)
-        .set({ txnCount: matchedIdsToUpdate.length + insertedTxIds.length })
-        .where(eq(statementImports.id, imp.id));
+    await txDb
+      .update(statementImports)
+      .set({
+        txnCount: matchedIdsToUpdate.length + insertedTxIds.length + crossTwinReassignedIds.length,
+      })
+      .where(eq(statementImports.id, imp.id));
 
-      return { imp, matchedIdsToUpdate, insertedTxIds, insertedBeforePeriodCount };
-    });
+    return {
+      imp,
+      matchedIdsToUpdate,
+      insertedTxIds,
+      insertedBeforePeriodCount,
+      crossTwinReassignedIds,
+    };
+  });
 
   const interesesResult = await applyInteresesCausadosForCycle({
     userId: opts.userId,
@@ -976,7 +1245,7 @@ export async function consolidateCycleFromStatement(
     cycle: opts.cycle,
     dryRun: false,
     status: "consolidated",
-    matchStats: buildMatchStats(match, insertedBeforePeriodCount),
+    matchStats: buildMatchStats(match, insertedBeforePeriodCount, crossTwinReassignedIds.length),
     matchedTxIds: matchedIdsToUpdate,
     insertedTxIds,
     matchedDiffs: serializeMatchedDiffs(match),

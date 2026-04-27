@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts, statementImports, transactions, users } from "@/lib/db/schema";
+import { accounts, physicalCards, statementImports, transactions, users } from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 
 import { consolidateCycleFromStatement } from "./consolidate";
@@ -748,5 +748,552 @@ describe("consolidateCycleFromStatement — refinanciación pair (auth=000000)",
     expect(ampliacion!.externalId).not.toBe(abono!.externalId);
     expect(ampliacion!.externalId).toContain("000000");
     expect(abono!.externalId).toContain("000000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-twin reconciliation (#555)
+// ---------------------------------------------------------------------------
+// International TC purchases arrive via gmail_bancolombia as COP amounts on
+// the COP twin. When the USD statement is consolidated, the matching COP tx
+// must be re-assigned to the USD account with the real USD amount.
+describe("consolidateCycleFromStatement — cross-twin reconciliation (#555)", () => {
+  const CROSS_TWIN_CYCLE = "2026-03";
+  const TAG_CT = "STMT_CROSSTWIN_TEST";
+  let userIdCT!: number;
+  let copAccountId!: number;
+  let usdAccountId!: number;
+  let physicalCardUUID!: string;
+
+  beforeAll(async () => {
+    userIdCT = await createUser(`${TAG_CT.toLowerCase()}.${Date.now()}@test.local`);
+
+    // Insert a physical_card so both accounts can be linked.
+    physicalCardUUID = crypto.randomUUID();
+    await db.insert(physicalCards).values({
+      id: physicalCardUUID,
+      userId: userIdCT,
+      institution: "Bancolombia",
+      network: "mastercard",
+      last4: "7291",
+      creditLimitCents: BigInt(15_000_000_00),
+    });
+
+    // COP twin account
+    const [copRow] = await db
+      .insert(accounts)
+      .values({
+        userId: userIdCT,
+        name: `${TAG_CT} MC COP`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "COP",
+        physicalCardId: physicalCardUUID,
+        metadata: { last4s: ["7291"], cutoffDay: 15 },
+      })
+      .returning({ id: accounts.id });
+    copAccountId = copRow.id;
+
+    // USD twin account
+    const [usdRow] = await db
+      .insert(accounts)
+      .values({
+        userId: userIdCT,
+        name: `${TAG_CT} MC USD`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "USD",
+        physicalCardId: physicalCardUUID,
+        metadata: { last4s: ["7291"], cutoffDay: 15 },
+      })
+      .returning({ id: accounts.id });
+    usdAccountId = usdRow.id;
+  });
+
+  afterAll(async () => {
+    await db.delete(transactions).where(eq(transactions.userId, userIdCT));
+    await db.delete(statementImports).where(eq(statementImports.userId, userIdCT));
+    await db.delete(accounts).where(eq(accounts.userId, userIdCT));
+    await db.delete(physicalCards).where(eq(physicalCards.id, physicalCardUUID));
+    await db.delete(users).where(eq(users.id, userIdCT));
+  });
+
+  it("reassigns a COP gmail tx to the USD account when the USD statement matches it", async () => {
+    // Seed a gmail_bancolombia tx on the COP account (how AIRBNB lands today).
+    const [airbnbRow] = await db
+      .insert(transactions)
+      .values({
+        userId: userIdCT,
+        accountId: copAccountId,
+        occurredAt: utcDate(2026, 3, 10),
+        amountCents: BigInt(-181479701), // -$1,814,797.01 COP (ledger sign)
+        currency: "COP",
+        descriptionRaw: "AIRBNB * HMA245HENE",
+        merchant: "AIRBNB * HMA245HENE",
+        source: "gmail_bancolombia",
+        channel: "bank",
+      })
+      .returning({ id: transactions.id });
+    const airbnbTxId = airbnbRow.id;
+
+    // USD statement has the real charge: $484.55 USD.
+    const usdStatement = buildParsed(
+      [
+        row({
+          authorizationNumber: "123456",
+          merchant: "AIRBNB",
+          occurredAt: utcDate(2026, 3, 10),
+          amountCents: BigInt(48455), // extracto sign: 484.55 USD
+        }),
+      ],
+      {
+        account: { last4: "7291", currency: "USD" },
+        period: {
+          startDate: utcDate(2026, 2, 28),
+          endDate: utcDate(2026, 3, 31),
+          dueDate: utcDate(2026, 4, 16),
+        },
+      },
+    );
+
+    const report = await consolidateCycleFromStatement({
+      userId: userIdCT,
+      accountId: usdAccountId,
+      cycle: CROSS_TWIN_CYCLE,
+      parsed: usdStatement,
+      fileHash: "ct-airbnb-01".repeat(5).slice(0, 64),
+      dryRun: false,
+    });
+
+    expect(report.status).toBe("consolidated");
+    expect(report.matchStats.crossTwinReassigned).toBe(1);
+    // Cross-twin reassigned rows are not counted as inserts.
+    expect(report.matchStats.insertedMissing).toBe(0);
+
+    // The AIRBNB tx must now live on the USD account.
+    const [updatedAirbnb] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, airbnbTxId));
+    expect(updatedAirbnb.accountId).toBe(usdAccountId);
+    expect(updatedAirbnb.currency).toBe("USD");
+    expect(updatedAirbnb.amountCents).toBe(BigInt(-48455)); // ledger-sign
+    expect(updatedAirbnb.reconciliationStatus).toBe("matched");
+    expect(updatedAirbnb.statementImportId).toBe(report.statementImportId);
+    expect(updatedAirbnb.sourceMismatch).toBe(true);
+
+    // sourceMismatchDetails must record the divergence.
+    const diffs = updatedAirbnb.sourceMismatchDetails?.diffs ?? [];
+    const accountDiff = diffs.find((d) => d.field === "accountId");
+    const currencyDiff = diffs.find((d) => d.field === "currency");
+    const amountDiff = diffs.find((d) => d.field === "amountCents");
+    expect(accountDiff?.fromValue).toBe(String(copAccountId));
+    expect(accountDiff?.toValue).toBe(String(usdAccountId));
+    expect(currencyDiff?.fromValue).toBe("COP");
+    expect(currencyDiff?.toValue).toBe("USD");
+    expect(amountDiff?.fromValue).toBe(BigInt(-181479701).toString());
+    expect(amountDiff?.toValue).toBe(BigInt(-48455).toString());
+  });
+
+  it("skips the cross-twin pass when account has no physicalCardId (single-currency TC)", async () => {
+    const userIdSingle = await createUser(
+      `${TAG_CT.toLowerCase()}.single.${Date.now()}@test.local`,
+    );
+    const accountIdSingle = await createTCAccount(userIdSingle);
+
+    try {
+      // Seed a gmail tx on the same account (no sibling to look in).
+      await db.insert(transactions).values({
+        userId: userIdSingle,
+        accountId: accountIdSingle,
+        occurredAt: utcDate(2026, 3, 10),
+        amountCents: BigInt(-181479701),
+        currency: "COP",
+        descriptionRaw: "AIRBNB * HMA245HENE",
+        merchant: "AIRBNB * HMA245HENE",
+        source: "gmail_bancolombia",
+        channel: "bank",
+      });
+
+      // A COP statement for the single-currency account — cross-twin must not error.
+      const parsed = buildParsed([
+        row({
+          authorizationNumber: "SINGLETEST",
+          merchant: "TIENDA LOCAL",
+          occurredAt: utcDate(2026, 3, 20),
+          amountCents: BigInt(5000000),
+        }),
+      ]);
+
+      const report = await consolidateCycleFromStatement({
+        userId: userIdSingle,
+        accountId: accountIdSingle,
+        cycle: CROSS_TWIN_CYCLE,
+        parsed,
+        fileHash: "ct-single-01".repeat(5).slice(0, 64),
+        dryRun: false,
+      });
+
+      expect(report.status).toBe("consolidated");
+      expect(report.matchStats.crossTwinReassigned).toBe(0);
+      // The AIRBNB tx stays on the COP account (no sibling).
+      const [airbnbTx] = await db
+        .select()
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, userIdSingle),
+            eq(transactions.accountId, accountIdSingle),
+            eq(transactions.source, "gmail_bancolombia"),
+          ),
+        );
+      expect(airbnbTx.accountId).toBe(accountIdSingle);
+    } finally {
+      await cleanupUser(userIdSingle);
+    }
+  });
+
+  it("does NOT reassign when merchantSimilarity is at or below the threshold (no false positives)", async () => {
+    const userIdLow = await createUser(`${TAG_CT.toLowerCase()}.low.${Date.now()}@test.local`);
+
+    const physicalCardLowUUID = crypto.randomUUID();
+    await db.insert(physicalCards).values({
+      id: physicalCardLowUUID,
+      userId: userIdLow,
+      institution: "Bancolombia",
+      creditLimitCents: BigInt(10_000_000_00),
+    });
+
+    const [copLow] = await db
+      .insert(accounts)
+      .values({
+        userId: userIdLow,
+        name: `${TAG_CT} Low COP`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "COP",
+        physicalCardId: physicalCardLowUUID,
+        metadata: {},
+      })
+      .returning({ id: accounts.id });
+
+    const [usdLow] = await db
+      .insert(accounts)
+      .values({
+        userId: userIdLow,
+        name: `${TAG_CT} Low USD`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "USD",
+        physicalCardId: physicalCardLowUUID,
+        metadata: {},
+      })
+      .returning({ id: accounts.id });
+
+    try {
+      // COP tx: completely different merchant name — similarity will be 0.
+      const [genericTxRow] = await db
+        .insert(transactions)
+        .values({
+          userId: userIdLow,
+          accountId: copLow.id,
+          occurredAt: utcDate(2026, 3, 10),
+          amountCents: BigInt(-500000),
+          currency: "COP",
+          descriptionRaw: "SUPERMERCADO XYZ",
+          merchant: "SUPERMERCADO XYZ",
+          source: "gmail_bancolombia",
+          channel: "bank",
+        })
+        .returning({ id: transactions.id });
+      const genericTxId = genericTxRow.id;
+
+      // USD statement row with a completely different merchant.
+      const usdStatement = buildParsed(
+        [
+          row({
+            authorizationNumber: "LOW001",
+            merchant: "AMAZON WEB SERVICES",
+            occurredAt: utcDate(2026, 3, 10),
+            amountCents: BigInt(9999),
+          }),
+        ],
+        {
+          account: { last4: "7291", currency: "USD" },
+          period: {
+            startDate: utcDate(2026, 2, 28),
+            endDate: utcDate(2026, 3, 31),
+            dueDate: utcDate(2026, 4, 16),
+          },
+        },
+      );
+
+      const report = await consolidateCycleFromStatement({
+        userId: userIdLow,
+        accountId: usdLow.id,
+        cycle: CROSS_TWIN_CYCLE,
+        parsed: usdStatement,
+        fileHash: "ct-low-01".repeat(5).slice(0, 64),
+        dryRun: false,
+      });
+
+      expect(report.matchStats.crossTwinReassigned).toBe(0);
+      // The unmatched USD row must be inserted as a new tx.
+      expect(report.matchStats.insertedMissing).toBe(1);
+
+      // The COP generic tx must remain untouched on the COP account.
+      const [unchanged] = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, genericTxId));
+      expect(unchanged.accountId).toBe(copLow.id);
+      expect(unchanged.currency).toBe("COP");
+    } finally {
+      await db.delete(transactions).where(eq(transactions.userId, userIdLow));
+      await db.delete(statementImports).where(eq(statementImports.userId, userIdLow));
+      await db.delete(accounts).where(eq(accounts.userId, userIdLow));
+      await db.delete(physicalCards).where(eq(physicalCards.id, physicalCardLowUUID));
+      await db.delete(users).where(eq(users.id, userIdLow));
+    }
+  });
+
+  it("pickBestCandidate: with two same-day sibling candidates picks the one with higher merchant similarity", async () => {
+    const userIdPick = await createUser(`${TAG_CT.toLowerCase()}.pick.${Date.now()}@test.local`);
+
+    const physicalCardPickUUID = crypto.randomUUID();
+    await db.insert(physicalCards).values({
+      id: physicalCardPickUUID,
+      userId: userIdPick,
+      institution: "Bancolombia",
+      creditLimitCents: BigInt(10_000_000_00),
+    });
+
+    const [copPick] = await db
+      .insert(accounts)
+      .values({
+        userId: userIdPick,
+        name: `${TAG_CT} Pick COP`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "COP",
+        physicalCardId: physicalCardPickUUID,
+        metadata: {},
+      })
+      .returning({ id: accounts.id });
+
+    const [usdPick] = await db
+      .insert(accounts)
+      .values({
+        userId: userIdPick,
+        name: `${TAG_CT} Pick USD`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "USD",
+        physicalCardId: physicalCardPickUUID,
+        metadata: {},
+      })
+      .returning({ id: accounts.id });
+
+    try {
+      // Two COP candidates on the same day — one matches "AIRBNB" well, the
+      // other is a generic "COMIDA" (low similarity).
+      const [airbnbCopRow] = await db
+        .insert(transactions)
+        .values({
+          userId: userIdPick,
+          accountId: copPick.id,
+          occurredAt: utcDate(2026, 3, 10),
+          amountCents: BigInt(-181479701),
+          currency: "COP",
+          descriptionRaw: "AIRBNB * HMA245HENE",
+          merchant: "AIRBNB * HMA245HENE",
+          source: "gmail_bancolombia",
+          channel: "bank",
+        })
+        .returning({ id: transactions.id });
+
+      const [comidaCopRow] = await db
+        .insert(transactions)
+        .values({
+          userId: userIdPick,
+          accountId: copPick.id,
+          occurredAt: utcDate(2026, 3, 10),
+          amountCents: BigInt(-50000),
+          currency: "COP",
+          descriptionRaw: "COMIDA RAPIDA",
+          merchant: "COMIDA RAPIDA",
+          source: "gmail_bancolombia",
+          channel: "bank",
+        })
+        .returning({ id: transactions.id });
+
+      // USD statement row for AIRBNB.
+      const usdStatement = buildParsed(
+        [
+          row({
+            authorizationNumber: "PICK001",
+            merchant: "AIRBNB",
+            occurredAt: utcDate(2026, 3, 10),
+            amountCents: BigInt(48455),
+          }),
+        ],
+        {
+          account: { last4: "7291", currency: "USD" },
+          period: {
+            startDate: utcDate(2026, 2, 28),
+            endDate: utcDate(2026, 3, 31),
+            dueDate: utcDate(2026, 4, 16),
+          },
+        },
+      );
+
+      const report = await consolidateCycleFromStatement({
+        userId: userIdPick,
+        accountId: usdPick.id,
+        cycle: CROSS_TWIN_CYCLE,
+        parsed: usdStatement,
+        fileHash: "ct-pick-01".repeat(5).slice(0, 64),
+        dryRun: false,
+      });
+
+      expect(report.matchStats.crossTwinReassigned).toBe(1);
+
+      // The AIRBNB tx (higher similarity) must be moved, not the COMIDA tx.
+      const [movedAirbnb] = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, airbnbCopRow.id));
+      expect(movedAirbnb.accountId).toBe(usdPick.id);
+
+      const [untouchedComida] = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, comidaCopRow.id));
+      expect(untouchedComida.accountId).toBe(copPick.id);
+    } finally {
+      await db.delete(transactions).where(eq(transactions.userId, userIdPick));
+      await db.delete(statementImports).where(eq(statementImports.userId, userIdPick));
+      await db.delete(accounts).where(eq(accounts.userId, userIdPick));
+      await db.delete(physicalCards).where(eq(physicalCards.id, physicalCardPickUUID));
+      await db.delete(users).where(eq(users.id, userIdPick));
+    }
+  });
+
+  it("idempotency: running consolidate twice does NOT double-reassign the tx", async () => {
+    const userIdIdem = await createUser(`${TAG_CT.toLowerCase()}.idem2.${Date.now()}@test.local`);
+
+    const physicalCardIdemUUID = crypto.randomUUID();
+    await db.insert(physicalCards).values({
+      id: physicalCardIdemUUID,
+      userId: userIdIdem,
+      institution: "Bancolombia",
+      creditLimitCents: BigInt(10_000_000_00),
+    });
+
+    const [copIdem] = await db
+      .insert(accounts)
+      .values({
+        userId: userIdIdem,
+        name: `${TAG_CT} Idem COP`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "COP",
+        physicalCardId: physicalCardIdemUUID,
+        metadata: {},
+      })
+      .returning({ id: accounts.id });
+
+    const [usdIdem] = await db
+      .insert(accounts)
+      .values({
+        userId: userIdIdem,
+        name: `${TAG_CT} Idem USD`,
+        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
+        type: "credit_card",
+        currency: "USD",
+        physicalCardId: physicalCardIdemUUID,
+        metadata: {},
+      })
+      .returning({ id: accounts.id });
+
+    try {
+      await db.insert(transactions).values({
+        userId: userIdIdem,
+        accountId: copIdem.id,
+        occurredAt: utcDate(2026, 3, 10),
+        amountCents: BigInt(-181479701),
+        currency: "COP",
+        descriptionRaw: "AIRBNB IDEM",
+        merchant: "AIRBNB IDEM",
+        source: "gmail_bancolombia",
+        channel: "bank",
+      });
+
+      const usdStatement = buildParsed(
+        [
+          row({
+            authorizationNumber: "IDEM001",
+            merchant: "AIRBNB IDEM",
+            occurredAt: utcDate(2026, 3, 10),
+            amountCents: BigInt(48455),
+          }),
+        ],
+        {
+          account: { last4: "7291", currency: "USD" },
+          period: {
+            startDate: utcDate(2026, 2, 28),
+            endDate: utcDate(2026, 3, 31),
+            dueDate: utcDate(2026, 4, 16),
+          },
+        },
+      );
+
+      // First run — should reassign.
+      const report1 = await consolidateCycleFromStatement({
+        userId: userIdIdem,
+        accountId: usdIdem.id,
+        cycle: CROSS_TWIN_CYCLE,
+        parsed: usdStatement,
+        fileHash: "ct-idem-01".repeat(5).slice(0, 64),
+        dryRun: false,
+      });
+      expect(report1.status).toBe("consolidated");
+      expect(report1.matchStats.crossTwinReassigned).toBe(1);
+
+      // Second run — already-consolidated short-circuit kicks in.
+      const report2 = await consolidateCycleFromStatement({
+        userId: userIdIdem,
+        accountId: usdIdem.id,
+        cycle: CROSS_TWIN_CYCLE,
+        parsed: usdStatement,
+        fileHash: "ct-idem-01".repeat(5).slice(0, 64),
+        dryRun: false,
+      });
+      expect(report2.status).toBe("already-consolidated");
+
+      // Only 1 tx should exist (no phantom insert on second run).
+      const allTxs = await db
+        .select()
+        .from(transactions)
+        .where(and(eq(transactions.userId, userIdIdem), eq(transactions.accountId, usdIdem.id)));
+      // The reassigned tx + possibly a synthetic intereses tx (but definitely no duplicate).
+      // The intereses synthetic uses categorySlug="intereses-tc"; filter it out.
+      const nonInteresesTxs = allTxs.filter((t) => t.categorySlug !== "intereses-tc");
+      expect(nonInteresesTxs).toHaveLength(1);
+    } finally {
+      await db.delete(transactions).where(eq(transactions.userId, userIdIdem));
+      await db.delete(statementImports).where(eq(statementImports.userId, userIdIdem));
+      await db.delete(accounts).where(eq(accounts.userId, userIdIdem));
+      await db.delete(physicalCards).where(eq(physicalCards.id, physicalCardIdemUUID));
+      await db.delete(users).where(eq(users.id, userIdIdem));
+    }
   });
 });
