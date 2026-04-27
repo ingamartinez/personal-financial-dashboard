@@ -2,7 +2,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, categories, physicalCards, transactions, users } from "@/lib/db/schema";
+import {
+  accountSnapshots,
+  accounts,
+  categories,
+  physicalCards,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { getAvailableCreditCOP, listAccountsDetailed } from "./queries";
 
 // #368: balance is now derived from SUM(transactions.amount_cents). Tests
@@ -337,5 +344,164 @@ describe("listAccountsDetailed: physical card join", () => {
     // assertion above is the important part. Also nuke the PC.
     await db.execute(sql`DELETE FROM accounts WHERE name = ${MARKER + "-crosstenant"}`);
     await db.delete(physicalCards).where(eq(physicalCards.id, pcId));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// derivedBalanceCentsSql — snapshot-anchored balance (#562c)
+//
+// These tests verify the new formula:
+//   WITH snapshot: balance = snapshot.balance_cents + SUM(txs where occurred_at >= snapshot_date)
+//   WITHOUT snapshot: balance = COALESCE(SUM(all non-archived txs), 0)  (original behaviour)
+// ---------------------------------------------------------------------------
+
+describe("derivedBalanceCentsSql: snapshot-anchored balance (#562c)", () => {
+  afterEach(async () => {
+    // accountSnapshots has ON DELETE CASCADE from accounts, so deleting the
+    // MARKER accounts also deletes their snapshots. But we also clean up
+    // any snapshots explicitly before the accounts (in case a test created
+    // a snapshot without an account marker).
+    await db.execute(
+      sql`DELETE FROM account_snapshots
+          WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE ${MARKER + "%"})`,
+    );
+    await cleanup();
+  });
+
+  // Helper: insert an account and return its id.
+  async function seedAccount(name: string): Promise<number> {
+    const [row] = await db
+      .insert(accounts)
+      .values({
+        userId: USER_A,
+        name: `${MARKER}${name}`,
+        institution: "ARQ (DolarApp)",
+        type: "savings",
+        currency: "USD",
+      })
+      .returning({ id: accounts.id });
+    return row.id;
+  }
+
+  // Helper: insert a transaction at a specific timestamp.
+  async function seedTx(accountId: number, amountCents: number, occurredAt: Date): Promise<void> {
+    await db
+      .insert(categories)
+      .values({
+        userId: USER_A,
+        slug: "adjustments",
+        name: "Ajustes de saldo",
+        icon: "wrench",
+        color: "#475569",
+        sortOrder: 1000,
+      })
+      .onConflictDoNothing({ target: [categories.userId, categories.slug] });
+    await db.insert(transactions).values({
+      userId: USER_A,
+      accountId,
+      occurredAt,
+      amountCents: BigInt(amountCents),
+      currency: "USD",
+      descriptionRaw: `__snapshot_test_tx_${amountCents}`,
+      classificationMethod: "manual",
+      source: "balance_adjustment",
+      channel: "manual",
+      isAdjustment: true,
+    });
+  }
+
+  // Helper: insert a snapshot.
+  async function seedSnapshot(
+    accountId: number,
+    snapshotDate: string,
+    balanceCents: number,
+  ): Promise<void> {
+    await db.insert(accountSnapshots).values({
+      userId: USER_A,
+      accountId,
+      snapshotDate,
+      balanceCents: BigInt(balanceCents),
+      metadata: { source: "test" },
+    });
+  }
+
+  it("account WITHOUT snapshot → balance = SUM(all txs) (original behaviour preserved)", async () => {
+    const accId = await seedAccount("-snap-no-snapshot");
+    await seedTx(accId, 10_00, new Date(Date.UTC(2026, 0, 5)));
+    await seedTx(accId, -3_00, new Date(Date.UTC(2026, 0, 20)));
+
+    const rows = await listAccountsDetailed(USER_A);
+    const acc = rows.find((r) => r.name === `${MARKER}-snap-no-snapshot`);
+    expect(acc).toBeDefined();
+    // SUM(10_00 + (-3_00)) = 7_00
+    expect(acc!.balanceCents).toBe(BigInt(7_00));
+  });
+
+  it("account WITH snapshot → balance = snapshot + SUM(txs on or after snapshot_date)", async () => {
+    const accId = await seedAccount("-snap-with-snapshot");
+    const snapDate = "2026-02-01";
+    // snapshot at Feb 1 with balance 50_00
+    await seedSnapshot(accId, snapDate, 50_00);
+    // tx BEFORE snapshot date — should NOT be included in the delta
+    await seedTx(accId, 10_00, new Date(Date.UTC(2026, 0, 15)));
+    // txs ON and AFTER snapshot date — should be included
+    await seedTx(accId, -5_00, new Date(Date.UTC(2026, 1, 1))); // exactly snapshot_date
+    await seedTx(accId, 3_00, new Date(Date.UTC(2026, 1, 15)));
+
+    const rows = await listAccountsDetailed(USER_A);
+    const acc = rows.find((r) => r.name === `${MARKER}-snap-with-snapshot`);
+    expect(acc).toBeDefined();
+    // balance = 50_00 (snapshot) + (-5_00 + 3_00) (delta on/after Feb 1) = 48_00
+    expect(acc!.balanceCents).toBe(BigInt(48_00));
+  });
+
+  it("multiple snapshots → only the LATEST one anchors", async () => {
+    const accId = await seedAccount("-snap-multi-snapshot");
+    // Two snapshots: Jan 1 and Feb 1. Feb 1 is latest.
+    await seedSnapshot(accId, "2026-01-01", 100_00);
+    await seedSnapshot(accId, "2026-02-01", 200_00);
+    // tx between Jan 1 and Feb 1 — should NOT be in delta (before Feb 1 snapshot)
+    await seedTx(accId, 15_00, new Date(Date.UTC(2026, 0, 15)));
+    // tx after Feb 1
+    await seedTx(accId, -20_00, new Date(Date.UTC(2026, 1, 10)));
+
+    const rows = await listAccountsDetailed(USER_A);
+    const acc = rows.find((r) => r.name === `${MARKER}-snap-multi-snapshot`);
+    expect(acc).toBeDefined();
+    // balance = 200_00 (Feb snapshot) + (-20_00) (delta after Feb 1) = 180_00
+    expect(acc!.balanceCents).toBe(BigInt(180_00));
+  });
+
+  it("soft-deleted txs are excluded from the delta even with a snapshot", async () => {
+    const accId = await seedAccount("-snap-soft-delete");
+    await seedSnapshot(accId, "2026-01-01", 100_00);
+    // Insert a tx then archive it (set deleted_at)
+    await seedTx(accId, 50_00, new Date(Date.UTC(2026, 0, 10)));
+    await db.execute(
+      sql`UPDATE transactions SET deleted_at = now()
+          WHERE account_id = ${accId}`,
+    );
+    // Insert a live tx after the snapshot
+    await seedTx(accId, 25_00, new Date(Date.UTC(2026, 0, 20)));
+
+    const rows = await listAccountsDetailed(USER_A);
+    const acc = rows.find((r) => r.name === `${MARKER}-snap-soft-delete`);
+    expect(acc).toBeDefined();
+    // balance = 100_00 (snapshot) + 25_00 (live tx) = 125_00
+    // The archived 50_00 tx is excluded.
+    expect(acc!.balanceCents).toBe(BigInt(125_00));
+  });
+
+  it("account with snapshot but NO txs after snapshot → balance = snapshot value", async () => {
+    const accId = await seedAccount("-snap-no-delta");
+    await seedSnapshot(accId, "2026-03-01", 75_00);
+    // All txs are BEFORE the snapshot date
+    await seedTx(accId, 10_00, new Date(Date.UTC(2026, 1, 15)));
+
+    const rows = await listAccountsDetailed(USER_A);
+    const acc = rows.find((r) => r.name === `${MARKER}-snap-no-delta`);
+    expect(acc).toBeDefined();
+    // balance = 75_00 (snapshot) + 0 (no txs on/after Mar 1) = 75_00
+    expect(acc!.balanceCents).toBe(BigInt(75_00));
   });
 });

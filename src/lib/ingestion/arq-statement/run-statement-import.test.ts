@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts, arqStatementImports, users } from "@/lib/db/schema";
+import { accountSnapshots, accounts, arqStatementImports, users } from "@/lib/db/schema";
 
 import { runStatementImport } from "./run-statement-import";
 import type { ParsedStatementTx } from "./type-handlers";
@@ -34,9 +34,15 @@ let otherUserId: number;
 let otherAccountId: number;
 
 async function cleanup(): Promise<void> {
-  // arq_statement_imports → ON DELETE CASCADE from users, but let's be explicit
+  // arq_statement_imports and account_snapshots → ON DELETE CASCADE from users,
+  // but we're explicit here for predictability.
   await db.delete(arqStatementImports).where(
     sql`${arqStatementImports.userId} IN (
+        SELECT id FROM users WHERE email LIKE ${TAG + "%"}
+      )`,
+  );
+  await db.delete(accountSnapshots).where(
+    sql`${accountSnapshots.userId} IN (
         SELECT id FROM users WHERE email LIKE ${TAG + "%"}
       )`,
   );
@@ -704,5 +710,148 @@ describe("cross-tenant defense", () => {
 
     // User B has their own import — hash is scoped per user
     expect(otherResult.status).toBe("committed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// account_snapshots forward-write (#562c)
+//
+// Verifies that a committed, reconciled import writes an account_snapshots row
+// with balanceCents = declaredStartCents and snapshotDate = periodStart.
+// ---------------------------------------------------------------------------
+
+describe("account_snapshots forward-write on committed import (#562c)", () => {
+  it("writes a snapshot row after a reconciled import", async () => {
+    const snapUserId = await createUser("snap-write");
+    const snapAccountId = await createAccount(snapUserId, "snap-write-acct");
+
+    const result = await runStatementImport(
+      { parsePdf: fakeParsePdf(JAN_REAL, JAN_TXS) },
+      {
+        userId: snapUserId,
+        accountId: snapAccountId,
+        pdfBuffer: Buffer.from("snap-jan"),
+        pdfHash: `${TAG}-snap-hash-jan`,
+      },
+    );
+
+    expect(result.status).toBe("committed");
+
+    const snap = await db.query.accountSnapshots.findFirst({
+      where: and(
+        eq(accountSnapshots.userId, snapUserId),
+        eq(accountSnapshots.accountId, snapAccountId),
+      ),
+    });
+
+    expect(snap).toBeDefined();
+    // JAN_STMT has balanceStartCents = 26296
+    expect(snap!.balanceCents).toBe(BigInt(26296));
+    // periodStart is 2026-01-01
+    expect(snap!.snapshotDate).toBe("2026-01-01");
+    expect((snap!.metadata as { source: string }).source).toBe("arq_statement_import");
+  });
+
+  it("snapshot is not written when reconciliation fails", async () => {
+    const failUserId = await createUser("snap-fail");
+    const failAccountId = await createAccount(failUserId, "snap-fail-acct");
+
+    // Statement that will fail reconciliation (wrong declared end balance)
+    const JAN_BAD = makeStatement({
+      periodStart: new Date(Date.UTC(2026, 0, 1)),
+      periodEnd: new Date(Date.UTC(2026, 0, 31)),
+      balanceStartCents: BigInt(26296),
+      totalCreditsCents: BigInt(206000),
+      totalDebitsCents: BigInt(159401),
+      balanceEndCents: BigInt(99999), // wrong: should be 72895
+    });
+    const JAN_BAD_REAL = stmtWithRealLines(JAN_BAD, BigInt(206000), BigInt(159401));
+
+    const result = await runStatementImport(
+      { parsePdf: fakeParsePdf(JAN_BAD_REAL, JAN_TXS) },
+      {
+        userId: failUserId,
+        accountId: failAccountId,
+        pdfBuffer: Buffer.from("snap-fail-jan"),
+        pdfHash: `${TAG}-snap-fail-hash`,
+      },
+    );
+
+    expect(result.status).toBe("reconcile_failed");
+
+    const snap = await db.query.accountSnapshots.findFirst({
+      where: and(
+        eq(accountSnapshots.userId, failUserId),
+        eq(accountSnapshots.accountId, failAccountId),
+      ),
+    });
+
+    // No snapshot should be written for failed imports
+    expect(snap).toBeUndefined();
+  });
+
+  it("re-import same period with different declared balance upserts the snapshot", async () => {
+    // This scenario: user manually deletes the arq_statement_imports row and
+    // re-uploads with corrected figures. The snapshot should be overwritten.
+    const upsertUserId = await createUser("snap-upsert");
+    const upsertAccountId = await createAccount(upsertUserId, "snap-upsert-acct");
+
+    // First import (Jan) — writes snapshot with balanceCents=26296
+    const firstResult = await runStatementImport(
+      { parsePdf: fakeParsePdf(JAN_REAL, JAN_TXS) },
+      {
+        userId: upsertUserId,
+        accountId: upsertAccountId,
+        pdfBuffer: Buffer.from("upsert-jan-v1"),
+        pdfHash: `${TAG}-snap-upsert-hash-v1`,
+      },
+    );
+    expect(firstResult.status).toBe("committed");
+
+    // Simulate a re-import: delete the arq_statement_imports row (manually, as
+    // the issue specifies), then import a different PDF for the same period with
+    // an amended opening balance.
+    await db
+      .delete(arqStatementImports)
+      .where(
+        and(
+          eq(arqStatementImports.userId, upsertUserId),
+          eq(arqStatementImports.accountId, upsertAccountId),
+        ),
+      );
+
+    // Amended statement: same period, different opening balance (29000)
+    const JAN_AMENDED = makeStatement({
+      periodStart: new Date(Date.UTC(2026, 0, 1)),
+      periodEnd: new Date(Date.UTC(2026, 0, 31)),
+      balanceStartCents: BigInt(29000), // amended
+      totalCreditsCents: BigInt(206000),
+      totalDebitsCents: BigInt(159401),
+      balanceEndCents: BigInt(75599), // 29000 + 206000 - 159401
+    });
+    const JAN_AMENDED_REAL = stmtWithRealLines(JAN_AMENDED, BigInt(206000), BigInt(159401));
+
+    const secondResult = await runStatementImport(
+      { parsePdf: fakeParsePdf(JAN_AMENDED_REAL, JAN_TXS) },
+      {
+        userId: upsertUserId,
+        accountId: upsertAccountId,
+        pdfBuffer: Buffer.from("upsert-jan-v2"),
+        pdfHash: `${TAG}-snap-upsert-hash-v2`,
+      },
+    );
+    expect(secondResult.status).toBe("committed");
+
+    const snap = await db.query.accountSnapshots.findFirst({
+      where: and(
+        eq(accountSnapshots.userId, upsertUserId),
+        eq(accountSnapshots.accountId, upsertAccountId),
+      ),
+    });
+
+    expect(snap).toBeDefined();
+    // Should be updated to the amended opening balance
+    expect(snap!.balanceCents).toBe(BigInt(29000));
+    expect(snap!.snapshotDate).toBe("2026-01-01");
   });
 });

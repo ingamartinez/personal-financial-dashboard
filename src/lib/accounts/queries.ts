@@ -6,11 +6,15 @@ import { toCop } from "@/lib/money";
 import type { AccountType, Currency } from "@/lib/types";
 
 /**
- * Derived balance — the source of truth for an account's current balance
- * is `SUM(transactions.amount_cents)`, not the `accounts.balance_cents`
- * column (see #368). This SQL fragment inlines the subquery and must be
- * used inside a SELECT whose FROM references `accounts` so that the
- * outer `accounts.id` resolves to the outer row.
+ * Derived balance — snapshot-anchored since #562(c).
+ *
+ * When an `account_snapshots` row exists for this account, the balance is:
+ *   snapshot.balance_cents  +  SUM(txs where occurred_at >= snapshot_date)
+ * using the LATEST snapshot (ORDER BY snapshot_date DESC LIMIT 1).
+ *
+ * When NO snapshot exists, the formula falls back to the original behaviour:
+ *   COALESCE(SUM(all non-archived transactions), 0)
+ * This means existing accounts without snapshots are unaffected.
  *
  * Qualifiers are hard-coded because drizzle interpolates
  * `${accounts.id}` as a bare identifier (`"id"`), which inside the
@@ -25,10 +29,41 @@ import type { AccountType, Currency } from "@/lib/types";
  * with `BigInt(...)`.
  */
 export const derivedBalanceCentsSql = sql<string>`(
-  SELECT COALESCE(SUM("transactions"."amount_cents"), 0)
-  FROM "transactions"
-  WHERE "transactions"."account_id" = "accounts"."id"
-    AND "transactions"."deleted_at" IS NULL
+  SELECT COALESCE(
+    -- Branch A: snapshot exists → anchor + delta since snapshot date.
+    (
+      SELECT s."balance_cents"
+      FROM "account_snapshots" s
+      WHERE s."account_id" = "accounts"."id"
+      ORDER BY s."snapshot_date" DESC
+      LIMIT 1
+    ) + COALESCE(
+      (
+        SELECT SUM("transactions"."amount_cents")
+        FROM "transactions"
+        WHERE "transactions"."account_id" = "accounts"."id"
+          AND "transactions"."deleted_at" IS NULL
+          AND "transactions"."occurred_at" >= (
+            SELECT s2."snapshot_date"
+            FROM "account_snapshots" s2
+            WHERE s2."account_id" = "accounts"."id"
+            ORDER BY s2."snapshot_date" DESC
+            LIMIT 1
+          )
+      ),
+      0
+    ),
+    -- Branch B: no snapshot exists → original SUM-all behaviour.
+    COALESCE(
+      (
+        SELECT SUM(t2."amount_cents")
+        FROM "transactions" t2
+        WHERE t2."account_id" = "accounts"."id"
+          AND t2."deleted_at" IS NULL
+      ),
+      0
+    )
+  )
 )`;
 
 export type PhysicalCardSummary = {
