@@ -1,5 +1,7 @@
 import * as XLSX from "xlsx";
 import { parseBancolombiaSavings } from "./parsers/bancolombia-savings";
+import { parseBancolombiaSavingsExtracto } from "./parsers/bancolombia-savings-extracto";
+import { findExtractoHeaderRow } from "./parsers/bancolombia-savings-extracto";
 import { parseBancolombiaTc } from "./parsers/bancolombia-tc";
 import { StatementParseError } from "./parsers/types";
 import type { ParsedStatement, StatementFormat, StatementBank } from "./parsers/types";
@@ -10,10 +12,16 @@ export interface DetectedFormat {
 }
 
 /**
- * Detects the Bancolombia export format by inspecting just the header row.
- * Column count + header text disambiguate:
- *   4 cols (Fecha | Descripción | Referencia | Valor) → savings
- *   6 cols (Fecha | Descripción | Fecha de corte | Valor | Tipo de moneda | Cuotas) → TC
+ * Detects the Bancolombia export format by inspecting the header row(s).
+ * Three formats are recognized:
+ *
+ *   Format A — 4-col Movimientos (header at row 1):
+ *     Fecha | Descripción | Referencia | Valor
+ *   Format B — 6-col Extracto Mensual (header at row ~15, scan first 30 rows):
+ *     FECHA | DESCRIPCIÓN | SUCURSAL | DCTO. | VALOR | SALDO
+ *   Format C — 6-col TC (header at row 1):
+ *     Fecha | Descripción | Fecha de corte | Valor | Tipo de moneda | Cuotas
+ *
  * Anything else → StatementParseError('format_mismatch').
  */
 export function detectFormat(buffer: Buffer | Uint8Array): DetectedFormat {
@@ -28,31 +36,38 @@ export function detectFormat(buffer: Buffer | Uint8Array): DetectedFormat {
   }
   const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
     header: 1,
-    raw: true,
+    raw: false,
     defval: null,
   });
-  const header = matrix[0];
-  if (!Array.isArray(header)) {
-    throw new StatementParseError("format_mismatch", "no header row");
-  }
-  const headerNorm = header.map((c) => String(c ?? "").trim());
 
-  if (headerMatches(headerNorm, ["Fecha", "Descripción", "Referencia", "Valor"])) {
-    return { bank: "bancolombia", format: "bancolombia_savings" };
-  }
-  if (
-    headerMatches(headerNorm, [
-      "Fecha",
-      "Descripción",
-      "Fecha de corte",
-      "Valor",
-      "Tipo de moneda",
-      "Cuotas",
-    ])
-  ) {
-    return { bank: "bancolombia", format: "bancolombia_tc" };
+  // --- Format A: 4-col Movimientos (header at row 0) ---
+  const header0 = matrix[0];
+  if (Array.isArray(header0)) {
+    const headerNorm = header0.map((c) => String(c ?? "").trim());
+
+    if (headerMatches(headerNorm, ["Fecha", "Descripción", "Referencia", "Valor"])) {
+      return { bank: "bancolombia", format: "bancolombia_savings" };
+    }
+    if (
+      headerMatches(headerNorm, [
+        "Fecha",
+        "Descripción",
+        "Fecha de corte",
+        "Valor",
+        "Tipo de moneda",
+        "Cuotas",
+      ])
+    ) {
+      return { bank: "bancolombia", format: "bancolombia_tc" };
+    }
   }
 
+  // --- Format B: 6-col Extracto Mensual (header anywhere in first 30 rows) ---
+  if (findExtractoHeaderRow(matrix as unknown[][]) !== -1) {
+    return { bank: "bancolombia", format: "bancolombia_savings_extracto" };
+  }
+
+  const headerNorm = Array.isArray(header0) ? header0.map((c) => String(c ?? "").trim()) : [];
   throw new StatementParseError(
     "format_mismatch",
     `unrecognized header: [${headerNorm.join(", ")}]`,
@@ -74,6 +89,9 @@ export function parseAny(buffer: Buffer | Uint8Array): {
   const detected = detectFormat(buffer);
   if (detected.format === "bancolombia_savings") {
     return { detected, parsed: parseBancolombiaSavings(buffer) };
+  }
+  if (detected.format === "bancolombia_savings_extracto") {
+    return { detected, parsed: parseBancolombiaSavingsExtracto(buffer) };
   }
   return { detected, parsed: parseBancolombiaTc(buffer) };
 }

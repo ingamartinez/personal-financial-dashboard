@@ -60,7 +60,7 @@ interface SerializedParsedRow {
 
 interface SerializedParsed {
   bank: "bancolombia";
-  format: "bancolombia_savings" | "bancolombia_tc";
+  format: "bancolombia_savings" | "bancolombia_savings_extracto" | "bancolombia_tc";
   periodStart: string;
   periodEnd: string;
   rowCount: number;
@@ -385,9 +385,12 @@ export async function applyReconcile(input: ApplyReconcileInput) {
   // #567 — after committing a savings extract, run Pago TC twin routing.
   // Savings descriptions carry DOLAR/PESOS distinction that gmail/SMS lack,
   // so this step corrects any misrouted destination legs and inserts any
-  // missing transfer pairs. Only runs when the uploaded file is a savings
-  // statement (not a TC statement).
-  if (result.status === "applied" && parsedStatement.format === "bancolombia_savings") {
+  // missing transfer pairs. Runs for both savings formats (4-col Movimientos
+  // and 6-col Extracto Mensual) — both carry the same PAGO SUC VIRT TC rows.
+  const isSavingsFormat =
+    parsedStatement.format === "bancolombia_savings" ||
+    parsedStatement.format === "bancolombia_savings_extracto";
+  if (result.status === "applied" && isSavingsFormat) {
     const pagoResult = await applyPagoTcRouting({
       userId: session.id,
       savingsAccountId: account.id,

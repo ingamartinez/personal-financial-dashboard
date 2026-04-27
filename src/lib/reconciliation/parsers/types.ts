@@ -1,6 +1,9 @@
 export type ParseDirection = "in" | "out";
 
-export type StatementFormat = "bancolombia_tc" | "bancolombia_savings";
+export type StatementFormat =
+  | "bancolombia_tc"
+  | "bancolombia_savings"
+  | "bancolombia_savings_extracto";
 
 export type StatementBank = "bancolombia";
 
