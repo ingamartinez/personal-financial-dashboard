@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { accounts, statementImports, transactions, users } from "@/lib/db/schema";
@@ -380,6 +380,272 @@ describe("consolidateCycleFromStatement — integration against findash_test", (
         dryRun: true,
       }),
     ).rejects.toThrow(/cycle must be YYYY-MM/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Before-period installment purchase insert (#557)
+// ---------------------------------------------------------------------------
+// When a before-period row is missing from the ledger AND it has
+// installments > 1 AND a rate, consolidate must insert it so the
+// intereses-causados job can price it in the current (and future) cycles.
+// The externalId is cycle-agnostic ("before" namespace) so consecutive
+// cycle consolidations don't insert the same purchase twice.
+describe("consolidateCycleFromStatement — before-period installment insert (#557)", () => {
+  const BEFORE_PERIOD_CYCLE = "2026-04";
+  const TAG3 = "STMT_BEFORE_TEST";
+  let userId3!: number;
+  let accountId3!: number;
+
+  beforeAll(async () => {
+    userId3 = await createUser(`${TAG3.toLowerCase()}.${Date.now()}@test.local`);
+    accountId3 = await createTCAccount(userId3);
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userId3);
+  });
+
+  // Builds a ParsedStatement for `BEFORE_PERIOD_CYCLE` that includes one
+  // before-period multi-cuota row (ALKOMPRAR-like) and one during-period
+  // purchase so there's something to consolidate.
+  function buildBeforePeriodStatement(): import("./types").ParsedStatement {
+    return buildParsed(
+      [
+        // Before-period installment purchase — missing from ledger.
+        // Should be inserted by the fix.
+        row({
+          kind: "before-period",
+          authorizationNumber: "R06018",
+          merchant: "ALKOMPRAR MOLINOS",
+          occurredAt: utcDate(2025, 11, 16), // original purchase date
+          amountCents: BigInt(99905000), // extracto sign (+) = expense
+          installments: { paid: 4, total: 8 },
+          rateEmX10k: 18740,
+        }),
+        // During-period: a regular purchase, no installments.
+        row({
+          authorizationNumber: "ABC123",
+          merchant: "TIENDA LOCAL",
+          occurredAt: utcDate(2026, 4, 10),
+          amountCents: BigInt(5000000),
+        }),
+      ],
+      {
+        period: {
+          startDate: utcDate(2026, 3, 31),
+          endDate: utcDate(2026, 4, 30),
+          dueDate: utcDate(2026, 5, 16),
+        },
+      },
+    );
+  }
+
+  it("inserts the before-period installment purchase into the ledger", async () => {
+    const report = await consolidateCycleFromStatement({
+      userId: userId3,
+      accountId: accountId3,
+      cycle: BEFORE_PERIOD_CYCLE,
+      parsed: buildBeforePeriodStatement(),
+      fileHash: "before01".repeat(8),
+      dryRun: false,
+    });
+
+    expect(report.status).toBe("consolidated");
+    // insertedTxIds includes both the before-period row and the during-period row.
+    // (plus possibly a synthetic intereses tx via the job)
+    // The matchStats should reflect insertedMissing >= 2 (before+during), skippedMissingBefore=0.
+    expect(report.matchStats.skippedMissingBefore).toBe(0);
+
+    // Find the ALKOMPRAR tx — it must exist with correct fields.
+    const [alkTx] = await db.execute<{
+      id: number;
+      merchant: string;
+      amount_cents: string;
+      installments_total: number;
+      installment_rate_bps: number;
+      external_id: string;
+      occurred_at: string;
+    }>(sql`
+      SELECT id, merchant, amount_cents::text, installments_total,
+             installment_rate_bps, external_id, occurred_at::text
+      FROM transactions
+      WHERE user_id = ${userId3} AND account_id = ${accountId3}
+        AND merchant = 'ALKOMPRAR MOLINOS' AND deleted_at IS NULL
+      LIMIT 1
+    `);
+    expect(alkTx).toBeDefined();
+    expect(BigInt(alkTx.amount_cents)).toBe(-BigInt(99905000)); // ledger sign inverted
+    expect(alkTx.installments_total).toBe(8);
+    expect(alkTx.installment_rate_bps).toBe(18740);
+    // externalId must use the "before" namespace (cycle-agnostic).
+    expect(alkTx.external_id).toMatch(/bancolombia-stmt:\d+:before:R06018/);
+    // occurred_at must be the original purchase date from the statement.
+    expect(alkTx.occurred_at).toContain("2025-11-16");
+  });
+
+  it("does NOT insert a before-period row again when a second consecutive cycle consolidation runs (#557 idempotency)", async () => {
+    // First consolidation (BEFORE_PERIOD_CYCLE already ran above, but we
+    // need a fresh user to avoid the already-consolidated short-circuit).
+    const userId4 = await createUser(`${TAG3.toLowerCase()}.idem.${Date.now()}@test.local`);
+    const accountId4 = await createTCAccount(userId4);
+
+    try {
+      await consolidateCycleFromStatement({
+        userId: userId4,
+        accountId: accountId4,
+        cycle: BEFORE_PERIOD_CYCLE,
+        parsed: buildBeforePeriodStatement(),
+        fileHash: "before02".repeat(8),
+        dryRun: false,
+      });
+
+      // Second cycle: same ALKOMPRAR appears before-period again.
+      const NEXT_CYCLE = "2026-05";
+      const nextParsed = buildParsed(
+        [
+          row({
+            kind: "before-period",
+            authorizationNumber: "R06018",
+            merchant: "ALKOMPRAR MOLINOS",
+            occurredAt: utcDate(2025, 11, 16),
+            amountCents: BigInt(99905000),
+            installments: { paid: 5, total: 8 },
+            rateEmX10k: 18740,
+          }),
+        ],
+        {
+          period: {
+            startDate: utcDate(2026, 4, 30),
+            endDate: utcDate(2026, 5, 31),
+            dueDate: utcDate(2026, 6, 16),
+          },
+        },
+      );
+      await consolidateCycleFromStatement({
+        userId: userId4,
+        accountId: accountId4,
+        cycle: NEXT_CYCLE,
+        parsed: nextParsed,
+        fileHash: "before03".repeat(8),
+        dryRun: false,
+      });
+
+      // ALKOMPRAR must exist exactly once (not duplicated across the two cycles).
+      const rows = await db.execute<{ n: string }>(sql`
+        SELECT count(*)::text AS n FROM transactions
+        WHERE user_id = ${userId4} AND account_id = ${accountId4}
+          AND merchant = 'ALKOMPRAR MOLINOS' AND deleted_at IS NULL
+      `);
+      expect(rows[0].n).toBe("1");
+    } finally {
+      await cleanupUser(userId4);
+    }
+  });
+
+  it("does NOT insert a before-period row that has no rate (would produce needsRate=true anyway)", async () => {
+    const userId5 = await createUser(`${TAG3.toLowerCase()}.norate.${Date.now()}@test.local`);
+    const accountId5 = await createTCAccount(userId5);
+
+    try {
+      const parsed = buildParsed(
+        [
+          row({
+            kind: "before-period",
+            authorizationNumber: "Z99999",
+            merchant: "SOME INSTALLMENT NO RATE",
+            occurredAt: utcDate(2025, 10, 1),
+            amountCents: BigInt(50000000),
+            installments: { paid: 2, total: 12 },
+            rateEmX10k: null, // no rate — should NOT be inserted
+          }),
+        ],
+        {
+          period: {
+            startDate: utcDate(2026, 3, 31),
+            endDate: utcDate(2026, 4, 30),
+            dueDate: utcDate(2026, 5, 16),
+          },
+        },
+      );
+      const report = await consolidateCycleFromStatement({
+        userId: userId5,
+        accountId: accountId5,
+        cycle: BEFORE_PERIOD_CYCLE,
+        parsed,
+        fileHash: "before04".repeat(8),
+        dryRun: false,
+      });
+
+      // skippedMissingBefore=1 because it was not inserted.
+      expect(report.matchStats.skippedMissingBefore).toBe(1);
+
+      const rows = await db.execute<{ n: string }>(sql`
+        SELECT count(*)::text AS n FROM transactions
+        WHERE user_id = ${userId5} AND account_id = ${accountId5}
+          AND merchant = 'SOME INSTALLMENT NO RATE' AND deleted_at IS NULL
+      `);
+      expect(rows[0].n).toBe("0");
+    } finally {
+      await cleanupUser(userId5);
+    }
+  });
+
+  it("produces an intereses-causados tx when before-period installment purchase generates interest", async () => {
+    const userId6 = await createUser(`${TAG3.toLowerCase()}.intereses.${Date.now()}@test.local`);
+    const accountId6 = await createTCAccount(userId6);
+
+    try {
+      // Simulates the real scenario: a before-period purchase at 8 cuotas with
+      // rate=18740. Purchase date 2025-11-16 → by cycle 2026-04 (anchor Apr 30),
+      // monthsBetween(Nov 16, Apr 30) = 5 → paidCount=5 → month 6 has interest.
+      const parsed = buildParsed(
+        [
+          row({
+            kind: "before-period",
+            authorizationNumber: "R06018",
+            merchant: "ALKOMPRAR MOLINOS",
+            occurredAt: utcDate(2025, 11, 16),
+            amountCents: BigInt(99905000), // $999,050 COP
+            installments: { paid: 5, total: 8 },
+            rateEmX10k: 18740,
+          }),
+        ],
+        {
+          period: {
+            startDate: utcDate(2026, 3, 31),
+            endDate: utcDate(2026, 4, 30),
+            dueDate: utcDate(2026, 5, 16),
+          },
+        },
+      );
+      const report = await consolidateCycleFromStatement({
+        userId: userId6,
+        accountId: accountId6,
+        cycle: BEFORE_PERIOD_CYCLE,
+        parsed,
+        fileHash: "before05".repeat(8),
+        dryRun: false,
+      });
+
+      expect(report.status).toBe("consolidated");
+      // The intereses job runs after the before-period tx is committed.
+      // With paidCount>=1 and rate > 0, the job should produce a non-zero result.
+      expect(report.intereses.status).toBe("inserted");
+      if (report.intereses.status === "inserted") {
+        expect(BigInt(report.intereses.totalInterestCentsStr)).toBeGreaterThan(BigInt(0));
+
+        // Verify the synthetic tx was persisted.
+        const [synthetic] = await db
+          .select()
+          .from(transactions)
+          .where(eq(transactions.id, report.intereses.txId));
+        expect(synthetic.categorySlug).toBe("intereses-tc");
+        expect(synthetic.amountCents).toBeLessThan(BigInt(0)); // expense
+      }
+    } finally {
+      await cleanupUser(userId6);
+    }
   });
 });
 

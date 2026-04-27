@@ -221,6 +221,44 @@ function externalIdFor(
   return `bancolombia-stmt:${accountId}:${cycle}:${authCode}`;
 }
 
+// Before-period installment purchases get a cycle-agnostic key so the same
+// purchase isn't inserted twice when multiple cycles are consolidated in
+// sequence (ENE→FEB→MAR: ALKOMPRAR MOLINOS appears before-period in all
+// three but should only enter the ledger once).
+//
+// The key omits `cycle` and uses a `before` namespace so it never collides
+// with the during-period keys above. Placeholder auth rows include the
+// normalized merchant slug + statement-sign amount to disambiguate pairs.
+function externalIdForBeforePeriod(
+  accountId: number,
+  authCode: string,
+  row: { merchant: string; amountCents: bigint },
+): string {
+  if (authCode === PLACEHOLDER_AUTH) {
+    const slug = normalizeMerchantSlug(row.merchant);
+    const amount = row.amountCents.toString();
+    return `bancolombia-stmt:${accountId}:before:${authCode}:${slug}:${amount}`;
+  }
+  return `bancolombia-stmt:${accountId}:before:${authCode}`;
+}
+
+// Returns true for before-period statement rows that should be inserted into
+// the ledger so the intereses-causados job can price them. Criteria:
+//   1. Multi-cuota (installments.total > 1) — 1-cuota purchases never accrue
+//      interest so inserting them doesn't help the job.
+//   2. Has a rate — the job needs it to compute interest. A row without a rate
+//      would become needsRate (interestCents=0), contributing nothing.
+//   3. Positive extracto amount — that's a purchase (expense). Negative rows
+//      are credits/abonos; inserting them as installment purchases would be wrong.
+//   4. Has a real authorizationNumber — required for a stable externalId.
+function isInsertableBeforePeriodRow(row: StatementRow): boolean {
+  if (row.authorizationNumber === null) return false;
+  if (row.amountCents <= BigInt(0)) return false;
+  if (row.installments === null || row.installments.total <= 1) return false;
+  if (row.rateEmX10k === null) return false;
+  return true;
+}
+
 function toIsoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -608,12 +646,18 @@ async function loadExistingTxs(
   return rows;
 }
 
-function buildMatchStats(match: MatchResult): MatchStats {
+function buildMatchStats(match: MatchResult, insertedBeforePeriodCount = 0): MatchStats {
   const matchedWillChange = match.matched.filter((m) => m.willChange).length;
-  const insertedMissing = match.missingInLedger.filter((r) => r.kind === "during-period").length;
-  const skippedMissingBefore = match.missingInLedger.filter(
-    (r) => r.kind === "before-period",
-  ).length;
+  // `insertedMissing` counts during-period inserts + before-period installment
+  // inserts (added in #557) so the UI "Nuevas" stat reflects everything landed.
+  const insertedMissing =
+    match.missingInLedger.filter((r) => r.kind === "during-period").length +
+    insertedBeforePeriodCount;
+  // `skippedMissingBefore` = before-period rows that did NOT qualify for insert
+  // (1-cuota, missing rate, credit/abono, or no authCode).
+  const skippedMissingBefore =
+    match.missingInLedger.filter((r) => r.kind === "before-period").length -
+    insertedBeforePeriodCount;
   return {
     matched: match.matched.length,
     matchedWillChange,
@@ -770,73 +814,106 @@ export async function consolidateCycleFromStatement(
   // outside this tx avoids the drizzle DB-vs-Transaction type mismatch and
   // makes partial-failure semantics sane (ledger fix commits even if the
   // intereses job fails; user can retry).
-  const { imp, matchedIdsToUpdate, insertedTxIds } = await database.transaction(async (txDb) => {
-    const [imp] = await txDb
-      .insert(statementImports)
-      .values({
-        userId: opts.userId,
-        accountId: opts.accountId,
-        fileHash: opts.fileHash,
-        periodStart: toIsoDate(opts.parsed.period.startDate),
-        periodEnd: toIsoDate(opts.parsed.period.endDate),
-        txnCount: 0,
-        kind: "extracto_detallado",
-        cycle: opts.cycle,
-        report: null,
-      })
-      .returning({ id: statementImports.id });
-
-    const matchedIdsToUpdate: number[] = [];
-    for (const m of match.matched) {
-      if (!m.willChange) continue;
-      await txDb
-        .update(transactions)
-        .set({
-          installmentsTotal: m.diff.installmentsTotalAfter,
-          ...(m.diff.rateEmX10kAfter !== null && {
-            installmentRateEmX10k: m.diff.rateEmX10kAfter,
-          }),
-          reconciliationStatus: "matched",
-          reconciledAt: new Date(),
-          statementImportId: imp.id,
-          updatedAt: new Date(),
+  const { imp, matchedIdsToUpdate, insertedTxIds, insertedBeforePeriodCount } =
+    await database.transaction(async (txDb) => {
+      const [imp] = await txDb
+        .insert(statementImports)
+        .values({
+          userId: opts.userId,
+          accountId: opts.accountId,
+          fileHash: opts.fileHash,
+          periodStart: toIsoDate(opts.parsed.period.startDate),
+          periodEnd: toIsoDate(opts.parsed.period.endDate),
+          txnCount: 0,
+          kind: "extracto_detallado",
+          cycle: opts.cycle,
+          report: null,
         })
-        .where(and(eq(transactions.id, m.txId), eq(transactions.userId, opts.userId)));
-      matchedIdsToUpdate.push(m.txId);
-    }
+        .returning({ id: statementImports.id });
 
-    const insertedTxIds: number[] = [];
-    for (const row of match.missingInLedger) {
-      if (row.kind !== "during-period") continue;
-      if (isBankInterestRow(row)) continue;
-      if (row.authorizationNumber === null) {
-        log.warn(
-          {
-            accountId: opts.accountId,
-            cycle: opts.cycle,
-            merchant: row.merchant,
-            event: "missing_auth_skip",
-          },
-          "consolidate: skipping missing row without authorizationNumber",
-        );
-        continue;
+      const matchedIdsToUpdate: number[] = [];
+      for (const m of match.matched) {
+        if (!m.willChange) continue;
+        await txDb
+          .update(transactions)
+          .set({
+            installmentsTotal: m.diff.installmentsTotalAfter,
+            ...(m.diff.rateEmX10kAfter !== null && {
+              installmentRateEmX10k: m.diff.rateEmX10kAfter,
+            }),
+            reconciliationStatus: "matched",
+            reconciledAt: new Date(),
+            statementImportId: imp.id,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(transactions.id, m.txId), eq(transactions.userId, opts.userId)));
+        matchedIdsToUpdate.push(m.txId);
       }
-      const inserted = await insertMissingRowInTx(txDb, {
-        opts,
-        account,
-        row,
-        statementImportId: imp.id,
-      });
-      if (inserted !== null) insertedTxIds.push(inserted);
-    }
 
-    await txDb
-      .update(statementImports)
-      .set({ txnCount: matchedIdsToUpdate.length + insertedTxIds.length })
-      .where(eq(statementImports.id, imp.id));
+      const insertedTxIds: number[] = [];
+      let insertedBeforePeriodCount = 0;
+      for (const row of match.missingInLedger) {
+        if (row.kind === "before-period") {
+          // #557: insert missing before-period multi-cuota purchases so the
+          // intereses-causados job can price them in the current cycle.
+          // Non-qualifying rows (credits, 1-cuota, missing rate, no authCode)
+          // are skipped silently — they are either not installment purchases or
+          // already have no interest potential.
+          if (!isInsertableBeforePeriodRow(row)) continue;
+          const inserted = await insertMissingBeforePeriodRowInTx(txDb, {
+            opts,
+            account,
+            row,
+            statementImportId: imp.id,
+          });
+          if (inserted !== null) {
+            insertedTxIds.push(inserted);
+            insertedBeforePeriodCount += 1;
+            log.info(
+              {
+                accountId: opts.accountId,
+                cycle: opts.cycle,
+                merchant: row.merchant,
+                installmentsTotal: row.installments?.total,
+                rateEmX10k: row.rateEmX10k,
+                txId: inserted,
+                event: "before_period_installment_inserted",
+              },
+              "consolidate: inserted missing before-period installment purchase",
+            );
+          }
+          continue;
+        }
+        // during-period
+        if (isBankInterestRow(row)) continue;
+        if (row.authorizationNumber === null) {
+          log.warn(
+            {
+              accountId: opts.accountId,
+              cycle: opts.cycle,
+              merchant: row.merchant,
+              event: "missing_auth_skip",
+            },
+            "consolidate: skipping missing row without authorizationNumber",
+          );
+          continue;
+        }
+        const inserted = await insertMissingRowInTx(txDb, {
+          opts,
+          account,
+          row,
+          statementImportId: imp.id,
+        });
+        if (inserted !== null) insertedTxIds.push(inserted);
+      }
 
-    return { imp, matchedIdsToUpdate, insertedTxIds };
-  });
+      await txDb
+        .update(statementImports)
+        .set({ txnCount: matchedIdsToUpdate.length + insertedTxIds.length })
+        .where(eq(statementImports.id, imp.id));
+
+      return { imp, matchedIdsToUpdate, insertedTxIds, insertedBeforePeriodCount };
+    });
 
   const interesesResult = await applyInteresesCausadosForCycle({
     userId: opts.userId,
@@ -899,7 +976,7 @@ export async function consolidateCycleFromStatement(
     cycle: opts.cycle,
     dryRun: false,
     status: "consolidated",
-    matchStats: buildMatchStats(match),
+    matchStats: buildMatchStats(match, insertedBeforePeriodCount),
     matchedTxIds: matchedIdsToUpdate,
     insertedTxIds,
     matchedDiffs: serializeMatchedDiffs(match),
@@ -962,6 +1039,54 @@ async function insertMissingRowInTx(
         authorizationNumber: row.authorizationNumber,
         saldoPendingCents: row.saldoPendingCents.toString(),
         installmentValueCents: row.installmentValueCents?.toString() ?? null,
+      },
+    })
+    .onConflictDoNothing({
+      target: [transactions.accountId, transactions.externalId],
+      where: sql`${transactions.externalId} IS NOT NULL`,
+    })
+    .returning({ id: transactions.id });
+  return result[0]?.id ?? null;
+}
+
+// #557: insert a before-period installment purchase that was missing from the
+// ledger. Uses a cycle-agnostic externalId (`before` namespace) so the same
+// row isn't inserted twice when multiple consecutive cycles are consolidated.
+// The `onConflictDoNothing` on (accountId, externalId) is the guard.
+async function insertMissingBeforePeriodRowInTx(
+  txDb: Parameters<Parameters<DB["transaction"]>[0]>[0],
+  { opts, account, row, statementImportId }: InsertMissingArgs,
+): Promise<number | null> {
+  const external = externalIdForBeforePeriod(opts.accountId, row.authorizationNumber!, row);
+  const result = await txDb
+    .insert(transactions)
+    .values({
+      userId: opts.userId,
+      accountId: account.id,
+      occurredAt: row.occurredAt,
+      amountCents: statementAmountToLedger(row.amountCents),
+      currency: account.currency,
+      descriptionRaw: row.merchant,
+      merchant: row.merchant,
+      installmentsTotal: row.installments!.total,
+      installmentRateEmX10k: row.rateEmX10k,
+      source: "csv_reconcile",
+      channel: "bank",
+      reconciliationStatus: "imported_from_statement",
+      reconciledAt: new Date(),
+      statementImportId,
+      externalId: external,
+      rawData: {
+        statementKind: "extracto_detallado",
+        // `importedFromBeforePeriod` flags that the purchase date pre-dates
+        // the cycle being consolidated — useful for audit trails.
+        importedFromBeforePeriod: true,
+        cycle: opts.cycle,
+        authorizationNumber: row.authorizationNumber,
+        saldoPendingCents: row.saldoPendingCents.toString(),
+        installmentValueCents: row.installmentValueCents?.toString() ?? null,
+        installmentsPaid: row.installments!.paid,
+        installmentsTotal: row.installments!.total,
       },
     })
     .onConflictDoNothing({
