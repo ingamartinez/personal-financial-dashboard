@@ -595,13 +595,28 @@ export function extractArqMeta(rawData: Record<string, unknown> | null): ArqMeta
   const mergedFx = mergedFxRaw !== undefined ? parseFxMetadata(mergedFxRaw) : null;
   const primaryFx = primaryFxRaw !== undefined ? parseFxMetadata(primaryFxRaw) : null;
 
-  // copAmountCents resolution: prefer schema-parsed value, then raw property fallback
-  // (for legacy partial blocks that only have copAmountCents without the full schema fields).
+  // copAmountCents resolution: prefer schema-parsed value, then raw property fallback,
+  // then derive from originalAmountCents when originalCurrency === "COP" (the most
+  // common case for ARQ Venta USDc / Pago con tarjeta COP — buildFxBlock stores the
+  // COP equivalent in originalAmountCents and never duplicates it as copAmountCents).
+  const deriveCopFromOriginal = (
+    fxRaw: Record<string, unknown> | undefined,
+    fxParsed: ReturnType<typeof parseFxMetadata>,
+  ): string | null => {
+    const orig = fxParsed?.originalCurrency ?? (fxRaw?.originalCurrency as string | undefined);
+    if (orig !== "COP") return null;
+    return (
+      fxParsed?.originalAmountCents ?? (fxRaw?.originalAmountCents as string | undefined) ?? null
+    );
+  };
+
   const rawCop: string | null =
     mergedFx?.copAmountCents ??
     (mergedFxRaw?.copAmountCents as string | undefined) ??
     primaryFx?.copAmountCents ??
     (primaryFxRaw?.copAmountCents as string | undefined) ??
+    deriveCopFromOriginal(mergedFxRaw, mergedFx) ??
+    deriveCopFromOriginal(primaryFxRaw, primaryFx) ??
     null;
 
   const copAmountCents = rawCop !== null ? BigInt(rawCop) : null;

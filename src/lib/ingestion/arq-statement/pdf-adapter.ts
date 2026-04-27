@@ -1,102 +1,23 @@
-import { createRequire } from "module";
-
 import { createLogger } from "@/lib/logger";
 
 import type { ArqEquivalentCurrency, RawStatement, RawTxLine } from "./types";
 
-// ---------------------------------------------------------------------------
-// pdfjs-dist browser-globals shim — MUST run before any code path that may
-// load the pdfjs-dist module graph. Turbopack/Next standalone evaluate
-// dynamic imports eagerly when bundling for Server Components, so installing
-// the shim inside the loader function is too late under Turbopack.
-//
-// pdfjs-dist's legacy build still references DOMMatrix / Path2D / ImageData
-// at module-evaluation time (used by canvas rendering paths we never hit).
-// Stub classes are sufficient because we only extract text — never render.
-//
-// In jsdom (test) these globals exist natively, which is why tests passed
-// while production crashed on the first PDF upload.
-// ---------------------------------------------------------------------------
-{
-  const g = globalThis as unknown as Record<string, unknown>;
-  if (typeof g.DOMMatrix === "undefined") {
-    class StubDOMMatrix {
-      constructor() {}
-      multiplySelf() {
-        return this;
-      }
-      multiply() {
-        return this;
-      }
-      invertSelf() {
-        return this;
-      }
-      translateSelf() {
-        return this;
-      }
-      scaleSelf() {
-        return this;
-      }
-    }
-    g.DOMMatrix = StubDOMMatrix;
-  }
-  if (typeof g.Path2D === "undefined") {
-    class StubPath2D {
-      constructor() {}
-      addPath() {}
-      moveTo() {}
-      lineTo() {}
-      closePath() {}
-    }
-    g.Path2D = StubPath2D;
-  }
-  if (typeof g.ImageData === "undefined") {
-    class StubImageData {
-      constructor() {}
-    }
-    g.ImageData = StubImageData;
-  }
-}
-
 const log = createLogger({ module: "arq-statement-pdf" });
 
 // ---------------------------------------------------------------------------
-// pdfjs-dist setup
+// PDF text extraction
 // ---------------------------------------------------------------------------
-// We use the `legacy` build because the standard build requires DOMMatrix and
-// other browser globals that are not available in Node.js / Bun.
 //
-// In Node.js, pdfjs-dist automatically disables the web worker and runs
-// synchronously in-process via a LoopbackPort "fake worker". The catch: it
-// still tries to import the worker file at `GlobalWorkerOptions.workerSrc`.
-// We resolve that path at module-init time so it survives cwd changes.
+// We use `unpdf` (a thin Node/serverless-friendly wrapper around pdfjs-dist).
+// `unpdf` ships a serverless build that bundles cleanly under Turbopack /
+// Next.js standalone — no DOMMatrix / Path2D / ImageData globals, no worker
+// resolution dance, no workerSrc setup. Drop-in for our text-only use case.
 //
-// createRequire resolves relative to THIS source file, so it correctly finds
-// the package in pure Node + Bun. Under Next.js standalone + Turbopack,
-// `import.meta.url` points at the bundled chunk and the resolution may fail —
-// fall back to an empty string so pdfjs's type check passes. In Node, pdfjs
-// uses an in-process LoopbackPort fake worker regardless of workerSrc value,
-// so the actual path is irrelevant for our text-only extraction path.
-function resolvePdfjsWorkerPath(): string {
-  try {
-    const _require = createRequire(import.meta.url);
-    const resolved: unknown = _require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    return typeof resolved === "string" ? resolved : "";
-  } catch {
-    // Turbopack may stub createRequire entirely or have it throw under the
-    // bundled standalone runtime — fall back to empty string.
-    return "";
-  }
-}
-const PDFJS_WORKER_PATH: string = resolvePdfjsWorkerPath();
-
-async function getPdfjsLib() {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  // pdfjs's setter rejects non-string assignments with "Invalid workerSrc type".
-  // resolvePdfjsWorkerPath() guarantees a string return.
-  pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_PATH;
-  return pdfjs;
-}
+// Why not raw pdfjs-dist: under Turbopack the legacy build's module-eval
+// references browser globals AND its fake-worker loader does
+// `await import(workerSrc)` where Turbopack stamps the path as `"[project]"`
+// — Node cannot resolve that magic placeholder at runtime. unpdf sidesteps
+// the entire mess.
 
 // ---------------------------------------------------------------------------
 // Text extraction
@@ -112,8 +33,6 @@ async function getPdfjsLib() {
  * @throws {ArqPdfExtractionError} when no text can be extracted from the PDF
  */
 export async function extractTextFromPdf(buffer: Buffer | Uint8Array): Promise<string> {
-  const pdfjs = await getPdfjsLib();
-
   const data = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
 
   log.debug(
@@ -121,51 +40,31 @@ export async function extractTextFromPdf(buffer: Buffer | Uint8Array): Promise<s
     "starting pdf text extraction",
   );
 
-  const loadingTask = pdfjs.getDocument({ data });
+  const { extractText, getDocumentProxy } = await import("unpdf");
+
   let pdf;
   try {
-    pdf = await loadingTask.promise;
+    pdf = await getDocumentProxy(data);
   } catch (err) {
-    throw new ArqPdfExtractionError("pdfjs failed to load document", { cause: err });
+    throw new ArqPdfExtractionError("unpdf failed to load document", { cause: err });
   }
 
-  const pageTexts: string[] = [];
+  // unpdf's extractText returns text per page; mergePages: false keeps the
+  // page break information so we can reconstruct line breaks consistently
+  // with how pdfjs-dist used to expose them via TextItem.hasEOL.
+  const { totalPages, text: pages } = await extractText(pdf, { mergePages: false });
 
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-
-    const lines: string[] = [];
-    let currentLine = "";
-
-    for (const item of content.items) {
-      // TextMarkedContent items don't have `str`
-      if (!("str" in item)) continue;
-
-      currentLine += item.str;
-
-      if (item.hasEOL) {
-        lines.push(currentLine);
-        currentLine = "";
-      }
-    }
-
-    // Flush any trailing content on the last line
-    if (currentLine.trim()) {
-      lines.push(currentLine);
-    }
-
-    pageTexts.push(lines.join("\n"));
-  }
-
-  const fullText = pageTexts.join("\n");
+  // unpdf returns each page as a single string. Real ARQ PDFs have visual
+  // line breaks that unpdf preserves with "\n" inside each page string. Keep
+  // the per-page join so the parser sees the same shape it did before.
+  const fullText = (pages as string[]).join("\n");
 
   if (!fullText.trim()) {
     throw new ArqPdfExtractionError("PDF yielded no text — may be image-based");
   }
 
   log.debug(
-    { event: "arq_pdf_extract_done", pages: pdf.numPages, chars: fullText.length },
+    { event: "arq_pdf_extract_done", pages: totalPages, chars: fullText.length },
     "pdf text extraction complete",
   );
 
