@@ -30,6 +30,17 @@ export type FlaggedRow = {
   currency: "COP" | "USD";
   descriptionRaw: string;
   merchant: string | null;
+  // Populated by the page loader: the merge-candidate id (statement copy)
+  // that has the same amount within ±3 days. When present, the flagged row
+  // is a duplicate and the recommended action is Archive.
+  suggestedSiblingId: number | null;
+  // "archive" — a sibling statement copy exists, so the flagged row is a
+  //   duplicate. Acting on the suggestion archives it.
+  // "keep"    — the row falls outside every reconciled period for this
+  //   account, so the statement simply doesn't cover it yet. Acting on the
+  //   suggestion resets the row to unreconciled (real).
+  // null       — ambiguous; user must decide manually.
+  suggestedAction: "archive" | "keep" | null;
 };
 
 export type MergeCandidate = {
@@ -58,7 +69,22 @@ export function FlaggedReview({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [busy, setBusy] = useState<number | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [mergePicker, setMergePicker] = useState<FlaggedRow | null>(null);
+
+  // Order: rows with a clear suggestion (archive or keep) first, then the
+  // ambiguous ones. Within each group keep recency so users see the latest
+  // activity at the top.
+  const sortedRows = useMemo(() => {
+    return [...rows].sort((a, b) => {
+      const aHas = a.suggestedAction !== null;
+      const bHas = b.suggestedAction !== null;
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      return new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime();
+    });
+  }, [rows]);
+
+  const suggestionCount = sortedRows.filter((r) => r.suggestedAction !== null).length;
 
   function handle(rowId: number, action: "archived" | "kept") {
     setBusy(rowId);
@@ -67,14 +93,43 @@ export function FlaggedReview({
         await reviewReconciliationDecision({ txnId: rowId, action });
         toast.success(
           action === "archived"
-            ? "Transaction archived (won't show in spend anymore)"
-            : "Transaction kept as real (status reset to unreconciled)",
+            ? "Transacción archivada — ya no aparece en el gasto"
+            : "Transacción mantenida como real",
         );
         router.refresh();
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Action failed");
+        toast.error(err instanceof Error ? err.message : "No se pudo aplicar la acción");
       } finally {
         setBusy(null);
+      }
+    });
+  }
+
+  function applySuggestions() {
+    const withSuggestion = sortedRows.filter((r) => r.suggestedAction !== null);
+    if (withSuggestion.length === 0) return;
+    const archiveCount = withSuggestion.filter((r) => r.suggestedAction === "archive").length;
+    const keepCount = withSuggestion.filter((r) => r.suggestedAction === "keep").length;
+    setBulkBusy(true);
+    startTransition(async () => {
+      try {
+        await Promise.all(
+          withSuggestion.map((r) =>
+            reviewReconciliationDecision({
+              txnId: r.id,
+              action: r.suggestedAction === "archive" ? "archived" : "kept",
+            }),
+          ),
+        );
+        const parts: string[] = [];
+        if (archiveCount > 0) parts.push(`${archiveCount} archivada(s)`);
+        if (keepCount > 0) parts.push(`${keepCount} mantenida(s) como reales`);
+        toast.success(parts.join(" · "));
+        router.refresh();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Bulk apply failed");
+      } finally {
+        setBulkBusy(false);
       }
     });
   }
@@ -88,11 +143,11 @@ export function FlaggedReview({
           action: "merged_into",
           mergedIntoTxnId: targetId,
         });
-        toast.success("Merged — flagged row inherits the statement amount & date");
+        toast.success("Fusionada — la fila adopta el monto y fecha del extracto");
         setMergePicker(null);
         router.refresh();
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Merge failed");
+        toast.error(err instanceof Error ? err.message : "No se pudo fusionar");
       } finally {
         setBusy(null);
       }
@@ -104,14 +159,38 @@ export function FlaggedReview({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Flagged · {rows.length}</CardTitle>
-        <CardDescription>
-          These transactions exist in findash but were NOT found in a reconciled statement. They are
-          probably reversals, cancellations, or duplicates. Decide one-by-one:
-          <span className="ml-1">
-            <em>Archive</em> to exclude from spend, <em>Keep</em> if it&apos;s real and should stay.
-          </span>
-        </CardDescription>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <CardTitle>Flagged · {rows.length}</CardTitle>
+            <CardDescription>
+              Estas transacciones existen en findash (capturadas por email/SMS) pero el extracto que
+              subiste no las trae. Para cada una:
+              <ul className="mt-2 ml-4 list-disc space-y-1">
+                <li>
+                  <strong>Archive</strong> — la tx no es real (cancelación, reversal o duplicado).
+                  Se oculta del gasto.
+                </li>
+                <li>
+                  <strong>Keep</strong> — la tx es real (quedó fuera del extracto). Sigue activa.
+                </li>
+                <li>
+                  <strong>Merge into…</strong> — la tx tiene una versión en el extracto pero con
+                  otra descripción. Se fusionan.
+                </li>
+              </ul>
+            </CardDescription>
+          </div>
+          {suggestionCount > 0 ? (
+            <Button
+              size="sm"
+              onClick={applySuggestions}
+              disabled={pending || bulkBusy}
+              title="Archiva las duplicadas y mantiene las reales que quedaron fuera del extracto"
+            >
+              Aplicar sugerencias ({suggestionCount})
+            </Button>
+          ) : null}
+        </div>
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto rounded-md border">
@@ -125,17 +204,45 @@ export function FlaggedReview({
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {sortedRows.map((r) => {
                 const cents = BigInt(r.amountCents);
-                const isBusy = busy === r.id;
+                const isBusy = busy === r.id || bulkBusy;
+                const suggestion = r.suggestedAction;
                 return (
-                  <tr key={r.id} className="border-t">
+                  <tr
+                    key={r.id}
+                    className={cn(
+                      "border-t",
+                      suggestion === "archive" && "bg-amber-50/40 dark:bg-amber-950/20",
+                      suggestion === "keep" && "bg-sky-50/40 dark:bg-sky-950/20",
+                    )}
+                  >
                     <td className="p-2 tabular-nums">{dateFmt.format(new Date(r.occurredAt))}</td>
                     <td className="max-w-[18rem] truncate p-2">
-                      {r.descriptionRaw}
-                      {r.merchant ? (
-                        <span className="text-muted-foreground text-xs"> · {r.merchant}</span>
-                      ) : null}
+                      <div className="flex flex-col gap-1">
+                        <div className="truncate">
+                          {r.descriptionRaw}
+                          {r.merchant ? (
+                            <span className="text-muted-foreground text-xs"> · {r.merchant}</span>
+                          ) : null}
+                        </div>
+                        {suggestion === "archive" ? (
+                          <Badge
+                            variant="outline"
+                            className="w-fit border-amber-500 text-amber-700 dark:text-amber-400"
+                          >
+                            Doble conteo · Archive recomendado
+                          </Badge>
+                        ) : null}
+                        {suggestion === "keep" ? (
+                          <Badge
+                            variant="outline"
+                            className="w-fit border-sky-500 text-sky-700 dark:text-sky-400"
+                          >
+                            Fuera del periodo del extracto · Keep recomendado
+                          </Badge>
+                        ) : null}
+                      </div>
                     </td>
                     <td
                       className={cn(

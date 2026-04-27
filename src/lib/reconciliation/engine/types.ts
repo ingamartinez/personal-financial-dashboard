@@ -89,4 +89,11 @@ export interface MatchingInput {
   parsedRows: ParsedStatementRow[];
   existingTxns: ExistingTxnForMatch[];
   config?: MatchingConfig;
+  /**
+   * The statement's declared period. When provided, flaggedExisting is
+   * restricted to existingTxns whose occurredAt falls inside it — so a
+   * Bancolombia April XLSX upload doesn't surface end-of-March txs as
+   * flagged just because the matcher's expand window pulled them in.
+   */
+  period?: { start: Date; end: Date };
 }
