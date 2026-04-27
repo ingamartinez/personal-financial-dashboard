@@ -420,4 +420,39 @@ describe("matchStatementAgainstLedger — missing and unmatched", () => {
     expect(result.missingInLedger).toHaveLength(1);
     expect(result.missingInLedger[0].merchant).toBe("B");
   });
+
+  // Refinanciación pairs (AMPLIACION DE PLAZO + ABONO AMPLIACION) both carry
+  // authorizationNumber="000000" with INVERSE amounts. The matcher must not
+  // cross-match them against each other — they have different amounts in ledger
+  // sign (+4M and -4M) so the candidate filter naturally prevents a cross-match.
+  // Both must reach missingInLedger so consolidate.ts can insert them.
+  it("refinanciación pair with auth=000000 both reach missingInLedger (not matched to each other)", () => {
+    const REFINANCIACION_CENTS = BigInt(409952337);
+    const stmt = buildStatement([
+      // ABONO AMPLIACION DE PLAZO: credita el saldo (negative in extracto sign)
+      buildRow({
+        amountCents: -REFINANCIACION_CENTS,
+        occurredAt: utcDate(2026, 3, 24),
+        merchant: "ABONO AMPLIACION DE PLA",
+        authorizationNumber: "000000",
+        installments: null,
+        rateEmX10k: null,
+      }),
+      // AMPLIACION DE PLAZO: carga el nuevo plazo (positive in extracto sign)
+      buildRow({
+        amountCents: REFINANCIACION_CENTS,
+        occurredAt: utcDate(2026, 3, 24),
+        merchant: "AMPLIACION DE PLAZO",
+        authorizationNumber: "000000",
+        installments: { paid: 1, total: 60 },
+        rateEmX10k: 19110,
+      }),
+    ]);
+    // No existing txs — both rows must surface as missing.
+    const result = matchStatementAgainstLedger(stmt, []);
+    expect(result.matched).toHaveLength(0);
+    expect(result.missingInLedger).toHaveLength(2);
+    const merchants = result.missingInLedger.map((r) => r.merchant).sort();
+    expect(merchants).toEqual(["ABONO AMPLIACION DE PLA", "AMPLIACION DE PLAZO"].sort());
+  });
 });
