@@ -331,6 +331,7 @@ export async function processPendingArqReceipts(userId: number): Promise<void> {
       id: emailReceipts.id,
       rawHtml: emailReceipts.rawHtml,
       createdAt: emailReceipts.createdAt,
+      emailReceivedAt: emailReceipts.emailReceivedAt,
     })
     .from(emailReceipts)
     .where(
@@ -344,7 +345,14 @@ export async function processPendingArqReceipts(userId: number): Promise<void> {
 
   for (const receipt of pending) {
     try {
-      await ingestArqEmail(userId, receipt.id, receipt.rawHtml, receipt.createdAt);
+      // Prefer the Gmail-supplied email timestamp (#545); fall back to
+      // createdAt for receipts ingested before that column existed.
+      await ingestArqEmail(
+        userId,
+        receipt.id,
+        receipt.rawHtml,
+        receipt.emailReceivedAt ?? receipt.createdAt,
+      );
     } catch (err) {
       log.error(
         {

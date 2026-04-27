@@ -286,6 +286,15 @@ async function pullGateway(opts: {
       // Postgres rejects an ON CONFLICT target that doesn't match a full
       // unique constraint. Letting it bind to whichever unique constraint
       // violated is fine — emailReceipts has only the one.
+      // Persist Gmail's internalDate so the parser step uses the real email
+      // timestamp instead of the cron-run timestamp (#545). For real-time
+      // notification emails (ARQ, PayPal, MP) this matches the underlying
+      // transaction time within seconds.
+      const internalDateMs = res.data.internalDate ? Number(res.data.internalDate) : null;
+      const emailReceivedAt =
+        internalDateMs !== null && Number.isFinite(internalDateMs)
+          ? new Date(internalDateMs)
+          : null;
       const insertResult = await db
         .insert(emailReceipts)
         .values({
@@ -294,6 +303,7 @@ async function pullGateway(opts: {
           gmailMsgId: msgId,
           gateway: gateway.id,
           rawHtml: rawBody,
+          emailReceivedAt,
         })
         .onConflictDoNothing()
         .returning({ id: emailReceipts.id });
@@ -394,6 +404,7 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
       gmailMsgId: emailReceipts.gmailMsgId,
       parsedAt: emailReceipts.parsedAt,
       createdAt: emailReceipts.createdAt,
+      emailReceivedAt: emailReceipts.emailReceivedAt,
     })
     .from(emailReceipts)
     .where(
@@ -411,8 +422,10 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
       // Receipts seeded with parsedAt already set (e.g. backfilled or pre-parsed
       // rows) skip parsing and proceed directly to matching.
       if (!receipt.parsedAt) {
+        // emailReceivedAt is null for receipts ingested before #545; fall
+        // back to createdAt for those so old receipts still parse.
         const parseResult = parseReceipt(receipt.gateway, receipt.rawHtml, {
-          receivedAt: receipt.createdAt,
+          receivedAt: receipt.emailReceivedAt ?? receipt.createdAt,
         });
 
         if (parseResult.kind === "parsed") {

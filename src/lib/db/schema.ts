@@ -1354,6 +1354,14 @@ export const emailReceipts = pgTable(
     // disambiguates via /transactions UI (#455) or Telegram bot (#456).
     matchCandidates: jsonb("match_candidates").$type<number[]>(),
     parsedAt: timestamp("parsed_at", { withTimezone: true }),
+    // Gmail's `internalDate` for the message — the moment Gmail received it,
+    // which for ARQ/PayPal/MP notification emails is essentially the moment
+    // of the underlying transaction. Persisted at pull time so the parser
+    // step uses the real email timestamp instead of `createdAt` (which is
+    // when the cron created the row, not when the email arrived). Nullable
+    // for backfill compatibility — receipts ingested before this column was
+    // added stay NULL until a backfill script populates them.
+    emailReceivedAt: timestamp("email_received_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

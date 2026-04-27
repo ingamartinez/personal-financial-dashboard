@@ -43,12 +43,20 @@ async function seedActiveConnection(userId: number): Promise<number> {
 }
 
 // Build a fake message payload with a single text/html part. Body is
-// base64url-encoded per the Gmail API contract.
-function fakeMessage(id: string, html: string): { data: { payload: unknown; id: string } } {
+// base64url-encoded per the Gmail API contract. `internalDate` is the
+// stringified epoch milliseconds Gmail returns for every message — when
+// provided we propagate it so tests can assert receipt.emailReceivedAt
+// (#545).
+function fakeMessage(
+  id: string,
+  html: string,
+  opts?: { internalDate?: string },
+): { data: { payload: unknown; id: string; internalDate?: string } } {
   const encoded = Buffer.from(html, "utf8").toString("base64url");
   return {
     data: {
       id,
+      ...(opts?.internalDate ? { internalDate: opts.internalDate } : {}),
       payload: {
         mimeType: "text/html",
         body: { data: encoded },
@@ -449,6 +457,51 @@ describe("gmail/pull", () => {
     expect(result.pulled).toBe(1);
     expect(listAttempts).toBe(2);
     expect(sleeps).toEqual([1000]);
+  });
+
+  it("persists Gmail internalDate as emailReceivedAt (#545)", async () => {
+    const connectionId = await seedActiveConnection(userA);
+    const messageEpochMs = Date.UTC(2026, 3, 15, 14, 30, 0); // 2026-04-15 14:30 UTC
+    const { authed } = fakeAuthed({
+      userId: userA,
+      connectionId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: () => ({ messageIds: ["msg-with-date"] }),
+      onGet: () =>
+        fakeMessage("msg-with-date", "<html><body>codebranch sample</body></html>", {
+          internalDate: String(messageEpochMs),
+        }),
+    });
+    const result = await pullForUser(userA, "arq", { getClient: async () => authed });
+    expect(result.pulled).toBe(1);
+    const [row] = await db
+      .select({
+        emailReceivedAt: emailReceipts.emailReceivedAt,
+      })
+      .from(emailReceipts)
+      .where(and(eq(emailReceipts.userId, userA), eq(emailReceipts.gmailMsgId, "msg-with-date")));
+    expect(row).toBeDefined();
+    expect(row.emailReceivedAt?.getTime()).toBe(messageEpochMs);
+  });
+
+  it("leaves emailReceivedAt null when Gmail omits internalDate (#545)", async () => {
+    const connectionId = await seedActiveConnection(userA);
+    const { authed } = fakeAuthed({
+      userId: userA,
+      connectionId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: () => ({ messageIds: ["msg-no-date"] }),
+      onGet: () => fakeMessage("msg-no-date", "<html><body>x</body></html>"),
+    });
+    const result = await pullForUser(userA, "arq", { getClient: async () => authed });
+    expect(result.pulled).toBe(1);
+    const [row] = await db
+      .select({
+        emailReceivedAt: emailReceipts.emailReceivedAt,
+      })
+      .from(emailReceipts)
+      .where(and(eq(emailReceipts.userId, userA), eq(emailReceipts.gmailMsgId, "msg-no-date")));
+    expect(row.emailReceivedAt).toBeNull();
   });
 });
 
