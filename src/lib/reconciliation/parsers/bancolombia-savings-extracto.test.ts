@@ -344,6 +344,85 @@ describe("parseBancolombiaSavingsExtracto", () => {
     expect(out.rows[0].rawData.sucursal).toBe("SUCURSAL NORTE");
     expect(out.rows[0].rawData.dcto).toBe("TXN-001");
   });
+
+  it("parses multi-section files where Bancolombia concatenates per-cycle blocks", () => {
+    // Real Bancolombia exports spanning multiple cycles concatenate one
+    // section per cycle, each starting with "Información Cliente:" → cliente
+    // → "Información General:" → period → "Movimientos:" → header → data.
+    // The parser must skip the section break and resume at the next header.
+    const titleSection: unknown[][] = [
+      [null, null, null, null, null, null],
+      ["Información Cliente:", null, null, null, null, null],
+      ["CLIENTE", "DIRECCIÓN", "CIUDAD", null, null, null],
+      ["ALEJANDRO MARTINEZ", "CALLE 75", "ITAGUI", null, null, null],
+      [null, null, null, null, null, null],
+      ["Información General:", null, null, null, null, null],
+      ["DESDE", "HASTA", "TIPO CUENTA", "NRO CUENTA", "SUCURSAL", null],
+      ["2026/01/01", "2026/03/31", "CUENTA DE AHORROS", "9871936126", "SUC TEST", null],
+      [null, null, null, null, null, null],
+      ["Resumen:", null, null, null, null, null],
+      ["SALDO ANT", "ABONOS", "CARGOS", "ACTUAL", null, null],
+      ["1000.00", "5000.00", "2000.00", "4000.00", null, null],
+      [null, null, null, null, null, null],
+      ["Movimientos:", null, null, null, null, null],
+      ["FECHA", "DESCRIPCIÓN", "SUCURSAL", "DCTO.", "VALOR", "SALDO"],
+    ];
+
+    const section1Data: unknown[][] = [
+      ["2/01", "TX A SECTION 1", null, null, "1,000.00", "1,000.00"],
+      ["3/01", "TX B SECTION 1", null, null, "-200.00", "800.00"],
+    ];
+
+    // Section break: same shape as a fresh section starting with cliente info
+    const sectionBreak: unknown[][] = [
+      ["Información Cliente:", null, null, null, null, null],
+      ["CLIENTE", "DIRECCIÓN", "CIUDAD", null, null, null],
+      ["ALEJANDRO MARTINEZ", "CALLE 75", "ITAGUI", null, null, null],
+      [null, null, null, null, null, null],
+      ["Información General:", null, null, null, null, null],
+      ["DESDE", "HASTA", "TIPO CUENTA", "NRO CUENTA", "SUCURSAL", null],
+      ["2026/02/01", "2026/02/28", "CUENTA DE AHORROS", "9871936126", "SUC TEST", null],
+      [null, null, null, null, null, null],
+      ["Movimientos:", null, null, null, null, null],
+      ["FECHA", "DESCRIPCIÓN", "SUCURSAL", "DCTO.", "VALOR", "SALDO"],
+    ];
+
+    const section2Data: unknown[][] = [
+      ["1/02", "TX C SECTION 2", null, null, "500.00", "1,300.00"],
+      ["14/03", "PAGO SUC VIRT TC MASTER DOLAR", null, null, "-381,147.38", "-379,847.38"],
+    ];
+
+    const all: unknown[][] = [
+      ...titleSection,
+      ...section1Data,
+      ...sectionBreak,
+      ...section2Data,
+      [null, "FIN ESTADO DE CUENTA", null, null, null, null],
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(all);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Extracto");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+    const out = parseBancolombiaSavingsExtracto(buf);
+
+    // Both sections' data rows present, section break excluded
+    expect(out.rowCount).toBe(4);
+    expect(out.rows.map((r) => r.descriptionRaw)).toEqual([
+      "TX A SECTION 1",
+      "TX B SECTION 1",
+      "TX C SECTION 2",
+      "PAGO SUC VIRT TC MASTER DOLAR",
+    ]);
+
+    // Section 2's PAGO row must be picked up correctly — this is the case
+    // that the prod Extracto file hit in 2026-04-27.
+    const pago = out.rows[3];
+    expect(pago.direction).toBe("out");
+    expect(pago.amountCents).toBe(BigInt(38_114_738));
+    expect(pago.occurredAt.toISOString()).toBe("2026-03-14T05:00:00.000Z");
+  });
 });
 
 // ---------------------------------------------------------------------------

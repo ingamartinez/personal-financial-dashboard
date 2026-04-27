@@ -84,6 +84,13 @@ export function parseBancolombiaSavingsExtracto(buffer: Buffer | Uint8Array): Pa
 
   // -------------------------------------------------------------------------
   // Step 3: Parse data rows
+  //
+  // Multi-section robustness: Bancolombia "Estado de Cuenta" exports that
+  // span multiple cycles concatenate one section per cycle in the same sheet.
+  // Each section is structured as: "Información Cliente:" → cliente row →
+  // "Información General:" → period row → "Movimientos:" → header row → data.
+  // We can't just stop at the first non-date row — instead we recognize known
+  // section-break markers, scan forward for the next FECHA header, and resume.
   // -------------------------------------------------------------------------
   const dataRows = matrix.slice(headerRowIndex + 1);
   const rows: ParsedStatementRow[] = [];
@@ -110,12 +117,23 @@ export function parseBancolombiaSavingsExtracto(buffer: Buffer | Uint8Array): Pa
     // Sentinel: FECHA null + DESCRIPCIÓN = END_SENTINEL
     if (fecha === null || fecha === undefined || fecha === "") {
       const desc = String(descripcion ?? "").trim();
-      if (desc === END_SENTINEL || desc === "") break;
-      // Otherwise skip blank-fecha rows
+      if (desc === END_SENTINEL) break;
+      // Skip blank-fecha rows but don't end parsing — multi-section files
+      // have blank rows between sections.
       continue;
     }
 
     const fechaStr = String(fecha).trim();
+
+    // Section-break detection: when we see a known section title in the FECHA
+    // column, scan forward for the next FECHA header and resume from there.
+    if (isSectionBreakMarker(fechaStr)) {
+      const nextHeader = findNextHeaderRowIndex(dataRows, i);
+      if (nextHeader === -1) break; // no more sections
+      i = nextHeader; // loop's i++ moves past the header into the next section's first data row
+      continue;
+    }
+
     const parsed = parseFecha(fechaStr, currentYear, prevMonth);
     if (!parsed) {
       throw new StatementParseError(
@@ -275,4 +293,41 @@ function parseColombianNumber(s: string): number {
   // Remove thousands-separator commas (but preserve decimal dots)
   const normalized = s.replace(/,/g, "");
   return parseFloat(normalized);
+}
+
+/**
+ * Detects whether a string in the FECHA column looks like a section title
+ * from a multi-cycle Extracto export. Bancolombia repeats these labels at
+ * the start of each cycle's section.
+ */
+function isSectionBreakMarker(s: string): boolean {
+  const upper = s.toUpperCase();
+  return (
+    upper.startsWith("INFORMACIÓN") ||
+    upper.startsWith("INFORMACION") ||
+    upper === "MOVIMIENTOS:" ||
+    upper === "RESUMEN:" ||
+    upper === "CLIENTE" || // label row of "Información Cliente:" sub-table
+    upper === "DESDE" // label row of "Información General:" sub-table
+  );
+}
+
+/**
+ * Scans forward from `startIdx` looking for the next data table header row
+ * (FECHA | DESCRIPCIÓN | SUCURSAL | DCTO. | VALOR | SALDO). Returns its
+ * 0-based index relative to `dataRows`, or -1 if no further header exists.
+ */
+function findNextHeaderRowIndex(dataRows: unknown[][], startIdx: number): number {
+  for (let i = startIdx; i < dataRows.length; i++) {
+    const row = dataRows[i];
+    if (!Array.isArray(row) || row.length < EXTRACTO_HEADERS.length) continue;
+    const match = EXTRACTO_HEADERS.every(
+      (expected, col) =>
+        String(row[col] ?? "")
+          .trim()
+          .toUpperCase() === expected,
+    );
+    if (match) return i;
+  }
+  return -1;
 }
