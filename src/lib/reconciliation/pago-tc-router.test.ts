@@ -300,6 +300,71 @@ describe("applyPagoTcRouting — integration against findash_test", () => {
   // Test 3: existing gmail pair on COP twin + savings says DOLAR + NO USD synthetic
   //         → COP destination soft-deleted, savings leg flagged pendingUsdTwinReassignment
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Test 2b: gmail/SMS round to whole pesos, savings extract has cents
+  //          (e.g. gmail tx amount=-$381,147 vs savings extract row=-$381,147.38)
+  //          The matcher must tolerate ±$1 difference.
+  // ---------------------------------------------------------------------------
+  describe("DOLAR match — gmail rounds to whole pesos, savings has cents", () => {
+    let copCreditId: number;
+    let usdSyntheticId: number;
+    let groupId: string;
+    const ROUNDED_DATE = new Date("2026-03-14T05:00:00Z");
+
+    beforeAll(async () => {
+      // Gmail-derived pair WITHOUT decimal cents (matches what Bancolombia
+      // emails actually carry: "Pagaste $381,147 ...")
+      const pair = await createTransferPair(
+        userId,
+        savingsAccountId,
+        copTcAccountId,
+        BigInt(381_147_00), // -$381,147.00 in DB (gmail truncated)
+        ROUNDED_DATE,
+        "COP",
+      );
+      copCreditId = pair.creditId;
+      groupId = pair.groupId;
+
+      usdSyntheticId = await createUsdSyntheticTx(
+        userId,
+        usdTcAccountId,
+        BigInt(103_00),
+        ROUNDED_DATE,
+      );
+    });
+
+    afterAll(async () => {
+      await db.delete(transactions).where(eq(transactions.userId, userId));
+    });
+
+    it("matches a savings row whose amount has cents that the gmail leg lacks (within ±$1)", async () => {
+      // Savings extract has the precise amount with cents
+      const result = await applyPagoTcRouting({
+        userId,
+        savingsAccountId,
+        rows: [toRow(ROUNDED_DATE, BigInt(381_147_38), "PAGO SUC VIRT TC MASTER DOLAR")],
+        database: db,
+      });
+
+      // Expectation: tolerance kicks in, savings row is matched to the rounded
+      // gmail leg, COP destination is soft-deleted, USD synthetic re-paired.
+      expect(result.detected).toBe(1);
+      expect(result.reassignedToUsd).toBe(1);
+
+      const [copTx] = await db
+        .select({ deletedAt: transactions.deletedAt })
+        .from(transactions)
+        .where(eq(transactions.id, copCreditId));
+      expect(copTx?.deletedAt).not.toBeNull();
+
+      const [usdTx] = await db
+        .select({ transferGroupId: transactions.transferGroupId })
+        .from(transactions)
+        .where(eq(transactions.id, usdSyntheticId));
+      expect(usdTx?.transferGroupId).toBe(groupId);
+    });
+  });
+
   describe("DOLAR match — wrong COP twin, USD synthetic NOT uploaded yet", () => {
     let copCreditId: number;
     let debitId: number;

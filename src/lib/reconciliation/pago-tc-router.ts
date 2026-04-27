@@ -11,6 +11,14 @@ const log = createLogger({ module: "reconciliation/pago-tc-router" });
 // One calendar day in milliseconds — used for ±1-day date windows.
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
+// Bancolombia gmail/SMS Pago TC notifications round to whole pesos
+// ("Pagaste $381,147 ...") while the savings extract carries cents
+// ("$-381,147.38"). When matching the savings row to its existing gmail
+// debit leg we allow ±100 cents (= ±$1 COP) of difference. This is wide
+// enough to absorb the rounding gap without risking false positives —
+// real Pago TC pairs never differ by more than $0.99 in practice.
+const AMOUNT_TOLERANCE_CENTS = BigInt(100);
+
 // Description patterns that identify a Pago TC row in a savings extract.
 // Matching is case-insensitive prefix so variations ("PAGO SUC VIRT TC MASTER DOLAR",
 // "PAGO AUTOM TC MASTER PESOS", "pago suc virt tc master pesos", etc.) are all caught.
@@ -195,9 +203,13 @@ async function routeSinglePagoTcRow(opts: {
   // The savings debit is stored as a negative amount in the DB (outbound).
   // The exact signed amount on the savings leg is -amountCents.
   const savingsSignedCents = -row.amountCents;
+  // Range with ±AMOUNT_TOLERANCE_CENTS to absorb gmail/SMS whole-peso rounding.
+  // Both bounds are negative (savings debit). Lower = more negative.
+  const lowerBound = savingsSignedCents - AMOUNT_TOLERANCE_CENTS;
+  const upperBound = savingsSignedCents + AMOUNT_TOLERANCE_CENTS;
 
   // Find the existing savings debit leg (source = gmail_bancolombia or csv_reconcile)
-  // that matches this savings row by date window + exact amount.
+  // that matches this savings row by date window + amount-within-tolerance.
   // We look for it on the savings account so we know its transfer_group_id.
   const [savingsLeg] = await database
     .select({
@@ -211,7 +223,8 @@ async function routeSinglePagoTcRow(opts: {
       and(
         eq(transactions.userId, userId),
         eq(transactions.accountId, savingsAccountId),
-        eq(transactions.amountCents, savingsSignedCents),
+        gte(transactions.amountCents, lowerBound),
+        lte(transactions.amountCents, upperBound),
         gte(transactions.occurredAt, windowStart),
         lte(transactions.occurredAt, windowEnd),
         notDeleted(transactions.deletedAt),
