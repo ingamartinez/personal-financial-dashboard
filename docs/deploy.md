@@ -598,6 +598,150 @@ systemctl stop redis.service
 | Jobs stuck in waiting | Worker not running; check instrumentation logs |
 | AOF growing unboundedly | Run `redis-cli BGREWRITEAOF` to compact |
 
+### AOF size monitoring and rotation
+
+AOF can grow if the app crashes repeatedly or BGREWRITEAOF is never triggered. Monitor:
+
+```bash
+# AOF file size
+ls -lh /var/lib/redis/appendonly.aof
+
+# Persistence stats (aof_current_size, aof_rewrite_in_progress, etc.)
+redis-cli INFO persistence
+
+# Auto-rotation trigger: compacts log by rewriting it from the current dataset
+redis-cli BGREWRITEAOF
+# Wait for completion:
+redis-cli INFO persistence | grep aof_rewrite_in_progress   # 0 = done
+```
+
+Redis auto-triggers a rewrite when the AOF grows 100% over its base size (`auto-aof-rewrite-percentage 100`). For a consistently busy production instance, add an explicit weekly cron that calls BGREWRITEAOF (outside the app, as root/redis user).
+
+---
+
+## 14. Queue ops runbook (BullMQ)
+
+All background work (cron schedules + async jobs) runs via BullMQ backed by Redis. There is no `node-cron` in the project — `node-cron` was removed in issue #594.
+
+### Active queues
+
+| Queue name | Purpose | Schedule |
+|---|---|---|
+| `fx-refresh` | Update exchange rates from external API | Daily 03:00 America/Bogota |
+| `classify-tx` | Run AI classifier on a single transaction | On-demand (enqueued after import) |
+| `recurring-gap` | Detect missing recurring transactions | Daily 07:00 America/Bogota |
+| `health-snapshots` | Write account-balance snapshots | Daily 01:00 America/Bogota |
+| `slo-alerts` | Check SLOs and send Telegram alerts | Every 5 minutes |
+| `gmail-pull` | Pull email transactions for all active connections | Hourly |
+
+### Bull-Board dashboard
+
+Bull-Board is mounted at `/admin/queues`. It requires an authenticated session with the `admin` role (`requireAdmin` gate — unauthorized requests get a 403 before the dashboard ever loads).
+
+Access:
+
+```
+https://findash.alejoframes.com/admin/queues
+```
+
+The dashboard shows each queue's waiting / active / completed / failed / delayed counts and lets you inspect individual job payloads and logs.
+
+### Manually trigger a stuck job
+
+If a job is stuck in `waiting` or `delayed` state (e.g., the worker crashed before picking it up):
+
+1. Open Bull-Board → select the queue → find the job.
+2. Click **Promote** (available on `delayed` jobs) to move it to `waiting` immediately.
+3. If the worker is running, the job will be picked up within seconds.
+
+If the worker itself is not running, restart the app first (see "Restart workers" below).
+
+### Retry failed jobs
+
+Jobs land in `failed` state after exhausting their retry attempts (default: 3 with exponential backoff starting at 1 s).
+
+1. Open Bull-Board → select the queue → **Failed** tab.
+2. Click **Retry** on individual jobs, or **Retry All** to re-enqueue everything.
+3. Watch the **Active** count — jobs should move from `failed` → `waiting` → `active` → `completed`.
+
+Alternatively, via `redis-cli` (advanced):
+
+```bash
+# List failed job IDs for a queue
+redis-cli LRANGE "bull:classify-tx:failed" 0 -1
+
+# Move a specific failed job back to waiting (BullMQ internal key format)
+# Prefer Bull-Board UI over manual key manipulation.
+```
+
+### Inspect job logs and payloads
+
+Via Bull-Board:
+
+1. Click any job row to expand it.
+2. **Data** tab: the full JSON payload passed when the job was enqueued.
+3. **Logs** tab: structured log lines emitted via `job.log()` inside the processor.
+
+Via `redis-cli`:
+
+```bash
+# List all BullMQ keys for a queue
+redis-cli KEYS "bull:fx-refresh:*" | sort
+
+# Inspect a waiting job's data (BullMQ stores jobs as hashes)
+redis-cli HGETALL "bull:fx-refresh:<job-id>"
+```
+
+### Drain a backed-up queue
+
+If a queue accumulates more waiting jobs than the worker can process (e.g., after a long downtime):
+
+```bash
+# Count jobs in each state
+redis-cli LLEN "bull:<queue-name>:wait"
+redis-cli ZCARD "bull:<queue-name>:failed"
+
+# Obliterate everything in a queue (waiting + failed + completed) — DESTRUCTIVE
+# Only use this if the backlog is stale and safe to discard.
+# Prefer Bull-Board "Clean" buttons (by state + age) for surgical cleanup.
+redis-cli DEL "bull:<queue-name>:wait" "bull:<queue-name>:failed"
+```
+
+The safer option is Bull-Board → queue → **Clean** button: lets you delete jobs older than N ms in a given state without touching active or recent jobs.
+
+### Restart workers
+
+Workers run inside the Next.js process (registered in `src/instrumentation.node.ts`). Restarting the app restarts all workers:
+
+```bash
+ssh root@147.182.138.79
+systemctl restart findash.service
+```
+
+After restart, workers re-register their recurring schedules (the `jobId: "<name>-recurring"` ensures idempotency — BullMQ will not add a duplicate repeat entry if one already exists).
+
+### Verify worker health
+
+```bash
+# App logs — look for "worker_init" and "job_completed" events
+journalctl -u findash -n 200 | grep -E 'worker_init|job_completed|job_failed|worker_error'
+
+# Redis active list (jobs currently being processed)
+redis-cli LRANGE "bull:fx-refresh:active" 0 -1
+redis-cli LRANGE "bull:classify-tx:active" 0 -1
+
+# Delayed jobs (scheduled future runs — repeating jobs appear here)
+redis-cli ZRANGE "bull:fx-refresh:delayed" 0 -1 WITHSCORES
+
+# Quick count across all queues
+for q in fx-refresh classify-tx recurring-gap health-snapshots slo-alerts gmail-pull; do
+  echo -n "$q waiting: "
+  redis-cli LLEN "bull:$q:wait"
+done
+```
+
+A healthy worker will show `worker_init` in logs at startup and `job_completed` entries after each run. If a worker is missing from logs after restart, check for a startup error in `journalctl -u findash -n 50 --no-pager`.
+
 ---
 
 ## 12. Engram keys for deeper context
