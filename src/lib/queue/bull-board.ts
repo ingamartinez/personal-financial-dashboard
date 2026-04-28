@@ -57,11 +57,16 @@ export function getBullBoardApp(): ReturnType<typeof express> {
     },
   });
 
-  // Resolve via package.json (a known JS-loadable file) instead of the .ejs
-  // template — Turbopack statically traces require.resolve() arguments and
-  // chokes on .ejs at build time. The dist folder lives next to package.json.
-  const uiPkgJson = require.resolve("@bull-board/ui/package.json");
-  const uiDistPath = path.join(path.dirname(uiPkgJson), "dist");
+  // Resolve the UI dist via process.cwd() — NOT require.resolve.
+  //
+  // Turbopack rewrites require.resolve() at build time to use its own module
+  // map. The map handles JS modules but does NOT expose package.json (or any
+  // non-bundled file) at runtime, so `require.resolve("@bull-board/ui/...")`
+  // throws ResolveMessage at runtime. We tried .ejs (build-time fail), then
+  // package.json (runtime fail). process.cwd() is stable: findash starts from
+  // the release dir where node_modules lives (in dev `bun run dev` runs from
+  // the project root). See memory `nextjs16/bull-board-turbopack`.
+  const uiDistPath = path.resolve(process.cwd(), "node_modules/@bull-board/ui/dist");
   serverAdapter.setViewsPath(uiDistPath);
   serverAdapter.setStaticPath("/static", path.join(uiDistPath, "static"));
 
