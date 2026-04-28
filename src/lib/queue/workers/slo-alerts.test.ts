@@ -39,9 +39,7 @@ describe("sloAlertsProcessor", () => {
   });
 
   it("calls checkAndAlertSlos and logs the decision summary", async () => {
-    mocks.checkAndAlertSlos.mockResolvedValueOnce([
-      { action: "noop", sloKey: "parse_success" },
-    ]);
+    mocks.checkAndAlertSlos.mockResolvedValueOnce([{ action: "noop", sloKey: "parse_success" }]);
 
     await sloAlertsProcessor(makeJob());
 
@@ -49,17 +47,13 @@ describe("sloAlertsProcessor", () => {
   });
 
   it("handles a fired alert without throwing", async () => {
-    mocks.checkAndAlertSlos.mockResolvedValueOnce([
-      { action: "fire", sloKey: "parse_success" },
-    ]);
+    mocks.checkAndAlertSlos.mockResolvedValueOnce([{ action: "fire", sloKey: "parse_success" }]);
 
     await expect(sloAlertsProcessor(makeJob())).resolves.toBeUndefined();
   });
 
   it("handles a resolved alert without throwing", async () => {
-    mocks.checkAndAlertSlos.mockResolvedValueOnce([
-      { action: "resolve", sloKey: "parse_success" },
-    ]);
+    mocks.checkAndAlertSlos.mockResolvedValueOnce([{ action: "resolve", sloKey: "parse_success" }]);
 
     await expect(sloAlertsProcessor(makeJob())).resolves.toBeUndefined();
   });

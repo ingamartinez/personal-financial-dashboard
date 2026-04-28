@@ -126,8 +126,8 @@ describe("gmailPullProcessor — mode: single-user", () => {
   it("propagates pullForUser errors for BullMQ retry", async () => {
     mocks.pullForUser.mockRejectedValueOnce(new Error("Gmail API timeout"));
 
-    await expect(
-      gmailPullProcessor(makeJob({ mode: "single-user", userId: 1 })),
-    ).rejects.toThrow("Gmail API timeout");
+    await expect(gmailPullProcessor(makeJob({ mode: "single-user", userId: 1 }))).rejects.toThrow(
+      "Gmail API timeout",
+    );
   });
 });
