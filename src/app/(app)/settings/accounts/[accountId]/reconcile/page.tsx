@@ -7,8 +7,10 @@ import { notDeleted } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { getSessionUser } from "@/lib/auth/session";
+import { buttonVariants } from "@/components/ui/button";
+// ReconcileForm kept wired for Phase 3 rollback safety — DO NOT delete until soak gate confirmed.
 import { ReconcileForm } from "./reconcile-form";
-import { FlaggedReview, type FlaggedRow, type MergeCandidate } from "./flagged-review";
+import { FlaggedReview, type MergeCandidate } from "./flagged-review";
 import { PlugCleanupSection, type Plug } from "./plug-cleanup";
 
 export const dynamic = "force-dynamic";
@@ -226,12 +228,27 @@ export default async function ReconcilePage({
           known bank. Edit the account to set the correct institution before uploading a statement.
         </div>
       ) : (
-        <ReconcileForm
-          accountId={account.id}
-          accountCurrency={account.currency}
-          accountInstitutionSlug={account.institutionSlug}
-          accountBalanceCents={account.balanceCents.toString()}
-        />
+        <div className="flex flex-col gap-3">
+          {/* Phase 2: CTA deep-links to unified /imports page */}
+          <Link
+            href={`/imports?hint_account_id=${account.id}`}
+            className={buttonVariants({ variant: "default" })}
+          >
+            Subir extracto →
+          </Link>
+          {/* ReconcileForm kept for Phase 3 rollback — hidden, not deleted */}
+          <details className="text-muted-foreground text-xs">
+            <summary className="cursor-pointer">Formulario legacy (reserva)</summary>
+            <div className="mt-2">
+              <ReconcileForm
+                accountId={account.id}
+                accountCurrency={account.currency}
+                accountInstitutionSlug={account.institutionSlug}
+                accountBalanceCents={account.balanceCents.toString()}
+              />
+            </div>
+          </details>
+        </div>
       )}
 
       {enrichedFlagged.length > 0 ? (

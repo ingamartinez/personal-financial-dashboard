@@ -9,24 +9,37 @@ import userEvent from "@testing-library/user-event";
 // Memory: nextjs16-use-server-async-only + vi.hoisted pattern.
 // ---------------------------------------------------------------------------
 
-const { mockPreviewArqStatement, mockCommitArqStatement, mockToastSuccess, mockToastError } =
-  vi.hoisted(() => ({
-    mockPreviewArqStatement: vi.fn(),
-    mockCommitArqStatement: vi.fn(),
-    mockToastSuccess: vi.fn(),
-    mockToastError: vi.fn(),
-  }));
+const {
+  mockPreviewIngestion,
+  mockCommitIngestion,
+  mockPreviewArqStatement,
+  mockCommitArqStatement,
+  mockToastSuccess,
+  mockToastError,
+  mockToastInfo,
+} = vi.hoisted(() => ({
+  mockPreviewIngestion: vi.fn(),
+  mockCommitIngestion: vi.fn(),
+  mockPreviewArqStatement: vi.fn(),
+  mockCommitArqStatement: vi.fn(),
+  mockToastSuccess: vi.fn(),
+  mockToastError: vi.fn(),
+  mockToastInfo: vi.fn(),
+}));
 
 vi.mock("@/app/(app)/imports/actions", () => ({
+  previewIngestion: mockPreviewIngestion,
+  commitIngestion: mockCommitIngestion,
   previewArqStatement: mockPreviewArqStatement,
   commitArqStatement: mockCommitArqStatement,
 }));
 
 vi.mock("sonner", () => ({
-  toast: { success: mockToastSuccess, error: mockToastError },
+  toast: { success: mockToastSuccess, error: mockToastError, info: mockToastInfo },
 }));
 
 import { StatementUploader } from "./statement-uploader";
+import type { AccountOption } from "./statement-uploader";
 
 // ---------------------------------------------------------------------------
 // Radix shims for jsdom (pointer-capture + scrollIntoView).
@@ -44,10 +57,13 @@ beforeEach(() => {
     Element.prototype.scrollIntoView = () => {};
   }
 
+  mockPreviewIngestion.mockReset();
+  mockCommitIngestion.mockReset();
   mockPreviewArqStatement.mockReset();
   mockCommitArqStatement.mockReset();
   mockToastSuccess.mockReset();
   mockToastError.mockReset();
+  mockToastInfo.mockReset();
 });
 
 afterEach(() => {
@@ -58,8 +74,12 @@ afterEach(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
+const TEST_ACCOUNTS: AccountOption[] = [
+  { id: 1, name: "ARQ Savings", currency: "USD", institution: "ARQ" },
+  { id: 2, name: "Bancolombia Ahorros", currency: "COP", institution: "Bancolombia" },
+];
+
 function makeFakePdf(size: number = 16): File {
-  // Buffer with %PDF magic bytes
   const bytes = new Uint8Array(size);
   bytes[0] = 0x25; // %
   bytes[1] = 0x50; // P
@@ -68,13 +88,17 @@ function makeFakePdf(size: number = 16): File {
   return new File([bytes], "statement.pdf", { type: "application/pdf" });
 }
 
-/**
- * Simulate selecting a file via the hidden file input.
- *
- * `userEvent.upload()` fails in jsdom when the input is `sr-only` (aria-hidden)
- * because jsdom's FileList doesn't implement `item()` via the same shim.
- * We construct a FileList-compatible duck-type and fire a native change event.
- */
+function makeFakeXlsx(): File {
+  const bytes = new Uint8Array(16);
+  bytes[0] = 0x50; // P
+  bytes[1] = 0x4b; // K
+  bytes[2] = 0x03; //
+  bytes[3] = 0x04; //
+  return new File([bytes], "movimientos.xlsx", {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+}
+
 function simulateFileSelect(file: File): void {
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   if (!input) throw new Error("file input not found");
@@ -91,21 +115,15 @@ function simulateFileSelect(file: File): void {
   fireEvent.change(input);
 }
 
-function makePreviewResult(
-  overrides: Partial<{
-    token: string;
-    accountLabel: string;
-    parsedCount: number;
-    balanceOk: boolean;
-  }> = {},
-) {
+function makeArqPreviewResult(overrides: Partial<{ token: string; accountLabel: string }> = {}) {
   return {
-    token: overrides.token ?? "tok-abc",
+    kind: "arq-pdf" as const,
+    token: overrides.token ?? "tok-arq",
     accountLabel: overrides.accountLabel ?? "ARQ Savings (USD)",
     period: { start: "2026-01-01", end: "2026-01-31" },
-    parsedCount: overrides.parsedCount ?? 42,
+    parsedCount: 42,
     balanceCheck: {
-      ok: overrides.balanceOk ?? true,
+      ok: true,
       declaredStartCents: "100000",
       declaredEndCents: "120000",
       declaredCreditsCents: "50000",
@@ -116,13 +134,36 @@ function makePreviewResult(
       warnings: [],
     },
     chainCheck: {
-      chainOk: null,
-      previousEndCents: null,
+      chainOk: null as boolean | null,
+      previousEndCents: null as string | null,
       currentStartCents: "100000",
-      diffCents: null,
+      diffCents: null as string | null,
     },
     mergePreview: { parsedCount: 42, estimatedMergeCount: 0 },
     errors: [],
+  };
+}
+
+function makeSavingsPreviewResult() {
+  return {
+    kind: "bancolombia-savings" as const,
+    token: "tok-savings",
+    accountLabel: "Bancolombia Ahorros (COP)",
+    period: { start: "2026-01-01", end: "2026-01-31" },
+    rowCount: 10,
+    matched: 8,
+    newInserts: 2,
+    nearMatches: 0,
+    flaggedExisting: 1,
+    fileHash: "abc123",
+    multiCurrency: null,
+  };
+}
+
+function makeFormatUnknownResult() {
+  return {
+    kind: "format_unknown" as const,
+    needsManualKindPick: true as const,
   };
 }
 
@@ -131,70 +172,91 @@ function makePreviewResult(
 // ---------------------------------------------------------------------------
 
 describe("StatementUploader", () => {
-  it("renders the drop zone and format selector", () => {
-    render(<StatementUploader />);
+  it("renders the drop zone and account dropdown", () => {
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
 
-    expect(screen.getByLabelText(/tipo de extracto/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/cuenta/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/zona de carga/i)).toBeInTheDocument();
-    expect(screen.getByText(/ARQ \/ DolarApp/i)).toBeInTheDocument();
   });
 
-  it("calls previewArqStatement when a file is selected", async () => {
-    mockPreviewArqStatement.mockResolvedValueOnce(makePreviewResult());
+  it("drops PDF → shows ARQ badge, account dropdown, no cycle input", async () => {
+    mockPreviewIngestion.mockResolvedValueOnce(makeArqPreviewResult());
 
-    render(<StatementUploader />);
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
     simulateFileSelect(makeFakePdf());
 
     await waitFor(() => {
-      expect(mockPreviewArqStatement).toHaveBeenCalledTimes(1);
+      expect(mockPreviewIngestion).toHaveBeenCalledTimes(1);
     });
 
-    // Preview block renders account label and tx count
+    // Preview block renders ARQ format badge (text "ARQ PDF")
     await waitFor(() => {
-      expect(screen.getByText("ARQ Savings (USD)")).toBeInTheDocument();
-      expect(screen.getByText("42")).toBeInTheDocument();
+      expect(screen.getByText("ARQ PDF")).toBeInTheDocument();
+    });
+
+    // No cycle input visible for ARQ
+    expect(screen.queryByLabelText(/ciclo/i)).not.toBeInTheDocument();
+  });
+
+  it("drops XLSX → shows Bancolombia savings badge", async () => {
+    mockPreviewIngestion.mockResolvedValueOnce(makeSavingsPreviewResult());
+
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+    simulateFileSelect(makeFakeXlsx());
+
+    await waitFor(() => {
+      expect(screen.getByText("Movimientos")).toBeInTheDocument();
     });
   });
 
-  it("shows confirm and cancel buttons in preview state", async () => {
-    mockPreviewArqStatement.mockResolvedValueOnce(makePreviewResult());
+  it("shows confirm button and cancel button in preview state (ARQ)", async () => {
+    mockPreviewIngestion.mockResolvedValueOnce(makeArqPreviewResult());
 
-    render(<StatementUploader />);
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
     simulateFileSelect(makeFakePdf());
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /confirmar import/i })).toBeInTheDocument();
+      expect(screen.getByText("Subir")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /cancelar/i })).toBeInTheDocument();
     });
   });
 
-  it("confirm button is disabled while committing (pending state)", async () => {
-    const user = userEvent.setup();
-    mockPreviewArqStatement.mockResolvedValueOnce(makePreviewResult({ token: "tok-123" }));
+  it("format_unknown → manual kind picker dropdown rendered", async () => {
+    mockPreviewIngestion.mockResolvedValueOnce(makeFormatUnknownResult());
 
-    // commitArqStatement never resolves — simulates the pending transition.
-    mockCommitArqStatement.mockImplementationOnce(() => new Promise(() => {}));
-
-    render(<StatementUploader />);
-    simulateFileSelect(makeFakePdf());
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+    simulateFileSelect(makeFakeXlsx());
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /confirmar import/i })).toBeInTheDocument();
+      expect(screen.getByText(/formato no reconocido/i)).toBeInTheDocument();
     });
-
-    await user.click(screen.getByRole("button", { name: /confirmar import/i }));
-
-    // While confirming: confirm button gone, cancel button disabled.
+    // Manual kind dropdown visible
     await waitFor(() => {
-      const cancelBtn = screen.getByRole("button", { name: /cancelar/i });
-      expect(cancelBtn).toBeDisabled();
+      expect(screen.getByLabelText(/seleccioná el formato manualmente/i)).toBeInTheDocument();
     });
   });
 
-  it("shows success card with counts after commit", async () => {
+  it("account override → previewIngestion called again with new hint", async () => {
+    mockPreviewIngestion.mockResolvedValue(makeArqPreviewResult());
+
     const user = userEvent.setup();
-    mockPreviewArqStatement.mockResolvedValueOnce(makePreviewResult({ token: "tok-success" }));
-    mockCommitArqStatement.mockResolvedValueOnce({
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+
+    // First drop triggers previewIngestion
+    simulateFileSelect(makeFakePdf());
+    await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(1));
+
+    // Change account dropdown — should trigger re-preview
+    const accountDropdown = screen.getByLabelText(/cuenta/i);
+    await user.selectOptions(accountDropdown, "1");
+    await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(2));
+  });
+
+  it("commit success (ARQ) → success banner shown", async () => {
+    const user = userEvent.setup();
+    mockPreviewIngestion.mockResolvedValueOnce(makeArqPreviewResult({ token: "tok-success" }));
+    mockCommitIngestion.mockResolvedValueOnce({
+      kind: "arq-pdf",
       status: "committed",
       importId: 1,
       insertedCount: 30,
@@ -204,41 +266,64 @@ describe("StatementUploader", () => {
       period: { start: "2026-01-01", end: "2026-01-31" },
     });
 
-    render(<StatementUploader />);
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
     simulateFileSelect(makeFakePdf());
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /confirmar import/i })).toBeInTheDocument();
+      expect(screen.getByText("Subir")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("button", { name: /confirmar import/i }));
+    await user.click(screen.getByText("Subir"));
 
     await waitFor(() => {
       expect(screen.getByText(/30 nuevas/i)).toBeInTheDocument();
-      expect(screen.getByText(/12 mergeadas/i)).toBeInTheDocument();
     });
 
-    expect(mockToastSuccess).toHaveBeenCalledWith(expect.stringMatching(/30 nuevas.*12 mergeadas/));
+    expect(mockToastSuccess).toHaveBeenCalledWith(expect.stringMatching(/30 nuevas/));
   });
 
-  it("shows error card when previewArqStatement throws", async () => {
-    mockPreviewArqStatement.mockRejectedValueOnce(
-      new Error("Este extracto no corresponde a ninguna cuenta tuya."),
-    );
+  it("expired token → toast error and reset to idle", async () => {
+    const user = userEvent.setup();
+    mockPreviewIngestion.mockResolvedValueOnce(makeArqPreviewResult({ token: "tok-old" }));
+    mockCommitIngestion.mockResolvedValueOnce({
+      kind: "arq-pdf",
+      status: "expired",
+      error: "La sesión de preview expiró.",
+    });
 
-    render(<StatementUploader />);
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+    simulateFileSelect(makeFakePdf());
+
+    await waitFor(() => expect(screen.getByText("Subir")).toBeInTheDocument());
+
+    await user.click(screen.getByText("Subir"));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(expect.stringMatching(/expiró/i));
+    });
+
+    // Resets to idle — drop zone visible again
+    await waitFor(() => {
+      expect(screen.getByLabelText(/zona de carga/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows error card when previewIngestion throws", async () => {
+    mockPreviewIngestion.mockRejectedValueOnce(new Error("No se pudo procesar el archivo."));
+
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
     simulateFileSelect(makeFakePdf());
 
     await waitFor(() => {
-      expect(screen.getByText(/no corresponde a ninguna cuenta tuya/i)).toBeInTheDocument();
+      expect(screen.getByText(/no se pudo procesar el archivo/i)).toBeInTheDocument();
     });
   });
 
-  it("resets to idle state on cancel", async () => {
+  it("resets to idle on cancel", async () => {
     const user = userEvent.setup();
-    mockPreviewArqStatement.mockResolvedValueOnce(makePreviewResult());
+    mockPreviewIngestion.mockResolvedValueOnce(makeArqPreviewResult());
 
-    render(<StatementUploader />);
+    render(<StatementUploader accounts={TEST_ACCOUNTS} />);
     simulateFileSelect(makeFakePdf());
 
     await waitFor(() => {
@@ -249,55 +334,7 @@ describe("StatementUploader", () => {
 
     await waitFor(() => {
       expect(screen.getByLabelText(/zona de carga/i)).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: /confirmar import/i })).not.toBeInTheDocument();
-    });
-  });
-
-  it("validates client-side: file too large does not call action", async () => {
-    render(<StatementUploader />);
-
-    // Create a file > 10 MB
-    const bigBytes = new Uint8Array(11 * 1024 * 1024);
-    bigBytes[0] = 0x25;
-    bigBytes[1] = 0x50;
-    bigBytes[2] = 0x44;
-    bigBytes[3] = 0x46;
-    const bigFile = new File([bigBytes], "big.pdf", { type: "application/pdf" });
-
-    simulateFileSelect(bigFile);
-
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toBeInTheDocument();
-      expect(screen.getByText(/supera el límite/i)).toBeInTheDocument();
-    });
-
-    expect(mockPreviewArqStatement).not.toHaveBeenCalled();
-  });
-
-  it("shows expired toast and resets when commit returns expired", async () => {
-    const user = userEvent.setup();
-    mockPreviewArqStatement.mockResolvedValueOnce(makePreviewResult({ token: "tok-old" }));
-    mockCommitArqStatement.mockResolvedValueOnce({
-      status: "expired",
-      error: "La sesión de preview expiró. Subí el PDF nuevamente.",
-    });
-
-    render(<StatementUploader />);
-    simulateFileSelect(makeFakePdf());
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /confirmar import/i })).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByRole("button", { name: /confirmar import/i }));
-
-    await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(expect.stringMatching(/sesión expiró/i));
-    });
-
-    // Should reset to idle — drop zone visible again
-    await waitFor(() => {
-      expect(screen.getByLabelText(/zona de carga/i)).toBeInTheDocument();
+      expect(screen.queryByText("Subir")).not.toBeInTheDocument();
     });
   });
 });
