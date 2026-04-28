@@ -1,16 +1,20 @@
 // globalThis singleton guards against Turbopack/HMR re-entering registerNode()
-// and spawning duplicate cron schedules.
+// and spawning duplicate BullMQ repeat schedules.
 declare global {
   var __findashBgRegistered: boolean | undefined;
 }
 
 /**
  * Node-runtime instrumentation body — runs once per worker on boot. Registers:
- * - recurring-gap detector cron (monthly)
- * - per-user health snapshot cron (daily 03:00 America/Bogota)
- * - slo-alerts cron (every 30 min)
  * - fx-refresh BullMQ recurring job (twice daily, 06:15 and 18:15 America/Bogota)
- * - gmail-pull cron (every 5 min)
+ * - recurring-gap BullMQ recurring job (monthly, day 5 at 06:00 America/Bogota)
+ * - health-snapshots BullMQ recurring job (daily 03:00 America/Bogota)
+ * - slo-alerts BullMQ recurring job (every 30 min)
+ * - gmail-pull BullMQ recurring job (every 5 min)
+ * - classify-tx BullMQ worker (on-demand jobs from import pipelines and UI)
+ *
+ * node-cron is fully removed — all scheduling goes through BullMQ (#593).
+ * Manual overrides use Bull-Board's Promote/Retry buttons.
  *
  * Telegram used to run a long-poll worker here; #185 moved it to per-user
  * webhooks (`src/app/api/telegram/webhook/[botId]/route.ts`) so there is no
@@ -25,36 +29,58 @@ export async function registerNode() {
   if (globalThis.__findashBgRegistered) return;
   globalThis.__findashBgRegistered = true;
 
-  const cron = (await import("node-cron")).default;
-  const { closePreviousMonthForAllUsers } = await import("@/lib/recurring/gap-detector");
-  const { snapshotAllActiveUsers } = await import("@/lib/telemetry/user-health");
-  const { checkAndAlertSlos } = await import("@/lib/observability/slo-alerts");
   const { getCurrentFxRate } = await import("@/lib/fx/repo");
-  const { pullAllActiveConnections } = await import("@/lib/gmail/pull");
   const { createLogger } = await import("@/lib/logger");
   const { createQueue, registerGracefulShutdown } = await import("@/lib/queue");
   const { createFxRefreshWorker } = await import("@/lib/queue/workers/fx-refresh");
   const { createClassifyTxWorker } = await import("@/lib/queue/workers/classify-tx");
+  const { createRecurringGapWorker } = await import("@/lib/queue/workers/recurring-gap");
+  const { createHealthSnapshotsWorker } = await import("@/lib/queue/workers/health-snapshots");
+  const { createSloAlertsWorker } = await import("@/lib/queue/workers/slo-alerts");
+  const { createGmailPullWorker } = await import("@/lib/queue/workers/gmail-pull");
   const log = createLogger({ module: "instrumentation" });
 
   // -------------------------------------------------------------------------
-  // BullMQ: fx-refresh worker + recurring schedule
+  // BullMQ: create all queues and workers
   //
-  // jobId is the idempotency key for the repeat entry — without it, every
+  // jobId is the idempotency key for repeat entries — without it, every
   // Next.js restart would add another copy of the schedule to Redis.
   // With it, BullMQ deduplicates to exactly one recurring job regardless of
   // how many times registerNode() runs (the globalThis guard above also helps,
   // but jobId is the true safety net at the BullMQ layer).
   // -------------------------------------------------------------------------
+
+  // fx-refresh: twice daily at 06:15 and 18:15 COT
   const fxQueue = createQueue("fx-refresh");
   createFxRefreshWorker();
 
-  // classify-tx worker — processes AI classification jobs enqueued by
-  // runAiClassifier (server action) and future import pipelines (#591).
+  // classify-tx: on-demand, no repeat schedule
   createQueue("classify-tx");
   createClassifyTxWorker();
 
+  // recurring-gap: monthly, day 5 at 06:00 COT
+  const recurringGapQueue = createQueue("recurring-gap");
+  createRecurringGapWorker();
+
+  // health-snapshots: daily at 03:00 COT
+  const healthSnapshotsQueue = createQueue("health-snapshots");
+  createHealthSnapshotsWorker();
+
+  // slo-alerts: every 30 min
+  const sloAlertsQueue = createQueue("slo-alerts");
+  createSloAlertsWorker();
+
+  // gmail-pull: every 5 min — fan-out to all active connections
+  const gmailPullQueue = createQueue("gmail-pull");
+  createGmailPullWorker();
+
+  // Graceful shutdown is idempotent — safe to call once after all workers are
+  // registered.
   registerGracefulShutdown();
+
+  // -------------------------------------------------------------------------
+  // Register recurring schedules
+  // -------------------------------------------------------------------------
 
   await fxQueue.add(
     "fx-refresh",
@@ -67,123 +93,55 @@ export async function registerNode() {
 
   // Day 5 of each month at 06:00 America/Bogota — gives a 4-day grace window
   // for late-posting SMS/Apple Pay events before we finalize gaps.
-  cron.schedule(
-    "0 6 5 * *",
-    async () => {
-      try {
-        const results = await closePreviousMonthForAllUsers();
-        for (const entry of results) {
-          if (entry.ok) {
-            log.info(
-              { userId: entry.userId, result: entry.result, event: "recurring_gap_closed" },
-              `recurring-gap detector closed ${entry.result.yearMonth}`,
-            );
-          } else {
-            log.error(
-              { err: entry.error, userId: entry.userId, event: "recurring_gap_failed" },
-              "recurring-gap detector failed",
-            );
-          }
-        }
-      } catch (err) {
-        log.error(
-          { err, event: "recurring_gap_fanout_failed" },
-          "recurring-gap detector fan-out failed",
-        );
-      }
+  await recurringGapQueue.add(
+    "recurring-gap",
+    {},
+    {
+      repeat: { pattern: "0 6 5 * *", tz: "America/Bogota" },
+      jobId: "recurring-gap-recurring",
     },
-    { timezone: "America/Bogota" },
   );
 
   // 03:00 COT daily — early enough to be ready before the operator checks
   // /admin/health in the morning, late enough that yesterday's last SMS had
   // time to land.
-  cron.schedule(
-    "0 3 * * *",
-    async () => {
-      try {
-        const results = await snapshotAllActiveUsers();
-        const churned = results.filter((r) => r.ok && r.data.churnSignalFlag).length;
-        const failed = results.filter((r) => !r.ok).length;
-        log.info(
-          { total: results.length, churned, failed, event: "user_health_snapshots_done" },
-          "user-health snapshots",
-        );
-        for (const entry of results) {
-          if (!entry.ok) {
-            log.error(
-              { err: entry.error, userId: entry.userId, event: "user_health_snapshot_failed" },
-              "user-health snapshot failed",
-            );
-          }
-        }
-      } catch (err) {
-        log.error(
-          { err, event: "user_health_fanout_failed" },
-          "user-health snapshot fan-out failed",
-        );
-      }
+  await healthSnapshotsQueue.add(
+    "health-snapshots",
+    {},
+    {
+      repeat: { pattern: "0 3 * * *", tz: "America/Bogota" },
+      jobId: "health-snapshots-recurring",
     },
-    { timezone: "America/Bogota" },
   );
 
   // Every 30 min — evaluate each SLO over a rolling 48h window and fire /
   // resolve Telegram alerts (#329 PR3, #341 wiring). Finer granularity is
   // wasteful: the 48h window swallows sub-half-hour deltas. Dedup is built
   // into `slo_alerts` (at most one unresolved row per sloKey).
-  cron.schedule(
-    "*/30 * * * *",
-    async () => {
-      try {
-        const decisions = await checkAndAlertSlos();
-        const fired = decisions.filter((d) => d.action === "fire").length;
-        const resolved = decisions.filter((d) => d.action === "resolve").length;
-        const noops = decisions.filter((d) => d.action === "noop").length;
-        log.info(
-          { total: decisions.length, fired, resolved, noops, event: "slo_alerts_checked" },
-          "slo-alerts tick",
-        );
-      } catch (err) {
-        log.error({ err, event: "slo_alerts_check_failed" }, "slo-alerts check failed");
-      }
+  await sloAlertsQueue.add(
+    "slo-alerts",
+    {},
+    {
+      repeat: { pattern: "*/30 * * * *", tz: "America/Bogota" },
+      jobId: "slo-alerts-recurring",
     },
-    { timezone: "America/Bogota" },
   );
 
-  // Hourly Gmail enrichment pull (#452, Epic G). Each tick fans out over
-  // every active gmail_connections row and pulls new gateway receipts +
-  // Bancolombia emails into email_receipts. Per-user failures are logged
-  // but do NOT break the loop — one user's revoked token cannot block the
-  // others. Manual backfills go through /enriquecer (bot) or
-  // POST /api/cron/gmail-pull.
-  cron.schedule(
-    "*/5 * * * *",
-    async () => {
-      try {
-        const results = await pullAllActiveConnections();
-        const totalPulled = results.reduce((acc, r) => acc + r.pulled, 0);
-        const totalSkipped = results.reduce((acc, r) => acc + r.skipped, 0);
-        const withErrors = results.filter((r) => r.errors.length > 0).length;
-        log.info(
-          {
-            users: results.length,
-            pulled: totalPulled,
-            skipped: totalSkipped,
-            withErrors,
-            event: "gmail_pull_cron_tick",
-          },
-          "gmail pull cron tick",
-        );
-      } catch (err) {
-        log.error({ err, event: "gmail_pull_fanout_failed" }, "gmail pull fan-out failed");
-      }
+  // Every 5 min — fan-out over every active gmail_connections row. Per-user
+  // failures are logged but do NOT break the loop. Manual overrides go through
+  // Bull-Board's Promote/Retry buttons (#593).
+  await gmailPullQueue.add(
+    "gmail-pull",
+    { mode: "all" },
+    {
+      repeat: { pattern: "*/5 * * * *", tz: "America/Bogota" },
+      jobId: "gmail-pull-recurring",
     },
-    { timezone: "America/Bogota" },
   );
 
   log.info(
-    { event: "crons_registered" },
-    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *) America/Bogota; fx-refresh via BullMQ (15 6,18 * * *); classify-tx worker registered",
+    { event: "workers_registered" },
+    "BullMQ workers registered: fx-refresh (15 6,18 * * *), recurring-gap (0 6 5 * *), health-snapshots (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *) America/Bogota; classify-tx on-demand",
   );
 
   // Backfill on boot when the last known rate is stale (source=fallback,
