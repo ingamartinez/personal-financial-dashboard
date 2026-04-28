@@ -21,10 +21,7 @@ const log = createLogger({ module: "classify-enqueue" });
  * Per memory `per-user-table-join-tenant-safety.md` (#336/#338): trust no
  * caller-provided invariant; enforce at the DB layer.
  */
-export async function classifyByRuleThenEnqueue(
-  userId: number,
-  txIds: number[],
-): Promise<void> {
+export async function classifyByRuleThenEnqueue(userId: number, txIds: number[]): Promise<void> {
   if (txIds.length === 0) return;
 
   // Fetch the minimal fields needed for rule matching in a single query.
@@ -35,12 +32,7 @@ export async function classifyByRuleThenEnqueue(
       merchant: transactions.merchant,
     })
     .from(transactions)
-    .where(
-      and(
-        eq(transactions.userId, userId),
-        inArray(transactions.id, txIds),
-      ),
-    );
+    .where(and(eq(transactions.userId, userId), inArray(transactions.id, txIds)));
 
   const unclassifiedIds: number[] = [];
 
@@ -62,12 +54,7 @@ export async function classifyByRuleThenEnqueue(
           classificationConfidence: match.confidence,
           updatedAt: new Date(),
         })
-        .where(
-          and(
-            eq(transactions.userId, userId),
-            eq(transactions.id, row.id),
-          ),
-        );
+        .where(and(eq(transactions.userId, userId), eq(transactions.id, row.id)));
       log.info(
         {
           event: "rule_matched_on_import",
@@ -98,19 +85,13 @@ export async function classifyByRuleThenEnqueue(
  * "unclassified" state and can be retried via the "Classify All Pending"
  * button (#592). Import correctness MUST NOT depend on Redis being up.
  */
-export async function enqueueClassification(
-  userId: number,
-  txIds: number[],
-): Promise<void> {
+export async function enqueueClassification(userId: number, txIds: number[]): Promise<void> {
   if (txIds.length === 0) return;
 
   try {
     const queue = createQueue<ClassifyTxJobData>("classify-tx");
     await queue.add("classify-tx", { userId, mode: "specific", txIds });
-    log.info(
-      { event: "classify_enqueued", userId, count: txIds.length },
-      "classify-tx enqueued",
-    );
+    log.info({ event: "classify_enqueued", userId, count: txIds.length }, "classify-tx enqueued");
   } catch (err) {
     log.error(
       { err, event: "classify_enqueue_failed", userId, count: txIds.length },

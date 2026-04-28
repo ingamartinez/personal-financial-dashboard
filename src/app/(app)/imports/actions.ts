@@ -989,7 +989,7 @@ async function _commitTcDetallado(
     sheets.push({
       accountId: targetAccountId,
       accountLabel: formatAccountLabel(targetAccount),
-      inserted: (r.insertedTxIds?.length ?? 0),
+      inserted: r.insertedTxIds?.length ?? 0,
       matched: r.matchStats.matched,
     });
   }
