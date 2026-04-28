@@ -5,10 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Sparkles, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  runAiClassifier,
-  enqueueClassifyAllPending,
-} from "@/app/(app)/transactions/actions";
+import { runAiClassifier, enqueueClassifyAllPending } from "@/app/(app)/transactions/actions";
 
 export function AiClassifyButton({ unclassified }: { unclassified: number }) {
   const router = useRouter();
@@ -68,9 +65,7 @@ export function DrainAllPendingButton({ unclassified }: { unclassified: number }
           toast.info("No pending transactions to classify");
           return;
         }
-        toast.success(
-          `Encolados ${res.enqueued.toLocaleString()} — te aviso cuando termine`,
-        );
+        toast.success(`Encolados ${res.enqueued.toLocaleString()} — te aviso cuando termine`);
         router.refresh();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to enqueue drain job");
