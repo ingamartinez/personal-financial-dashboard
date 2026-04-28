@@ -1,29 +1,69 @@
 "use client";
 
-// Statement PDF uploader component.
+// Unified statement uploader — Phase 2 rewrite.
 //
-// Handles drag-and-drop + file picker, client-side validation, preview
-// rendering, and the confirm/cancel flow. Extensible for future statement
-// formats via the `format` select.
+// A single drop-zone accepts both PDF and XLSX. After drop, calls
+// previewIngestion which auto-detects the format. Preview panel shows:
+//   - Format badge (detected kind)
+//   - Account dropdown (ALWAYS visible — pre-filled from hint/detection)
+//   - Cycle input (ONLY for bancolombia-tc-detallado)
+//   - Multi-currency banner when applicable
+//   - Per-kind detail (ARQ: balance + chain check; Bancolombia: match counts)
+//   - Manual format picker ONLY when kind === "format_unknown"
+//
+// formatAccountLabel is always used — never inline account.name.
+// (Memory: prod-accounts-seeded-2026-04-19, formatAccountLabel-must-not-inline-account-name)
 
 import { useCallback, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
+
 import { Button } from "@/components/ui/button";
-import { previewArqStatement, commitArqStatement } from "@/app/(app)/imports/actions";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { previewIngestion, commitIngestion } from "@/app/(app)/imports/actions";
+import { formatAccountLabel } from "@/lib/accounts/format";
+import { FormatBadge } from "./format-badge";
+
 import type {
-  ImportPreviewResult,
-  ImportCommitResult,
-  StatementFormat,
-} from "@/app/(app)/imports/_types";
+  ImportPreviewResultV2,
+  UnifiedCommitResult,
+  IngestionKind,
+  ArqPreviewResult,
+  BancolombiaPreviewResult,
+  TcDetalladoPreviewResult,
+} from "@/app/(app)/imports/_dispatch-ui-types";
 
 // ---------------------------------------------------------------------------
-// Constants / helpers
+// Types
 // ---------------------------------------------------------------------------
 
-const MAX_PDF_BYTES = 10 * 1024 * 1024;
-const FORMATS: { value: StatementFormat; label: string }[] = [
-  { value: "arq", label: "ARQ / DolarApp" },
-];
+export type AccountOption = {
+  id: number;
+  name: string;
+  currency: string;
+  institution?: string | null;
+  metadata?: { last4s?: string[] | null } | null;
+};
+
+type UploaderProps = {
+  accounts: AccountOption[];
+  initialHint?: {
+    accountId?: number;
+    cycle?: string;
+  };
+};
+
+type Phase =
+  | { kind: "idle" }
+  | { kind: "previewing" }
+  | { kind: "preview"; data: ImportPreviewResultV2 }
+  | { kind: "confirming" }
+  | { kind: "done"; result: UnifiedCommitResult }
+  | { kind: "error"; message: string };
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function formatCents(centsStr: string): string {
   const cents = BigInt(centsStr);
@@ -41,8 +81,16 @@ function periodLabel(start: string, _end: string): string {
   return d.toLocaleDateString("es-CO", { month: "long", year: "numeric" });
 }
 
+const MANUAL_KIND_OPTIONS: { value: IngestionKind; label: string }[] = [
+  { value: "arq-pdf", label: "ARQ PDF" },
+  { value: "bancolombia-savings", label: "Bancolombia Movimientos (4 col)" },
+  { value: "bancolombia-extracto", label: "Bancolombia Extracto Mensual (6 col)" },
+  { value: "bancolombia-tc-legacy", label: "Bancolombia TC Legacy" },
+  { value: "bancolombia-tc-detallado", label: "Bancolombia TC Detallado" },
+];
+
 // ---------------------------------------------------------------------------
-// Sub-components
+// DropZone
 // ---------------------------------------------------------------------------
 
 function DropZone({ onFile, disabled }: { onFile: (file: File) => void; disabled: boolean }) {
@@ -65,9 +113,7 @@ function DropZone({ onFile, disabled }: { onFile: (file: File) => void; disabled
     setDragging(true);
   }, []);
 
-  const handleDragLeave = useCallback(() => {
-    setDragging(false);
-  }, []);
+  const handleDragLeave = useCallback(() => setDragging(false), []);
 
   const handleClick = () => {
     if (!disabled) inputRef.current?.click();
@@ -77,7 +123,6 @@ function DropZone({ onFile, disabled }: { onFile: (file: File) => void; disabled
     const file = e.target.files?.[0];
     if (file) {
       onFile(file);
-      // Reset input so the same file can be dropped again after cancel.
       e.target.value = "";
     }
   };
@@ -86,7 +131,7 @@ function DropZone({ onFile, disabled }: { onFile: (file: File) => void; disabled
     <div
       role="button"
       tabIndex={disabled ? -1 : 0}
-      aria-label="Zona de carga — hacé click o soltá un PDF aquí"
+      aria-label="Zona de carga — hacé click o soltá un archivo aquí"
       aria-disabled={disabled}
       onClick={handleClick}
       onKeyDown={(e) => {
@@ -109,13 +154,13 @@ function DropZone({ onFile, disabled }: { onFile: (file: File) => void; disabled
         📄
       </div>
       <p className="text-muted-foreground text-center text-sm">
-        Soltá el PDF aquí o hacé click para seleccionar
+        Soltá el archivo aquí o hacé click para seleccionar
       </p>
-      <p className="text-muted-foreground/60 text-xs">Solo PDFs, máximo 10 MB</p>
+      <p className="text-muted-foreground/60 text-xs">PDF o XLSX · PDF máx 10 MB · XLSX máx 5 MB</p>
       <input
         ref={inputRef}
         type="file"
-        accept="application/pdf,.pdf"
+        accept=".pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         className="sr-only"
         aria-hidden
         tabIndex={-1}
@@ -124,6 +169,48 @@ function DropZone({ onFile, disabled }: { onFile: (file: File) => void; disabled
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// AccountDropdown
+// ---------------------------------------------------------------------------
+
+function AccountDropdown({
+  accounts,
+  value,
+  onChange,
+  disabled,
+}: {
+  accounts: AccountOption[];
+  value: number | null;
+  onChange: (id: number | null) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor="uploader-account" className="text-sm font-medium">
+        Cuenta
+      </label>
+      <select
+        id="uploader-account"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
+        disabled={disabled}
+        className="bg-background focus:ring-ring w-full rounded-md border px-3 py-2 text-sm focus:ring-2 focus:outline-none disabled:opacity-50"
+      >
+        <option value="">Seleccioná una cuenta...</option>
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>
+            {formatAccountLabel(a)}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ARQ preview detail
+// ---------------------------------------------------------------------------
 
 function BalanceRow({
   label,
@@ -155,41 +242,14 @@ function BalanceRow({
   );
 }
 
-function PreviewCard({
-  preview,
-  onConfirm,
-  onCancel,
-  confirming,
-}: {
-  preview: ImportPreviewResult;
-  onConfirm: () => void;
-  onCancel: () => void;
-  confirming: boolean;
-}) {
+function ArqPreviewDetail({ preview }: { preview: ArqPreviewResult }) {
   const { balanceCheck, chainCheck } = preview;
-
   return (
-    <div className="flex flex-col gap-4 rounded-xl border p-5">
-      {/* Header */}
-      <div>
-        <h2 className="text-sm font-semibold">Cuenta detectada</h2>
-        <p className="text-muted-foreground text-sm">{preview.accountLabel}</p>
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-muted-foreground">Transacciones</span>
+        <span className="font-medium">{preview.parsedCount}</span>
       </div>
-
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold">Período</h2>
-          <p className="text-muted-foreground text-sm">
-            {periodLabel(preview.period.start, preview.period.end)}
-          </p>
-        </div>
-        <div className="text-right">
-          <h2 className="text-sm font-semibold">Transacciones</h2>
-          <p className="text-muted-foreground text-sm">{preview.parsedCount}</p>
-        </div>
-      </div>
-
-      {/* Balance reconciliation */}
       <div className="bg-muted/30 flex flex-col gap-2 rounded-lg p-4">
         <div className="mb-1 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Reconciliación</h3>
@@ -208,7 +268,6 @@ function PreviewCard({
         <BalanceRow label="Retiros" centsStr={balanceCheck.declaredDebitsCents} sign="-" />
         <div className="border-muted-foreground/20 my-1 border-t" />
         <BalanceRow label="Balance final" centsStr={balanceCheck.declaredEndCents} />
-
         {!balanceCheck.ok && balanceCheck.errors.length > 0 && (
           <div className="mt-2 rounded-md bg-rose-50 p-3 dark:bg-rose-950/20">
             {balanceCheck.errors.map((err, i) => (
@@ -218,7 +277,6 @@ function PreviewCard({
             ))}
           </div>
         )}
-
         {balanceCheck.warnings.length > 0 && (
           <div className="mt-2 rounded-md bg-amber-50 p-3 dark:bg-amber-950/20">
             {balanceCheck.warnings.map((w, i) => (
@@ -229,67 +287,158 @@ function PreviewCard({
           </div>
         )}
       </div>
-
-      {/* Chain check */}
       {chainCheck.chainOk === false && chainCheck.diffCents !== null && (
         <div className="flex gap-2 rounded-md bg-amber-50 p-3 text-xs text-amber-700 dark:bg-amber-950/20 dark:text-amber-400">
           <span aria-hidden>⚠️</span>
           <span>
-            El balance inicial de este extracto ({formatCents(chainCheck.currentStartCents)}) no
-            coincide con el balance final del extracto anterior (
-            {formatCents(chainCheck.previousEndCents!)}). Diferencia:{" "}
-            {formatCents(chainCheck.diffCents)}.
+            El balance inicial ({formatCents(chainCheck.currentStartCents)}) no coincide con el
+            balance final del extracto anterior ({formatCents(chainCheck.previousEndCents!)}).
+            Diferencia: {formatCents(chainCheck.diffCents)}.
           </span>
         </div>
       )}
-
-      {/* Reconcile failure warning */}
-      {!balanceCheck.ok && (
-        <div className="flex gap-2 rounded-md bg-rose-50/80 p-3 text-xs text-rose-700 dark:bg-rose-950/20 dark:text-rose-400">
-          <span aria-hidden>⚠️</span>
-          <span>
-            El parser no logró cuadrar los números. Si confirmás la importación, las transacciones
-            NO se insertarán. El extracto quedará registrado para auditoría.{" "}
-            <a
-              href="https://github.com/ingamartinez/personal-financial-dashboard/issues/new"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline"
-            >
-              Reportá esto con el PDF.
-            </a>
-          </span>
-        </div>
-      )}
-
-      {/* Action buttons */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-        <Button variant="outline" onClick={onCancel} disabled={confirming}>
-          Cancelar
-        </Button>
-        <Button onClick={onConfirm} disabled={confirming} aria-busy={confirming}>
-          {confirming ? "Importando..." : "Confirmar import"}
-        </Button>
-      </div>
     </div>
   );
 }
 
-function SuccessCard({ result, onReset }: { result: ImportCommitResult; onReset: () => void }) {
-  const periodStr = result.period
-    ? periodLabel(result.period.start, result.period.end)
-    : "extracto";
+// ---------------------------------------------------------------------------
+// Bancolombia preview detail
+// ---------------------------------------------------------------------------
 
+function BancolombiaPreviewDetail({ preview }: { preview: BancolombiaPreviewResult }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Badge variant="outline" className="bg-emerald-50 text-emerald-900">
+        {preview.matched} matched
+      </Badge>
+      <Badge variant="outline" className="bg-sky-50 text-sky-900">
+        {preview.newInserts} nuevas
+      </Badge>
+      {preview.nearMatches > 0 && (
+        <Badge variant="outline" className="bg-amber-50 text-amber-900">
+          {preview.nearMatches} near-match
+        </Badge>
+      )}
+      <Badge variant="outline" className="bg-amber-50 text-amber-900">
+        {preview.flaggedExisting} marcadas
+      </Badge>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TC Detallado preview detail
+// ---------------------------------------------------------------------------
+
+function TcDetalladoPreviewDetail({ preview }: { preview: TcDetalladoPreviewResult }) {
+  return (
+    <div className="flex flex-col gap-3">
+      {preview.reports.map((r) => (
+        <div key={r.accountId} className="rounded-lg border p-3 text-sm">
+          <div className="mb-2 font-medium">{r.accountLabel}</div>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant="outline" className="bg-emerald-50 text-emerald-900">
+              {r.matchStats.matched} matched
+            </Badge>
+            <Badge variant="outline" className="bg-sky-50 text-sky-900">
+              {r.matchStats.insertedMissing} insertar
+            </Badge>
+            <Badge variant="outline" className="text-muted-foreground">
+              {r.matchStats.unmatchedInLedger} sin match
+            </Badge>
+          </div>
+          <p className="text-muted-foreground mt-2 text-xs">
+            Intereses: {r.intereses.status}
+            {r.intereses.txId ? ` (tx ${r.intereses.txId})` : ""}
+            {r.intereses.reason ? ` — ${r.intereses.reason}` : ""}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Multi-currency banner
+// ---------------------------------------------------------------------------
+
+function MultiCurrencyBanner({
+  info,
+}: {
+  info: NonNullable<(BancolombiaPreviewResult | TcDetalladoPreviewResult)["multiCurrency"]>;
+}) {
+  return (
+    <Alert className="border-sky-400/40 bg-sky-50 dark:bg-sky-950/40">
+      <AlertDescription className="text-sm text-sky-900 dark:text-sky-200">
+        <strong>Tarjeta multi-moneda detectada.</strong> Se aplicará a {info.rowsByCurrency.COP} fil
+        {info.rowsByCurrency.COP === 1 ? "a" : "as"} COP + {info.rowsByCurrency.USD} fil
+        {info.rowsByCurrency.USD === 1 ? "a" : "as"} USD → {info.siblingAccountLabel}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SuccessCard
+// ---------------------------------------------------------------------------
+
+function SuccessCard({ result, onReset }: { result: UnifiedCommitResult; onReset: () => void }) {
+  if (result.kind === "arq-pdf") {
+    const periodStr = result.period
+      ? periodLabel(result.period.start, result.period.end)
+      : "extracto";
+    return (
+      <div className="flex flex-col items-center gap-4 rounded-xl border border-emerald-200 bg-emerald-50 p-8 text-center dark:border-emerald-800/30 dark:bg-emerald-950/20">
+        <div className="text-4xl" aria-hidden>
+          ✅
+        </div>
+        <div>
+          <h2 className="font-semibold">Statement {periodStr} importado</h2>
+          <p className="text-muted-foreground mt-1 text-sm">
+            {result.insertedCount ?? 0} nuevas &bull; {result.mergedCount ?? 0} mergeadas &bull;{" "}
+            {result.flaggedCount ?? 0} marcadas
+          </p>
+        </div>
+        <Button variant="outline" onClick={onReset}>
+          Importar otro extracto
+        </Button>
+      </div>
+    );
+  }
+
+  if (result.kind === "bancolombia-tc-detallado") {
+    return (
+      <div className="flex flex-col items-center gap-4 rounded-xl border border-emerald-200 bg-emerald-50 p-8 text-center dark:border-emerald-800/30 dark:bg-emerald-950/20">
+        <div className="text-4xl" aria-hidden>
+          ✅
+        </div>
+        <div>
+          <h2 className="font-semibold">Ciclo {result.cycle} consolidado</h2>
+          {result.sheets &&
+            result.sheets.map((s) => (
+              <p key={s.accountId} className="text-muted-foreground mt-1 text-sm">
+                {s.accountLabel}: {s.inserted} insertadas, {s.matched} matched
+              </p>
+            ))}
+        </div>
+        <Button variant="outline" onClick={onReset}>
+          Importar otro extracto
+        </Button>
+      </div>
+    );
+  }
+
+  // Bancolombia savings/extracto/tc-legacy
   return (
     <div className="flex flex-col items-center gap-4 rounded-xl border border-emerald-200 bg-emerald-50 p-8 text-center dark:border-emerald-800/30 dark:bg-emerald-950/20">
       <div className="text-4xl" aria-hidden>
         ✅
       </div>
       <div>
-        <h2 className="font-semibold">Statement {periodStr} importado</h2>
+        <h2 className="font-semibold">Extracto aplicado</h2>
         <p className="text-muted-foreground mt-1 text-sm">
-          {result.insertedCount ?? 0} nuevas &bull; {result.mergedCount ?? 0} mergeadas &bull;{" "}
-          {result.flaggedCount ?? 0} marcadas para revisión
+          {result.inserted ?? 0} insertadas &bull; {result.matched ?? 0} matched &bull;{" "}
+          {result.flagged ?? 0} marcadas
         </p>
       </div>
       <Button variant="outline" onClick={onReset}>
@@ -303,91 +452,101 @@ function SuccessCard({ result, onReset }: { result: ImportCommitResult; onReset:
 // Main component
 // ---------------------------------------------------------------------------
 
-type Phase =
-  | { kind: "idle" }
-  | { kind: "previewing" }
-  | { kind: "preview"; data: ImportPreviewResult }
-  | { kind: "confirming" }
-  | { kind: "done"; result: ImportCommitResult }
-  | { kind: "error"; message: string };
-
-export function StatementUploader() {
-  const [format, setFormat] = useState<StatementFormat>("arq");
+export function StatementUploader({ accounts, initialHint }: UploaderProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(
+    initialHint?.accountId ?? null,
+  );
+  const [cycleInput, setCycleInput] = useState<string>(initialHint?.cycle ?? "");
+  const [manualKind, setManualKind] = useState<IngestionKind | null>(null);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [_isPending, startTransition] = useTransition();
 
-  const handleFile = useCallback(
-    (file: File) => {
-      // Client-side validation
-      if (!file.type.includes("pdf") && !file.name.endsWith(".pdf")) {
-        setPhase({ kind: "error", message: "El archivo debe ser un PDF." });
-        return;
-      }
-      if (file.size > MAX_PDF_BYTES) {
-        setPhase({
-          kind: "error",
-          message: `El archivo supera el límite de 10 MB (${(file.size / 1_048_576).toFixed(1)} MB).`,
-        });
-        return;
-      }
-
+  const triggerPreview = useCallback(
+    (file: File, overrideAccountId?: number | null) => {
+      setPendingFile(file);
       setPhase({ kind: "previewing" });
 
       startTransition(async () => {
         try {
           const formData = new FormData();
           formData.append("file", file);
-
-          let result: ImportPreviewResult;
-          if (format === "arq") {
-            result = await previewArqStatement(formData);
-          } else {
-            setPhase({ kind: "error", message: "Formato no soportado aún." });
-            return;
+          if (overrideAccountId != null) {
+            formData.append("hint_account_id", String(overrideAccountId));
+          } else if (selectedAccountId != null) {
+            formData.append("hint_account_id", String(selectedAccountId));
+          }
+          if (cycleInput) {
+            formData.append("hint_cycle", cycleInput);
           }
 
+          const result = await previewIngestion(formData);
           setPhase({ kind: "preview", data: result });
         } catch (err) {
           const message =
-            err instanceof Error ? err.message : "Ocurrió un error al procesar el PDF.";
+            err instanceof Error ? err.message : "Ocurrió un error al procesar el archivo.";
           setPhase({ kind: "error", message });
         }
       });
     },
-    [format],
+    [selectedAccountId, cycleInput],
+  );
+
+  const handleFile = useCallback(
+    (file: File) => {
+      triggerPreview(file);
+    },
+    [triggerPreview],
+  );
+
+  const handleAccountChange = useCallback(
+    (newAccountId: number | null) => {
+      setSelectedAccountId(newAccountId);
+      // Re-preview with new account hint if we already have a file
+      if (pendingFile) {
+        triggerPreview(pendingFile, newAccountId);
+      }
+    },
+    [pendingFile, triggerPreview],
   );
 
   const handleConfirm = useCallback(() => {
     if (phase.kind !== "preview") return;
-    const token = phase.data.token;
+    const data = phase.data;
+    if (data.kind === "format_unknown" || !data.token) return;
 
+    const token = data.token;
     setPhase({ kind: "confirming" });
 
     startTransition(async () => {
       try {
-        const result = await commitArqStatement(token);
+        const result = await commitIngestion(
+          token,
+          selectedAccountId ? { accountId: selectedAccountId } : undefined,
+        );
 
         if (result.status === "committed") {
           setPhase({ kind: "done", result });
-          const periodStr = result.period
-            ? periodLabel(result.period.start, result.period.end)
-            : "extracto";
-          toast.success(
-            `Statement ${periodStr} importado: ${result.insertedCount ?? 0} nuevas, ${result.mergedCount ?? 0} mergeadas, ${result.flaggedCount ?? 0} marcadas para revisión`,
-          );
-        } else if (result.status === "reconcile_failed") {
-          setPhase({
-            kind: "error",
-            message:
-              result.error ??
-              "El parser no logró cuadrar los números. No se importó nada. Reportá esto con el PDF.",
-          });
+          if (result.kind === "arq-pdf") {
+            const periodStr = result.period
+              ? periodLabel(result.period.start, result.period.end)
+              : "extracto";
+            toast.success(
+              `Statement ${periodStr} importado: ${result.insertedCount ?? 0} nuevas, ${result.mergedCount ?? 0} mergeadas`,
+            );
+          } else if (result.kind === "bancolombia-tc-detallado") {
+            toast.success(`Ciclo ${result.cycle} consolidado.`);
+          } else {
+            toast.success(
+              `Extracto aplicado: ${result.inserted ?? 0} insertadas, ${result.matched ?? 0} matched`,
+            );
+          }
         } else if (result.status === "already_imported") {
           setPhase({ kind: "idle" });
-          toast.error("Este extracto ya fue importado anteriormente.");
+          toast.info("Este extracto ya fue importado anteriormente.");
         } else if (result.status === "expired") {
           setPhase({ kind: "idle" });
-          toast.error("La sesión expiró. Subí el PDF nuevamente.");
+          toast.error("La sesión de preview expiró. Subí el archivo nuevamente.");
         } else {
           setPhase({ kind: "error", message: result.error ?? "Error desconocido." });
         }
@@ -396,44 +555,56 @@ export function StatementUploader() {
         setPhase({ kind: "error", message });
       }
     });
-  }, [phase]);
+  }, [phase, selectedAccountId]);
 
   const handleCancel = useCallback(() => {
     setPhase({ kind: "idle" });
+    setPendingFile(null);
   }, []);
 
   const handleReset = useCallback(() => {
     setPhase({ kind: "idle" });
+    setPendingFile(null);
+    setManualKind(null);
   }, []);
 
   const isDropDisabled = phase.kind === "previewing" || phase.kind === "confirming";
+  const showDropZone =
+    phase.kind === "idle" || phase.kind === "previewing" || phase.kind === "error";
+
+  const previewData = phase.kind === "preview" ? phase.data : null;
+  const isFormatUnknown = previewData?.kind === "format_unknown";
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Format selector — extensible for future formats */}
-      <div className="flex flex-col gap-1">
-        <label htmlFor="statement-format" className="text-sm font-medium">
-          Tipo de extracto
-        </label>
-        <select
-          id="statement-format"
-          value={format}
-          onChange={(e) => setFormat(e.target.value as StatementFormat)}
-          disabled={isDropDisabled || phase.kind === "preview" || phase.kind === "done"}
-          className="bg-background focus:ring-ring w-full max-w-xs rounded-md border px-3 py-2 text-sm focus:ring-2 focus:outline-none disabled:opacity-50"
-        >
-          {FORMATS.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* Account dropdown — ALWAYS visible (design Decision #4) */}
+      <AccountDropdown
+        accounts={accounts}
+        value={selectedAccountId}
+        onChange={handleAccountChange}
+        disabled={isDropDisabled}
+      />
 
-      {/* Drop zone — only shown when not in preview/done state */}
-      {(phase.kind === "idle" || phase.kind === "previewing" || phase.kind === "error") && (
-        <DropZone onFile={handleFile} disabled={isDropDisabled} />
+      {/* Cycle input — ONLY for tc-detallado */}
+      {(previewData?.kind === "bancolombia-tc-detallado" ||
+        (phase.kind === "idle" && initialHint?.cycle)) && (
+        <div className="flex flex-col gap-1">
+          <label htmlFor="uploader-cycle" className="text-sm font-medium">
+            Ciclo (YYYY-MM)
+          </label>
+          <input
+            id="uploader-cycle"
+            type="month"
+            value={cycleInput}
+            onChange={(e) => setCycleInput(e.target.value)}
+            disabled={isDropDisabled}
+            className="bg-background focus:ring-ring w-full max-w-xs rounded-md border px-3 py-2 text-sm focus:ring-2 focus:outline-none disabled:opacity-50"
+          />
+        </div>
       )}
+
+      {/* Drop zone */}
+      {showDropZone && <DropZone onFile={handleFile} disabled={isDropDisabled} />}
 
       {/* Loading state */}
       {phase.kind === "previewing" && (
@@ -457,36 +628,83 @@ export function StatementUploader() {
           className="flex flex-col gap-3 rounded-xl border border-rose-200 bg-rose-50 p-5 dark:border-rose-800/30 dark:bg-rose-950/20"
         >
           <p className="text-sm font-medium text-rose-700 dark:text-rose-400">{phase.message}</p>
-          <p className="text-muted-foreground text-xs">
-            Si el error persiste,{" "}
-            <a
-              href="https://github.com/ingamartinez/personal-financial-dashboard/issues/new"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline"
-            >
-              reportalo con el PDF
-            </a>
-            .
-          </p>
           <Button variant="outline" size="sm" onClick={handleCancel} className="self-start">
             Intentar de nuevo
           </Button>
         </div>
       )}
 
-      {/* Preview state */}
-      {phase.kind === "preview" && (
-        <PreviewCard
-          preview={phase.data}
-          onConfirm={handleConfirm}
-          onCancel={handleCancel}
-          confirming={false}
-        />
+      {/* Preview panel */}
+      {phase.kind === "preview" && previewData && (
+        <div className="flex flex-col gap-4 rounded-xl border p-5">
+          {/* Kind badge header */}
+          <div className="flex items-center gap-2">
+            {previewData.kind !== "format_unknown" ? (
+              <>
+                <FormatBadge kind={previewData.kind} />
+                <span className="text-muted-foreground text-sm">
+                  {periodLabel(previewData.period.start, previewData.period.end)}
+                </span>
+              </>
+            ) : (
+              <span className="text-sm font-medium text-amber-700">Formato no reconocido</span>
+            )}
+          </div>
+
+          {/* Multi-currency banner */}
+          {previewData.kind !== "format_unknown" &&
+            previewData.kind !== "arq-pdf" &&
+            previewData.multiCurrency && <MultiCurrencyBanner info={previewData.multiCurrency} />}
+
+          {/* Manual kind picker for format_unknown */}
+          {isFormatUnknown && (
+            <div className="flex flex-col gap-1">
+              <label htmlFor="uploader-manual-kind" className="text-sm font-medium">
+                Seleccioná el formato manualmente
+              </label>
+              <select
+                id="uploader-manual-kind"
+                value={manualKind ?? ""}
+                onChange={(e) => setManualKind((e.target.value as IngestionKind) || null)}
+                className="bg-background focus:ring-ring w-full rounded-md border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
+              >
+                <option value="">Seleccioná un formato...</option>
+                {MANUAL_KIND_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Per-kind detail */}
+          {previewData.kind === "arq-pdf" && <ArqPreviewDetail preview={previewData} />}
+          {(previewData.kind === "bancolombia-savings" ||
+            previewData.kind === "bancolombia-extracto" ||
+            previewData.kind === "bancolombia-tc-legacy") && (
+            <BancolombiaPreviewDetail preview={previewData} />
+          )}
+          {previewData.kind === "bancolombia-tc-detallado" && (
+            <TcDetalladoPreviewDetail preview={previewData} />
+          )}
+
+          {/* Buttons */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" onClick={handleCancel}>
+              Cancelar
+            </Button>
+            {!isFormatUnknown && previewData.token && (
+              <Button onClick={handleConfirm} data-testid="confirm-import-button">
+                Subir
+              </Button>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Confirming state */}
-      {phase.kind === "confirming" && phase.kind === "confirming" && (
+      {phase.kind === "confirming" && (
         <div className="flex flex-col gap-4 rounded-xl border p-5">
           <div
             role="status"
@@ -497,7 +715,7 @@ export function StatementUploader() {
               className="border-primary size-5 animate-spin rounded-full border-2 border-t-transparent"
               aria-hidden
             />
-            Importando transacciones...
+            Importando...
           </div>
           <Button variant="outline" disabled>
             Cancelar

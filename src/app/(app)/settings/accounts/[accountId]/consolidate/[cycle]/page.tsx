@@ -154,12 +154,27 @@ export default async function ConsolidatePage({
           institutionSlug={account.institutionSlug}
         />
       ) : (
-        <ConsolidateForm
-          accountId={accountId}
-          accountName={accountLabel}
-          cycle={cycle}
-          institutionSlug={account.institutionSlug}
-        />
+        <div className="flex flex-col gap-4">
+          {/* Phase 2: CTA deep-links to unified /imports with account + cycle pre-filled */}
+          <Link
+            href={`/imports?hint_account_id=${accountId}&hint_cycle=${cycle}`}
+            className={buttonVariants({ variant: "default" })}
+          >
+            Subir extracto detallado →
+          </Link>
+          {/* ConsolidateForm kept for Phase 3 rollback — hidden behind details */}
+          <details className="text-muted-foreground text-xs">
+            <summary className="cursor-pointer">Formulario legacy (reserva)</summary>
+            <div className="mt-2">
+              <ConsolidateForm
+                accountId={accountId}
+                accountName={accountLabel}
+                cycle={cycle}
+                institutionSlug={account.institutionSlug}
+              />
+            </div>
+          </details>
+        </div>
       )}
     </main>
   );
