@@ -17,6 +17,7 @@ import { matchStatement } from "@/lib/reconciliation/engine/match";
 import type { ExistingTxnForMatch, MatchingPlan } from "@/lib/reconciliation/engine/types";
 import type { ParsedStatement } from "@/lib/reconciliation/parsers/types";
 import { applyPagoTcRouting } from "@/lib/reconciliation/pago-tc-router";
+import { classifyByRuleThenEnqueue } from "@/lib/classification/enqueue";
 import { createLogger } from "@/lib/logger";
 import { expandReconcileWindow } from "./window";
 
@@ -381,6 +382,14 @@ export async function applyReconcile(input: ApplyReconcileInput) {
     },
     "reconciliation applied",
   );
+
+  // #591 — classify newly-inserted reconciliation rows. Mirrors the flow
+  // used by /imports commit functions: rules engine first (in-place update),
+  // remainder enqueued for AI classification. classifyByRuleThenEnqueue
+  // swallows enqueue failures so a Redis hiccup never breaks reconcile.
+  if (result.status === "applied" && result.insertedIds.length > 0) {
+    await classifyByRuleThenEnqueue(session.id, result.insertedIds);
+  }
 
   // #567 — after committing a savings extract, run Pago TC twin routing.
   // Savings descriptions carry DOLAR/PESOS distinction that gmail/SMS lack,

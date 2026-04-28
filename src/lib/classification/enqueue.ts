@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { transactions } from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
@@ -15,9 +15,11 @@ const log = createLogger({ module: "classify-enqueue" });
  * Used by import paths (Excel/PDF) that insert txs WITHOUT calling
  * classifyByRule first (unlike the SMS pipeline which runs rules inline).
  *
- * Tenant safety: all queries filter on userId. txIds must belong to userId —
- * callers are responsible for this invariant (verified by the insert that
- * produced them).
+ * Tenant safety: every SELECT and UPDATE filters by `userId AND id IN (txIds)`.
+ * If a caller ever passes a txIds list that contains another user's row id,
+ * the WHERE clause silently drops it — no cross-tenant read or write possible.
+ * Per memory `per-user-table-join-tenant-safety.md` (#336/#338): trust no
+ * caller-provided invariant; enforce at the DB layer.
  */
 export async function classifyByRuleThenEnqueue(
   userId: number,
@@ -33,7 +35,12 @@ export async function classifyByRuleThenEnqueue(
       merchant: transactions.merchant,
     })
     .from(transactions)
-    .where(inArray(transactions.id, txIds));
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        inArray(transactions.id, txIds),
+      ),
+    );
 
   const unclassifiedIds: number[] = [];
 
@@ -44,7 +51,9 @@ export async function classifyByRuleThenEnqueue(
     });
 
     if (match) {
-      // Rule matched — update the tx in place.
+      // Rule matched — update the tx in place. userId guard re-asserted
+      // here even though the SELECT above already enforced it; defense-in-
+      // depth against a caller manually splicing rows[] across users.
       await db
         .update(transactions)
         .set({
@@ -53,7 +62,12 @@ export async function classifyByRuleThenEnqueue(
           classificationConfidence: match.confidence,
           updatedAt: new Date(),
         })
-        .where(eq(transactions.id, row.id));
+        .where(
+          and(
+            eq(transactions.userId, userId),
+            eq(transactions.id, row.id),
+          ),
+        );
       log.info(
         {
           event: "rule_matched_on_import",
