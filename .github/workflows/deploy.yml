@@ -76,6 +76,9 @@ jobs:
           # OAuth callback URL — build-time stub. Real value set per-environment
           # in findash.env (prod: https://findash.alejoframes.com/...).
           GMAIL_OAUTH_REDIRECT_URI: https://build.findash.local/api/integrations/gmail/oauth/callback
+          # BullMQ queue backend — build-time stub. Real Redis URL lives in
+          # /srv/findash/env/findash.env on the droplet (see docs/deploy.md §13).
+          REDIS_URL: redis://localhost:6379
         run: bun run build
 
       - name: Package release tarball

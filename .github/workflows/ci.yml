@@ -34,6 +34,16 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     env:
       PGHOST: localhost
       PGPORT: 5432
@@ -58,6 +68,8 @@ jobs:
       # build the Google authorization URL. Build-time stub; real value set
       # per-environment.
       GMAIL_OAUTH_REDIRECT_URI: https://ci.findash.local/api/integrations/gmail/oauth/callback
+      # BullMQ queue backend — points at the redis service container above.
+      REDIS_URL: redis://localhost:6379
 
     steps:
       - uses: actions/checkout@v6

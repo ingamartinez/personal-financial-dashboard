@@ -497,6 +497,109 @@ If the R2 token is stolen: revoke it in the CF dashboard, create a new token, up
 
 ---
 
+## 13. Redis (BullMQ queue backend)
+
+Added by Epic #586 / issue #587.
+
+### Installation (first-time on fresh droplet)
+
+```bash
+ssh root@147.182.138.79
+
+# Install Redis 7 from Ubuntu 24.04 repos
+apt-get install -y redis-server
+
+# Copy the Findash systemd unit (overrides the stock service file)
+cp /path/to/repo/infra/systemd/redis.service /etc/systemd/system/redis.service
+systemctl daemon-reload
+
+# Enable + start
+systemctl enable --now redis.service
+```
+
+Verify it's bound to localhost only and AOF is enabled:
+
+```bash
+redis-cli ping                     # PONG
+redis-cli CONFIG GET appendonly    # appendonly yes
+redis-cli INFO server | grep bind  # bind_addresses:127.0.0.1
+```
+
+Add `REDIS_URL` to the app env file:
+
+```bash
+nano /srv/findash/env/findash.env
+# Add:
+# REDIS_URL=redis://127.0.0.1:6379
+```
+
+### Monitoring
+
+```bash
+# General health + memory
+redis-cli INFO
+
+# Connected clients
+redis-cli CLIENT LIST
+
+# Queue key counts (BullMQ uses sorted sets per queue)
+redis-cli KEYS "bull:*" | head -20
+
+# Real-time command stats (press Ctrl-C to stop)
+redis-cli MONITOR
+```
+
+Via systemd:
+
+```bash
+systemctl status redis.service
+journalctl -u redis-findash -f       # SyslogIdentifier from the unit file
+```
+
+### AOF backup
+
+Redis AOF file lives at `/var/lib/redis/appendonly.aof`. It's written to
+continuously and survives a process crash.
+
+To take a point-in-time copy:
+
+```bash
+# Trigger a blocking BGREWRITEAOF first (compacts the AOF)
+redis-cli BGREWRITEAOF
+
+# Wait for completion
+redis-cli INFO persistence | grep aof_rewrite_in_progress  # 0 = done
+
+# Copy the compacted AOF
+cp /var/lib/redis/appendonly.aof /srv/findash/backups/daily/redis-aof-$(date +%Y%m%dT%H%M).aof
+```
+
+The daily Postgres pg_dump cron (§8) does NOT cover Redis. Job data is
+transient (queues are drained within seconds under normal operation) — losing
+the AOF on a catastrophic failure means in-flight jobs are re-enqueued on next
+app start by the application logic, not by Redis restore.
+
+### Restart procedure
+
+```bash
+# Graceful restart (flushes AOF before stopping)
+systemctl restart redis.service
+
+# Full stop (drains in-flight BGSAVE/AOF writes first — up to 10s)
+systemctl stop redis.service
+```
+
+### Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| BullMQ throws `maxRetriesPerRequest must be null` | ioredis connection created without `maxRetriesPerRequest: null` — see `src/lib/queue/index.ts` |
+| `redis-cli ping` → Connection refused | `systemctl status redis.service`; check bind address |
+| Jobs stuck in waiting | Worker not running; check instrumentation logs |
+| AOF growing unboundedly | Run `redis-cli BGREWRITEAOF` to compact |
+
+---
+
 ## 12. Engram keys for deeper context
 
 Prior SDD planning artifacts for this deployment can be retrieved by future agents:
