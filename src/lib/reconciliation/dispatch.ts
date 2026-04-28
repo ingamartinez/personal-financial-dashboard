@@ -12,6 +12,26 @@ export interface DetectedFormat {
 }
 
 /**
+ * Non-throwing variant of detectFormat. Returns null when no format matches
+ * instead of throwing StatementParseError('format_mismatch').
+ *
+ * Used by the unified ingestion dispatcher to probe XLSX files without a
+ * try/catch ladder. Callers that need an explicit error should use
+ * detectFormat() instead.
+ */
+export function tryDetectFormat(buffer: Buffer | Uint8Array): DetectedFormat | null {
+  try {
+    return detectFormat(buffer);
+  } catch (err) {
+    if (err instanceof StatementParseError && err.kind === "format_mismatch") {
+      return null;
+    }
+    // Re-throw unexpected errors (missing_sheet, bad_row, etc.)
+    throw err;
+  }
+}
+
+/**
  * Detects the Bancolombia export format by inspecting the header row(s).
  * Three formats are recognized:
  *

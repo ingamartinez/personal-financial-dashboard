@@ -482,6 +482,63 @@ export type ParseStatementOptions = {
   sheet?: StatementSheetName;
 };
 
+/**
+ * Cheap structural probe: returns true when the buffer looks like a
+ * Bancolombia TC Extracto Detallado (the multi-sheet PESOS+DOLARES format used
+ * by parseBancolombiaStatementAllSheets).
+ *
+ * Detection criteria (ANY of these is sufficient):
+ *   1. Workbook has both a "PESOS" and a "DOLARES" sheet (multi-currency twin).
+ *   2. First ~10 rows of any sheet contain the text "TARJETA" or
+ *      "Estado de Cuenta" in any cell (TC extracto header marker).
+ *
+ * Returns false — does NOT throw — when the buffer is not a valid XLSX or
+ * does not match the criteria. This keeps the unified dispatcher clean.
+ */
+export function tryDetectTcDetallado(buffer: Buffer): boolean {
+  let wb: XLSX.WorkBook;
+  try {
+    wb = XLSX.read(buffer, { type: "buffer", raw: false, cellDates: false });
+  } catch {
+    return false;
+  }
+
+  if (!wb.SheetNames.length) return false;
+
+  // Criterion 1: both PESOS and DOLARES sheets present.
+  const upperNames = wb.SheetNames.map((n) => n.toUpperCase());
+  if (upperNames.includes("PESOS") && upperNames.includes("DOLARES")) {
+    return true;
+  }
+
+  // Criterion 2: any of the first ~10 rows in any sheet contains the
+  // "TARJETA" or "Estado de Cuenta" header text (case-insensitive).
+  const TC_MARKERS = ["tarjeta", "estado de cuenta"];
+  for (const sheetName of wb.SheetNames) {
+    const sheet = wb.Sheets[sheetName];
+    if (!sheet) continue;
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      raw: false,
+      defval: null,
+    }) as unknown[][];
+    const scanLimit = Math.min(10, rows.length);
+    for (let i = 0; i < scanLimit; i++) {
+      const row = rows[i];
+      if (!Array.isArray(row)) continue;
+      for (const cell of row) {
+        if (cell == null) continue;
+        const text = String(cell).toLowerCase();
+        if (TC_MARKERS.some((m) => text.includes(m))) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 function parseSheetRows(rows: SheetRows): ParsedStatement {
   const account = extractAccount(rows);
   const period = extractPeriod(rows);
