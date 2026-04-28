@@ -129,6 +129,43 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
+      - name: Provision Redis (idempotent)
+        # Every BullMQ worker registered at boot (fx-refresh, classify-tx,
+        # gmail-pull, etc — see src/instrumentation.node.ts) needs Redis up
+        # before findash.service starts. This step ensures the droplet has
+        # redis-server installed and our hardened unit at /etc/systemd/system/
+        # redis.service. Idempotent: a healthy droplet hits the no-op path.
+        run: |
+          set -eu
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            infra/systemd/redis.service "$DEPLOY_USER@$DEPLOY_HOST:/tmp/redis-findash.service"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" '
+            set -eu
+            # Install redis-server package only if missing.
+            if ! command -v redis-server >/dev/null 2>&1; then
+              echo "installing redis-server..."
+              sudo -n DEBIAN_FRONTEND=noninteractive apt-get update -qq
+              sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq redis-server
+            fi
+            # Disable the Ubuntu default unit if it ever became enabled.
+            sudo -n systemctl disable --now redis-server.service 2>/dev/null || true
+            # Replace our unit only if the on-disk copy differs from the repo.
+            # Avoids gratuitous redis restarts on every deploy.
+            if ! sudo -n diff -q /tmp/redis-findash.service /etc/systemd/system/redis.service >/dev/null 2>&1; then
+              echo "redis unit changed — installing"
+              sudo -n mv /tmp/redis-findash.service /etc/systemd/system/redis.service
+              sudo -n systemctl daemon-reload
+              sudo -n systemctl enable redis.service
+              sudo -n systemctl restart redis.service
+            else
+              rm -f /tmp/redis-findash.service
+            fi
+            # Ensure active (covers fresh-install case + crash recovery).
+            sudo -n systemctl is-active --quiet redis.service || sudo -n systemctl start redis.service
+            # Verify reachable.
+            redis-cli ping
+          '
+
       - name: Upload tarball
         env:
           GIT_SHA: ${{ steps.sha.outputs.sha }}
