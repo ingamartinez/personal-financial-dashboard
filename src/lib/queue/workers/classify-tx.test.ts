@@ -153,7 +153,12 @@ describe('classifyTxProcessor — mode "drain-pending"', () => {
 // Tenant isolation: specific-mode txIds scoped to userId
 // ---------------------------------------------------------------------------
 
-describe("tenant isolation — specific mode", () => {
+// Worker-level tenant isolation: this test verifies the WORKER routes each
+// job's userId correctly through to the pipeline. The actual DB-level
+// isolation guarantee (cross-tenant txIds rejected by the WHERE clause)
+// is covered in pipeline.test.ts under "tenant isolation" — that one runs
+// against the real findash_test DB.
+describe("tenant isolation — specific mode (call-routing only)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

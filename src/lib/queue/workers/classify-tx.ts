@@ -144,9 +144,12 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
 /**
  * Create and register the classify-tx BullMQ worker.
  *
- * Concurrency is set to 1 globally to avoid hammering Anthropic's API with
- * parallel classification requests. Multiple jobs can be enqueued but they
- * will process one at a time.
+ * Concurrency is set to 1 per-process to avoid hammering Anthropic's API
+ * with parallel classification requests. Findash currently runs single-
+ * instance, so per-process == global. Revisit if horizontal scaling is
+ * added — N instances each with concurrency 1 means N concurrent calls
+ * to Anthropic, which would need a distributed rate limiter (e.g. Redis-
+ * backed token bucket or BullMQ Pro's group rate limiting).
  *
  * Retry: 3 attempts with exponential back-off starting at 5s. Handles
  * transient Anthropic API failures without overwhelming the API.

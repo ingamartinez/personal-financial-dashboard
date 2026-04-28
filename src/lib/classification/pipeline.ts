@@ -21,6 +21,17 @@ export type ClassifyBatchOpts = {
   txIds?: number[];
 };
 
+/**
+ * Retry safety: when the worker retries a job mid-batch (e.g. Anthropic
+ * timeout after partial success), the WHERE clause below re-filters by
+ * `classificationMethod = "unclassified"`. Rows already classified on the
+ * previous attempt have a different method and are silently skipped, so
+ * retries are idempotent in practice. The only theoretical race is two
+ * retries firing within the DB-commit window of the first AI response —
+ * BullMQ's exponential backoff (5s+) makes this effectively impossible.
+ * If we ever observe duplicates, switch to a sentinel `"ai-pending"`
+ * state set in a single UPDATE before the AI call.
+ */
 export async function classifyUnclassifiedBatch(
   userId: number,
   opts?: ClassifyBatchOpts,

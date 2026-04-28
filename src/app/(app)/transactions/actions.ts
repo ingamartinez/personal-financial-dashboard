@@ -367,6 +367,12 @@ export async function runAiClassifier(): Promise<{ enqueued: number }> {
     },
   );
 
+  // Bust the RSC cache so the unclassified count badge reflects the enqueue
+  // immediately. The job runs async, but the cache invalidation is synchronous
+  // and cheap — without this the badge stays stale until the user reloads.
+  revalidatePath("/");
+  revalidatePath("/transactions");
+
   return { enqueued: txIds.length };
 }
 
