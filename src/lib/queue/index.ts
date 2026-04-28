@@ -6,6 +6,29 @@ import { createLogger } from "@/lib/logger";
 const log = createLogger({ module: "queue" });
 
 // ---------------------------------------------------------------------------
+// globalThis-backed singletons
+//
+// Next.js standalone bundles can duplicate module instances across route
+// chunks, so a plain module-scoped `let` Map ends up DIFFERENT in
+// instrumentation vs the bull-board route. Result: queues are registered
+// on instance A, Bull-Board reads from instance B (empty), dashboard shows
+// queueCount: 0. Pin everything to globalThis to share across instances.
+// Same pattern Vercel uses for Prisma in dev.
+// ---------------------------------------------------------------------------
+
+type GlobalQueueShared = {
+  __findashRedis?: IORedis;
+  __findashQueueRegistry?: Map<string, Queue>;
+  __findashWorkerRegistry?: Worker[];
+  __findashShutdownRegistered?: boolean;
+};
+
+const globalForQueue = globalThis as unknown as GlobalQueueShared;
+
+const queueRegistry = (globalForQueue.__findashQueueRegistry ??= new Map<string, Queue>());
+const workerRegistry = (globalForQueue.__findashWorkerRegistry ??= []);
+
+// ---------------------------------------------------------------------------
 // Redis connection singleton
 //
 // BullMQ requires maxRetriesPerRequest: null — without it ioredis will throw
@@ -16,36 +39,27 @@ function buildRedisUrl(): string {
   return process.env.REDIS_URL ?? "redis://localhost:6379";
 }
 
-let _redisConnection: IORedis | null = null;
-
 export function getRedisConnection(): IORedis {
-  if (!_redisConnection) {
+  if (!globalForQueue.__findashRedis) {
     const url = buildRedisUrl();
-    _redisConnection = new IORedis(url, {
+    const conn = new IORedis(url, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
     });
 
-    _redisConnection.on("connect", () => {
+    conn.on("connect", () => {
       log.info({ event: "redis_connect", url }, "redis connected");
     });
 
-    _redisConnection.on("error", (err) => {
+    conn.on("error", (err) => {
       log.error({ event: "redis_error", err }, "redis connection error");
     });
+
+    globalForQueue.__findashRedis = conn;
   }
 
-  return _redisConnection;
+  return globalForQueue.__findashRedis;
 }
-
-// ---------------------------------------------------------------------------
-// Global queue registry
-//
-// Stored here so Bull-Board (#588) can iterate over all registered queues
-// without needing to know their names upfront.
-// ---------------------------------------------------------------------------
-
-const queueRegistry = new Map<string, Queue>();
 
 export function getQueueRegistry(): ReadonlyMap<string, Queue> {
   return queueRegistry;
@@ -78,12 +92,6 @@ export function createQueue<TData = unknown, TResult = unknown>(
   queueRegistry.set(name, queue as Queue);
   return queue;
 }
-
-// ---------------------------------------------------------------------------
-// Worker registry (for graceful shutdown)
-// ---------------------------------------------------------------------------
-
-const workerRegistry: Worker[] = [];
 
 // ---------------------------------------------------------------------------
 // Worker factory
@@ -124,11 +132,9 @@ export function createWorker<TData = unknown, TResult = unknown>(
 // this handler ensures they drain cleanly before the process exits.
 // ---------------------------------------------------------------------------
 
-let shutdownRegistered = false;
-
 export function registerGracefulShutdown(): void {
-  if (shutdownRegistered) return;
-  shutdownRegistered = true;
+  if (globalForQueue.__findashShutdownRegistered) return;
+  globalForQueue.__findashShutdownRegistered = true;
 
   process.on("SIGTERM", async () => {
     log.info(
