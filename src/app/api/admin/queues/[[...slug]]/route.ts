@@ -141,7 +141,15 @@ async function bridgeToExpress(req: Request): Promise<Response> {
       },
     });
 
-    app(nodeReq, nodeRes as unknown as ServerResponse);
+    // Express may throw synchronously during middleware setup if our mock
+    // res/req objects are missing a property it expects. Without this
+    // try/catch the error escapes the Promise and is logged as a circular
+    // ref by Pino's err serializer.
+    try {
+      app(nodeReq, nodeRes as unknown as ServerResponse);
+    } catch (syncErr) {
+      reject(syncErr instanceof Error ? syncErr : new Error(String(syncErr)));
+    }
   });
 }
 
@@ -164,7 +172,25 @@ async function handler(req: Request): Promise<Response> {
   try {
     return await bridgeToExpress(req);
   } catch (err) {
-    log.error({ err, event: "bull_board_handler_error" }, "bull-board handler error");
+    // Log error fields as plain strings — Pino's `err` serializer chokes on
+    // Express request/response cycles ("circular reference is too complex to
+    // analyze") and silently drops the actual error message + stack.
+    if (err instanceof Error) {
+      log.error(
+        {
+          errorName: err.name,
+          errorMessage: err.message,
+          errorStack: err.stack,
+          event: "bull_board_handler_error",
+        },
+        "bull-board handler error",
+      );
+    } else {
+      log.error(
+        { errorString: String(err), event: "bull_board_handler_error" },
+        "bull-board handler error",
+      );
+    }
     return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 }
