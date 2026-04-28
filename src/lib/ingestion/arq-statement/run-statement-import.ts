@@ -54,6 +54,8 @@ export type RunStatementImportResult =
       preview: StatementImportPreview;
       /** Tx rows newly inserted (statement-only events with no email counterpart). */
       insertedTxCount: number;
+      /** IDs of the newly inserted transaction rows (parallel to insertedTxCount). */
+      insertedTxIds: number[];
       /** Existing gmail_arq rows updated with statement metadata. */
       mergedTxCount: number;
       /** Rows flagged source_mismatch (diverged merges + email orphans). */
@@ -363,6 +365,7 @@ export async function runStatementImport(
     importId,
     preview,
     insertedTxCount: reconcilerResult.insertedCount,
+    insertedTxIds: reconcilerResult.insertedIds,
     mergedTxCount: reconcilerResult.mergedCount,
     flaggedTxCount: reconcilerResult.flaggedCount,
     emailOrphanCount: reconcilerResult.emailOrphanCount,

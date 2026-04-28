@@ -7,6 +7,7 @@ import {
   type TelegramDraft,
 } from "@/lib/db/schema";
 import { classifyByRule } from "@/lib/classification/rules";
+import { enqueueClassification } from "@/lib/classification/enqueue";
 import { emit } from "@/lib/events/bus";
 import { insertTransferGroup } from "@/lib/transactions/transfer-groups";
 
@@ -152,6 +153,12 @@ export async function insertFromDraft(opts: {
     startedAt,
     finishedAt: new Date(),
   });
+
+  // #591: enqueue AI classification for txs the rule engine could not classify.
+  // Transfers skip classification entirely (channel=transfer, no spend/income).
+  if (outcome.status === "inserted" && classificationMethod === "unclassified") {
+    await enqueueClassification(userId, [outcome.txId]);
+  }
 
   return outcome;
 }

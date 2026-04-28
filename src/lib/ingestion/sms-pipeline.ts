@@ -22,6 +22,7 @@ import {
   type AiFallbackOutcome,
 } from "@/lib/ingestion/sms-ai-fallback";
 import { keyForParsed } from "@/lib/counterparties/alias-key";
+import { enqueueClassification } from "@/lib/classification/enqueue";
 import type { ClassificationMethod, TransactionSource } from "@/lib/types";
 
 // Colombia uses UTC-5 year-round (no DST). Time in SMS is local.
@@ -298,6 +299,13 @@ async function ingestParsedBancolombia(
           rawData: { kind: parsed.kind, ...cfg.rawDataExtras },
         },
       );
+    }
+    // #591: AI classification only for txs that the rule engine could not
+    // classify. Transfers and rule-matched txs are already handled; only
+    // "unclassified" goes to the queue. Failure to enqueue must not abort
+    // the import — see enqueueClassification for the graceful-degrade policy.
+    if (finalMethod === "unclassified") {
+      await enqueueClassification(userId, [txId]);
     }
     return { status: "inserted", txId };
   } catch (err) {
