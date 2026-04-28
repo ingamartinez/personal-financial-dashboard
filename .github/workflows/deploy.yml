@@ -141,11 +141,15 @@ jobs:
             infra/systemd/redis.service "$DEPLOY_USER@$DEPLOY_HOST:/tmp/redis-findash.service"
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" '
             set -eu
-            # Install redis-server package only if missing.
+            # Install redis-server package only if missing. -y -qq is enough
+            # for the no-interaction case (no debconf prompts on this package);
+            # passing DEBIAN_FRONTEND through sudo would require an env_keep
+            # entry the deploy user does not have, and would fail on a fresh
+            # droplet (#605).
             if ! command -v redis-server >/dev/null 2>&1; then
               echo "installing redis-server..."
-              sudo -n DEBIAN_FRONTEND=noninteractive apt-get update -qq
-              sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq redis-server
+              sudo -n apt-get update -qq
+              sudo -n apt-get install -y -qq redis-server
             fi
             # Disable the Ubuntu default unit if it ever became enabled.
             sudo -n systemctl disable --now redis-server.service 2>/dev/null || true
