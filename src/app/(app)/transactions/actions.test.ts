@@ -58,6 +58,7 @@ const {
   createManualTransferGroup,
   updateTransactionInstallments,
   runAiClassifier,
+  enqueueClassifyAllPending,
 } = await import("./actions");
 const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
 const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
@@ -1906,6 +1907,108 @@ describe("runAiClassifier (#590)", () => {
     await runAiClassifier();
 
     // The tx must still be unclassified — only the queue.add was called
+    const [row] = await db.execute<{ classification_method: string }>(sql`
+      SELECT classification_method FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.classification_method).toBe("unclassified");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enqueueClassifyAllPending — enqueues ONE drain-pending job (#592)
+// ---------------------------------------------------------------------------
+
+describe("enqueueClassifyAllPending (#592)", () => {
+  const EXT_PREFIX = "test-drain-all-pending";
+
+  async function defaultAccountId(): Promise<number> {
+    const [row] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    return row.id;
+  }
+
+  async function seedUnclassifiedTx(externalId: string): Promise<number> {
+    const accountId = await defaultAccountId();
+    const [row] = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency,
+        description_raw, classification_method, source, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${accountId}, now(), -10000, 'COP',
+        'drain-all-test', 'unclassified'::classification_method,
+        'sms', ${externalId}
+      )
+      RETURNING id
+    `);
+    return row.id;
+  }
+
+  async function cleanupDrainTxs() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE ${EXT_PREFIX + ":%"}
+    `);
+  }
+
+  beforeEach(async () => {
+    await cleanupDrainTxs();
+    queueMocks.addMock.mockClear();
+  });
+  afterEach(cleanupDrainTxs);
+
+  it("returns { enqueued: 0 } and does NOT call queue.add when nothing is pending", async () => {
+    // No unclassified txs seeded for this user (cleanup ran above)
+    const result = await enqueueClassifyAllPending();
+
+    expect(result.enqueued).toBe(0);
+    expect(queueMocks.addMock).not.toHaveBeenCalled();
+  });
+
+  it("enqueues a classify-tx job with mode=drain-pending when there are pending txs", async () => {
+    await seedUnclassifiedTx(`${EXT_PREFIX}:one`);
+
+    const result = await enqueueClassifyAllPending();
+
+    expect(result.enqueued).toBeGreaterThanOrEqual(1);
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
+
+    const [, jobData, jobOpts] = queueMocks.addMock.mock.calls[0];
+    expect(jobData.mode).toBe("drain-pending");
+    expect(jobData.userId).toBe(TEST_USER_ID);
+    // drain-pending carries no txIds — the worker fetches them incrementally
+    expect("txIds" in jobData).toBe(false);
+    // Idempotent jobId
+    expect(jobOpts.jobId).toBe(`drain-${TEST_USER_ID}`);
+  });
+
+  it("returns the total pending count (not capped at batch size)", async () => {
+    // Seed 25 txs — more than AI_BATCH_SIZE (20); drain-all should report ALL
+    for (let i = 0; i < 25; i++) {
+      await seedUnclassifiedTx(`${EXT_PREFIX}:batch-${i}`);
+    }
+
+    const result = await enqueueClassifyAllPending();
+
+    // enqueued = total pending, which is at least our 25 seeded rows
+    expect(result.enqueued).toBeGreaterThanOrEqual(25);
+    // Only one job added regardless of pending count
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
+  });
+
+  it("uses a per-user idempotent jobId (drain-<userId>)", async () => {
+    await seedUnclassifiedTx(`${EXT_PREFIX}:idem`);
+
+    await enqueueClassifyAllPending();
+
+    const [, , opts] = queueMocks.addMock.mock.calls[0];
+    expect(opts.jobId).toBe(`drain-${TEST_USER_ID}`);
+  });
+
+  it("does NOT update any transaction rows synchronously", async () => {
+    const txId = await seedUnclassifiedTx(`${EXT_PREFIX}:no-inline`);
+
+    await enqueueClassifyAllPending();
+
     const [row] = await db.execute<{ classification_method: string }>(sql`
       SELECT classification_method FROM transactions WHERE id = ${txId}
     `);

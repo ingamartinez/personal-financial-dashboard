@@ -33,6 +33,7 @@ import {
   type TransferLeg,
 } from "@/lib/transactions/transfer-groups";
 import { validateInstallmentRate, rateValidationMessage } from "@/lib/finance/rates";
+import { countUnclassified } from "@/lib/transactions/queries";
 import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
 const updateSchema = z.object({
@@ -330,6 +331,43 @@ export async function createManualEntry(input: {
     source: "manual",
     timestamp: Date.now(),
   });
+}
+
+/**
+ * Enqueue a single drain-pending job that classifies ALL pending transactions
+ * for the session user — the worker loops until the queue is empty (capped at
+ * 100 iterations × AI_BATCH_SIZE = 2000 max txs, per classify-tx worker).
+ *
+ * The `jobId` is deterministic per-user (`drain-<userId>`) so duplicate
+ * clicks or rapid re-submissions are idempotent at the BullMQ level — BullMQ
+ * deduplicates by jobId and the second add is a no-op.
+ */
+export async function enqueueClassifyAllPending(): Promise<{ enqueued: number }> {
+  const session = await getSessionUser();
+
+  // Count pending so the toast can tell the user how many are queued.
+  // `countUnclassified` already filters by userId + notDeleted.
+  const pendingCount = await countUnclassified(session.id);
+
+  if (pendingCount === 0) return { enqueued: 0 };
+
+  const queue = createQueue<ClassifyTxJobData>("classify-tx");
+  await queue.add(
+    "classify-tx",
+    { userId: session.id, mode: "drain-pending" },
+    {
+      // Idempotent per user — a second click while the drain is running
+      // simply finds the existing job and is silently dropped by BullMQ.
+      jobId: `drain-${session.id}`,
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5000 },
+    },
+  );
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+
+  return { enqueued: pendingCount };
 }
 
 export async function runAiClassifier(): Promise<{ enqueued: number }> {

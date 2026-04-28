@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { AlertTriangleIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { AiClassifyButton } from "@/components/transactions/ai-classify-button";
+import {
+  AiClassifyButton,
+  DrainAllPendingButton,
+} from "@/components/transactions/ai-classify-button";
 import { Filters } from "@/components/transactions/filters";
 import { TransactionTable } from "@/components/transactions/transaction-table";
 import { TransferGroupDialog } from "@/components/transactions/transfer-group-dialog";
@@ -144,6 +147,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         <div className="flex items-center gap-2">
           <TransferGroupDialog accounts={accounts} />
           <AiClassifyButton unclassified={unclassified} />
+          <DrainAllPendingButton unclassified={unclassified} />
         </div>
       </header>
 
