@@ -57,7 +57,11 @@ export function getBullBoardApp(): ReturnType<typeof express> {
     },
   });
 
-  const uiDistPath = path.dirname(require.resolve("@bull-board/ui/dist/index.ejs"));
+  // Resolve via package.json (a known JS-loadable file) instead of the .ejs
+  // template — Turbopack statically traces require.resolve() arguments and
+  // chokes on .ejs at build time. The dist folder lives next to package.json.
+  const uiPkgJson = require.resolve("@bull-board/ui/package.json");
+  const uiDistPath = path.join(path.dirname(uiPkgJson), "dist");
   serverAdapter.setViewsPath(uiDistPath);
   serverAdapter.setStaticPath("/static", path.join(uiDistPath, "static"));
 
