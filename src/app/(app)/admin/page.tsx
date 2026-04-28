@@ -28,6 +28,12 @@ const LINKS = [
     description:
       "6 métricas agregadas cross-user (parse success, clasificación, dedup, onboarding, data loss, detection lag). Gatean Phase 8.",
   },
+  {
+    href: "/admin/queues",
+    title: "Queues",
+    description:
+      "Dashboard tipo Horizon para ver jobs activos, pendientes, completados y fallidos. Pausa, reintenta y monitorea las BullMQ queues en tiempo real.",
+  },
 ];
 
 export default async function AdminPage() {
