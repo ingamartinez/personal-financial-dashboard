@@ -56,6 +56,10 @@ async function bridgeToExpress(req: Request): Promise<Response> {
     (nodeReq as unknown as Record<string, unknown>).socket = {
       remoteAddress: "127.0.0.1",
       encrypted: false,
+      destroy: () => {
+        /* Node's stream end-of-data path calls socket.destroy() during
+           cleanup. No-op on our mock (no real TCP socket to close). */
+      },
     };
 
     // Push request body into the stream
@@ -133,9 +137,20 @@ async function bridgeToExpress(req: Request): Promise<Response> {
           case "writable":
             return true;
           case "socket":
-            return { encrypted: false };
+            return {
+              encrypted: false,
+              destroy: () => {
+                /* Node's stream cleanup calls socket.destroy() — no-op on
+                   our mock (we don't have a real TCP socket to tear down). */
+              },
+            };
           default:
-            return dynamicProps.get(prop);
+            // Fall through dynamicProps first (props Express attached via
+            // assignment), then to the target's prototype chain so methods
+            // Express adds via Object.setPrototypeOf (e.g. res.render,
+            // res.send, res.json) resolve correctly.
+            if (dynamicProps.has(prop)) return dynamicProps.get(prop);
+            return Reflect.get(_target, prop);
         }
       },
       set(_target, prop: string | symbol, value: unknown) {
