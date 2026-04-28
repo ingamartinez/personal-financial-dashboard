@@ -12,6 +12,8 @@ export interface CommitResult {
   status: CommitStatus;
   statementImportId: number;
   inserted: number;
+  /** IDs of the newly inserted transaction rows (parallel to `inserted` count). */
+  insertedIds: number[];
   matched: number;
   flagged: number;
 }
@@ -112,6 +114,7 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
         status: "already_imported" as const,
         statementImportId: existingImport[0].id,
         inserted: 0,
+        insertedIds: [],
         matched: 0,
         flagged: 0,
       };
@@ -153,6 +156,7 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
 
     let matched = 0;
     let inserted = 0;
+    const insertedIds: number[] = [];
     const txnCountByImport = new Map<number, number>();
 
     for (const decision of input.plan.decisions) {
@@ -175,21 +179,25 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
           );
         matched++;
       } else {
-        await tx.insert(transactions).values({
-          userId: input.userId,
-          accountId: target.id,
-          occurredAt: parsedRow.occurredAt,
-          amountCents: signedAmount(parsedRow),
-          currency: parsedRow.currency,
-          descriptionRaw: parsedRow.descriptionRaw,
-          source: "csv_reconcile",
-          channel: "bank",
-          reconciliationStatus: "imported_from_statement",
-          reconciledAt: new Date(),
-          statementImportId: importId,
-          rawData: parsedRow.rawData,
-        });
+        const [newTx] = await tx
+          .insert(transactions)
+          .values({
+            userId: input.userId,
+            accountId: target.id,
+            occurredAt: parsedRow.occurredAt,
+            amountCents: signedAmount(parsedRow),
+            currency: parsedRow.currency,
+            descriptionRaw: parsedRow.descriptionRaw,
+            source: "csv_reconcile",
+            channel: "bank",
+            reconciliationStatus: "imported_from_statement",
+            reconciledAt: new Date(),
+            statementImportId: importId,
+            rawData: parsedRow.rawData,
+          })
+          .returning({ id: transactions.id });
         inserted++;
+        if (newTx) insertedIds.push(newTx.id);
       }
       txnCountByImport.set(importId, (txnCountByImport.get(importId) ?? 0) + 1);
     }
@@ -219,6 +227,7 @@ export async function commitReconciliation(input: CommitInput): Promise<CommitRe
       status: "applied" as const,
       statementImportId: importIdByCurrency[input.account.currency]!,
       inserted,
+      insertedIds,
       matched,
       flagged: input.plan.flaggedExisting.length,
     };

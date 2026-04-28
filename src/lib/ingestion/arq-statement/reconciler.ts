@@ -116,6 +116,8 @@ export type ReconcileDecision =
 
 export interface ReconcileResult {
   insertedCount: number;
+  /** IDs of the transaction rows newly inserted by this reconcile run. */
+  insertedIds: number[];
   mergedCount: number;
   /** source_mismatch=true count (diverged merges + email orphans). */
   flaggedCount: number;
@@ -898,5 +900,9 @@ export async function reconcileEmailVsStatement(
     "ARQ statement reconciler complete",
   );
 
-  return { insertedCount, mergedCount, flaggedCount, emailOrphanCount, details };
+  const insertedIds = details
+    .filter((d): d is typeof d & { kind: "insert"; newTxId: number } => d.kind === "insert")
+    .map((d) => d.newTxId);
+
+  return { insertedCount, insertedIds, mergedCount, flaggedCount, emailOrphanCount, details };
 }

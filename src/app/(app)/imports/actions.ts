@@ -38,6 +38,7 @@ import { buildChainCheck, reconcileStatement } from "@/lib/ingestion/arq-stateme
 import { parseArqStatementPdf } from "@/lib/ingestion/arq-statement/pdf-adapter";
 import { parseStatementTransactions } from "@/lib/ingestion/arq-statement/type-handlers";
 import { runStatementImport } from "@/lib/ingestion/arq-statement/run-statement-import";
+import { classifyByRuleThenEnqueue } from "@/lib/classification/enqueue";
 import {
   parseAndHint,
   resolveAccountHint,
@@ -783,6 +784,10 @@ async function _commitArqV1(entry: CacheEntryV1, userId: number): Promise<Unifie
     { parsePdf: parseArqStatementPdf },
     { userId, accountId: entry.accountId, pdfBuffer: entry.pdfBuffer, pdfHash: entry.pdfHash },
   );
+  // #591: run rule-based classification on newly inserted txs, then enqueue AI for the rest.
+  if (result.status === "committed" && result.insertedTxIds && result.insertedTxIds.length > 0) {
+    await classifyByRuleThenEnqueue(userId, result.insertedTxIds);
+  }
   return _mapArqRunResult(result, entry.preview.period);
 }
 
@@ -797,6 +802,10 @@ async function _commitArqV2(
     { parsePdf: parseArqStatementPdf },
     { userId, accountId, pdfBuffer, pdfHash },
   );
+  // #591: run rule-based classification on newly inserted txs, then enqueue AI for the rest.
+  if (result.status === "committed" && result.insertedTxIds && result.insertedTxIds.length > 0) {
+    await classifyByRuleThenEnqueue(userId, result.insertedTxIds);
+  }
   return _mapArqRunResult(result, preview.period);
 }
 
@@ -886,6 +895,11 @@ async function _commitBancolombia(
   revalidatePath(`/settings/accounts/${accountId}/reconcile`);
   if (siblingAccountId) revalidatePath(`/settings/accounts/${siblingAccountId}/reconcile`);
 
+  // #591: run rule-based classification on newly inserted txs, then enqueue AI for the rest.
+  if (result.status === "applied" && result.insertedIds.length > 0) {
+    await classifyByRuleThenEnqueue(userId, result.insertedIds);
+  }
+
   return {
     kind,
     status: result.status === "applied" ? "committed" : "already_imported",
@@ -936,6 +950,9 @@ async function _commitTcDetallado(
     matched: number;
   }> = [];
 
+  // #591: collect all inserted txIds across sheets for classification.
+  const allInsertedTxIds: number[] = [];
+
   for (const sheet of parsedSheets) {
     const sheetCurrency = sheet.account.currency as "COP" | "USD";
     const targetAccountId =
@@ -967,10 +984,12 @@ async function _commitTcDetallado(
       dryRun: false,
     });
 
+    allInsertedTxIds.push(...(r.insertedTxIds ?? []));
+
     sheets.push({
       accountId: targetAccountId,
       accountLabel: formatAccountLabel(targetAccount),
-      inserted: r.insertedTxIds.length,
+      inserted: r.insertedTxIds?.length ?? 0,
       matched: r.matchStats.matched,
     });
   }
@@ -980,6 +999,11 @@ async function _commitTcDetallado(
   revalidatePath(`/settings/accounts/${accountId}/consolidate/${cycle}`);
   if (siblingAccountId)
     revalidatePath(`/settings/accounts/${siblingAccountId}/consolidate/${cycle}`);
+
+  // #591: run rule-based classification on newly inserted txs, then enqueue AI for the rest.
+  if (allInsertedTxIds.length > 0) {
+    await classifyByRuleThenEnqueue(userId, allInsertedTxIds);
+  }
 
   log.info(
     {
@@ -1197,6 +1221,10 @@ export async function commitArqStatement(previewToken: string): Promise<ImportCo
       { parsePdf: parseArqStatementPdf },
       { userId, accountId: entry.accountId!, pdfBuffer, pdfHash },
     );
+    // #591: run rule-based classification on newly inserted txs, then enqueue AI for the rest.
+    if (result.status === "committed" && result.insertedTxIds && result.insertedTxIds.length > 0) {
+      await classifyByRuleThenEnqueue(userId, result.insertedTxIds);
+    }
     return _mapCommitResult(result, preview.period);
   }
 
@@ -1213,6 +1241,10 @@ export async function commitArqStatement(previewToken: string): Promise<ImportCo
     { parsePdf: parseArqStatementPdf },
     { userId, accountId: entry.accountId, pdfBuffer: entry.pdfBuffer, pdfHash: entry.pdfHash },
   );
+  // #591: run rule-based classification on newly inserted txs, then enqueue AI for the rest.
+  if (result.status === "committed" && result.insertedTxIds && result.insertedTxIds.length > 0) {
+    await classifyByRuleThenEnqueue(userId, result.insertedTxIds);
+  }
 
   return _mapCommitResult(result, entry.preview.period);
 }
