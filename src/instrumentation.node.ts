@@ -9,7 +9,8 @@ declare global {
  * - recurring-gap detector cron (monthly)
  * - per-user health snapshot cron (daily 03:00 America/Bogota)
  * - slo-alerts cron (every 30 min)
- * - fx-refresh cron (twice daily, 06:15 and 18:15 America/Bogota)
+ * - fx-refresh BullMQ recurring job (twice daily, 06:15 and 18:15 America/Bogota)
+ * - gmail-pull cron (every 5 min)
  *
  * Telegram used to run a long-poll worker here; #185 moved it to per-user
  * webhooks (`src/app/api/telegram/webhook/[botId]/route.ts`) so there is no
@@ -28,30 +29,34 @@ export async function registerNode() {
   const { closePreviousMonthForAllUsers } = await import("@/lib/recurring/gap-detector");
   const { snapshotAllActiveUsers } = await import("@/lib/telemetry/user-health");
   const { checkAndAlertSlos } = await import("@/lib/observability/slo-alerts");
-  const { fetchTrm } = await import("@/lib/fx/trm");
-  const { getCurrentFxRate, upsertFxRate } = await import("@/lib/fx/repo");
+  const { getCurrentFxRate } = await import("@/lib/fx/repo");
   const { pullAllActiveConnections } = await import("@/lib/gmail/pull");
   const { createLogger } = await import("@/lib/logger");
+  const { createQueue, registerGracefulShutdown } = await import("@/lib/queue");
+  const { createFxRefreshWorker } = await import("@/lib/queue/workers/fx-refresh");
   const log = createLogger({ module: "instrumentation" });
 
-  async function refreshFxOnce(trigger: "cron" | "boot") {
-    try {
-      const trm = await fetchTrm();
-      await upsertFxRate({
-        base: "USD",
-        quote: "COP",
-        rate: trm.rate,
-        asOf: trm.asOf,
-        source: trm.source,
-      });
-      log.info(
-        { rate: trm.rate, asOf: trm.asOf, trigger, event: "fx_refresh_ok" },
-        "fx-refresh tick",
-      );
-    } catch (err) {
-      log.error({ err, trigger, event: "fx_refresh_failed" }, "fx-refresh tick failed");
-    }
-  }
+  // -------------------------------------------------------------------------
+  // BullMQ: fx-refresh worker + recurring schedule
+  //
+  // jobId is the idempotency key for the repeat entry — without it, every
+  // Next.js restart would add another copy of the schedule to Redis.
+  // With it, BullMQ deduplicates to exactly one recurring job regardless of
+  // how many times registerNode() runs (the globalThis guard above also helps,
+  // but jobId is the true safety net at the BullMQ layer).
+  // -------------------------------------------------------------------------
+  const fxQueue = createQueue("fx-refresh");
+  createFxRefreshWorker();
+  registerGracefulShutdown();
+
+  await fxQueue.add(
+    "fx-refresh",
+    {},
+    {
+      repeat: { pattern: "15 6,18 * * *", tz: "America/Bogota" },
+      jobId: "fx-refresh-recurring",
+    },
+  );
 
   // Day 5 of each month at 06:00 America/Bogota — gives a 4-day grace window
   // for late-posting SMS/Apple Pay events before we finalize gaps.
@@ -138,14 +143,6 @@ export async function registerNode() {
     { timezone: "America/Bogota" },
   );
 
-  // TRM is published daily by SuperFinanciera via datos.gov.co. Two ticks per
-  // day (06:15 and 18:15 COT) balance freshness against API load: morning tick
-  // catches the day's official rate, evening tick retries if morning failed.
-  // POST /api/fx/refresh remains available for manual/emergency refresh.
-  cron.schedule("15 6,18 * * *", () => void refreshFxOnce("cron"), {
-    timezone: "America/Bogota",
-  });
-
   // Hourly Gmail enrichment pull (#452, Epic G). Each tick fans out over
   // every active gmail_connections row and pulls new gateway receipts +
   // Bancolombia emails into email_receipts. Per-user failures are logged
@@ -179,16 +176,34 @@ export async function registerNode() {
 
   log.info(
     { event: "crons_registered" },
-    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *), slo-alerts (*/30 * * * *), fx-refresh (15 6,18 * * *), gmail-pull (0 * * * *) America/Bogota",
+    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *) America/Bogota; fx-refresh via BullMQ (15 6,18 * * *)",
   );
 
-  // Backfill on boot when the repo is empty or last known rate came from the
-  // hardcoded fallback. Without this, a fresh deploy shows `· fallback` in the
-  // Net worth card for up to ~12h until the first cron tick lands (#347).
+  // Backfill on boot when the last known rate is stale (source=fallback,
+  // never fetched, or fetchedAt > 12h ago). Without this, a fresh deploy or
+  // a reboot after a long downtime shows `· fallback` in the Net Worth card
+  // until the next scheduled tick lands (#347).
   try {
     const current = await getCurrentFxRate();
-    if (current.source === "fallback") {
-      await refreshFxOnce("boot");
+    const isStale =
+      current.source === "fallback" ||
+      current.fetchedAt === null ||
+      Date.now() - current.fetchedAt.getTime() > 12 * 60 * 60 * 1000;
+
+    if (isStale) {
+      log.info(
+        { event: "fx_refresh_boot_backfill", source: current.source, fetchedAt: current.fetchedAt },
+        "fx rate stale — enqueueing boot backfill",
+      );
+      await fxQueue.add(
+        "fx-refresh",
+        { reason: "boot-backfill" },
+        {
+          jobId: `fx-refresh-boot-${Date.now()}`,
+          attempts: 3,
+          backoff: { type: "exponential", delay: 30000 },
+        },
+      );
     }
   } catch (err) {
     log.error({ err, event: "fx_refresh_boot_check_failed" }, "fx boot backfill check failed");
