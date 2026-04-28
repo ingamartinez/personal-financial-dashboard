@@ -13,7 +13,7 @@ declare global {
  * - gmail-pull BullMQ recurring job (every 5 min)
  * - classify-tx BullMQ worker (on-demand jobs from import pipelines and UI)
  *
- * node-cron is fully removed — all scheduling goes through BullMQ (#593).
+ * All scheduling goes through BullMQ (#593 removed the prior scheduler).
  * Manual overrides use Bull-Board's Promote/Retry buttons.
  *
  * Telegram used to run a long-poll worker here; #185 moved it to per-user
