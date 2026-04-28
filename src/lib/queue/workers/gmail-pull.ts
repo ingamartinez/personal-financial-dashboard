@@ -12,19 +12,18 @@ const log = createLogger({ module: "worker/gmail-pull" });
 //
 // Design decision: in-worker fan-out (NOT parent+child jobs).
 //
-// The current node-cron implementation calls pullAllActiveConnections() in one
-// go — sequential fan-out inside a single tick. Individual per-user retries
-// were never part of the contract (a failed user is logged and the next tick
-// picks up naturally). Introducing a parent→child job pattern would:
+// The scheduled job calls pullAllActiveConnections() in one go — sequential
+// fan-out inside a single tick. Individual per-user retries were never part
+// of the contract (a failed user is logged and the next tick picks up
+// naturally). Introducing a parent→child job pattern would:
 //   (a) triple the Redis round-trips per tick (parent enqueue + N child enqueues
 //       + N acks), and
 //   (b) require a "parent job" concept that BullMQ only natively supports via
 //       BullMQ Pro flows — non-trivial to add safely.
 //
-// Therefore we keep the simpler approach: the scheduled ("cron") job runs the
-// full fan-out inside the processor, identical to what node-cron was doing.
-// Per-user errors are caught, logged, and do not abort the loop (existing
-// behavior preserved exactly).
+// Therefore we keep the simpler approach: the scheduled job runs the full
+// fan-out inside the processor. Per-user errors are caught, logged, and do
+// not abort the loop (existing behavior preserved exactly).
 //
 // User-triggered pulls (previously queueMicrotask in actions.ts) use the
 // "single-user" mode below so they target one user without touching others.
