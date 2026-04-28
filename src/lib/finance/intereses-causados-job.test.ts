@@ -703,4 +703,90 @@ describe("computeInterestForCycle — partial-month accrual (#565)", () => {
     expect(entry.interestCents).toBeGreaterThan(BigInt(0)); // per-cuota path works
     expect(entry.gracePeriodPartialCents).toBe(BigInt(0)); // second pass skips mature
   });
+
+  // #578: second pass must NOT charge interest on 1-cuota purchases even when
+  // the tx carries a non-zero installment_rate_bps (Gmail parser stamps the
+  // account's default rate regardless of installmentsTotal). Bancolombia treats
+  // 1-cuota purchases as the oneMonth bucket = 0 → no interest ever.
+  it("does NOT apply partial accrual on 1-cuota purchases with installment_rate_bps set (#578)", async () => {
+    const visa = await getVisaId();
+    // oneMonth=0 is the correct Bancolombia config; months2to36 nonzero to
+    // confirm a multi-cuota purchase in the same cycle DOES get partial interest,
+    // proving the guard targets only installmentsTotal=1.
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
+    await setCutoffDay(visa, 31);
+
+    // 1-cuota purchase posted mid-cycle (7 days before anchor). The tx carries
+    // rate=19110 as the Gmail parser would stamp it. Without the #578 fix the
+    // second pass would compute ~17,690 cents of phantom interest for this row.
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}one-cuota-with-rate`,
+      amountCentsMagnitude: BigInt(409_952_300), // same amount as AMPLIACION scenario
+      occurredAt: "2026-03-24",
+      installmentsTotal: 1,
+      installmentRateEmX10k: 19110, // explicit rate — simulates Gmail parser stamp
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-03",
+    });
+
+    // The 1-cuota purchase must not appear in intereses at all — it is neither
+    // a mature installment (first pass skips it) nor eligible for partial
+    // accrual (second pass must skip it via the installmentsTotal<=1 guard).
+    const oneCuotaEntry = run.intereses.find(
+      (i) => i.installmentsPaid === 0 && i.installmentsTotal === 1,
+    );
+    expect(oneCuotaEntry).toBeUndefined();
+    expect(run.totalInterestCents).toBe(BigInt(0));
+  });
+
+  // #578: mixed scenario — 1-cuota (no interest) + multi-cuota grace (partial
+  // interest). Confirms the guard only fires on 1-cuota while the multi-cuota
+  // sibling still gets its partial accrual.
+  it("skips 1-cuota but still charges partial accrual on co-existing multi-cuota grace (#578)", async () => {
+    const visa = await getVisaId();
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
+    await setCutoffDay(visa, 31);
+
+    // 1-cuota — should produce 0 interest
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}578-one-cuota`,
+      amountCentsMagnitude: BigInt(10_000_000), // 100,000 pesos
+      occurredAt: "2026-03-24",
+      installmentsTotal: 1,
+      installmentRateEmX10k: 19110,
+    });
+
+    // 60-cuota grace-month-1 posted same day — should produce partial accrual
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}578-sixty-cuota`,
+      amountCentsMagnitude: BigInt(409_952_300), // 4,099,523 pesos
+      occurredAt: "2026-03-24",
+      installmentsTotal: 60,
+      installmentRateEmX10k: 19110,
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-03",
+    });
+
+    // Only the 60-cuota purchase should appear (the 1-cuota is filtered out entirely)
+    expect(run.intereses.length).toBe(1);
+    const entry = run.intereses[0];
+    expect(entry.installmentsTotal).toBe(60);
+    expect(entry.installmentsPaid).toBe(0); // grace month 1
+    expect(entry.gracePeriodPartialCents).toBe(BigInt(1_769_010)); // 7/31 partial
+    expect(entry.interestCents).toBe(BigInt(0)); // grace → per-cuota path gives 0
+
+    // Total = only the 60-cuota partial; 1-cuota contributes 0
+    expect(run.totalInterestCents).toBe(BigInt(1_769_010));
+  });
 });

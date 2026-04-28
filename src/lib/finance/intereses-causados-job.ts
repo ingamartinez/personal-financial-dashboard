@@ -322,6 +322,7 @@ export async function computeInterestForCycle(opts: {
   for (const p of purchases) {
     // Skip if already priced via the per-cuota path (mature installment)
     if (alreadyInIntereses.has(p.id)) continue;
+    if (p.installmentsTotal <= 1) continue; // Bancolombia: oneMonth bucket = 0 → no interest on 1-cuota
 
     // Resolve rate — same logic as first pass
     let rateEmX10k: number;
