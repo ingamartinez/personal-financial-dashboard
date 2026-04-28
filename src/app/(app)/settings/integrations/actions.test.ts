@@ -8,17 +8,22 @@ import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 // Hoist shared mocks before module imports.
 // ---------------------------------------------------------------------------
 
-const { mockGetSessionUser, mockPullForUser } = vi.hoisted(() => ({
+const { mockGetSessionUser, mockQueueAdd } = vi.hoisted(() => ({
   mockGetSessionUser: vi.fn(),
-  mockPullForUser: vi.fn(),
+  mockQueueAdd: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/session", () => ({
   getSessionUser: mockGetSessionUser,
 }));
 
-vi.mock("@/lib/gmail/pull", () => ({
-  pullForUser: mockPullForUser,
+// #593: actions enqueue a gmail-pull BullMQ job instead of calling pullForUser
+// directly. createQueue returns the same mock instance every call, so the
+// `queue.add(...)` invocation lands on `mockQueueAdd`.
+vi.mock("@/lib/queue", () => ({
+  createQueue: vi.fn(() => ({
+    add: mockQueueAdd,
+  })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -169,31 +174,32 @@ describe("setBootstrapSinceDateAction", () => {
 // ---------------------------------------------------------------------------
 
 describe("triggerIncrementalPullAction", () => {
-  it("returns { triggered: true } immediately without awaiting the pull", async () => {
+  beforeEach(() => {
+    mockQueueAdd.mockReset();
+    mockQueueAdd.mockResolvedValue({});
+  });
+
+  it("returns { triggered: true } immediately", async () => {
     mockGetSessionUser.mockResolvedValue({ id: userA });
-    // pullForUser returns a promise that never resolves during this test —
-    // the action must not await it.
-    mockPullForUser.mockReturnValue(new Promise(() => {}));
 
     const result = await triggerIncrementalPullAction();
 
     expect(result).toEqual({ triggered: true });
   });
 
-  it("does not pass overrideSince to pullForUser (uses cursor)", async () => {
+  it("enqueues a single-user gmail-pull job WITHOUT overrideSince (uses cursor)", async () => {
     mockGetSessionUser.mockResolvedValue({ id: userA });
-    mockPullForUser.mockResolvedValue({});
 
     await triggerIncrementalPullAction();
 
-    // Allow the microtask to drain.
-    await new Promise((r) => setTimeout(r, 0));
-
-    // The action calls pullForUser(userId) with NO opts — uses the cursor.
-    expect(mockPullForUser).toHaveBeenCalledWith(userA);
-    const call = mockPullForUser.mock.calls[0];
-    // Second argument must be absent or not contain overrideSince.
-    expect(call[1]).toBeUndefined();
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "gmail-pull",
+      { mode: "single-user", userId: userA },
+      expect.objectContaining({ jobId: expect.stringContaining(`gmail-pull-user-${userA}`) }),
+    );
+    // Payload must NOT carry overrideSince — incremental relies on the cursor.
+    const payload = mockQueueAdd.mock.calls[0][1] as { opts?: { overrideSince?: Date } };
+    expect(payload.opts?.overrideSince).toBeUndefined();
   });
 });
 
@@ -202,18 +208,21 @@ describe("triggerIncrementalPullAction", () => {
 // ---------------------------------------------------------------------------
 
 describe("triggerRebootstrapAction", () => {
+  beforeEach(() => {
+    mockQueueAdd.mockReset();
+    mockQueueAdd.mockResolvedValue({});
+  });
+
   it("returns { triggered: true } immediately", async () => {
     mockGetSessionUser.mockResolvedValue({ id: userA });
-    mockPullForUser.mockReturnValue(new Promise(() => {}));
 
     const result = await triggerRebootstrapAction();
 
     expect(result).toEqual({ triggered: true });
   });
 
-  it("passes overrideSince set to the stored bootstrapSinceDate", async () => {
+  it("enqueues with overrideSince set to the stored bootstrapSinceDate", async () => {
     mockGetSessionUser.mockResolvedValue({ id: userA });
-    mockPullForUser.mockResolvedValue({});
 
     // Pre-set a bootstrapSinceDate on connA.
     const bootstrap = new Date("2026-01-10T00:00:00Z");
@@ -224,18 +233,21 @@ describe("triggerRebootstrapAction", () => {
 
     await triggerRebootstrapAction();
 
-    // Drain the queueMicrotask.
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(mockPullForUser).toHaveBeenCalledWith(
-      userA,
-      expect.objectContaining({ overrideSince: bootstrap }),
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "gmail-pull",
+      expect.objectContaining({
+        mode: "single-user",
+        userId: userA,
+        opts: expect.objectContaining({ overrideSince: bootstrap }),
+      }),
+      expect.objectContaining({
+        jobId: expect.stringContaining(`gmail-pull-rebootstrap-${userA}`),
+      }),
     );
   });
 
   it("falls back to Jan 1 of current year when bootstrapSinceDate is null", async () => {
     mockGetSessionUser.mockResolvedValue({ id: userA });
-    mockPullForUser.mockResolvedValue({});
 
     // Clear the date.
     await db
@@ -244,17 +256,13 @@ describe("triggerRebootstrapAction", () => {
       .where(and(eq(gmailConnections.id, connA)));
 
     await triggerRebootstrapAction();
-    await new Promise((r) => setTimeout(r, 0));
 
+    expect(mockQueueAdd).toHaveBeenCalledTimes(1);
+    const payload = mockQueueAdd.mock.calls[0][1] as {
+      opts: { overrideSince: Date };
+    };
+    const overrideSince = payload.opts.overrideSince;
     const jan1 = new Date(new Date().getFullYear(), 0, 1);
-    expect(mockPullForUser).toHaveBeenCalledWith(
-      userA,
-      expect.objectContaining({
-        overrideSince: expect.any(Date),
-      }),
-    );
-    const call = mockPullForUser.mock.calls[0];
-    const overrideSince = (call[1] as { overrideSince: Date }).overrideSince;
     expect(overrideSince.getFullYear()).toBe(jan1.getFullYear());
     expect(overrideSince.getMonth()).toBe(0);
     expect(overrideSince.getDate()).toBe(1);
