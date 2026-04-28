@@ -80,9 +80,14 @@ async function bridgeToExpress(req: Request): Promise<Response> {
     let statusCode = 200;
     const responseHeaders = new Headers();
     const chunks: Buffer[] = [];
+    // Backing store for properties Express attaches at runtime (res.render,
+    // res.app, res.req, res.locals, etc). Without this, our Proxy's set
+    // trap silently drops them and downstream calls like Bull-Board's
+    // `res.render(view, params)` blow up with "is not a function".
+    const dynamicProps = new Map<string | symbol, unknown>();
 
     const nodeRes = new Proxy({} as ServerResponse, {
-      get(_target, prop: string) {
+      get(_target, prop: string | symbol) {
         switch (prop) {
           case "statusCode":
             return statusCode;
@@ -130,12 +135,14 @@ async function bridgeToExpress(req: Request): Promise<Response> {
           case "socket":
             return { encrypted: false };
           default:
-            return undefined;
+            return dynamicProps.get(prop);
         }
       },
-      set(_target, prop: string, value: unknown) {
+      set(_target, prop: string | symbol, value: unknown) {
         if (prop === "statusCode") {
           statusCode = value as number;
+        } else {
+          dynamicProps.set(prop, value);
         }
         return true;
       },
