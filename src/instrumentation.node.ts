@@ -34,6 +34,7 @@ export async function registerNode() {
   const { createLogger } = await import("@/lib/logger");
   const { createQueue, registerGracefulShutdown } = await import("@/lib/queue");
   const { createFxRefreshWorker } = await import("@/lib/queue/workers/fx-refresh");
+  const { createClassifyTxWorker } = await import("@/lib/queue/workers/classify-tx");
   const log = createLogger({ module: "instrumentation" });
 
   // -------------------------------------------------------------------------
@@ -47,6 +48,12 @@ export async function registerNode() {
   // -------------------------------------------------------------------------
   const fxQueue = createQueue("fx-refresh");
   createFxRefreshWorker();
+
+  // classify-tx worker — processes AI classification jobs enqueued by
+  // runAiClassifier (server action) and future import pipelines (#591).
+  createQueue("classify-tx");
+  createClassifyTxWorker();
+
   registerGracefulShutdown();
 
   await fxQueue.add(
@@ -176,7 +183,7 @@ export async function registerNode() {
 
   log.info(
     { event: "crons_registered" },
-    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *) America/Bogota; fx-refresh via BullMQ (15 6,18 * * *)",
+    "crons registered: recurring-gap (0 6 5 * *), user-health (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *) America/Bogota; fx-refresh via BullMQ (15 6,18 * * *); classify-tx worker registered",
   );
 
   // Backfill on boot when the last known rate is stale (source=fallback,

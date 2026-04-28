@@ -18,13 +18,11 @@ export function AiClassifyButton({ unclassified }: { unclassified: number }) {
     startTransition(async () => {
       try {
         const res = await runAiClassifier();
-        if (res.picked === 0) {
+        if (res.enqueued === 0) {
           toast.info("Nothing to classify");
           return;
         }
-        toast.success(
-          `Classified ${res.aiClassified} via AI · ${res.ruleClassified} via rules · ${res.skipped} skipped`,
-        );
+        toast.success(`Queued ${res.enqueued} transactions for AI classification`);
         router.refresh();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "AI classify failed");

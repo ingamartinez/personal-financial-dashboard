@@ -3,6 +3,15 @@ import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import type { CounterpartyKind } from "@/lib/types";
 
+// ---------------------------------------------------------------------------
+// Shared mock state — hoisted so factory closures work above top-level consts.
+// ---------------------------------------------------------------------------
+const queueMocks = vi.hoisted(() => {
+  const addMock = vi.fn().mockResolvedValue({ id: "mock-job-id" });
+  const queueInstance = { add: addMock };
+  return { addMock, queueInstance };
+});
+
 // `revalidatePath` requires a Next.js request context that vitest's node
 // environment does not provide. No-op it so we can unit-test actions directly.
 vi.mock("next/cache", () => ({
@@ -31,6 +40,11 @@ vi.mock("@/lib/classification/ai", async () => {
   };
 });
 
+// Stub the BullMQ queue so runAiClassifier tests don't need a live Redis.
+vi.mock("@/lib/queue", () => ({
+  createQueue: vi.fn().mockReturnValue(queueMocks.queueInstance),
+}));
+
 const {
   updateCounterparty,
   mergeCounterparty,
@@ -43,6 +57,7 @@ const {
   restoreTransaction,
   createManualTransferGroup,
   updateTransactionInstallments,
+  runAiClassifier,
 } = await import("./actions");
 const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
 const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
@@ -1801,5 +1816,99 @@ describe("updateTransactionInstallments (#406)", () => {
       installmentRateEmX10k: null,
     });
     expect(tooMany.status).toBe("error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runAiClassifier — now enqueues instead of processing inline (#590)
+// ---------------------------------------------------------------------------
+
+describe("runAiClassifier (#590)", () => {
+  const EXT_PREFIX = "test-run-ai-classifier";
+
+  async function defaultAccountId(): Promise<number> {
+    const [row] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    return row.id;
+  }
+
+  async function seedUnclassifiedTx(externalId: string): Promise<number> {
+    const accountId = await defaultAccountId();
+    const [row] = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency,
+        description_raw, classification_method, source, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${accountId}, now(), -10000, 'COP',
+        'runAiClassifier-test', 'unclassified'::classification_method,
+        'sms', ${externalId}
+      )
+      RETURNING id
+    `);
+    return row.id;
+  }
+
+  async function cleanupRunAiTxs() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE ${EXT_PREFIX + ":%"}
+    `);
+  }
+
+  beforeEach(async () => {
+    await cleanupRunAiTxs();
+    queueMocks.addMock.mockClear();
+  });
+  afterEach(cleanupRunAiTxs);
+
+  it("enqueues a classify-tx job with mode=specific and the pending tx IDs", async () => {
+    const txId = await seedUnclassifiedTx(`${EXT_PREFIX}:one`);
+
+    const result = await runAiClassifier();
+
+    expect(result.enqueued).toBeGreaterThanOrEqual(1);
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
+
+    const [, jobData] = queueMocks.addMock.mock.calls[0];
+    expect(jobData.mode).toBe("specific");
+    expect(jobData.userId).toBe(TEST_USER_ID);
+    expect(Array.isArray(jobData.txIds)).toBe(true);
+    expect(jobData.txIds).toContain(txId);
+  });
+
+  it("returns { enqueued: 0 } and does NOT call queue.add when nothing is pending", async () => {
+    // No unclassified txs seeded
+    const result = await runAiClassifier();
+
+    expect(result.enqueued).toBe(0);
+    expect(queueMocks.addMock).not.toHaveBeenCalled();
+  });
+
+  it("enqueues at most AI_BATCH_SIZE transactions per call", async () => {
+    // Seed 25 unclassified txs — more than AI_BATCH_SIZE (20)
+    for (let i = 0; i < 25; i++) {
+      await seedUnclassifiedTx(`${EXT_PREFIX}:batch-${i}`);
+    }
+
+    const result = await runAiClassifier();
+
+    expect(result.enqueued).toBeLessThanOrEqual(20);
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
+
+    const [, jobData] = queueMocks.addMock.mock.calls[0];
+    expect(jobData.txIds).toHaveLength(result.enqueued);
+    expect(jobData.txIds.length).toBeLessThanOrEqual(20);
+  });
+
+  it("does NOT process the transactions synchronously (no DB updates)", async () => {
+    const txId = await seedUnclassifiedTx(`${EXT_PREFIX}:no-inline`);
+
+    await runAiClassifier();
+
+    // The tx must still be unclassified — only the queue.add was called
+    const [row] = await db.execute<{ classification_method: string }>(sql`
+      SELECT classification_method FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.classification_method).toBe("unclassified");
   });
 });

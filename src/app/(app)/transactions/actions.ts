@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
@@ -18,7 +18,9 @@ import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { classifySingleWithAi as classifySingleWithAiLib } from "@/lib/classification/ai";
 import { MERCHANT_HINTS_MAX } from "@/lib/classification/context";
-import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
+import { AI_BATCH_SIZE } from "@/lib/classification/pipeline";
+import { createQueue } from "@/lib/queue";
+import type { ClassifyTxJobData } from "@/lib/queue/workers/classify-tx";
 import type { UserClassificationContext } from "@/lib/db/schema";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
@@ -330,12 +332,42 @@ export async function createManualEntry(input: {
   });
 }
 
-export async function runAiClassifier() {
+export async function runAiClassifier(): Promise<{ enqueued: number }> {
   const session = await getSessionUser();
-  const result = await classifyUnclassifiedBatch(session.id);
-  revalidatePath("/");
-  revalidatePath("/transactions");
-  return result;
+
+  // Fetch the next batch of unclassified tx IDs so the job targets specific
+  // rows (tenant-safe: WHERE user_id = $1 AND classification_method = 'unclassified').
+  // This matches the pipeline's own fetch order (asc id, limit AI_BATCH_SIZE).
+  const pending = await db
+    .select({ id: transactions.id })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.classificationMethod, "unclassified"),
+        isNull(transactions.categorySlug),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
+    .orderBy(asc(transactions.id))
+    .limit(AI_BATCH_SIZE);
+
+  if (pending.length === 0) {
+    return { enqueued: 0 };
+  }
+
+  const txIds = pending.map((r) => r.id);
+  const queue = createQueue<ClassifyTxJobData>("classify-tx");
+  await queue.add(
+    "classify-tx",
+    { userId: session.id, mode: "specific", txIds },
+    {
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5000 },
+    },
+  );
+
+  return { enqueued: txIds.length };
 }
 
 const classifySingleSchema = z.object({
