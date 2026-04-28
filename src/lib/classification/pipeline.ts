@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
-import { db as defaultDb, type DB } from "@/lib/db";
+import { db as defaultDb } from "@/lib/db";
 import { categories, ingestionLogs, transactions, users } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { classifyBatchWithAi, type AiCategoryOption, type AiUserHint } from "./ai";
@@ -16,13 +16,48 @@ export type PipelineResult = {
   usage: { inputTokens: number; outputTokens: number };
 };
 
+export type ClassifyBatchOpts = {
+  /** When provided, only classify these specific transaction IDs (still filtered by userId). */
+  txIds?: number[];
+};
+
+/**
+ * Retry safety: when the worker retries a job mid-batch (e.g. Anthropic
+ * timeout after partial success), the WHERE clause below re-filters by
+ * `classificationMethod = "unclassified"`. Rows already classified on the
+ * previous attempt have a different method and are silently skipped, so
+ * retries are idempotent in practice. The only theoretical race is two
+ * retries firing within the DB-commit window of the first AI response —
+ * BullMQ's exponential backoff (5s+) makes this effectively impossible.
+ * If we ever observe duplicates, switch to a sentinel `"ai-pending"`
+ * state set in a single UPDATE before the AI call.
+ */
 export async function classifyUnclassifiedBatch(
   userId: number,
-  database: DB = defaultDb,
+  opts?: ClassifyBatchOpts,
 ): Promise<PipelineResult> {
+  const db = defaultDb;
+  const options: ClassifyBatchOpts = opts ?? {};
+
   const startedAt = new Date();
 
-  const pending = await database
+  const whereClause =
+    options.txIds && options.txIds.length > 0
+      ? and(
+          eq(transactions.userId, userId),
+          eq(transactions.classificationMethod, "unclassified"),
+          isNull(transactions.categorySlug),
+          notDeleted(transactions.deletedAt),
+          inArray(transactions.id, options.txIds),
+        )
+      : and(
+          eq(transactions.userId, userId),
+          eq(transactions.classificationMethod, "unclassified"),
+          isNull(transactions.categorySlug),
+          notDeleted(transactions.deletedAt),
+        );
+
+  const pending = await db
     .select({
       id: transactions.id,
       description: transactions.descriptionRaw,
@@ -32,14 +67,7 @@ export async function classifyUnclassifiedBatch(
       currency: transactions.currency,
     })
     .from(transactions)
-    .where(
-      and(
-        eq(transactions.userId, userId),
-        eq(transactions.classificationMethod, "unclassified"),
-        isNull(transactions.categorySlug),
-        notDeleted(transactions.deletedAt),
-      ),
-    )
+    .where(whereClause)
     .orderBy(asc(transactions.id))
     .limit(AI_BATCH_SIZE);
 
@@ -55,7 +83,7 @@ export async function classifyUnclassifiedBatch(
   }
 
   const [cats, userRow] = await Promise.all([
-    database
+    db
       .select({
         slug: categories.slug,
         name: categories.name,
@@ -63,7 +91,7 @@ export async function classifyUnclassifiedBatch(
       })
       .from(categories)
       .where(and(eq(categories.userId, userId), notDeleted(categories.deletedAt))),
-    database
+    db
       .select({ context: users.classificationContext })
       .from(users)
       .where(eq(users.id, userId))
@@ -82,10 +110,10 @@ export async function classifyUnclassifiedBatch(
         descriptionClean: tx.descriptionClean,
         merchant: tx.merchant,
       },
-      database,
+      db,
     );
     if (ruleHit) {
-      await database
+      await db
         .update(transactions)
         .set({
           categorySlug: ruleHit.categorySlug,
@@ -133,7 +161,7 @@ export async function classifyUnclassifiedBatch(
       skipped++;
       continue;
     }
-    await database
+    await db
       .update(transactions)
       .set({
         categorySlug: hit.categorySlug,
@@ -152,7 +180,7 @@ export async function classifyUnclassifiedBatch(
     aiClassified++;
   }
 
-  await database.insert(ingestionLogs).values({
+  await db.insert(ingestionLogs).values({
     userId,
     source: "manual",
     status: skipped === 0 ? "ok" : "partial",
