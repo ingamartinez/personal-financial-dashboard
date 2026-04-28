@@ -107,7 +107,7 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
         accountId: a.id,
         userId,
         metadata: a.metadata,
-        count: 3,
+        count: 6,
       }),
     })),
   );

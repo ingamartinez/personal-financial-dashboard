@@ -172,6 +172,27 @@ describe("recentCycles — integration", () => {
     expect(cycles[3].status).toBe("pending");
   });
 
+  it("returns 6 cycles when count=6 (covers #580 UI fix)", async () => {
+    const cycles = await recentCycles({
+      accountId,
+      userId,
+      metadata: { cutoffDay: 30 },
+      count: 6,
+      now: utcDate(2026, 4, 15),
+    });
+    expect(cycles).toHaveLength(6);
+    expect(cycles.map((c) => c.cycle)).toEqual([
+      "2026-04",
+      "2026-03",
+      "2026-02",
+      "2026-01",
+      "2025-12",
+      "2025-11",
+    ]);
+    expect(cycles[0].status).toBe("in-progress");
+    expect(cycles[1].status).toBe("consolidated");
+  });
+
   it("overdueCyclesForUser flags cycles past threshold", async () => {
     const overdue = await overdueCyclesForUser(
       userId,
