@@ -5,8 +5,9 @@ import { db } from "@/lib/db";
 import { gmailConnections } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
-import { pullForUser } from "@/lib/gmail/pull";
+import { createQueue } from "@/lib/queue";
 import { createLogger } from "@/lib/logger";
+import type { GmailPullJobData } from "@/lib/queue/workers/gmail-pull";
 import type { SetBootstrapSinceDateResult, TriggerPullResult } from "./integrations-types";
 
 const log = createLogger({ module: "settings-integrations-actions" });
@@ -44,21 +45,16 @@ export async function setBootstrapSinceDateAction(
 export async function triggerIncrementalPullAction(): Promise<TriggerPullResult> {
   const session = await getSessionUser();
 
-  // Fire-and-forget: pull runs in the background; action returns immediately.
-  // Best-effort trigger — if the Node process receives SIGTERM (deploy
-  // rollover) between this return and the microtask running, the pull is
-  // silently dropped. The 5-min cron in instrumentation.node.ts is the
-  // reliable fallback.
-  queueMicrotask(async () => {
-    try {
-      await pullForUser(session.id);
-    } catch (err) {
-      log.error(
-        { err, userId: session.id, event: "incremental_pull_failed" },
-        "background incremental pull threw",
-      );
-    }
-  });
+  // Enqueue a single-user gmail-pull job. More reliable than queueMicrotask:
+  // the job persists in Redis even if SIGTERM arrives before execution, and
+  // BullMQ will retry on transient failures. The 5-min cron is still the
+  // reliable fallback for missed pulls (#593).
+  const queue = createQueue<GmailPullJobData>("gmail-pull");
+  await queue.add(
+    "gmail-pull",
+    { mode: "single-user", userId: session.id },
+    { jobId: `gmail-pull-user-${session.id}-${Date.now()}` },
+  );
 
   log.info({ userId: session.id, event: "incremental_pull_triggered" }, "incremental pull queued");
 
@@ -78,18 +74,14 @@ export async function triggerRebootstrapAction(): Promise<TriggerPullResult> {
 
   const overrideSince: Date = conn?.bootstrapSinceDate ?? new Date(new Date().getFullYear(), 0, 1);
 
-  // Fire-and-forget — same SIGTERM caveat as triggerIncrementalPullAction.
-  // The 5-min cron is the fallback for missed re-bootstraps.
-  queueMicrotask(async () => {
-    try {
-      await pullForUser(session.id, { overrideSince });
-    } catch (err) {
-      log.error(
-        { err, userId: session.id, event: "rebootstrap_pull_failed" },
-        "background re-bootstrap pull threw",
-      );
-    }
-  });
+  // Enqueue a single-user re-bootstrap job. More reliable than queueMicrotask
+  // — persists in Redis across SIGTERM, BullMQ retries on transient failures.
+  const queue = createQueue<GmailPullJobData>("gmail-pull");
+  await queue.add(
+    "gmail-pull",
+    { mode: "single-user", userId: session.id, opts: { overrideSince } },
+    { jobId: `gmail-pull-rebootstrap-${session.id}-${Date.now()}` },
+  );
 
   log.info(
     { userId: session.id, overrideSince, event: "rebootstrap_triggered" },
