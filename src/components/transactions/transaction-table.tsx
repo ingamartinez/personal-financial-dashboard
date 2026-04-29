@@ -397,8 +397,7 @@ export function TransactionTable({
                 const isArchived = tx.deletedAt !== null;
                 // #642: paired transfers have category_slug=NULL by design — suppress
                 // "Sin clasificar" styling and the "¿Por qué?" button for these rows.
-                const isPairedTransfer =
-                  tx.channel === "transfer" && tx.transferGroupId !== null;
+                const isPairedTransfer = tx.channel === "transfer" && tx.transferGroupId !== null;
                 const isLowConfidence =
                   confidenceBand(tx.classificationMethod, tx.classificationConfidence) === "low";
                 return (
@@ -604,8 +603,7 @@ export function TransactionTable({
             // change adds a `text-destructive` span here mirroring desktop's
             // line 467, include the explicit guard:
             //   tx.classificationMethod === "unclassified" && !isPairedTransferMobile
-            const isPairedTransferMobile =
-              tx.channel === "transfer" && tx.transferGroupId !== null;
+            const isPairedTransferMobile = tx.channel === "transfer" && tx.transferGroupId !== null;
             return (
               <motion.li
                 key={tx.id}
@@ -693,9 +691,7 @@ export function TransactionTable({
                   </Badge>
                   <Badge
                     variant={
-                      isPairedTransferMobile
-                        ? "outline"
-                        : methodVariant[tx.classificationMethod]
+                      isPairedTransferMobile ? "outline" : methodVariant[tx.classificationMethod]
                     }
                     className="font-normal"
                   >
