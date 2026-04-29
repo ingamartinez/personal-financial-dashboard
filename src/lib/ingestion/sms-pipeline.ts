@@ -21,7 +21,7 @@ import {
   recordParserEvent,
   type AiFallbackOutcome,
 } from "@/lib/ingestion/sms-ai-fallback";
-import { keyForParsed } from "@/lib/counterparties/alias-key";
+import { keyForParsed, type KeyForKind } from "@/lib/counterparties/alias-key";
 import { enqueueClassification } from "@/lib/classification/enqueue";
 import type { ClassificationMethod, TransactionSource } from "@/lib/types";
 
@@ -321,14 +321,20 @@ type CounterpartyResolution = {
   inheritedCategory: string | null;
 };
 
-export async function resolveCounterparty(
+/**
+ * Resolve (or create) a counterparty by its canonical key.
+ *
+ * This is the low-level building block. It performs the alias lookup + insert
+ * inside a transaction and returns the counterparty id and any inherited
+ * category slug. Extracted from resolveCounterparty so that non-SMS pipelines
+ * (e.g. email-arq) can call it directly with their own key — without needing
+ * a ParsedSms shape. (#637)
+ */
+export async function resolveCounterpartyByKey(
   userId: number,
-  parsed: ParsedSms,
+  key: KeyForKind,
   database: DB,
 ): Promise<CounterpartyResolution> {
-  const key = keyForParsed(parsed);
-  if (!key) return { counterpartyId: null, inheritedCategory: null };
-
   return database.transaction(async (trx) => {
     const existing = await trx.execute<{
       id: number;
@@ -366,6 +372,16 @@ export async function resolveCounterparty(
     `);
     return { counterpartyId: inserted[0].id, inheritedCategory: null };
   });
+}
+
+export async function resolveCounterparty(
+  userId: number,
+  parsed: ParsedSms,
+  database: DB,
+): Promise<CounterpartyResolution> {
+  const key = keyForParsed(parsed);
+  if (!key) return { counterpartyId: null, inheritedCategory: null };
+  return resolveCounterpartyByKey(userId, key, database);
 }
 
 function resolveAccountForParsed(
