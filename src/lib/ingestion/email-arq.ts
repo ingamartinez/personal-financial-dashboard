@@ -9,6 +9,7 @@ import { parseArqEmail, type ArqParseResult, type ParsedArqTx } from "@/lib/gmai
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 import { resolveCounterpartyByKey } from "@/lib/ingestion/sms-pipeline";
 import { normalizeName } from "@/lib/counterparties/alias-key";
+import { enqueueClassification } from "@/lib/classification/enqueue";
 import type { FxMetadata } from "@/lib/types/fx-metadata";
 
 const log = createLogger({ module: "ingestion/email-arq" });
@@ -339,6 +340,12 @@ export async function ingestArqEmail(
         rawData,
       },
     );
+
+    // #645: ARQ inserts do NOT run the rule engine inline (unlike the SMS
+    // pipeline). Enqueue AI classification so the tx does not sit forever as
+    // "unclassified". Failure is graceful-degraded inside enqueueClassification
+    // — Redis down must not abort a successful insert.
+    await enqueueClassification(userId, [txId]);
 
     log.info(
       {
