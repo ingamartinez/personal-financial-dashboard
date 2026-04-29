@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, emailReceipts, transactions, type ParsedReceiptPayload } from "@/lib/db/schema";
+import { accounts, emailReceipts, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import { emit } from "@/lib/events/bus";
@@ -167,10 +167,7 @@ async function markReceiptNeedsReview(
     .set({
       matchStatus: "unmatched",
       parsedAt: new Date(),
-      // Cast required: schema type is ParsedReceiptPayload but we intentionally
-      // store an error-shaped object for audit trail. The underlying column is
-      // JSONB so the DB accepts arbitrary JSON. No migration needed.
-      parsedPayload: { error: { reason, kind: "needs_review" } } as unknown as ParsedReceiptPayload,
+      parsedPayload: { error: { reason, kind: "needs_review" } },
       updatedAt: new Date(),
     })
     .where(and(eq(emailReceipts.id, receiptId), eq(emailReceipts.userId, userId)));

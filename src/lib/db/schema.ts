@@ -89,6 +89,14 @@ export type ParsedReceiptPayload = {
   extra?: Record<string, unknown>;
 };
 
+// #641: written when a parser returns `needs_review` so the receipt has an
+// audit trail (reason + kind) and can be distinguished from intentional skips
+// (which leave parsedPayload null). Callers reading parsedPayload must
+// type-narrow on the presence of `error` before accessing payload fields.
+export type ParsedReceiptError = {
+  error: { reason: string; kind: "needs_review" };
+};
+
 export const users = pgTable(
   "users",
   {
@@ -1483,7 +1491,9 @@ export const emailReceipts = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true }),
     referenceId: varchar("reference_id", { length: 120 }),
     rawHtml: text("raw_html").notNull(),
-    parsedPayload: jsonb("parsed_payload").$type<ParsedReceiptPayload | Record<string, never>>(),
+    parsedPayload: jsonb("parsed_payload").$type<
+      ParsedReceiptPayload | ParsedReceiptError | Record<string, never>
+    >(),
     matchedTransactionId: integer("matched_transaction_id").references(
       (): AnyPgColumn => transactions.id,
       { onDelete: "set null" },
