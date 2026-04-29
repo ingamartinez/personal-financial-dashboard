@@ -1,11 +1,13 @@
 /**
  * Smoke tests for the Bull-Board route handler.
  *
- * Verifies auth enforcement without touching Redis or Express.
- * All external dependencies (auth, bull-board app) are mocked.
+ * Verifies auth enforcement and the missing-port path. The success path
+ * (reverse proxy via fetch) is exercised end-to-end via local browser tests
+ * and prod smoke; mocking fetch + the internal http server here adds noise
+ * without catching real bugs.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mock requireAdmin — controls the auth gate
@@ -15,25 +17,6 @@ const mockRequireAdmin = vi.fn();
 
 vi.mock("@/lib/auth/session", () => ({
   requireAdmin: mockRequireAdmin,
-}));
-
-// ---------------------------------------------------------------------------
-// Mock getBullBoardApp — prevents Express + Redis from initializing in tests
-// ---------------------------------------------------------------------------
-
-const mockExpressApp = vi.fn().mockImplementation((_req: unknown, res: Record<string, unknown>) => {
-  // Simulate a minimal Express response for the success path.
-  // Express sets res.statusCode directly rather than calling writeHead,
-  // then calls res.end() to finish the response.
-  (res as { statusCode: number }).statusCode = 200;
-  if (typeof res.end === "function") {
-    (res.end as (body: string) => void)("<html><body>bull-board</body></html>");
-  }
-});
-
-vi.mock("@/lib/queue/bull-board", () => ({
-  getBullBoardApp: () => mockExpressApp,
-  BULL_BOARD_BASE_PATH: "/api/admin/queues",
 }));
 
 // ---------------------------------------------------------------------------
@@ -49,6 +32,8 @@ const { GET } = await import("./route");
 function makeRequest(path = "/api/admin/queues"): Request {
   return new Request(`http://localhost${path}`, { method: "GET" });
 }
+
+type GlobalWithPort = typeof globalThis & { __findashBullBoardPort?: number };
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -67,9 +52,6 @@ describe("Bull-Board route handler — auth gate", () => {
 
     const body = await res.json();
     expect(body).toMatchObject({ error: "Forbidden" });
-
-    // The Express app must NOT be called
-    expect(mockExpressApp).not.toHaveBeenCalled();
   });
 
   it("returns 401 when requireAdmin throws UNAUTHENTICATED", async () => {
@@ -80,11 +62,33 @@ describe("Bull-Board route handler — auth gate", () => {
 
     const body = await res.json();
     expect(body).toMatchObject({ error: "Unauthenticated" });
-
-    expect(mockExpressApp).not.toHaveBeenCalled();
   });
 
-  it("calls the Express app when requireAdmin resolves (admin user)", async () => {
+  it("does not expose the dashboard to non-admin role on deep paths", async () => {
+    mockRequireAdmin.mockRejectedValue(new Error("FORBIDDEN"));
+
+    const res = await GET(makeRequest("/api/admin/queues/api/queues"));
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("Bull-Board route handler — internal server availability", () => {
+  const originalPort = (globalThis as GlobalWithPort).__findashBullBoardPort;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete (globalThis as GlobalWithPort).__findashBullBoardPort;
+  });
+
+  afterEach(() => {
+    if (originalPort !== undefined) {
+      (globalThis as GlobalWithPort).__findashBullBoardPort = originalPort;
+    } else {
+      delete (globalThis as GlobalWithPort).__findashBullBoardPort;
+    }
+  });
+
+  it("returns 503 when the internal Bull-Board port is not set (instrumentation failed)", async () => {
     mockRequireAdmin.mockResolvedValue({
       id: 1,
       email: "admin@example.com",
@@ -93,20 +97,9 @@ describe("Bull-Board route handler — auth gate", () => {
     });
 
     const res = await GET(makeRequest());
+    expect(res.status).toBe(503);
 
-    // The Express bridge was invoked
-    expect(mockExpressApp).toHaveBeenCalledOnce();
-    // Status is whatever the mock Express app returned (200).
-    // If the bridge throws internally, the route returns 500 — debug if so.
-    const body = await res.json().catch(() => null);
-    expect({ status: res.status, body }).toMatchObject({ status: 200 });
-  });
-
-  it("does not expose the dashboard to non-admin role (FORBIDDEN path)", async () => {
-    mockRequireAdmin.mockRejectedValue(new Error("FORBIDDEN"));
-
-    const res = await GET(makeRequest("/api/admin/queues/api/queues"));
-    expect(res.status).toBe(403);
-    expect(mockExpressApp).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body).toMatchObject({ error: "Bull-Board not initialized" });
   });
 });

@@ -144,6 +144,33 @@ export async function registerNode() {
     "BullMQ workers registered: fx-refresh (15 6,18 * * *), recurring-gap (0 6 5 * *), health-snapshots (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *) America/Bogota; classify-tx on-demand",
   );
 
+  // -------------------------------------------------------------------------
+  // Bull-Board internal http server
+  //
+  // Bull-Board's @bull-board/express adapter uses res.render() (EJS) and
+  // streaming static-file responses that need a real Node Writable Stream
+  // — not the Web Fetch Request/Response pair Next.js Route Handlers
+  // expose. So we spin up an internal http.Server on 127.0.0.1:0 (random
+  // port) and let the @bull-board/express app handle requests natively.
+  // The Next.js route at /api/admin/queues authenticates the user and
+  // reverse-proxies via fetch(). See #607, #615.
+  // -------------------------------------------------------------------------
+  const { getBullBoardApp } = await import("@/lib/queue/bull-board");
+  const http = await import("node:http");
+
+  const bullBoardApp = getBullBoardApp();
+  const bullBoardServer = http.createServer(bullBoardApp);
+  await new Promise<void>((resolve) => {
+    bullBoardServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const addr = bullBoardServer.address();
+  const port = typeof addr === "object" && addr ? addr.port : 0;
+  (globalThis as unknown as { __findashBullBoardPort?: number }).__findashBullBoardPort = port;
+  log.info(
+    { event: "bull_board_server_started", port },
+    `bull-board internal http server listening on 127.0.0.1:${port}`,
+  );
+
   // Backfill on boot when the last known rate is stale (source=fallback,
   // never fetched, or fetchedAt > 12h ago). Without this, a fresh deploy or
   // a reboot after a long downtime shows `· fallback` in the Net Worth card
