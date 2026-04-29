@@ -21,7 +21,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { classifySingleWithAi as classifySingleWithAiLib } from "@/lib/classification/ai";
 import { MERCHANT_HINTS_MAX } from "@/lib/classification/context";
 import { AI_BATCH_SIZE } from "@/lib/classification/pipeline";
-import { createQueue } from "@/lib/queue";
+import { createQueue, getRedisConnection } from "@/lib/queue";
 import type { ClassifyTxJobData } from "@/lib/queue/workers/classify-tx";
 import type { UserClassificationContext } from "@/lib/db/schema";
 import { emit } from "@/lib/events/bus";
@@ -586,8 +586,17 @@ export async function createManualEntry(input: {
  * set respecting `removeOnComplete: { count: 100 }`).
  *
  * Return shape: `{ enqueued: number; alreadyRunning?: boolean }`
- *   - `alreadyRunning: true` when the queue already has an active drain for
- *     this user (dedup fired on an active job). The toast should be truthful.
+ *   - `alreadyRunning: true` when the queue already has a live drain for
+ *     this user (the dedup key exists in Redis). The toast should be truthful.
+ *
+ * Race-condition note: we read the dedup key BEFORE calling queue.add() to
+ * avoid a false-positive. The old `getState()`-based approach was ambiguous:
+ * with concurrency:1 a worker can transition a job from "wait" → "active" in
+ * Redis before getState() runs, making a fresh legitimate add look like a
+ * duplicate (BullMQ source confirmed: bull:classify-tx:de:<id>). A pre-read
+ * avoids that. The remaining narrow race — two concurrent clicks when no drain
+ * is live both see an empty key — is benign: BullMQ deduplicates the second
+ * add and one drain runs; both callers receive { enqueued: pendingCount }.
  */
 export async function enqueueClassifyAllPending(): Promise<{
   enqueued: number;
@@ -601,8 +610,21 @@ export async function enqueueClassifyAllPending(): Promise<{
 
   if (pendingCount === 0) return { enqueued: 0 };
 
+  // Check the BullMQ deduplication key BEFORE calling queue.add().
+  // BullMQ stores the dedup key at `{prefix}:{queueName}:de:{id}` — it exists
+  // while a deduplicated job is waiting or active, and is atomically removed on
+  // complete/fail (confirmed in node_modules/bullmq dist/cjs/scripts/addStandardJob-9.js).
+  // Reading it first avoids the getState() race where a fresh job transitions
+  // from "wait" to "active" before getState() runs (concurrency:1 worker).
+  const redis = getRedisConnection();
+  const dedupKey = `bull:classify-tx:de:drain-${session.id}`;
+  const existing = await redis.get(dedupKey);
+  if (existing) {
+    return { enqueued: 0, alreadyRunning: true };
+  }
+
   const queue = createQueue<ClassifyTxJobData>("classify-tx");
-  const job = await queue.add(
+  await queue.add(
     "classify-tx",
     { userId: session.id, mode: "drain-pending" },
     {
@@ -614,15 +636,6 @@ export async function enqueueClassifyAllPending(): Promise<{
       backoff: { type: "exponential", delay: 5000 },
     },
   );
-
-  // Detect whether BullMQ blocked this add via dedup (an existing active job
-  // was returned instead of a freshly created one). `getState()` performs a
-  // single Redis round-trip and returns "active" when a worker already holds
-  // the job lock — the primary prod-visible dedup case.
-  const state = await job.getState();
-  if (state === "active") {
-    return { enqueued: 0, alreadyRunning: true };
-  }
 
   revalidatePath("/");
   revalidatePath("/transactions");

@@ -7,10 +7,12 @@ import type { CounterpartyKind } from "@/lib/types";
 // Shared mock state — hoisted so factory closures work above top-level consts.
 // ---------------------------------------------------------------------------
 const queueMocks = vi.hoisted(() => {
-  const getStateMock = vi.fn().mockResolvedValue("waiting");
-  const addMock = vi.fn().mockResolvedValue({ id: "mock-job-id", getState: getStateMock });
+  const addMock = vi.fn().mockResolvedValue({ id: "mock-job-id" });
   const queueInstance = { add: addMock };
-  return { addMock, getStateMock, queueInstance };
+  // Redis GET mock: default null (no dedup key = no live drain)
+  const redisGetMock = vi.fn().mockResolvedValue(null);
+  const redisInstance = { get: redisGetMock };
+  return { addMock, queueInstance, redisGetMock, redisInstance };
 });
 
 // `revalidatePath` requires a Next.js request context that vitest's node
@@ -41,9 +43,10 @@ vi.mock("@/lib/classification/ai", async () => {
   };
 });
 
-// Stub the BullMQ queue so runAiClassifier tests don't need a live Redis.
+// Stub the BullMQ queue and Redis so drain/classify tests don't need live Redis.
 vi.mock("@/lib/queue", () => ({
   createQueue: vi.fn().mockReturnValue(queueMocks.queueInstance),
+  getRedisConnection: vi.fn().mockReturnValue(queueMocks.redisInstance),
 }));
 
 const {
@@ -2166,9 +2169,9 @@ describe("enqueueClassifyAllPending (#592)", () => {
   beforeEach(async () => {
     await cleanupDrainTxs();
     queueMocks.addMock.mockClear();
-    queueMocks.getStateMock.mockClear();
-    // Default: freshly added job is in "waiting" state
-    queueMocks.getStateMock.mockResolvedValue("waiting");
+    queueMocks.redisGetMock.mockClear();
+    // Default: no dedup key in Redis = no live drain running
+    queueMocks.redisGetMock.mockResolvedValue(null);
   });
   afterEach(cleanupDrainTxs);
 
@@ -2241,43 +2244,46 @@ describe("enqueueClassifyAllPending (#592)", () => {
 
   it("(dedup) returns { enqueued: pendingCount } when no prior drain exists — Test 1", async () => {
     await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t1`);
-    // getStateMock returns "waiting" by default — fresh job, no prior drain
-    queueMocks.getStateMock.mockResolvedValueOnce("waiting");
+    // redisGetMock returns null by default — dedup key absent, no live drain
+    queueMocks.redisGetMock.mockResolvedValueOnce(null);
 
     const result = await enqueueClassifyAllPending();
 
     expect(result.enqueued).toBeGreaterThanOrEqual(1);
     expect(result.alreadyRunning).toBeFalsy();
+    // Dedup key was read before add; add was called once
+    expect(queueMocks.redisGetMock).toHaveBeenCalledOnce();
     expect(queueMocks.addMock).toHaveBeenCalledOnce();
   });
 
   it("(dedup) returns { enqueued: 0, alreadyRunning: true } when drain is active — Test 2", async () => {
     await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t2`);
-    // Simulate BullMQ returning the existing active job (dedup fired)
-    queueMocks.getStateMock.mockResolvedValueOnce("active");
+    // Simulate an existing live drain: dedup key present in Redis
+    queueMocks.redisGetMock.mockResolvedValueOnce("42");
 
     const result = await enqueueClassifyAllPending();
 
     expect(result.enqueued).toBe(0);
     expect(result.alreadyRunning).toBe(true);
-    // queue.add was still called — dedup detection happens via getState()
-    expect(queueMocks.addMock).toHaveBeenCalledOnce();
+    // Short-circuited before queue.add — dedup detected via Redis GET
+    expect(queueMocks.addMock).not.toHaveBeenCalled();
   });
 
   it("(dedup) re-enqueues after a completed drain — Test 3 (regression: jobId blocked this)", async () => {
     await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t3`);
-    // After a drain completes, BullMQ removes the deduplication key.
-    // The next queue.add() creates a fresh "waiting" job — NOT deduplicated.
-    // With the old jobId approach, the completed job hash still existed in
-    // the completed set, and BullMQ's jobId dedup would silently block the add.
-    // With deduplication, the key is gone → fresh add succeeds.
-    queueMocks.getStateMock.mockResolvedValueOnce("waiting");
+    // First call: dedup key is present (drain is running) → alreadyRunning
+    queueMocks.redisGetMock.mockResolvedValueOnce("42");
+    const first = await enqueueClassifyAllPending();
+    expect(first.alreadyRunning).toBe(true);
+    expect(queueMocks.addMock).not.toHaveBeenCalled();
 
-    const result = await enqueueClassifyAllPending();
-
-    expect(result.enqueued).toBeGreaterThanOrEqual(1);
-    expect(result.alreadyRunning).toBeFalsy();
-    // A real job was enqueued (not silently dropped like the prod bug)
+    // Second call: drain completed, BullMQ removed the dedup key → key absent
+    // This is the regression test: the old jobId approach kept the completed job
+    // hash in the completed set and blocked all future adds forever.
+    queueMocks.redisGetMock.mockResolvedValueOnce(null);
+    const second = await enqueueClassifyAllPending();
+    expect(second.enqueued).toBeGreaterThanOrEqual(1);
+    expect(second.alreadyRunning).toBeFalsy();
     expect(queueMocks.addMock).toHaveBeenCalledOnce();
   });
 });
