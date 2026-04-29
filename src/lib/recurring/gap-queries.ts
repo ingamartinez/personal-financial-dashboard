@@ -8,6 +8,7 @@ import {
   recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import {
   DEFAULT_WINDOW_AFTER_DAYS,
   DEFAULT_WINDOW_BEFORE_DAYS,
@@ -103,6 +104,7 @@ export async function getOpenGaps(userId: number, database: DB = defaultDb): Pro
       label: recurringTransactions.label,
       accountId: recurringTransactions.accountId,
       accountName: accounts.name,
+      accountCurrency: accounts.currency,
       amountCents: recurringTransactions.amountCents,
       currency: recurringTransactions.currency,
       categorySlug: recurringTransactions.categorySlug,
@@ -124,5 +126,8 @@ export async function getOpenGaps(userId: number, database: DB = defaultDb): Pro
     .where(eq(recurringGaps.userId, userId))
     .orderBy(asc(recurringGaps.yearMonth), asc(recurringTransactions.dayOfMonth));
 
-  return rows;
+  return rows.map((r) => ({
+    ...r,
+    accountName: formatAccountLabel({ name: r.accountName, currency: r.accountCurrency }),
+  }));
 }
