@@ -9,6 +9,10 @@ import {
 } from "@/lib/recurring/gap-detector";
 import type { Currency } from "@/lib/types";
 
+// Default window for getUpcomingForWindow (#632).
+export const UPCOMING_WINDOW_BEFORE_DAYS = 5;
+export const UPCOMING_WINDOW_AFTER_DAYS = 5;
+
 export type UpcomingStatus = "matched" | "upcoming" | "overdue" | "dismissed";
 
 export type UpcomingItem = {
@@ -224,6 +228,230 @@ export async function getUpcomingForMonth(
       notes: r.notes,
     });
   }
+
+  return items;
+}
+
+// ---------------------------------------------------------------------------
+// getUpcomingForWindow (#632)
+// ---------------------------------------------------------------------------
+// Returns un-matched recurring slots whose expectedDate falls in the window
+// [today - beforeDays, today + afterDays]. Unlike getUpcomingForMonth this:
+//   - Can span month boundaries (e.g., today=Apr 29, window includes May 1).
+//   - Only returns "esperado" / "atrasado" statuses (filters out matched/dismissed).
+//   - Sorted by expectedDate ascending.
+// ---------------------------------------------------------------------------
+
+export type UpcomingWindowOptions = {
+  userId: number;
+  today: Date;
+  beforeDays?: number;
+  afterDays?: number;
+  matchWindowBeforeDays?: number;
+  matchWindowAfterDays?: number;
+};
+
+export async function getUpcomingForWindow(
+  opts: UpcomingWindowOptions,
+  database: DB = defaultDb,
+): Promise<UpcomingItem[]> {
+  const {
+    userId,
+    today,
+    beforeDays = UPCOMING_WINDOW_BEFORE_DAYS,
+    afterDays = UPCOMING_WINDOW_AFTER_DAYS,
+    matchWindowBeforeDays = DEFAULT_WINDOW_BEFORE_DAYS,
+    matchWindowAfterDays = DEFAULT_WINDOW_AFTER_DAYS,
+  } = opts;
+
+  const todayDate = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
+  );
+  const windowStart = new Date(todayDate.getTime() - beforeDays * 86400000);
+  const windowEnd = new Date(todayDate.getTime() + afterDays * 86400000);
+
+  // Fetch all active, non-deleted recurrings for this user.
+  const rows = await database
+    .select({
+      id: recurringTransactions.id,
+      label: recurringTransactions.label,
+      accountId: recurringTransactions.accountId,
+      accountName: accounts.name,
+      accountCurrency: accounts.currency,
+      amountCents: recurringTransactions.amountCents,
+      currency: recurringTransactions.currency,
+      categorySlug: recurringTransactions.categorySlug,
+      categoryName: categories.name,
+      dayOfMonth: recurringTransactions.dayOfMonth,
+      skippedMonths: recurringTransactions.skippedMonths,
+      notes: recurringTransactions.notes,
+    })
+    .from(recurringTransactions)
+    .innerJoin(
+      accounts,
+      and(
+        eq(accounts.id, recurringTransactions.accountId),
+        // Tenant safety: pair user_id on both sides per per-user-table-join-tenant-safety.
+        eq(accounts.userId, recurringTransactions.userId),
+      ),
+    )
+    .leftJoin(
+      categories,
+      and(
+        eq(categories.slug, recurringTransactions.categorySlug),
+        eq(categories.userId, recurringTransactions.userId),
+      ),
+    )
+    .where(
+      and(
+        eq(recurringTransactions.userId, userId),
+        eq(recurringTransactions.active, true),
+        notDeleted(recurringTransactions.deletedAt),
+      ),
+    )
+    .orderBy(asc(recurringTransactions.dayOfMonth), asc(recurringTransactions.id));
+
+  if (rows.length === 0) return [];
+
+  // For each recurring we need to evaluate up to 3 year-months: the ones whose
+  // expectedDate might fall within the window. We consider prev-month, current-month
+  // (relative to windowStart), and next-month.
+  // Derive the set of year-months to evaluate.
+  const startYear = windowStart.getUTCFullYear();
+  const startMonth = windowStart.getUTCMonth() + 1; // 1-based
+  const endYear = windowEnd.getUTCFullYear();
+  const endMonth = windowEnd.getUTCMonth() + 1;
+
+  // Collect all unique (year, month) combos spanned by [windowStart, windowEnd].
+  const ymSet: Array<{ year: number; month: number; ym: string }> = [];
+  let y = startYear;
+  let m = startMonth;
+  while (y < endYear || (y === endYear && m <= endMonth)) {
+    ymSet.push({ year: y, month: m, ym: `${y}-${String(m).padStart(2, "0")}` });
+    if (m === 12) {
+      y += 1;
+      m = 1;
+    } else {
+      m += 1;
+    }
+  }
+
+  // Fetch explicit links for these year-months in one query.
+  const recurringIds = rows.map((r) => r.id);
+  const ymStrings = ymSet.map((e) => e.ym);
+
+  // We need explicit links for ALL year-months in the window.
+  // A single `inArray` on recurringYearMonth covers all relevant months.
+  const explicitLinks = await database
+    .select({
+      id: transactions.id,
+      recurringId: transactions.recurringId,
+      recurringYearMonth: transactions.recurringYearMonth,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        inArray(transactions.recurringId, recurringIds),
+        inArray(transactions.recurringYearMonth, ymStrings),
+        notDeleted(transactions.deletedAt),
+      ),
+    );
+
+  // Map: `${recurringId}:${yearMonth}` → txId
+  const explicitMap = new Map<string, number>();
+  for (const e of explicitLinks) {
+    if (e.recurringId !== null && e.recurringYearMonth !== null) {
+      explicitMap.set(`${e.recurringId}:${e.recurringYearMonth}`, e.id);
+    }
+  }
+
+  // Heuristic: unlinked txs in a broad range around the window for fallback matching.
+  const heuristicWindowStart = new Date(
+    windowStart.getTime() - matchWindowBeforeDays * 86400000,
+  );
+  const heuristicWindowEnd = new Date(
+    windowEnd.getTime() + matchWindowAfterDays * 86400000 + 86399999,
+  );
+  const nearbyTxs = await database
+    .select({
+      id: transactions.id,
+      accountId: transactions.accountId,
+      amountCents: transactions.amountCents,
+      occurredAt: transactions.occurredAt,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        gte(transactions.occurredAt, heuristicWindowStart),
+        lte(transactions.occurredAt, heuristicWindowEnd),
+        isNull(transactions.recurringId),
+        notDeleted(transactions.deletedAt),
+      ),
+    );
+
+  const items: UpcomingItem[] = [];
+
+  for (const r of rows) {
+    for (const { year, month, ym } of ymSet) {
+      const monthDays = daysInMonth(year, month);
+      const day = Math.min(r.dayOfMonth, monthDays);
+      const expectedOn = toIso(year, month, day);
+      const expectedDate = new Date(`${expectedOn}T00:00:00Z`);
+
+      // Only include if expectedDate falls within [windowStart, windowEnd].
+      if (expectedDate < windowStart || expectedDate > windowEnd) continue;
+
+      // Check skipped.
+      const isDismissed = (r.skippedMonths ?? []).includes(ym);
+      if (isDismissed) continue;
+
+      // Check explicit link.
+      const explicitTxId = explicitMap.get(`${r.id}:${ym}`);
+      if (explicitTxId !== undefined) continue; // already matched — skip
+
+      // Heuristic fallback: tx in same account + same amount in match window.
+      const matchHeurStart = new Date(
+        expectedDate.getTime() - matchWindowBeforeDays * 86400000,
+      );
+      const matchHeurEnd = new Date(
+        expectedDate.getTime() + matchWindowAfterDays * 86400000 + 86399999,
+      );
+      const heuristicMatch = nearbyTxs.find(
+        (tx) =>
+          tx.accountId === r.accountId &&
+          tx.amountCents === r.amountCents &&
+          tx.occurredAt >= matchHeurStart &&
+          tx.occurredAt <= matchHeurEnd,
+      );
+      if (heuristicMatch) continue; // already covered — skip
+
+      // Determine status.
+      const status: UpcomingStatus =
+        expectedDate <= todayDate ? "overdue" : "upcoming";
+
+      items.push({
+        recurringId: r.id,
+        label: r.label,
+        accountId: r.accountId,
+        accountName: formatAccountLabel({ name: r.accountName, currency: r.accountCurrency }),
+        amountCents: r.amountCents,
+        currency: r.currency,
+        categorySlug: r.categorySlug,
+        categoryName: r.categoryName,
+        dayOfMonth: r.dayOfMonth,
+        expectedOn,
+        status,
+        matchedTransactionId: null,
+        yearMonth: ym,
+        notes: r.notes,
+      });
+    }
+  }
+
+  // Sort by expectedDate ascending.
+  items.sort((a, b) => (a.expectedOn < b.expectedOn ? -1 : a.expectedOn > b.expectedOn ? 1 : 0));
 
   return items;
 }
