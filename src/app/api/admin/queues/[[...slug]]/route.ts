@@ -1,183 +1,31 @@
 /**
  * Route Handler: /api/admin/queues/[[...slug]]
  *
- * Serves the Bull-Board SPA (HTML entry + JSON API + static assets).
- * Enforces requireAdmin() BEFORE the Express app ever sees the request.
+ * Authenticates via requireAdmin() then reverse-proxies the request to the
+ * internal http server that hosts Bull-Board (started in instrumentation.node.ts).
  *
- * The [[...slug]] catch-all matches:
- *   /api/admin/queues              → Bull-Board entry point
- *   /api/admin/queues/static/*     → CSS / JS / images
- *   /api/admin/queues/api/*        → Bull-Board JSON API
- *   /api/admin/queues/queue/*      → queue detail SPA route
+ * Why a reverse proxy instead of direct mounting: Bull-Board's
+ * @bull-board/express adapter relies on Express's res.render() (EJS) and
+ * streaming static-file responses, which need a real Node Writable Stream.
+ * The Web Fetch Request/Response pair Next.js Route Handlers expose can't
+ * be made stream-equivalent through Proxy mocking — every prior attempt
+ * (#608-#614) failed in subtle ways (res.render undefined, socket.destroy
+ * undefined, pipe hanging on backpressure). Spawning a real http.Server
+ * and proxying via fetch() lets Bull-Board run natively.
  */
 
-import { type IncomingMessage, type ServerResponse } from "http";
-import { Readable } from "stream";
 import { requireAdmin } from "@/lib/auth/session";
-import { getBullBoardApp } from "@/lib/queue/bull-board";
 import { createLogger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const log = createLogger({ module: "bull-board-route" });
+const BASE_PATH = "/api/admin/queues";
 
-// ---------------------------------------------------------------------------
-// Bridge: Next.js Request → Node.js IncomingMessage / ServerResponse
-// ---------------------------------------------------------------------------
-
-/**
- * Converts a Fetch API `Request` into a Node.js `IncomingMessage`-compatible
- * object and a mock `ServerResponse` that collects status, headers, and body.
- * Returns a `Response` after Express finishes handling the request.
- */
-async function bridgeToExpress(req: Request): Promise<Response> {
-  const app = getBullBoardApp();
-  const url = new URL(req.url);
-
-  // Strip the /api/admin/queues prefix so Express sees paths relative to "/"
-  const relPath = url.pathname.replace(/^\/api\/admin\/queues/, "") || "/";
-  const fullUrl = relPath + (url.search ?? "");
-
-  return new Promise<Response>((resolve, reject) => {
-    // --- Mock IncomingMessage ---
-    // Use a Readable stream so Express can pipe it without crashing.
-    const nodeReq = new Readable({
-      read() {
-        /* intentionally empty — body is pushed below */
-      },
-    }) as unknown as IncomingMessage;
-
-    (nodeReq as unknown as Record<string, unknown>).method = req.method;
-    (nodeReq as unknown as Record<string, unknown>).url = fullUrl;
-    (nodeReq as unknown as Record<string, unknown>).headers = Object.fromEntries(
-      req.headers.entries(),
-    );
-    (nodeReq as unknown as Record<string, unknown>).socket = {
-      remoteAddress: "127.0.0.1",
-      encrypted: false,
-      destroy: () => {
-        /* Node's stream end-of-data path calls socket.destroy() during
-           cleanup. No-op on our mock (no real TCP socket to close). */
-      },
-    };
-
-    // Push request body into the stream
-    (async () => {
-      try {
-        if (req.body) {
-          const reader = req.body.getReader();
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            (nodeReq as unknown as Readable).push(value);
-          }
-        }
-        (nodeReq as unknown as Readable).push(null);
-      } catch (err) {
-        log.error({ err, event: "bridge_body_error" }, "error reading request body");
-        reject(err as Error);
-      }
-    })().catch(reject);
-
-    // --- Mock ServerResponse ---
-    let statusCode = 200;
-    const responseHeaders = new Headers();
-    const chunks: Buffer[] = [];
-    // Backing store for properties Express attaches at runtime (res.render,
-    // res.app, res.req, res.locals, etc). Without this, our Proxy's set
-    // trap silently drops them and downstream calls like Bull-Board's
-    // `res.render(view, params)` blow up with "is not a function".
-    const dynamicProps = new Map<string | symbol, unknown>();
-
-    const nodeRes = new Proxy({} as ServerResponse, {
-      get(_target, prop: string | symbol) {
-        switch (prop) {
-          case "statusCode":
-            return statusCode;
-          case "setHeader":
-            return (name: string, value: string | string[]) => {
-              responseHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
-            };
-          case "getHeader":
-            return (name: string) => responseHeaders.get(name) ?? undefined;
-          case "removeHeader":
-            return (name: string) => responseHeaders.delete(name);
-          case "write":
-            return (chunk: Buffer | string) => {
-              chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-              return true;
-            };
-          case "end":
-            return (chunk?: Buffer | string) => {
-              if (chunk) {
-                chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-              }
-              resolve(
-                new Response(Buffer.concat(chunks), {
-                  status: statusCode,
-                  headers: responseHeaders,
-                }),
-              );
-            };
-          case "writeHead":
-            return (code: number, headers?: Record<string, string>) => {
-              statusCode = code;
-              if (headers) {
-                for (const [k, v] of Object.entries(headers)) {
-                  responseHeaders.set(k, v);
-                }
-              }
-            };
-          // Express inspects these on the response object
-          case "headersSent":
-            return false;
-          case "finished":
-            return false;
-          case "writable":
-            return true;
-          case "socket":
-            return {
-              encrypted: false,
-              destroy: () => {
-                /* Node's stream cleanup calls socket.destroy() — no-op on
-                   our mock (we don't have a real TCP socket to tear down). */
-              },
-            };
-          default:
-            // Fall through dynamicProps first (props Express attached via
-            // assignment), then to the target's prototype chain so methods
-            // Express adds via Object.setPrototypeOf (e.g. res.render,
-            // res.send, res.json) resolve correctly.
-            if (dynamicProps.has(prop)) return dynamicProps.get(prop);
-            return Reflect.get(_target, prop);
-        }
-      },
-      set(_target, prop: string | symbol, value: unknown) {
-        if (prop === "statusCode") {
-          statusCode = value as number;
-        } else {
-          dynamicProps.set(prop, value);
-        }
-        return true;
-      },
-    });
-
-    // Express may throw synchronously during middleware setup if our mock
-    // res/req objects are missing a property it expects. Without this
-    // try/catch the error escapes the Promise and is logged as a circular
-    // ref by Pino's err serializer.
-    try {
-      app(nodeReq, nodeRes as unknown as ServerResponse);
-    } catch (syncErr) {
-      reject(syncErr instanceof Error ? syncErr : new Error(String(syncErr)));
-    }
-  });
+function getInternalPort(): number | undefined {
+  return (globalThis as unknown as { __findashBullBoardPort?: number }).__findashBullBoardPort;
 }
-
-// ---------------------------------------------------------------------------
-// Route exports — all methods forwarded to the Express bridge
-// ---------------------------------------------------------------------------
 
 async function handler(req: Request): Promise<Response> {
   try {
@@ -187,30 +35,74 @@ async function handler(req: Request): Promise<Response> {
     if (msg === "UNAUTHENTICATED") {
       return Response.json({ error: "Unauthenticated" }, { status: 401 });
     }
-    // FORBIDDEN or anything else
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  const port = getInternalPort();
+  if (!port) {
+    log.error(
+      { event: "bull_board_port_missing" },
+      "bull-board internal server not initialized — instrumentation may have failed",
+    );
+    return Response.json({ error: "Bull-Board not initialized" }, { status: 503 });
+  }
+
+  const url = new URL(req.url);
+  const relPath = url.pathname.replace(new RegExp(`^${BASE_PATH}`), "") || "/";
+  const targetUrl = `http://127.0.0.1:${port}${relPath}${url.search}`;
+
+  // Strip Next.js / proxy / framework headers that don't make sense on the
+  // internal hop. Forward only the application-level ones Bull-Board cares
+  // about (cookies for any session work, accept-* for content negotiation).
+  const upstreamHeaders = new Headers();
+  for (const [key, value] of req.headers.entries()) {
+    const lower = key.toLowerCase();
+    if (lower === "host" || lower === "connection" || lower === "content-length") continue;
+    upstreamHeaders.set(key, value);
+  }
+
   try {
-    return await bridgeToExpress(req);
+    const upstream = await fetch(targetUrl, {
+      method: req.method,
+      headers: upstreamHeaders,
+      // Body only present for non-GET/HEAD methods; Bull-Board has POST/PATCH
+      // endpoints for retry/promote/clean.
+      body:
+        req.method === "GET" || req.method === "HEAD"
+          ? undefined
+          : Buffer.from(await req.arrayBuffer()),
+      redirect: "manual",
+    });
+
+    // Pass through status, headers, and body. Strip hop-by-hop headers per
+    // RFC 7230 (transfer-encoding, connection) — fetch handles them but
+    // Next.js may try to set them too.
+    const resHeaders = new Headers();
+    upstream.headers.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      if (lower === "transfer-encoding" || lower === "connection") return;
+      resHeaders.set(key, value);
+    });
+
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: resHeaders,
+    });
   } catch (err) {
-    // Log error fields as plain strings — Pino's `err` serializer chokes on
-    // Express request/response cycles ("circular reference is too complex to
-    // analyze") and silently drops the actual error message + stack.
     if (err instanceof Error) {
       log.error(
         {
           errorName: err.name,
           errorMessage: err.message,
           errorStack: err.stack,
-          event: "bull_board_handler_error",
+          event: "bull_board_proxy_error",
         },
-        "bull-board handler error",
+        "bull-board reverse-proxy error",
       );
     } else {
       log.error(
-        { errorString: String(err), event: "bull_board_handler_error" },
-        "bull-board handler error",
+        { errorString: String(err), event: "bull_board_proxy_error" },
+        "bull-board reverse-proxy error",
       );
     }
     return Response.json({ error: "Internal server error" }, { status: 500 });
