@@ -38,7 +38,7 @@ import type {
 import { linkTxToRecurringSchema, unlinkTxFromRecurringSchema } from "./link-recurring-types";
 
 const log = createLogger({ module: "transactions/actions" });
-import { keyForParsed } from "@/lib/counterparties/alias-key";
+import { keyForParsed, normalizeName } from "@/lib/counterparties/alias-key";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { decimalStringToCents } from "@/lib/money";
 import {
@@ -271,6 +271,141 @@ export async function markUncategorized(input: {
   revalidatePath("/settings/inbox");
   revalidatePath("/transactions");
   revalidatePath("/insights");
+  return { status: "ok" };
+}
+
+// ---------------------------------------------------------------------------
+// setTransactionCounterparty — assign, create, or unlink a counterparty
+// ---------------------------------------------------------------------------
+
+const setTxCounterpartySchema = z.object({
+  txId: z.number().int().positive(),
+  counterpartyId: z.number().int().positive().nullable(),
+  displayName: z.string().trim().min(1).max(255).optional(),
+});
+
+/**
+ * Assign an existing counterparty, create a new one inline, or unlink.
+ *
+ * Three modes (discriminated by input):
+ *   - counterpartyId non-null → link existing (with tenant safety check)
+ *   - counterpartyId null + displayName provided → create new counterparty + alias
+ *   - both null → unlink (set counterparty_id = NULL)
+ *
+ * Auto-alias side-effect: when LINKING (either mode) and tx.merchant is
+ * non-null, inserts (kind='name', value=normalizeName(merchant)) into
+ * counterparty_aliases with ON CONFLICT DO NOTHING. This ensures that future
+ * ingestion for the same merchant string auto-links to this counterparty.
+ *
+ * NOTE: resolveCounterpartyByKey calls database.transaction() internally so
+ * it cannot be passed a PgTransaction. We inline the equivalent SQL here so
+ * everything runs in one flat transaction.
+ */
+export async function setTransactionCounterparty(input: {
+  txId: number;
+  counterpartyId: number | null;
+  displayName?: string;
+}): Promise<{ status: "ok" } | { status: "error"; message: string }> {
+  const session = await getSessionUser();
+  const parsed = setTxCounterpartySchema.safeParse(input);
+  if (!parsed.success) return { status: "error", message: "Input inválido." };
+
+  const { txId, counterpartyId, displayName } = parsed.data;
+
+  const result = await db.transaction(async (trx) => {
+    // 1. Verify tx ownership and capture merchant for auto-alias
+    const [tx] = await trx
+      .select({ id: transactions.id, merchant: transactions.merchant })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, txId),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!tx) return { status: "error" as const, message: "Transacción no encontrada." };
+
+    // 2. Resolve target counterparty ID
+    let targetId: number | null = null;
+
+    if (counterpartyId !== null) {
+      // Link existing — verify ownership
+      const [cp] = await trx
+        .select({ id: counterparties.id })
+        .from(counterparties)
+        .where(and(eq(counterparties.id, counterpartyId), eq(counterparties.userId, session.id)))
+        .limit(1);
+
+      if (!cp) return { status: "error" as const, message: "Counterparty no encontrado." };
+      targetId = cp.id;
+    } else if (displayName) {
+      // Create new (or find existing alias by name key) — inline equivalent of
+      // resolveCounterpartyByKey so we stay in the same flat transaction.
+      const aliasKey = normalizeName(displayName);
+      const existing = await trx.execute<{ id: number }>(sql`
+        SELECT c.id
+        FROM counterparty_aliases a
+        JOIN counterparties c ON c.id = a.counterparty_id
+        WHERE a.user_id = ${session.id}
+          AND a.kind = 'name'::counterparty_key_kind
+          AND a.value = ${aliasKey}
+        LIMIT 1
+      `);
+
+      if (existing.length > 0) {
+        await trx.execute(sql`
+          UPDATE counterparties
+          SET hit_count = hit_count + 1, last_hit_at = now()
+          WHERE user_id = ${session.id} AND id = ${existing[0].id}
+        `);
+        targetId = existing[0].id;
+      } else {
+        const inserted = await trx.execute<{ id: number }>(sql`
+          INSERT INTO counterparties (user_id, display_name, type, hit_count, last_hit_at)
+          VALUES (${session.id}, ${displayName.trim()}, 'unknown', 1, now())
+          RETURNING id
+        `);
+        await trx.execute(sql`
+          INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
+          VALUES (${session.id}, ${inserted[0].id}, 'name'::counterparty_key_kind, ${aliasKey})
+        `);
+        targetId = inserted[0].id;
+      }
+    }
+    // else: targetId stays null → unlink
+
+    // 3. Update the transaction
+    await trx
+      .update(transactions)
+      .set({ counterpartyId: targetId, updatedAt: new Date() })
+      .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+
+    // 4. Auto-alias when LINKING and tx.merchant is non-null/non-empty
+    if (targetId !== null && tx.merchant) {
+      const normalizedMerchant = normalizeName(tx.merchant);
+      await trx.execute(sql`
+        INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
+        VALUES (${session.id}, ${targetId}, 'name'::counterparty_key_kind, ${normalizedMerchant})
+        ON CONFLICT DO NOTHING
+      `);
+    }
+
+    return { status: "ok" as const };
+  });
+
+  if (result.status === "error") return result;
+
+  revalidatePath("/transactions");
+  revalidatePath("/insights");
+  revalidatePath("/settings/period");
+
+  emit({ type: "transaction:updated", id: txId, source: "manual", timestamp: Date.now() });
+
+  log.info({ txId, counterpartyId, event: "tx_counterparty_set" }, "counterparty assigned");
+
   return { status: "ok" };
 }
 
