@@ -425,7 +425,13 @@ export async function setTransactionCounterparty(input: {
   revalidatePath("/insights");
   revalidatePath("/settings/period");
 
-  emit({ type: "transaction:updated", id: txId, source: "manual", timestamp: Date.now() });
+  emit({
+    type: "transaction:updated",
+    userId: session.id,
+    id: txId,
+    source: "manual",
+    timestamp: Date.now(),
+  });
 
   log.info({ txId, counterpartyId, event: "tx_counterparty_set" }, "counterparty assigned");
 
@@ -566,6 +572,7 @@ export async function createManualEntry(input: {
 
   emit({
     type: "transaction:created",
+    userId: session.id,
     id: inserted.id,
     source: "manual",
     timestamp: Date.now(),
@@ -871,6 +878,7 @@ export async function updateCounterparty(
   if (propagatedCount > 0) {
     emit({
       type: "transaction:bulk-updated",
+      userId: session.id,
       count: propagatedCount,
       reason: "counterparty-updated",
       timestamp: Date.now(),
@@ -879,6 +887,7 @@ export async function updateCounterparty(
 
   emit({
     type: "counterparty:updated",
+    userId: session.id,
     id: parsed.id,
     reason: "edit",
     timestamp: Date.now(),
@@ -1001,6 +1010,7 @@ export async function mergeCounterparty(
 
   emit({
     type: "transaction:bulk-updated",
+    userId: session.id,
     count: result.movedTxCount,
     reason: "counterparty-updated",
     timestamp: Date.now(),
@@ -1008,6 +1018,7 @@ export async function mergeCounterparty(
 
   emit({
     type: "counterparty:updated",
+    userId: session.id,
     id: parsed.targetId,
     reason: "merge",
     timestamp: Date.now(),
@@ -1171,6 +1182,7 @@ export async function splitCounterparty(
   if (result.movedTxCount > 0) {
     emit({
       type: "transaction:bulk-updated",
+      userId: session.id,
       count: result.movedTxCount,
       reason: "counterparty-updated",
       timestamp: Date.now(),
@@ -1179,12 +1191,14 @@ export async function splitCounterparty(
 
   emit({
     type: "counterparty:updated",
+    userId: session.id,
     id: parsed.sourceId,
     reason: "split",
     timestamp: Date.now(),
   });
   emit({
     type: "counterparty:updated",
+    userId: session.id,
     id: result.newCounterpartyId,
     reason: "split",
     timestamp: Date.now(),
@@ -1479,7 +1493,13 @@ export async function createManualTransferGroup(
   }
 
   for (const txId of insertResult.txIds) {
-    emit({ type: "transaction:created", id: txId, source: "manual", timestamp: Date.now() });
+    emit({
+      type: "transaction:created",
+      userId: session.id,
+      id: txId,
+      source: "manual",
+      timestamp: Date.now(),
+    });
   }
 
   revalidatePath("/");
@@ -1585,6 +1605,7 @@ export async function updateTransactionInstallments(
 
   emit({
     type: "transaction:updated",
+    userId: session.id,
     id: txId,
     source: "manual",
     timestamp: Date.now(),
@@ -1739,6 +1760,7 @@ export async function linkTxToRecurring(
 
     emit({
       type: "recurring-gap:resolved",
+      userId: session.id,
       gapId: ym.gapId,
       reason: "linked",
       timestamp: Date.now(),
@@ -1851,6 +1873,7 @@ export async function unlinkTxFromRecurring(
 
     emit({
       type: "transaction:updated",
+      userId: session.id,
       id: txId,
       source: "manual",
       timestamp: Date.now(),

@@ -21,7 +21,7 @@ export function useLiveEvents(options?: {
 
   useEffect(() => {
     const refreshOn = options?.refreshOn ?? DEFAULT_REFRESH_ON;
-    const source = new EventSource("/api/events/stream");
+    const source = new EventSource("/api/events/stream/me");
 
     source.onmessage = (e) => {
       try {
