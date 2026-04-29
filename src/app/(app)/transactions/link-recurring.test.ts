@@ -41,7 +41,8 @@ vi.mock("@/lib/queue", () => ({
 // Lazy imports (after mocks)
 // ---------------------------------------------------------------------------
 
-const { linkTxToRecurring, unlinkTxFromRecurring } = await import("./actions");
+const { linkTxToRecurring, unlinkTxFromRecurring, listActiveRecurrings } =
+  await import("./actions");
 const { getSessionUser } = await import("@/lib/auth/session");
 const mockGetSessionUser = vi.mocked(getSessionUser);
 
@@ -296,15 +297,23 @@ describe("unlinkTxFromRecurring", () => {
 
   afterEach(cleanup);
 
-  it("happy path: clears recurring_id and recurring_year_month", async () => {
+  it("happy path: clears recurring_id, recurring_year_month, and reopens the linked gap", async () => {
     const txId = await seedTx(userAId, accountAId, {
       recurringId: recurringAId,
       recurringYearMonth: "2026-03",
     });
+    // Seed a gap that is already closed via 'linked' resolution (simulating
+    // what linkTxToRecurring would have done).
+    const gapId = await seedGap(userAId, recurringAId, "2026-03");
+    await db
+      .update(recurringGaps)
+      .set({ resolution: "linked", resolutionTxId: txId, resolvedAt: new Date() })
+      .where(eq(recurringGaps.id, gapId));
 
     const result = await unlinkTxFromRecurring({ txId });
     expect(result.ok).toBe(true);
 
+    // Tx fields cleared
     const [tx] = await db
       .select({
         recurringId: transactions.recurringId,
@@ -314,6 +323,17 @@ describe("unlinkTxFromRecurring", () => {
       .where(eq(transactions.id, txId));
     expect(tx?.recurringId).toBeNull();
     expect(tx?.recurringYearMonth).toBeNull();
+
+    // Gap is back to open (resolution IS NULL)
+    const [gap] = await db
+      .select({
+        resolution: recurringGaps.resolution,
+        resolutionTxId: recurringGaps.resolutionTxId,
+      })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, gapId));
+    expect(gap?.resolution).toBeNull();
+    expect(gap?.resolutionTxId).toBeNull();
   });
 
   it("idempotent: calling unlink on a tx without a link returns ok without error", async () => {
@@ -321,6 +341,71 @@ describe("unlinkTxFromRecurring", () => {
 
     const result = await unlinkTxFromRecurring({ txId });
     expect(result.ok).toBe(true);
+  });
+
+  it("gap reopen is idempotent when no gap exists (no error thrown)", async () => {
+    // Tx is linked but no gap row exists — unlink should still succeed cleanly.
+    const txId = await seedTx(userAId, accountAId, {
+      recurringId: recurringAId,
+      recurringYearMonth: "2026-04",
+    });
+
+    const result = await unlinkTxFromRecurring({ txId });
+    expect(result.ok).toBe(true);
+
+    const [tx] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(tx?.recurringId).toBeNull();
+  });
+
+  it("link → unlink → re-link: gap is reusable after unlink", async () => {
+    const txAId = await seedTx(userAId, accountAId);
+    const txBId = await seedTx(userAId, accountAId);
+    const gapId = await seedGap(userAId, recurringAId, "2026-03");
+
+    // Step 1: link txA → gap becomes 'linked'
+    const linkResult = await linkTxToRecurring({
+      txId: txAId,
+      recurringId: recurringAId,
+      yearMonth: "2026-03",
+    });
+    expect(linkResult.ok).toBe(true);
+
+    const [gapAfterLink] = await db
+      .select({ resolution: recurringGaps.resolution })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, gapId));
+    expect(gapAfterLink?.resolution).toBe("linked");
+
+    // Step 2: unlink txA → gap reopens
+    const unlinkResult = await unlinkTxFromRecurring({ txId: txAId });
+    expect(unlinkResult.ok).toBe(true);
+
+    const [gapAfterUnlink] = await db
+      .select({ resolution: recurringGaps.resolution })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, gapId));
+    expect(gapAfterUnlink?.resolution).toBeNull();
+
+    // Step 3: re-link with a different tx → gap closes again
+    const relinkResult = await linkTxToRecurring({
+      txId: txBId,
+      recurringId: recurringAId,
+      yearMonth: "2026-03",
+    });
+    expect(relinkResult.ok).toBe(true);
+
+    const [gapAfterRelink] = await db
+      .select({
+        resolution: recurringGaps.resolution,
+        resolutionTxId: recurringGaps.resolutionTxId,
+      })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, gapId));
+    expect(gapAfterRelink?.resolution).toBe("linked");
+    expect(gapAfterRelink?.resolutionTxId).toBe(txBId);
   });
 
   it("cross-tenant: userA cannot unlink a tx that belongs to userB", async () => {
@@ -358,6 +443,74 @@ describe("unlinkTxFromRecurring", () => {
     // Cleanup userB
     await db.execute(sql`DELETE FROM transactions WHERE id = ${txBId}`);
     await db.execute(sql`DELETE FROM recurring_transactions WHERE id = ${recurringBId}`);
+    await db.execute(sql`DELETE FROM accounts WHERE id = ${accountBId}`);
+    await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1: listActiveRecurrings — tenant pairing on the accounts JOIN
+// ---------------------------------------------------------------------------
+
+describe("listActiveRecurrings — tenant isolation", () => {
+  let userAId: number;
+  let accountAId: number;
+  let recurringAId: number;
+
+  beforeEach(async () => {
+    await cleanup();
+    userAId = await seedUser(`${TAG}-userA@test.local`);
+    accountAId = await seedAccount(userAId);
+    recurringAId = await seedRecurring(userAId, accountAId);
+    mockGetSessionUser.mockResolvedValue({
+      id: userAId,
+      email: `${TAG}-userA@test.local`,
+      name: "A",
+      role: "user" as const,
+      active: true,
+    });
+  });
+
+  afterEach(cleanup);
+
+  it("returns userA recurring with correct account info", async () => {
+    const results = await listActiveRecurrings();
+    expect(results).toHaveLength(1);
+    expect(results[0]?.id).toBe(recurringAId);
+    expect(results[0]?.accountId).toBe(accountAId);
+  });
+
+  it("cross-tenant: corrupted accountId pointing at userB account does NOT leak into results", async () => {
+    // Simulate a corrupted state: userA's recurring_transaction has its
+    // account_id pointing at userB's account. In normal operation the FK
+    // chain prevents this, but the test enforces the explicit user_id
+    // pairing rule on the JOIN.
+    const userBId = await seedUser(`${TAG}-userB@test.local`);
+    const accountBId = await seedAccount(userBId);
+
+    // Corrupt userA's recurring to point at userB's account via raw SQL.
+    // The FK allows this because accountBId is a valid account.id value.
+    await db.execute(sql`
+      UPDATE recurring_transactions
+      SET account_id = ${accountBId}
+      WHERE id = ${recurringAId}
+    `);
+
+    // Session is userA — listActiveRecurrings must return empty because the
+    // JOIN now requires accounts.user_id = recurring_transactions.user_id,
+    // and accountB belongs to userB.
+    const results = await listActiveRecurrings();
+    expect(results).toHaveLength(0);
+
+    // Restore accountId before cleanup so the cascade on accountBId deletion
+    // doesn't wipe userA's recurring row (recurring has ON DELETE CASCADE on accountId).
+    await db.execute(sql`
+      UPDATE recurring_transactions
+      SET account_id = ${accountAId}
+      WHERE id = ${recurringAId}
+    `);
+
+    // Cleanup userB data
     await db.execute(sql`DELETE FROM accounts WHERE id = ${accountBId}`);
     await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
   });

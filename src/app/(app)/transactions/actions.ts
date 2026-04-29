@@ -1452,7 +1452,7 @@ export async function linkTxToRecurring(
         .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
 
       // 7. Close the gap if one exists, using resolution fields for audit trail.
-      await trx
+      const [closedGap] = await trx
         .update(recurringGaps)
         .set({
           resolution: "linked",
@@ -1466,19 +1466,20 @@ export async function linkTxToRecurring(
             eq(recurringGaps.yearMonth, resolvedYm),
             isNull(recurringGaps.resolution),
           ),
-        );
+        )
+        .returning({ id: recurringGaps.id });
 
-      return resolvedYm;
+      return { ym: resolvedYm, gapId: closedGap?.id ?? null };
     });
 
     log.info(
-      { event: "tx_recurring_linked", txId, recurringId, yearMonth: ym, userId: session.id },
+      { event: "tx_recurring_linked", txId, recurringId, yearMonth: ym.ym, userId: session.id },
       "transaction linked to recurring",
     );
 
     emit({
       type: "recurring-gap:resolved",
-      gapId: null,
+      gapId: ym.gapId,
       reason: "linked",
       timestamp: Date.now(),
     });
@@ -1486,7 +1487,7 @@ export async function linkTxToRecurring(
     revalidatePath("/");
     revalidatePath("/transactions");
 
-    return { ok: true, yearMonth: ym };
+    return { ok: true, yearMonth: ym.ym };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Error inesperado";
     return { ok: false, error: message };
@@ -1495,8 +1496,13 @@ export async function linkTxToRecurring(
 
 /**
  * Remove a recurring link from a transaction. Clears recurring_id and
- * recurring_year_month. Does NOT reopen the gap — the cron will redetect
- * on next month-close if needed.
+ * recurring_year_month, and reopens the corresponding recurring_gap (if it
+ * was closed with resolution='linked') so it becomes visible to the cron and
+ * to gap consumers again.
+ *
+ * The gap reopen is atomic with the tx field clear — both happen inside a
+ * single DB transaction. Only gaps with resolution='linked' are touched;
+ * 'synthetic' and 'skipped' gaps are left as-is.
  *
  * Idempotent: if the tx is not linked, returns ok:true (no-op).
  */
@@ -1511,30 +1517,57 @@ export async function unlinkTxFromRecurring(
   const { txId } = parsed.data;
 
   try {
-    // Tenant-safe: WHERE user_id = session.id. No-op if already unlinked.
-    const [tx] = await db
-      .select({ id: transactions.id, recurringId: transactions.recurringId })
-      .from(transactions)
-      .where(
-        and(
-          eq(transactions.userId, session.id),
-          eq(transactions.id, txId),
-          notDeleted(transactions.deletedAt),
-        ),
-      )
-      .limit(1);
+    await db.transaction(async (trx) => {
+      // 1. Fetch the tx with both recurring fields — tenant-safe.
+      const [tx] = await trx
+        .select({
+          id: transactions.id,
+          recurringId: transactions.recurringId,
+          recurringYearMonth: transactions.recurringYearMonth,
+        })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.id, txId),
+            notDeleted(transactions.deletedAt),
+          ),
+        )
+        .limit(1);
 
-    if (!tx) return { ok: false, error: "Transacción no encontrada" };
+      if (!tx) throw new Error("Transacción no encontrada");
 
-    // Idempotent — if already unlinked, return ok without writing.
-    if (tx.recurringId === null) {
-      return { ok: true };
-    }
+      // Idempotent — if already unlinked, skip writing.
+      if (tx.recurringId === null) return;
 
-    await db
-      .update(transactions)
-      .set({ recurringId: null, recurringYearMonth: null, updatedAt: new Date() })
-      .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+      // Capture BEFORE the clear — needed for the gap WHERE clause.
+      const priorRecurringId = tx.recurringId;
+      const priorYearMonth = tx.recurringYearMonth;
+
+      // 2. Clear the recurring link on the transaction.
+      await trx
+        .update(transactions)
+        .set({ recurringId: null, recurringYearMonth: null, updatedAt: new Date() })
+        .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+
+      // 3. Reopen the gap (if it was closed via manual link). Only touches
+      // resolution='linked' — leaves 'synthetic' and 'skipped' untouched.
+      // priorYearMonth CAN be null in theory (schema allows it), so only run
+      // the UPDATE when it is actually set.
+      if (priorYearMonth !== null) {
+        await trx
+          .update(recurringGaps)
+          .set({ resolution: null, resolutionTxId: null, resolvedAt: null })
+          .where(
+            and(
+              eq(recurringGaps.userId, session.id),
+              eq(recurringGaps.recurringId, priorRecurringId),
+              eq(recurringGaps.yearMonth, priorYearMonth),
+              eq(recurringGaps.resolution, "linked"),
+            ),
+          );
+      }
+    });
 
     log.info(
       { event: "tx_recurring_unlinked", txId, userId: session.id },
@@ -1577,7 +1610,16 @@ export async function listActiveRecurrings(): Promise<RecurringOption[]> {
       accountCurrency: accounts.currency,
     })
     .from(recurringTransactions)
-    .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
+    .innerJoin(
+      accounts,
+      and(
+        eq(accounts.id, recurringTransactions.accountId),
+        // Tenant safety: pair user_id on the join so a corrupted accountId
+        // pointing at another user's account is rejected at the JOIN level
+        // rather than leaking data. See engram `per-user-table-join-tenant-safety`.
+        eq(accounts.userId, recurringTransactions.userId),
+      ),
+    )
     .where(
       and(
         eq(recurringTransactions.userId, session.id),
