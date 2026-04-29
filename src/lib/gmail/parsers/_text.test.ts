@@ -16,9 +16,7 @@ import { extractVisibleText } from "./_text";
 describe("extractVisibleText — smart quotes and ellipsis (issue #641)", () => {
   it("decodes &rsquo; to right single quotation mark", () => {
     // ARQ emails use "We&rsquo;ve debited" — this was the root cause of #641.
-    expect(extractVisibleText("We&rsquo;ve debited 334.64 USDc")).toBe(
-      "We’ve debited 334.64 USDc",
-    );
+    expect(extractVisibleText("We&rsquo;ve debited 334.64 USDc")).toBe("We’ve debited 334.64 USDc");
   });
 
   it("decodes &lsquo; to left single quotation mark", () => {
@@ -26,9 +24,7 @@ describe("extractVisibleText — smart quotes and ellipsis (issue #641)", () => 
   });
 
   it("decodes &rdquo; to right double quotation mark", () => {
-    expect(extractVisibleText("She said &rdquo;done&rdquo;")).toBe(
-      "She said ”done”",
-    );
+    expect(extractVisibleText("She said &rdquo;done&rdquo;")).toBe("She said ”done”");
   });
 
   it("decodes &ldquo; to left double quotation mark", () => {
