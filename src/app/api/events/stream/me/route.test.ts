@@ -186,9 +186,7 @@ describe("GET /api/events/stream/me", () => {
 
   it("delivers admin-broadcast notification:created to admin user", async () => {
     const ADMIN_ID = 1;
-    mockGetSessionUserOrNull.mockResolvedValue(
-      makeSession({ id: ADMIN_ID, role: "admin" }),
-    );
+    mockGetSessionUserOrNull.mockResolvedValue(makeSession({ id: ADMIN_ID, role: "admin" }));
 
     const { req, controller } = makeRequest();
     const res = await GET(req);
@@ -222,9 +220,7 @@ describe("GET /api/events/stream/me", () => {
 
   it("does NOT deliver admin-broadcast notification:created to non-admin user", async () => {
     const USER_ID = 55;
-    mockGetSessionUserOrNull.mockResolvedValue(
-      makeSession({ id: USER_ID, role: "user" }),
-    );
+    mockGetSessionUserOrNull.mockResolvedValue(makeSession({ id: USER_ID, role: "user" }));
 
     const { req, controller } = makeRequest();
     const res = await GET(req);
@@ -258,9 +254,7 @@ describe("GET /api/events/stream/me", () => {
     // notification whose userId happened to match a non-admin session would
     // be delivered to that user.
     const USER_ID = 77;
-    mockGetSessionUserOrNull.mockResolvedValue(
-      makeSession({ id: USER_ID, role: "user" }),
-    );
+    mockGetSessionUserOrNull.mockResolvedValue(makeSession({ id: USER_ID, role: "user" }));
 
     const { req, controller } = makeRequest();
     const res = await GET(req);

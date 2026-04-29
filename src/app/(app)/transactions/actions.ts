@@ -425,7 +425,13 @@ export async function setTransactionCounterparty(input: {
   revalidatePath("/insights");
   revalidatePath("/settings/period");
 
-  emit({ type: "transaction:updated", userId: session.id, id: txId, source: "manual", timestamp: Date.now() });
+  emit({
+    type: "transaction:updated",
+    userId: session.id,
+    id: txId,
+    source: "manual",
+    timestamp: Date.now(),
+  });
 
   log.info({ txId, counterpartyId, event: "tx_counterparty_set" }, "counterparty assigned");
 
@@ -1487,7 +1493,13 @@ export async function createManualTransferGroup(
   }
 
   for (const txId of insertResult.txIds) {
-    emit({ type: "transaction:created", userId: session.id, id: txId, source: "manual", timestamp: Date.now() });
+    emit({
+      type: "transaction:created",
+      userId: session.id,
+      id: txId,
+      source: "manual",
+      timestamp: Date.now(),
+    });
   }
 
   revalidatePath("/");

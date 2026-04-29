@@ -241,7 +241,13 @@ async function insertTransferFromDraft(opts: {
     else if (result.status === "error") outcome = { status: "error", reason: result.reason };
     else {
       for (const txId of result.txIds) {
-        emit({ type: "transaction:created", userId, id: txId, source: "telegram", timestamp: Date.now() });
+        emit({
+          type: "transaction:created",
+          userId,
+          id: txId,
+          source: "telegram",
+          timestamp: Date.now(),
+        });
       }
       outcome = { status: "inserted", txId: result.txIds[0] };
     }
