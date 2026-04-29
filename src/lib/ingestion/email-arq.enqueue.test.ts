@@ -83,8 +83,7 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...preds) => ({ and: preds })),
   eq: vi.fn((_col, val) => ({ eq: val })),
   sql: new Proxy(
-    (strings: TemplateStringsArray, ...values: unknown[]) =>
-      ({ sql: strings.join("?"), values }),
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: strings.join("?"), values }),
     { get: (_t, p) => (p === Symbol.toPrimitive ? String : undefined) },
   ),
 }));
