@@ -20,6 +20,7 @@ import {
   PAGE_SIZE,
 } from "@/lib/transactions/queries";
 import { listActiveRecurrings } from "@/app/(app)/transactions/actions";
+import { getForecastOccurrences } from "@/lib/recurring/expected-occurrences";
 import { loadAmbiguousReceiptsForTxIds } from "@/lib/gmail/ambiguous";
 import { createLogger } from "@/lib/logger";
 
@@ -72,6 +73,27 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     needsRate: needsRateActive,
   };
 
+  // #622: Determine yearMonth for forecast overlay.
+  // Show forecasts only when the filter is scoped to a single month (from + to
+  // covering the same calendar month) OR when no date filter is active (current month).
+  // We derive this from `from` / `to` params — if they span a single month, use it.
+  const now = new Date();
+  const forecastYearMonth = (() => {
+    if (filters.from && filters.to) {
+      const fromDate = new Date(filters.from);
+      const toDate = new Date(filters.to);
+      const fromYm = `${fromDate.getUTCFullYear()}-${String(fromDate.getUTCMonth() + 1).padStart(2, "0")}`;
+      const toYm = `${toDate.getUTCFullYear()}-${String(toDate.getUTCMonth() + 1).padStart(2, "0")}`;
+      // Only show forecasts when both dates are in the same month.
+      return fromYm === toYm ? fromYm : null;
+    }
+    if (!filters.from && !filters.to) {
+      // No date filter — show current month forecasts.
+      return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    }
+    return null;
+  })();
+
   const [
     { rows, nextCursor },
     accounts,
@@ -81,6 +103,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     allCounterparties,
     needingRate,
     activeRecurrings,
+    forecastOccurrences,
   ] = await Promise.all([
     listTransactions(session.id, filters),
     listAccounts(session.id),
@@ -98,6 +121,10 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     listCounterparties(session.id),
     countNeedingRate(session.id),
     listActiveRecurrings(),
+    // #622: forecast overlay — only for single-month views.
+    forecastYearMonth
+      ? getForecastOccurrences(session.id, forecastYearMonth, now)
+      : Promise.resolve([]),
   ]);
 
   // #455 (Epic G): sidecar query — attach ambiguous Gmail receipts to each
@@ -184,6 +211,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         allCounterparties={allCounterparties}
         highlightId={highlightId}
         activeRecurrings={activeRecurrings}
+        forecastOccurrences={forecastOccurrences}
       />
 
       <div className="flex items-center justify-between">

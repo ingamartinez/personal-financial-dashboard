@@ -17,13 +17,12 @@ import { TopExpensesCard } from "@/components/dashboard/top-expenses-card";
 import { AccountsGrid } from "@/components/dashboard/accounts-grid";
 import { UpcomingCard } from "@/components/dashboard/upcoming-card";
 import { MonthSwitcher } from "@/components/dashboard/month-switcher";
-import { RecurringInboxCard } from "@/components/dashboard/recurring-inbox-card";
+import { RecurringPendingBanner } from "@/components/dashboard/recurring-pending-banner";
 import { SmsHealthCard } from "@/components/dashboard/sms-health-card";
 import { CreditCardsCard } from "@/components/dashboard/credit-cards-card";
 import { PendingConsolidationBanner } from "@/components/dashboard/pending-consolidation-banner";
 import { PayPeriodNudge } from "@/components/dashboard/pay-period-nudge";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
-import { getOpenGaps } from "@/lib/recurring/gap-queries";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { getSmsHealthSnapshot } from "@/lib/ingestion/sms-health";
 import { getSessionUser } from "@/lib/auth/session";
@@ -70,52 +69,29 @@ export default async function DashboardPage({
   const showPayPeriodNudge =
     prefs.financialCycleMode === "calendar" && readiness.ready && !prefs.payPeriodNudgeDismissed;
 
-  const [
-    picture,
-    flow,
-    progress,
-    slices,
-    top,
-    accounts,
-    upcoming,
-    openGaps,
-    smsHealth,
-    creditCards,
-  ] = await Promise.all([
-    getFinancialPicture(session.id, fx.rate),
-    getMonthlyFlow(session.id, fx.rate, range),
-    getMonthlyProgress(session.id, fx.rate, range),
-    getCategoryBreakdown(session.id, fx.rate, range),
-    getTopExpenses(session.id, fx.rate, range, 5),
-    getAccountStatuses(session.id),
-    getUpcomingForMonth({
-      userId: session.id,
-      year: refYear,
-      month: refMonth,
-      includeDismissed: true,
-      today: now,
-    }),
-    getOpenGaps(session.id),
-    getSmsHealthSnapshot(session.id, now),
-    // Bank truth — TC summary stays on calendar regardless of cycle mode.
-    getCreditCardsSummary(session.id, fx.rate, now),
-  ]);
+  const [picture, flow, progress, slices, top, accounts, upcoming, smsHealth, creditCards] =
+    await Promise.all([
+      getFinancialPicture(session.id, fx.rate),
+      getMonthlyFlow(session.id, fx.rate, range),
+      getMonthlyProgress(session.id, fx.rate, range),
+      getCategoryBreakdown(session.id, fx.rate, range),
+      getTopExpenses(session.id, fx.rate, range, 5),
+      getAccountStatuses(session.id),
+      getUpcomingForMonth({
+        userId: session.id,
+        year: refYear,
+        month: refMonth,
+        includeDismissed: true,
+        today: now,
+      }),
+      getSmsHealthSnapshot(session.id, now),
+      // Bank truth — TC summary stays on calendar regardless of cycle mode.
+      getCreditCardsSummary(session.id, fx.rate, now),
+    ]);
 
   const upcomingItems = upcoming.map((u) => ({
     ...u,
     amountCents: u.amountCents.toString(),
-  }));
-
-  const gapItems = openGaps.map((g) => ({
-    gapId: g.gapId,
-    recurringId: g.recurringId,
-    yearMonth: g.yearMonth,
-    label: g.label,
-    accountName: g.accountName,
-    amountCents: g.amountCents.toString(),
-    currency: g.currency,
-    categoryName: g.categoryName,
-    dayOfMonth: g.dayOfMonth,
   }));
 
   const donutSlices = slices.map((s) => ({
@@ -189,11 +165,7 @@ export default async function DashboardPage({
           <SmsHealthCard snapshot={smsHealth} />
         </section>
 
-        {gapItems.length > 0 ? (
-          <section>
-            <RecurringInboxCard gaps={gapItems} />
-          </section>
-        ) : null}
+        <RecurringPendingBanner userId={session.id} />
 
         <section className="flex flex-col gap-4">
           <h2 className="text-eyebrow">Cuentas</h2>
