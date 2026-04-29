@@ -87,9 +87,7 @@ export default async function InsightsPage({
         </CardHeader>
         <CardContent>
           {uncategorizedCount === 0 ? (
-            <p className="text-muted-foreground text-sm">
-              Todo está categorizado, fantástico.
-            </p>
+            <p className="text-muted-foreground text-sm">Todo está categorizado, fantástico.</p>
           ) : (
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm">
@@ -99,7 +97,7 @@ export default async function InsightsPage({
               </p>
               <Link
                 href="/settings/inbox"
-                className="text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 text-xs underline underline-offset-4"
+                className="text-xs text-amber-700 underline underline-offset-4 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100"
               >
                 Revisar →
               </Link>

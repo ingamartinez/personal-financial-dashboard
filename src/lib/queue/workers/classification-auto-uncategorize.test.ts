@@ -55,8 +55,13 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeJob(data: ClassificationAutoUncategorizeJobData = {}): Job<ClassificationAutoUncategorizeJobData> {
-  return { id: "test-job-auto-uncat", data } as unknown as Job<ClassificationAutoUncategorizeJobData>;
+function makeJob(
+  data: ClassificationAutoUncategorizeJobData = {},
+): Job<ClassificationAutoUncategorizeJobData> {
+  return {
+    id: "test-job-auto-uncat",
+    data,
+  } as unknown as Job<ClassificationAutoUncategorizeJobData>;
 }
 
 // ---------------------------------------------------------------------------

@@ -38,9 +38,8 @@ export async function registerNode() {
   const { createHealthSnapshotsWorker } = await import("@/lib/queue/workers/health-snapshots");
   const { createSloAlertsWorker } = await import("@/lib/queue/workers/slo-alerts");
   const { createGmailPullWorker } = await import("@/lib/queue/workers/gmail-pull");
-  const { createClassificationAutoUncategorizeWorker } = await import(
-    "@/lib/queue/workers/classification-auto-uncategorize"
-  );
+  const { createClassificationAutoUncategorizeWorker } =
+    await import("@/lib/queue/workers/classification-auto-uncategorize");
   const log = createLogger({ module: "instrumentation" });
 
   // -------------------------------------------------------------------------
