@@ -7,6 +7,8 @@ import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { parseArqEmail, type ArqParseResult, type ParsedArqTx } from "@/lib/gmail/parsers/arq";
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
+import { resolveCounterpartyByKey } from "@/lib/ingestion/sms-pipeline";
+import { normalizeName } from "@/lib/counterparties/alias-key";
 import type { FxMetadata } from "@/lib/types/fx-metadata";
 
 const log = createLogger({ module: "ingestion/email-arq" });
@@ -235,6 +237,23 @@ export async function ingestArqEmail(
 
   // --- Insert ---
   try {
+    // --- Counterparty resolution (#637) ---
+    // Both transfer_received and transfer_sent populate counterpartyName.
+    // Always kind="name" for ARQ — there is no account number or QR key
+    // available, so the normalized display name is the only stable key.
+    // Do NOT use inheritedCategory — email-arq has its own category logic.
+    // Inside the try so resolver errors return { status: "error" } instead of
+    // throwing through the outcome contract.
+    const cpResolution = await resolveCounterpartyByKey(
+      userId,
+      {
+        kind: "name",
+        value: normalizeName(parsed.counterpartyName),
+        initialDisplayName: parsed.counterpartyName,
+      },
+      db,
+    );
+
     const result = await db
       .insert(transactions)
       .values({
@@ -249,6 +268,7 @@ export async function ingestArqEmail(
         channel: "transfer",
         externalId,
         rawData,
+        counterpartyId: cpResolution.counterpartyId,
       })
       .onConflictDoNothing({
         target: [transactions.accountId, transactions.externalId],
@@ -297,6 +317,7 @@ export async function ingestArqEmail(
         txKind: parsed.txKind,
         amountUsdcCents: parsed.amountUsdcCents.toString(),
         counterparty: parsed.counterpartyName,
+        counterpartyId: cpResolution.counterpartyId,
         event: "arq_email_inserted",
       },
       "ARQ email ingested as transaction",
