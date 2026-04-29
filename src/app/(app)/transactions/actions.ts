@@ -363,16 +363,39 @@ export async function setTransactionCounterparty(input: {
         `);
         targetId = existing[0].id;
       } else {
+        // Race-safe upsert: two concurrent requests with the same displayName
+        // can both miss the SELECT above. The alias UNIQUE(user_id, kind, value)
+        // serializes them. ON CONFLICT lets the loser short-circuit; we then
+        // re-query to find the winner's counterparty_id.
         const inserted = await trx.execute<{ id: number }>(sql`
           INSERT INTO counterparties (user_id, display_name, type, hit_count, last_hit_at)
           VALUES (${session.id}, ${displayName.trim()}, 'unknown', 1, now())
           RETURNING id
         `);
-        await trx.execute(sql`
+        const aliasInsert = await trx.execute<{ counterparty_id: number }>(sql`
           INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
           VALUES (${session.id}, ${inserted[0].id}, 'name'::counterparty_key_kind, ${aliasKey})
+          ON CONFLICT (user_id, kind, value) DO NOTHING
+          RETURNING counterparty_id
         `);
-        targetId = inserted[0].id;
+        if (aliasInsert.length > 0) {
+          targetId = inserted[0].id;
+        } else {
+          // Lost the race — clean up the orphan counterparty we just created
+          // and adopt the winner's id.
+          await trx.execute(sql`
+            DELETE FROM counterparties
+            WHERE user_id = ${session.id} AND id = ${inserted[0].id}
+          `);
+          const winner = await trx.execute<{ counterparty_id: number }>(sql`
+            SELECT counterparty_id FROM counterparty_aliases
+            WHERE user_id = ${session.id}
+              AND kind = 'name'::counterparty_key_kind
+              AND value = ${aliasKey}
+            LIMIT 1
+          `);
+          targetId = winner[0].counterparty_id;
+        }
       }
     }
     // else: targetId stays null → unlink
@@ -389,7 +412,7 @@ export async function setTransactionCounterparty(input: {
       await trx.execute(sql`
         INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
         VALUES (${session.id}, ${targetId}, 'name'::counterparty_key_kind, ${normalizedMerchant})
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (user_id, kind, value) DO NOTHING
       `);
     }
 
