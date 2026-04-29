@@ -2,7 +2,14 @@
 
 import { useEffect, useMemo } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArchiveIcon, ReceiptTextIcon, UserIcon, BuildingIcon, WrenchIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ReceiptTextIcon,
+  RefreshCwIcon,
+  UserIcon,
+  BuildingIcon,
+  WrenchIcon,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Money } from "@/components/display/money";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -24,6 +31,7 @@ import { ConfidenceBadge, confidenceBand } from "./confidence-badge";
 import { CounterpartyDialog } from "./counterparty-dialog";
 import { NeedsReviewBadge } from "./needs-review-badge";
 import { TransactionRowActions } from "./transaction-row-actions";
+import type { RecurringOption } from "@/app/(app)/transactions/link-recurring-types";
 
 const ROW_CLASSES =
   "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted";
@@ -100,6 +108,20 @@ function InstallmentsBadge({ total }: { total: number }) {
   );
 }
 
+// #621: badge shown when a tx is linked to a recurring.
+function RecurringBadge({ label }: { label: string | null }) {
+  return (
+    <Badge
+      variant="outline"
+      className="shrink-0 gap-1 border-violet-300 text-[10px] font-medium tracking-wide text-violet-700 uppercase dark:border-violet-700 dark:text-violet-300"
+      title={`Recurring: ${label ?? "linked"}`}
+    >
+      <RefreshCwIcon className="size-2.5" />
+      {label ? <span className="max-w-[80px] truncate">{label}</span> : "Recurring"}
+    </Badge>
+  );
+}
+
 function CounterpartyTypeBadge({ type }: { type: NonNullable<TxRow["counterparty"]>["type"] }) {
   if (type === "person") {
     return (
@@ -139,11 +161,14 @@ export function TransactionTable({
   categories,
   allCounterparties,
   highlightId,
+  activeRecurrings,
 }: {
   rows: TxRow[];
   categories: CategoryOption[];
   allCounterparties: CounterpartyBrief[];
   highlightId?: number;
+  // #621: passed from the page to avoid per-row fetches.
+  activeRecurrings: RecurringOption[];
 }) {
   const shouldReduceMotion = useReducedMotion();
   const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);
@@ -250,6 +275,9 @@ export function TransactionTable({
                             txOccurredAt={tx.occurredAt.toISOString()}
                           />
                         ) : null}
+                        {tx.recurringId !== null ? (
+                          <RecurringBadge label={tx.recurringLabel} />
+                        ) : null}
                       </div>
                       <div className="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
                         <span className="truncate">{tx.accountName}</span>
@@ -306,6 +334,9 @@ export function TransactionTable({
                         currency={tx.currency}
                         installmentsTotal={tx.installmentsTotal}
                         installmentRateEmX10k={tx.installmentRateEmX10k}
+                        recurringId={tx.recurringId}
+                        recurringLabel={tx.recurringLabel}
+                        activeRecurrings={activeRecurrings}
                       />
                     </TableCell>
                   </motion.tr>
@@ -363,6 +394,9 @@ export function TransactionTable({
                           txOccurredAt={tx.occurredAt.toISOString()}
                         />
                       ) : null}
+                      {tx.recurringId !== null ? (
+                        <RecurringBadge label={tx.recurringLabel} />
+                      ) : null}
                     </div>
                     {hasSecondaryDescription(tx) ? (
                       <p className="text-muted-foreground line-clamp-1 text-xs">
@@ -389,6 +423,9 @@ export function TransactionTable({
                       currency={tx.currency}
                       installmentsTotal={tx.installmentsTotal}
                       installmentRateEmX10k={tx.installmentRateEmX10k}
+                      recurringId={tx.recurringId}
+                      recurringLabel={tx.recurringLabel}
+                      activeRecurrings={activeRecurrings}
                     />
                   </div>
                 </div>

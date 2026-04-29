@@ -6,6 +6,7 @@ import {
   categories,
   counterparties,
   counterpartyAliases,
+  recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
 import type { CounterpartyAlias, CounterpartyBrief, TxRow } from "@/lib/types";
@@ -125,10 +126,21 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
         FROM ${counterpartyAliases} a
         WHERE a.counterparty_id = ${counterparties.id}
       )`,
+      // #621: recurring link fields — null when not linked
+      recurringId: transactions.recurringId,
+      recurringYearMonth: transactions.recurringYearMonth,
+      recurringLabel: recurringTransactions.label,
     })
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
     .leftJoin(counterparties, eq(counterparties.id, transactions.counterpartyId))
+    .leftJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, transactions.recurringId),
+        eq(recurringTransactions.userId, transactions.userId),
+      ),
+    )
     .where(and(...conditions))
     .orderBy(desc(transactions.occurredAt), desc(transactions.id))
     .limit(PAGE_SIZE + 1);
@@ -172,6 +184,9 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
           aliases: r.cpAliases ?? [],
         }
       : null,
+    recurringId: r.recurringId,
+    recurringYearMonth: r.recurringYearMonth,
+    recurringLabel: r.recurringLabel ?? null,
   }));
 
   return { rows: shaped, nextCursor };
