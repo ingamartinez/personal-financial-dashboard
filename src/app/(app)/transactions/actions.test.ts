@@ -7,9 +7,10 @@ import type { CounterpartyKind } from "@/lib/types";
 // Shared mock state — hoisted so factory closures work above top-level consts.
 // ---------------------------------------------------------------------------
 const queueMocks = vi.hoisted(() => {
-  const addMock = vi.fn().mockResolvedValue({ id: "mock-job-id" });
+  const getStateMock = vi.fn().mockResolvedValue("waiting");
+  const addMock = vi.fn().mockResolvedValue({ id: "mock-job-id", getState: getStateMock });
   const queueInstance = { add: addMock };
-  return { addMock, queueInstance };
+  return { addMock, getStateMock, queueInstance };
 });
 
 // `revalidatePath` requires a Next.js request context that vitest's node
@@ -2165,6 +2166,9 @@ describe("enqueueClassifyAllPending (#592)", () => {
   beforeEach(async () => {
     await cleanupDrainTxs();
     queueMocks.addMock.mockClear();
+    queueMocks.getStateMock.mockClear();
+    // Default: freshly added job is in "waiting" state
+    queueMocks.getStateMock.mockResolvedValue("waiting");
   });
   afterEach(cleanupDrainTxs);
 
@@ -2182,6 +2186,7 @@ describe("enqueueClassifyAllPending (#592)", () => {
     const result = await enqueueClassifyAllPending();
 
     expect(result.enqueued).toBeGreaterThanOrEqual(1);
+    expect(result.alreadyRunning).toBeFalsy();
     expect(queueMocks.addMock).toHaveBeenCalledOnce();
 
     const [, jobData, jobOpts] = queueMocks.addMock.mock.calls[0];
@@ -2189,8 +2194,9 @@ describe("enqueueClassifyAllPending (#592)", () => {
     expect(jobData.userId).toBe(TEST_USER_ID);
     // drain-pending carries no txIds — the worker fetches them incrementally
     expect("txIds" in jobData).toBe(false);
-    // Idempotent jobId
-    expect(jobOpts.jobId).toBe(`drain-${TEST_USER_ID}`);
+    // Uses deduplication (not jobId) so completed jobs don't block re-adds
+    expect(jobOpts.deduplication?.id).toBe(`drain-${TEST_USER_ID}`);
+    expect(jobOpts.jobId).toBeUndefined();
   });
 
   it("returns the total pending count (not capped at batch size)", async () => {
@@ -2207,13 +2213,15 @@ describe("enqueueClassifyAllPending (#592)", () => {
     expect(queueMocks.addMock).toHaveBeenCalledOnce();
   });
 
-  it("uses a per-user idempotent jobId (drain-<userId>)", async () => {
+  it("uses deduplication.id = drain-<userId> (not jobId)", async () => {
     await seedUnclassifiedTx(`${EXT_PREFIX}:idem`);
 
     await enqueueClassifyAllPending();
 
     const [, , opts] = queueMocks.addMock.mock.calls[0];
-    expect(opts.jobId).toBe(`drain-${TEST_USER_ID}`);
+    expect(opts.deduplication?.id).toBe(`drain-${TEST_USER_ID}`);
+    // The old jobId approach is gone — it caused completed jobs to block re-adds
+    expect(opts.jobId).toBeUndefined();
   });
 
   it("does NOT update any transaction rows synchronously", async () => {
@@ -2225,6 +2233,52 @@ describe("enqueueClassifyAllPending (#592)", () => {
       SELECT classification_method FROM transactions WHERE id = ${txId}
     `);
     expect(row.classification_method).toBe("unclassified");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Deduplication regression tests (#646)
+  // ---------------------------------------------------------------------------
+
+  it("(dedup) returns { enqueued: pendingCount } when no prior drain exists — Test 1", async () => {
+    await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t1`);
+    // getStateMock returns "waiting" by default — fresh job, no prior drain
+    queueMocks.getStateMock.mockResolvedValueOnce("waiting");
+
+    const result = await enqueueClassifyAllPending();
+
+    expect(result.enqueued).toBeGreaterThanOrEqual(1);
+    expect(result.alreadyRunning).toBeFalsy();
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
+  });
+
+  it("(dedup) returns { enqueued: 0, alreadyRunning: true } when drain is active — Test 2", async () => {
+    await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t2`);
+    // Simulate BullMQ returning the existing active job (dedup fired)
+    queueMocks.getStateMock.mockResolvedValueOnce("active");
+
+    const result = await enqueueClassifyAllPending();
+
+    expect(result.enqueued).toBe(0);
+    expect(result.alreadyRunning).toBe(true);
+    // queue.add was still called — dedup detection happens via getState()
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
+  });
+
+  it("(dedup) re-enqueues after a completed drain — Test 3 (regression: jobId blocked this)", async () => {
+    await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t3`);
+    // After a drain completes, BullMQ removes the deduplication key.
+    // The next queue.add() creates a fresh "waiting" job — NOT deduplicated.
+    // With the old jobId approach, the completed job hash still existed in
+    // the completed set, and BullMQ's jobId dedup would silently block the add.
+    // With deduplication, the key is gone → fresh add succeeds.
+    queueMocks.getStateMock.mockResolvedValueOnce("waiting");
+
+    const result = await enqueueClassifyAllPending();
+
+    expect(result.enqueued).toBeGreaterThanOrEqual(1);
+    expect(result.alreadyRunning).toBeFalsy();
+    // A real job was enqueued (not silently dropped like the prod bug)
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
   });
 });
 

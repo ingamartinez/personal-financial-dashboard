@@ -577,11 +577,22 @@ export async function createManualEntry(input: {
  * for the session user — the worker loops until the queue is empty (capped at
  * 100 iterations × AI_BATCH_SIZE = 2000 max txs, per classify-tx worker).
  *
- * The `jobId` is deterministic per-user (`drain-<userId>`) so duplicate
- * clicks or rapid re-submissions are idempotent at the BullMQ level — BullMQ
- * deduplicates by jobId and the second add is a no-op.
+ * Uses BullMQ's `deduplication` option (NOT the legacy `jobId` approach).
+ * The key difference: `deduplication` stores a separate Redis key (`de:<id>`)
+ * that is automatically removed when the job completes or fails. This prevents
+ * the prod bug where a completed `drain-N` job in the completed set would block
+ * all subsequent button clicks forever (because `jobId`-based dedup checks if
+ * the job hash key EXISTS, which it does while the job sits in the completed
+ * set respecting `removeOnComplete: { count: 100 }`).
+ *
+ * Return shape: `{ enqueued: number; alreadyRunning?: boolean }`
+ *   - `alreadyRunning: true` when the queue already has an active drain for
+ *     this user (dedup fired on an active job). The toast should be truthful.
  */
-export async function enqueueClassifyAllPending(): Promise<{ enqueued: number }> {
+export async function enqueueClassifyAllPending(): Promise<{
+  enqueued: number;
+  alreadyRunning?: boolean;
+}> {
   const session = await getSessionUser();
 
   // Count pending so the toast can tell the user how many are queued.
@@ -591,17 +602,27 @@ export async function enqueueClassifyAllPending(): Promise<{ enqueued: number }>
   if (pendingCount === 0) return { enqueued: 0 };
 
   const queue = createQueue<ClassifyTxJobData>("classify-tx");
-  await queue.add(
+  const job = await queue.add(
     "classify-tx",
     { userId: session.id, mode: "drain-pending" },
     {
-      // Idempotent per user — a second click while the drain is running
-      // simply finds the existing job and is silently dropped by BullMQ.
-      jobId: `drain-${session.id}`,
+      // `deduplication` uses a separate Redis key (`de:drain-<userId>`) that
+      // BullMQ deletes atomically when the job completes or fails. Unlike the
+      // legacy `jobId` approach, completed jobs do NOT block future adds.
+      deduplication: { id: `drain-${session.id}` },
       attempts: 3,
       backoff: { type: "exponential", delay: 5000 },
     },
   );
+
+  // Detect whether BullMQ blocked this add via dedup (an existing active job
+  // was returned instead of a freshly created one). `getState()` performs a
+  // single Redis round-trip and returns "active" when a worker already holds
+  // the job lock — the primary prod-visible dedup case.
+  const state = await job.getState();
+  if (state === "active") {
+    return { enqueued: 0, alreadyRunning: true };
+  }
 
   revalidatePath("/");
   revalidatePath("/transactions");
