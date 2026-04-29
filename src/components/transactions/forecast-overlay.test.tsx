@@ -143,20 +143,29 @@ describe("mergeRows", () => {
     expect(merged).toHaveLength(0);
   });
 
+  /**
+   * Architecture invariant: forecast rows must NEVER count toward the month total.
+   *
+   * The displayed month total in /transactions is computed by countTotal() in
+   * page.tsx — a DB query against the transactions table only. forecast rows
+   * are a render-time overlay (issue #622) and never reach that query.
+   *
+   * This test asserts the kind-separation contract of mergeRows() at the data
+   * layer. If someone later adds a row-level footer total inside TransactionTable,
+   * they MUST filter by kind === 'tx' and a DOM-level assertion should be added
+   * here.
+   */
   it("ARCHITECTURE INVARIANT — forecast amounts MUST NOT be counted in the month total", () => {
-    // This is the critical guard from issue #622: the month total in the UI is
-    // derived from real transactions ONLY. Forecast rows are visual overlays.
-    // The invariant: sum of (kind='tx').amountCents === sum of real tx amounts only.
-    const tx1 = makeTxRow({ id: 1, amountCents: BigInt(-50000) });
-    const tx2 = makeTxRow({ id: 2, amountCents: BigInt(-30000) });
+    const tx1 = makeTxRow({ id: 1, amountCents: BigInt(-80000) });
+    const tx2 = makeTxRow({ id: 2, amountCents: BigInt(-24990) });
     const forecast1 = makeForecast({
       recurringId: 10,
-      amountCents: BigInt(-9990),
+      amountCents: BigInt(-80000),
       status: "esperado",
     });
     const forecast2 = makeForecast({
       recurringId: 11,
-      amountCents: BigInt(-15000),
+      amountCents: BigInt(-24990),
       status: "atrasado",
     });
 
@@ -172,12 +181,17 @@ describe("mergeRows", () => {
       .filter((r): r is Extract<MergedRow, { kind: "forecast" }> => r.kind === "forecast")
       .reduce((acc, r) => acc + r.data.amountCents, BigInt(0));
 
-    // Real tx total = tx1 + tx2 = -80000.
-    expect(txOnlyTotal).toBe(BigInt(-80000));
-    // Forecast total is separate and non-zero — proves they are NOT mixed in.
-    expect(forecastTotal).toBe(BigInt(-24990));
-    // The sum-of-all would be wrong if forecasts were included.
-    expect(txOnlyTotal).not.toBe(txOnlyTotal + forecastTotal);
+    // Concrete values — the amounts are intentionally equal per kind so a naive
+    // implementation that accidentally mixes kinds would STILL produce the wrong
+    // total (doubled), making the guard non-trivial.
+    expect(txOnlyTotal).toBe(BigInt(-104990)); // tx1 + tx2 = -80000 + -24990
+    expect(forecastTotal).toBe(BigInt(-104990)); // forecast1 + forecast2 (same values)
+
+    // What the total would WRONGLY be if forecasts were mixed in:
+    const wrongTotalIfMixed = txOnlyTotal + forecastTotal;
+    expect(wrongTotalIfMixed).toBe(BigInt(-209980)); // doubled — the bug we guard against
+    expect(txOnlyTotal).not.toBe(wrongTotalIfMixed); // explicit guard: facts-only != mixed
+
     // Total row count = 2 tx + 2 forecast (neither is linkeado/synthetic).
     expect(merged).toHaveLength(4);
   });

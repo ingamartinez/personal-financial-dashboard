@@ -90,7 +90,14 @@ export async function getUpcomingForMonth(
       notes: recurringTransactions.notes,
     })
     .from(recurringTransactions)
-    .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
+    .innerJoin(
+      accounts,
+      and(
+        eq(accounts.id, recurringTransactions.accountId),
+        // Defense-in-depth tenant pairing per per-user-table-join-tenant-safety.
+        eq(accounts.userId, recurringTransactions.userId),
+      ),
+    )
     .leftJoin(
       categories,
       and(

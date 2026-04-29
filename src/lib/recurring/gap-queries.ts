@@ -62,7 +62,14 @@ export async function getLinkCandidates(
       dayOfMonth: recurringTransactions.dayOfMonth,
     })
     .from(recurringGaps)
-    .innerJoin(recurringTransactions, eq(recurringTransactions.id, recurringGaps.recurringId))
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringGaps.recurringId),
+        // Defense-in-depth tenant pairing per per-user-table-join-tenant-safety.
+        eq(recurringTransactions.userId, recurringGaps.userId),
+      ),
+    )
     .where(and(eq(recurringGaps.userId, userId), eq(recurringGaps.id, gapId)))
     .limit(1);
   if (!gap) return [];
@@ -114,8 +121,22 @@ export async function getOpenGaps(userId: number, database: DB = defaultDb): Pro
       detectedAt: recurringGaps.detectedAt,
     })
     .from(recurringGaps)
-    .innerJoin(recurringTransactions, eq(recurringTransactions.id, recurringGaps.recurringId))
-    .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringGaps.recurringId),
+        // Defense-in-depth tenant pairing per per-user-table-join-tenant-safety.
+        eq(recurringTransactions.userId, recurringGaps.userId),
+      ),
+    )
+    .innerJoin(
+      accounts,
+      and(
+        eq(accounts.id, recurringTransactions.accountId),
+        // Defense-in-depth tenant pairing per per-user-table-join-tenant-safety.
+        eq(accounts.userId, recurringTransactions.userId),
+      ),
+    )
     .leftJoin(
       categories,
       and(
