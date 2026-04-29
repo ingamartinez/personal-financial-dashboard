@@ -8,6 +8,7 @@ import {
   recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import {
   DEFAULT_WINDOW_AFTER_DAYS,
   DEFAULT_WINDOW_BEFORE_DAYS,
@@ -61,7 +62,14 @@ export async function getLinkCandidates(
       dayOfMonth: recurringTransactions.dayOfMonth,
     })
     .from(recurringGaps)
-    .innerJoin(recurringTransactions, eq(recurringTransactions.id, recurringGaps.recurringId))
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringGaps.recurringId),
+        // Defense-in-depth tenant pairing per per-user-table-join-tenant-safety.
+        eq(recurringTransactions.userId, recurringGaps.userId),
+      ),
+    )
     .where(and(eq(recurringGaps.userId, userId), eq(recurringGaps.id, gapId)))
     .limit(1);
   if (!gap) return [];
@@ -103,6 +111,7 @@ export async function getOpenGaps(userId: number, database: DB = defaultDb): Pro
       label: recurringTransactions.label,
       accountId: recurringTransactions.accountId,
       accountName: accounts.name,
+      accountCurrency: accounts.currency,
       amountCents: recurringTransactions.amountCents,
       currency: recurringTransactions.currency,
       categorySlug: recurringTransactions.categorySlug,
@@ -112,8 +121,22 @@ export async function getOpenGaps(userId: number, database: DB = defaultDb): Pro
       detectedAt: recurringGaps.detectedAt,
     })
     .from(recurringGaps)
-    .innerJoin(recurringTransactions, eq(recurringTransactions.id, recurringGaps.recurringId))
-    .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringGaps.recurringId),
+        // Defense-in-depth tenant pairing per per-user-table-join-tenant-safety.
+        eq(recurringTransactions.userId, recurringGaps.userId),
+      ),
+    )
+    .innerJoin(
+      accounts,
+      and(
+        eq(accounts.id, recurringTransactions.accountId),
+        // Defense-in-depth tenant pairing per per-user-table-join-tenant-safety.
+        eq(accounts.userId, recurringTransactions.userId),
+      ),
+    )
     .leftJoin(
       categories,
       and(
@@ -124,5 +147,8 @@ export async function getOpenGaps(userId: number, database: DB = defaultDb): Pro
     .where(eq(recurringGaps.userId, userId))
     .orderBy(asc(recurringGaps.yearMonth), asc(recurringTransactions.dayOfMonth));
 
-  return rows;
+  return rows.map((r) => ({
+    ...r,
+    accountName: formatAccountLabel({ name: r.accountName, currency: r.accountCurrency }),
+  }));
 }

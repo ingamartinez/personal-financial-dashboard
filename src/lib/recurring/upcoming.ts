@@ -2,6 +2,7 @@ import { and, asc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { accounts, categories, recurringTransactions, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import {
   DEFAULT_WINDOW_AFTER_DAYS,
   DEFAULT_WINDOW_BEFORE_DAYS,
@@ -78,6 +79,7 @@ export async function getUpcomingForMonth(
       label: recurringTransactions.label,
       accountId: recurringTransactions.accountId,
       accountName: accounts.name,
+      accountCurrency: accounts.currency,
       amountCents: recurringTransactions.amountCents,
       currency: recurringTransactions.currency,
       categorySlug: recurringTransactions.categorySlug,
@@ -88,7 +90,14 @@ export async function getUpcomingForMonth(
       notes: recurringTransactions.notes,
     })
     .from(recurringTransactions)
-    .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
+    .innerJoin(
+      accounts,
+      and(
+        eq(accounts.id, recurringTransactions.accountId),
+        // Defense-in-depth tenant pairing per per-user-table-join-tenant-safety.
+        eq(accounts.userId, recurringTransactions.userId),
+      ),
+    )
     .leftJoin(
       categories,
       and(
@@ -202,7 +211,7 @@ export async function getUpcomingForMonth(
       recurringId: r.id,
       label: r.label,
       accountId: r.accountId,
-      accountName: r.accountName,
+      accountName: formatAccountLabel({ name: r.accountName, currency: r.accountCurrency }),
       amountCents: r.amountCents,
       currency: r.currency,
       categorySlug: r.categorySlug,
