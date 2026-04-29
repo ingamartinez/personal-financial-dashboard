@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  recurringGaps,
+  recurringTransactions,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { autoLinkTransaction } from "./auto-link";
 
 const TEST_ACCOUNT = "__autolink_test_account__";
+const TEST_USER_EMAIL = "__autolink_other_user__@test.local";
 
 async function cleanup() {
   await db.execute(
@@ -12,17 +19,30 @@ async function cleanup() {
   );
   await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__autolink%'`);
   await db.execute(sql`DELETE FROM recurring_transactions WHERE label LIKE '__autolink%'`);
-  await db.execute(sql`DELETE FROM accounts WHERE name = ${TEST_ACCOUNT}`);
+  await db.execute(sql`DELETE FROM accounts WHERE name LIKE ${"__autolink_test_account__%"}`);
+  await db.execute(sql`DELETE FROM users WHERE email = ${TEST_USER_EMAIL}`);
 }
 
 const TEST_USER_ID = 1;
 
-async function seedAccount() {
+/**
+ * Seeds a temporary second user for cross-tenant tests.
+ * Returns the seeded user id. Cleaned up via `cleanup()` (deletes by email).
+ */
+async function seedOtherUser(): Promise<number> {
+  const [row] = await db
+    .insert(users)
+    .values({ email: TEST_USER_EMAIL, name: "Autolink Other User" })
+    .returning({ id: users.id });
+  return row.id;
+}
+
+async function seedAccount(userId = TEST_USER_ID, nameSuffix = "") {
   const [a] = await db
     .insert(accounts)
     .values({
-      userId: TEST_USER_ID,
-      name: TEST_ACCOUNT,
+      userId,
+      name: TEST_ACCOUNT + nameSuffix,
       institution: "Test",
       type: "savings",
       currency: "COP",
@@ -33,12 +53,19 @@ async function seedAccount() {
 
 async function seedRecurringWithGap(
   accountId: number,
-  opts: { label: string; amountCents: bigint; dayOfMonth: number; yearMonth: string },
+  opts: {
+    label: string;
+    amountCents: bigint;
+    dayOfMonth: number;
+    yearMonth: string;
+    userId?: number;
+  },
 ) {
+  const userId = opts.userId ?? TEST_USER_ID;
   const [r] = await db
     .insert(recurringTransactions)
     .values({
-      userId: TEST_USER_ID,
+      userId,
       accountId,
       label: opts.label,
       amountCents: opts.amountCents,
@@ -50,10 +77,38 @@ async function seedRecurringWithGap(
 
   const [g] = await db
     .insert(recurringGaps)
-    .values({ userId: TEST_USER_ID, recurringId: r.id, yearMonth: opts.yearMonth })
+    .values({ userId, recurringId: r.id, yearMonth: opts.yearMonth })
     .returning({ id: recurringGaps.id });
 
   return { recurringId: r.id, gapId: g.id };
+}
+
+async function seedRecurring(
+  accountId: number,
+  opts: {
+    label: string;
+    amountCents: bigint;
+    dayOfMonth: number;
+    active?: boolean;
+    deletedAt?: Date;
+    userId?: number;
+  },
+) {
+  const userId = opts.userId ?? TEST_USER_ID;
+  const [r] = await db
+    .insert(recurringTransactions)
+    .values({
+      userId,
+      accountId,
+      label: opts.label,
+      amountCents: opts.amountCents,
+      currency: "COP",
+      dayOfMonth: opts.dayOfMonth,
+      active: opts.active ?? true,
+      deletedAt: opts.deletedAt ?? null,
+    })
+    .returning({ id: recurringTransactions.id });
+  return r.id;
 }
 
 async function seedTx(
@@ -64,12 +119,14 @@ async function seedTx(
     description?: string;
     recurringId?: number;
     recurringYearMonth?: string;
+    userId?: number;
   },
 ) {
+  const userId = opts.userId ?? TEST_USER_ID;
   const [t] = await db
     .insert(transactions)
     .values({
-      userId: TEST_USER_ID,
+      userId,
       accountId,
       occurredAt: new Date(`${opts.occurredOn}T12:00:00-05:00`),
       amountCents: opts.amountCents,
@@ -206,5 +263,300 @@ describe("autoLinkTransaction (integration)", () => {
     });
     const result = await autoLinkTransaction(1, txId);
     expect(result.status).toBe("no-open-gap");
+  });
+});
+
+// ── Direct-recurring path (no gap exists yet — current month) ───────────────
+describe("autoLinkTransaction direct-recurring path", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("happy path: links tx to active recurring with no gap and returns gapId: null", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink direct happy",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 15,
+    });
+    // tx on day 15 of March 2026 — well inside the window
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-03-15",
+      amountCents: BigInt(-100000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.gapId).toBeNull();
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.yearMonth).toBe("2026-03");
+    }
+
+    // Verify DB was updated
+    const [linked] = await db
+      .select({
+        recurringId: transactions.recurringId,
+        recurringYearMonth: transactions.recurringYearMonth,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringId).toBe(recurringId);
+    expect(linked.recurringYearMonth).toBe("2026-03");
+  });
+
+  it("sign convention: negative tx + negative recurring matches; negative tx + positive recurring does not", async () => {
+    const accountId = await seedAccount();
+
+    // Recurring with POSITIVE amount (income)
+    await seedRecurring(accountId, {
+      label: "__autolink sign positive",
+      amountCents: BigInt(100000),
+      dayOfMonth: 10,
+    });
+
+    // tx with NEGATIVE amount (expense)
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-100000),
+    });
+
+    // No match: signs differ
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+  });
+
+  it("sign convention: both negative → match succeeds", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink sign both negative",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 10,
+    });
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-100000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+    }
+  });
+
+  it("window out: tx 6 days after dayOfMonth+5 → no match", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__autolink direct window",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 10,
+    });
+    // dayOfMonth=10, window end = day 15 (10+5). Day 16 is outside.
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-16",
+      amountCents: BigInt(-100000),
+    });
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+  });
+
+  it("window start: tx 10 days before dayOfMonth → matches", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink direct window start",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 20,
+    });
+    // dayOfMonth=20, window start = day 10 (20-10). Day 10 is inside.
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-100000),
+    });
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+    }
+  });
+
+  it("window before start: tx 11 days before dayOfMonth → no match", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__autolink direct window before",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 20,
+    });
+    // dayOfMonth=20, window start = day 10. Day 9 is outside.
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-09",
+      amountCents: BigInt(-100000),
+    });
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+  });
+
+  it("ambiguity: two active recurrings same account+amount in window → returns ambiguous count=2", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__autolink direct amb A",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 10,
+    });
+    await seedRecurring(accountId, {
+      label: "__autolink direct amb B",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 12,
+    });
+    // Day 11 — inside both windows (10+5=15 and 12-10=2)
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-11",
+      amountCents: BigInt(-100000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("ambiguous");
+    if (result.status === "ambiguous") {
+      expect(result.candidateCount).toBe(2);
+    }
+  });
+
+  it("slot-taken: another tx already linked to (recurring, yearMonth) → returns no-open-gap without error", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink direct slot taken",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 15,
+    });
+
+    // First tx claims the slot
+    const txId1 = await seedTx(accountId, {
+      occurredOn: "2026-03-15",
+      amountCents: BigInt(-100000),
+      description: "__autolink_tx_slot1",
+      recurringId,
+      recurringYearMonth: "2026-03",
+    });
+    void txId1; // already linked — used to occupy the slot
+
+    // Second tx tries to link to the same recurring + yearMonth
+    const txId2 = await seedTx(accountId, {
+      occurredOn: "2026-03-15",
+      amountCents: BigInt(-100000),
+      description: "__autolink_tx_slot2",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId2);
+    // Slot is taken → unique index throws → we degrade gracefully
+    expect(result.status).toBe("no-open-gap");
+
+    // Verify txId2 was NOT linked
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId2));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("soft-deleted recurring → not matched", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__autolink direct deleted",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 15,
+      deletedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-03-15",
+      amountCents: BigInt(-100000),
+    });
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+  });
+
+  it("inactive recurring → not matched", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__autolink direct inactive",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 15,
+      active: false,
+    });
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-03-15",
+      amountCents: BigInt(-100000),
+    });
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+  });
+
+  it("cross-tenant: userA tx does not link to userB recurring", async () => {
+    const otherUserId = await seedOtherUser();
+    const userAAccountId = await seedAccount(TEST_USER_ID, "_userA");
+    const userBAccountId = await seedAccount(otherUserId, "_userB");
+
+    // userB has a recurring on their account with the same amount
+    await seedRecurring(userBAccountId, {
+      label: "__autolink cross tenant recurring",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 15,
+      userId: otherUserId,
+    });
+
+    // userA has a tx on their account — same amount, same day
+    const txId = await seedTx(userAAccountId, {
+      occurredOn: "2026-03-15",
+      amountCents: BigInt(-100000),
+      userId: TEST_USER_ID,
+    });
+
+    // autoLinkTransaction called for userA — must NOT link to userB's recurring
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("gap takes precedence: matching gap wins over matching active recurring", async () => {
+    const accountId = await seedAccount();
+
+    // Both a gap AND a direct recurring exist for the same account+amount
+    const { recurringId: gapRecurringId, gapId } = await seedRecurringWithGap(accountId, {
+      label: "__autolink gap precedence gap",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 10,
+      yearMonth: "2026-04",
+    });
+
+    // A separate active recurring (no gap) — same account+amount+window
+    await seedRecurring(accountId, {
+      label: "__autolink gap precedence direct",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 10,
+    });
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-100000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    // Must link via the gap path (returns specific gapId)
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      // Gap path sets gapId to the actual gap row id
+      expect(result.gapId).toBe(gapId);
+      expect(result.recurringId).toBe(gapRecurringId);
+    }
+
+    // Gap must be deleted
+    const gaps = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, gapId));
+    expect(gaps.length).toBe(0);
   });
 });
