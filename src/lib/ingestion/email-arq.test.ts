@@ -165,6 +165,73 @@ const NOW = new Date("2026-04-01T10:00:00Z");
 // Tests
 // ---------------------------------------------------------------------------
 
+describe("ingestArqEmail — needs_review breaks the retry loop (issue #641)", () => {
+  it("marks receipt unmatched with error payload when parser returns needs_review", async () => {
+    // Garbage HTML: no title, no recognisable body markers → unknown_arq_template.
+    const html = `<html><head></head><body><p>Some unrecognised ARQ email content.</p></body></html>`;
+    const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-nr-1`, html);
+
+    const result = await ingestArqEmail(USER_A, receiptId, html, NOW);
+
+    // Outcome is still "error" (no transaction) but the receipt is now persisted
+    // as unmatched so the cron loop won't pick it up again.
+    expect(result.status).toBe("error");
+
+    // Receipt must be updated — match_status='unmatched', parsed_at not null.
+    const [row] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        parsedAt: emailReceipts.parsedAt,
+        parsedPayload: emailReceipts.parsedPayload,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receiptId));
+
+    expect(row.matchStatus).toBe("unmatched");
+    expect(row.parsedAt).not.toBeNull();
+
+    // Audit trail: parsed_payload.error.reason populated and kind='needs_review'.
+    const payload = row.parsedPayload as { error: { reason: string; kind: string } } | null;
+    expect(payload).not.toBeNull();
+    expect(payload?.error?.kind).toBe("needs_review");
+    expect(payload?.error?.reason).toBe("unknown_arq_template");
+  });
+
+  it("no transaction is inserted when parser returns needs_review", async () => {
+    const html = `<html><head></head><body><p>Unrecognised content.</p></body></html>`;
+    const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-nr-2`, html);
+
+    await ingestArqEmail(USER_A, receiptId, html, NOW);
+
+    const txRows = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+    expect(txRows).toHaveLength(0);
+  });
+
+  it("idempotency — calling ingestArqEmail twice on needs_review receipt is safe", async () => {
+    // After the first call the receipt is unmatched. A second call on the same
+    // receipt (simulating manual retry with same HTML) should still just error
+    // and update the receipt fields again — no crash, no transaction inserted.
+    const html = `<html><head></head><body><p>Unrecognised again.</p></body></html>`;
+    const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-nr-3`, html);
+
+    const r1 = await ingestArqEmail(USER_A, receiptId, html, NOW);
+    const r2 = await ingestArqEmail(USER_A, receiptId, html, NOW);
+
+    expect(r1.status).toBe("error");
+    expect(r2.status).toBe("error");
+
+    // Still no transaction.
+    const txRows = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+    expect(txRows).toHaveLength(0);
+  });
+});
+
 describe("ingestArqEmail — counterparty linking", () => {
   it("happy path — new ingest links counterparty (and normalizes the alias)", async () => {
     // Mixed case input: proves normalizeName uppercases the alias value

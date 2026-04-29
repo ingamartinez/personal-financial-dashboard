@@ -295,6 +295,75 @@ describe("parseArqEmail — amount edge cases", () => {
   });
 });
 
+describe("parseArqEmail — titled COP transfer_sent with &rsquo; in body (issue #641)", () => {
+  /**
+   * This fixture reproduces the exact template that caused receipt id 1364 to
+   * loop indefinitely in prod (2026-04-29). The distinguishing features are:
+   *
+   *   1. <title>You sent {COP} COP to {name}</title>  — template 2 route
+   *   2. Body uses &rsquo; in "We&rsquo;ve debited" — was undecoded before #641
+   *   3. A display:none preheader contains the "Hi USER, You&rsquo;ve set up..."
+   *      sentence — mimics the real ARQ HTML structure
+   *
+   * PII redacted: name → "Test Recipient", amounts → synthetic but structurally
+   * equivalent. DO NOT commit the real prod HTML at /tmp/arq-1364.html.
+   */
+  function makeCopTitledSentWithRsquo(
+    copAmount: string,
+    name: string,
+    usdcDebited: string,
+  ): string {
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>You sent ${copAmount} COP to ${name}</title>
+  <style>body{margin:0;font-family:sans-serif;}</style>
+</head>
+<body>
+  <!-- Preheader: display:none — visible text extractor must strip tags but keep text -->
+  <div style="display:none;max-height:0;overflow:hidden;">
+    Hi User, You&rsquo;ve set up a transfer to ${name}. We&rsquo;ve debited ${usdcDebited} USDc from your balance.
+  </div>
+  <table>
+    <tr><td><h1>COP transfer sent</h1></td></tr>
+    <tr><td><p>Amount sent: ${copAmount} COP</p></td></tr>
+    <tr><td><p>We&rsquo;ve debited ${usdcDebited} USDc from your balance.</p></td></tr>
+    <tr><td><p>To: ${name}</p></td></tr>
+  </table>
+</body>
+</html>`;
+  }
+
+  it("parses titled COP transfer_sent where body uses &rsquo; apostrophe", () => {
+    // Before #641 fix: &rsquo; was left literal → DEBITED_RE didn't match →
+    // needs_review('no_usdc_amount_titled_sent') → receipt stuck in pending forever.
+    const html = makeCopTitledSentWithRsquo("1,234,567", "Test Recipient", "337.05");
+    const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.txKind).toBe("transfer_sent");
+    // USDc debited: 337.05 × 100 = 33705 cents
+    expect(r.amountUsdcCents).toBe(BigInt(33705));
+    expect(r.counterpartyName).toBe("Test Recipient");
+    // COP amount: 1,234,567 × 100 = 123456700 cents
+    expect(r.copAmountCents).toBe(BigInt(123456700));
+    // implied TRM: 123_456_700 / 33_705 ≈ 3663 COP/USDc (realistic)
+    expect(r.impliedTrmCopPerUsdc).toBeCloseTo(123456700 / 33705, 0);
+  });
+
+  it("preheader &rsquo; lines do not confuse amount extraction (two debited lines)", () => {
+    // Same template but confirms that when the preheader and main body both say
+    // "We've debited X USDc", the parser finds the correct amount (they agree).
+    const html = makeCopTitledSentWithRsquo("500,000", "Test Recipient", "136.58");
+    const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
+    if (r.kind !== "parsed") throw new Error(`expected parsed, got ${r.kind}`);
+    // 136.58 × 100 = 13658 cents
+    expect(r.amountUsdcCents).toBe(BigInt(13658));
+    expect(r.copAmountCents).toBe(BigInt(50000000));
+  });
+});
+
 describe("parseArqEmail — FROM display name tolerance", () => {
   it("parses emails regardless of display name format in From header (parser ignores From)", () => {
     // The FROM header 'ARQ (formerly DolarApp) <no-reply@arqfinance.com>' is
