@@ -171,6 +171,7 @@ export async function dismissUpcoming(input: z.input<typeof dismissSchema>) {
 
   emit({
     type: "recurring-gap:resolved",
+    userId: session.id,
     gapId: result.gapId,
     reason: "skipped",
     timestamp: Date.now(),
@@ -297,6 +298,7 @@ export async function promoteUpcoming(input: PromoteUpcomingInput) {
 
   emit({
     type: "transaction:created",
+    userId: session.id,
     id: result.txId,
     source: "recurring",
     timestamp: Date.now(),
@@ -305,6 +307,7 @@ export async function promoteUpcoming(input: PromoteUpcomingInput) {
   if (result.gapId !== null) {
     emit({
       type: "recurring-gap:resolved",
+      userId: session.id,
       gapId: result.gapId,
       reason: "synthetic",
       timestamp: Date.now(),
@@ -398,6 +401,7 @@ export async function linkTxToRecurring(input: LinkTxToRecurringInput) {
 
   emit({
     type: "recurring-gap:resolved",
+    userId: session.id,
     gapId: result.gapId,
     reason: "linked",
     timestamp: Date.now(),

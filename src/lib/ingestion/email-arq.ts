@@ -320,7 +320,7 @@ export async function ingestArqEmail(
 
     await markReceiptMatched(receiptId, userId, txId, parsed);
     await autoLinkTransaction(userId, txId);
-    emit({ type: "transaction:created", id: txId, source: ARQ_SOURCE, timestamp: Date.now() });
+    emit({ type: "transaction:created", userId, id: txId, source: ARQ_SOURCE, timestamp: Date.now() });
 
     // #518: attempt intra-user transfer pairing. ARQ transfer_sent (USD debit)
     // is the origin leg of a cross-currency self-transfer via PEXTO COLOMBIA.

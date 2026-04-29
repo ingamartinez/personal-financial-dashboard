@@ -275,6 +275,7 @@ async function ingestParsedBancolombia(
     await autoLinkTransaction(userId, txId);
     emit({
       type: "transaction:created",
+      userId,
       id: txId,
       source: cfg.source,
       timestamp: Date.now(),
@@ -489,7 +490,7 @@ async function ingestTcStatementPayment(
   if (result.status === "error") return { status: "error", reason: result.reason };
 
   for (const txId of result.txIds) {
-    emit({ type: "transaction:created", id: txId, source: cfg.source, timestamp: Date.now() });
+    emit({ type: "transaction:created", userId, id: txId, source: cfg.source, timestamp: Date.now() });
   }
   // Contract: IngestOutcome carries a single txId. Return the origin (debit)
   // leg — it's the one users recognize as "their payment" in logs and UI.
@@ -567,6 +568,7 @@ async function ingestTcCreditReceived(
     if (result.length === 0) return { status: "duplicated" };
     emit({
       type: "transaction:created",
+      userId,
       id: result[0].id,
       source: cfg.source,
       timestamp: Date.now(),

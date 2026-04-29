@@ -122,6 +122,7 @@ export async function insertFromDraft(opts: {
     } else {
       emit({
         type: "transaction:created",
+        userId,
         id: result[0].id,
         source: "telegram",
         timestamp: Date.now(),
@@ -240,7 +241,7 @@ async function insertTransferFromDraft(opts: {
     else if (result.status === "error") outcome = { status: "error", reason: result.reason };
     else {
       for (const txId of result.txIds) {
-        emit({ type: "transaction:created", id: txId, source: "telegram", timestamp: Date.now() });
+        emit({ type: "transaction:created", userId, id: txId, source: "telegram", timestamp: Date.now() });
       }
       outcome = { status: "inserted", txId: result.txIds[0] };
     }
@@ -284,6 +285,7 @@ async function insertTransferFromDraft(opts: {
       } else {
         emit({
           type: "transaction:created",
+          userId,
           id: result[0].id,
           source: "telegram",
           timestamp: Date.now(),

@@ -162,6 +162,7 @@ export async function autoLinkTransaction(
 
     emit({
       type: "recurring-gap:resolved",
+      userId,
       gapId: result.gapId,
       reason: "auto-linked",
       timestamp: Date.now(),
@@ -410,6 +411,7 @@ export async function autoLinkTransaction(
 
   emit({
     type: "recurring-gap:resolved",
+    userId,
     gapId: null,
     reason: "auto-linked",
     timestamp: Date.now(),

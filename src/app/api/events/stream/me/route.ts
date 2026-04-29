@@ -1,16 +1,29 @@
+import { getSessionUserOrNull } from "@/lib/auth/session";
 import { subscribe, type AppEvent } from "@/lib/events/bus";
+import { createLogger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const HEARTBEAT_MS = 20_000;
+const log = createLogger({ module: "sse-stream-me" });
+
+const HEARTBEAT_MS = 30_000;
 
 export async function GET(req: Request) {
+  const session = await getSessionUserOrNull();
+  if (!session) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const { id: userId, role } = session;
+  log.info({ userId, role, event: "sse_subscribed" }, "SSE client subscribed");
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+
       const safeEnqueue = (chunk: string) => {
         if (closed) return;
         try {
@@ -23,8 +36,17 @@ export async function GET(req: Request) {
       safeEnqueue(`: hello\n\n`);
 
       const onEvent = (event: AppEvent) => {
+        // Forward if event belongs to this user, or if it is an admin broadcast
+        // and the current session has the admin role.
+        const isOwn = event.userId === userId;
+        const isAdminBroadcast =
+          "audience" in event && event.audience === "admin" && role === "admin";
+
+        if (!isOwn && !isAdminBroadcast) return;
+
         safeEnqueue(`data: ${JSON.stringify(event)}\n\n`);
       };
+
       const unsubscribe = subscribe(onEvent);
 
       const heartbeat = setInterval(() => {
@@ -36,6 +58,7 @@ export async function GET(req: Request) {
         closed = true;
         clearInterval(heartbeat);
         unsubscribe();
+        log.info({ userId, role, event: "sse_disconnected" }, "SSE client disconnected");
         try {
           controller.close();
         } catch {
