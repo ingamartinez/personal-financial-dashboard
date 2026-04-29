@@ -1,13 +1,13 @@
 "use client";
 
 import { useTransition } from "react";
-import { AlertTriangleIcon, CheckIcon } from "lucide-react";
+import { AlertTriangleIcon, CheckIcon, HelpCircleIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Money } from "@/components/display/money";
 import { CategoryCell, type CategoryOption } from "@/components/transactions/category-cell";
-import { confirmClassification } from "@/app/(app)/transactions/actions";
+import { confirmClassification, markUncategorized } from "@/app/(app)/transactions/actions";
 import type { Currency } from "@/lib/types";
 
 export type ReviewRow = {
@@ -38,6 +38,14 @@ export function ClassificationReviewList({
       const result = await confirmClassification({ txId: row.id });
       if (result.status === "error") toast.error(result.message);
       else toast.success(`Confirmada como ${row.categoryName}`);
+    });
+  }
+
+  function onNoMeAcuerdo(row: ReviewRow) {
+    startTransition(async () => {
+      const result = await markUncategorized({ txId: row.id });
+      if (result.status === "error") toast.error(result.message);
+      else toast.success("Marcada como sin categorizar");
     });
   }
 
@@ -90,6 +98,16 @@ export function ClassificationReviewList({
               >
                 <CheckIcon className="size-4" />
                 Confirmar
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onNoMeAcuerdo(r)}
+                disabled={pending}
+                aria-label="No me acuerdo de esta transacción"
+              >
+                <HelpCircleIcon className="size-4" />
+                No me acuerdo
               </Button>
             </div>
           );

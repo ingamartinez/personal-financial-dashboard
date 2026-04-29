@@ -53,6 +53,7 @@ const {
   classifySingleWithAi,
   updateTransactionCategory,
   confirmClassification,
+  markUncategorized,
   archiveTransaction,
   restoreTransaction,
   createManualTransferGroup,
@@ -1159,6 +1160,216 @@ describe("confirmClassification", () => {
       status: "error",
       message: "Transacción no está pendiente de revisión.",
     });
+  });
+});
+
+describe("markUncategorized", () => {
+  async function seedReviewTx(args: {
+    externalId: string;
+    method: "rule" | "ai" | "manual" | "manual_confirmed" | "user_uncategorized";
+    categorySlug: string;
+    confidence: number;
+    softDelete?: boolean;
+  }): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        merchant, category_slug, classification_method, classification_confidence, source, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${acc.id}, now(), -5000, 'COP', 'test',
+        'TEST-MARK-UNCAT',
+        ${args.categorySlug},
+        ${args.method}::classification_method,
+        ${args.confidence},
+        'sms',
+        ${args.externalId}
+      )
+      RETURNING id
+    `);
+    const txId = rows[0].id;
+    if (args.softDelete) {
+      await db.execute(sql`UPDATE transactions SET deleted_at = now() WHERE id = ${txId}`);
+    }
+    return txId;
+  }
+
+  async function cleanupMarkUncatTxs() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE 'test-mark-uncat:%'
+    `);
+  }
+
+  // Also verify no corrections are inserted (shared verification helper)
+  async function getCorrectionsForTx(txId: number): Promise<number> {
+    const rows = await db.execute<{ cnt: string }>(sql`
+      SELECT COUNT(*)::text AS cnt FROM classification_corrections WHERE transaction_id = ${txId}
+    `);
+    return parseInt(rows[0]?.cnt ?? "0", 10);
+  }
+
+  beforeEach(cleanupMarkUncatTxs);
+  afterEach(cleanupMarkUncatTxs);
+
+  it("moves a rule-classified tx to otros with method=user_uncategorized", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:rule",
+      method: "rule",
+      categorySlug: "alimentacion",
+      confidence: 45,
+    });
+
+    const result = await markUncategorized({ txId });
+    expect(result).toEqual({ status: "ok" });
+
+    const [row] = await db.execute<{
+      classification_method: string;
+      classification_confidence: number;
+      category_slug: string;
+    }>(sql`
+      SELECT classification_method, classification_confidence, category_slug
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.classification_method).toBe("user_uncategorized");
+    expect(row.classification_confidence).toBe(100);
+    expect(row.category_slug).toBe("otros");
+  });
+
+  it("stores the correct reason JSON snapshot", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:ai-reason",
+      method: "ai",
+      categorySlug: "transporte",
+      confidence: 52,
+    });
+
+    await markUncategorized({ txId });
+
+    const [row] = await db.execute<{ classification_reason: string }>(sql`
+      SELECT classification_reason FROM transactions WHERE id = ${txId}
+    `);
+    const parsed = JSON.parse(row.classification_reason);
+    expect(parsed).toMatchObject({
+      confirmed_from: "ai",
+      confidence: 52,
+      action: "user_uncategorized",
+    });
+  });
+
+  it("does NOT insert into classification_corrections", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:no-correction",
+      method: "rule",
+      categorySlug: "alimentacion",
+      confidence: 40,
+    });
+
+    await markUncategorized({ txId });
+
+    const correctionCount = await getCorrectionsForTx(txId);
+    expect(correctionCount).toBe(0);
+  });
+
+  it("rejects when method is already manual (not in review inbox)", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:manual",
+      method: "manual",
+      categorySlug: "alimentacion",
+      confidence: 100,
+    });
+
+    const result = await markUncategorized({ txId });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
+  });
+
+  it("rejects when method is already user_uncategorized", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:already-uncat",
+      method: "user_uncategorized",
+      categorySlug: "otros",
+      confidence: 100,
+    });
+
+    const result = await markUncategorized({ txId });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
+  });
+
+  it("rejects soft-deleted transactions", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:deleted",
+      method: "rule",
+      categorySlug: "alimentacion",
+      confidence: 35,
+      softDelete: true,
+    });
+
+    const result = await markUncategorized({ txId });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
+  });
+
+  it("rejects when txId belongs to another user (tenant safety)", async () => {
+    // Seed a real row under a different user_id and prove that markUncategorized
+    // — running with session.id = TEST_USER_ID = 1 — cannot touch it. A regression
+    // that drops `eq(transactions.userId, session.id)` from the WHERE would leak
+    // here. Cleanup via CASCADE on user delete.
+    const uniqueEmail = `mark-uncat-tenant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
+    const [otherUser] = await db.execute<{ id: number }>(sql`
+      INSERT INTO users (email, name)
+      VALUES (${uniqueEmail}, 'Tenant Test')
+      RETURNING id
+    `);
+    const [otherAcc] = await db.execute<{ id: number }>(sql`
+      INSERT INTO accounts (user_id, name, institution, type, currency)
+      VALUES (${otherUser.id}, 'Other Bank', 'OTHER', 'savings', 'COP')
+      RETURNING id
+    `);
+    // category_slug NULL avoids needing to seed per-user categories (FK is on
+    // (user_id, category_slug) and only fires when category_slug IS NOT NULL).
+    const [otherTx] = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        merchant, category_slug, classification_method, classification_confidence,
+        source, external_id
+      ) VALUES (
+        ${otherUser.id}, ${otherAcc.id}, now(), -5000, 'COP', 'cross-tenant',
+        'CROSS-TENANT', NULL, 'rule'::classification_method, 45,
+        'sms', 'test-mark-uncat:cross-tenant'
+      )
+      RETURNING id
+    `);
+
+    try {
+      const result = await markUncategorized({ txId: otherTx.id });
+      expect(result).toEqual({
+        status: "error",
+        message: "Transacción no está pendiente de revisión.",
+      });
+
+      const [row] = await db.execute<{
+        classification_method: string;
+        category_slug: string | null;
+        user_id: number;
+      }>(sql`
+        SELECT classification_method, category_slug, user_id
+        FROM transactions WHERE id = ${otherTx.id}
+      `);
+      expect(row.classification_method).toBe("rule");
+      expect(row.category_slug).toBeNull();
+      expect(row.user_id).toBe(otherUser.id);
+    } finally {
+      await db.execute(sql`DELETE FROM users WHERE id = ${otherUser.id}`);
+    }
   });
 });
 

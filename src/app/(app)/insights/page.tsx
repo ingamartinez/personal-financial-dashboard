@@ -1,10 +1,14 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import Link from "next/link";
 import { db } from "@/lib/db";
-import { insightsReports } from "@/lib/db/schema";
+import { insightsReports, transactions } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { buildInsightsSummary, hashSummary, isStale } from "@/lib/ai/insights";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { getFinancialPeriod } from "@/lib/dashboard/period";
+import { formatMoney } from "@/lib/money";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InsightsViewer } from "./insights-viewer";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +50,24 @@ export default async function InsightsPage({
 
   const stale = existing ? isStale(existing.generatedAt, existing.inputHash, currentHash) : true;
 
+  // Uncategorized counter — all-time, tenant-scoped (#628)
+  const [uncategorized] = await db
+    .select({
+      count: sql<number>`COUNT(*)::int`,
+      totalCents: sql<string>`COALESCE(SUM(ABS(amount_cents)), 0)::text`,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.classificationMethod, "user_uncategorized"),
+        notDeleted(transactions.deletedAt),
+      ),
+    );
+
+  const uncategorizedCount = uncategorized?.count ?? 0;
+  const uncategorizedCents = BigInt(uncategorized?.totalCents ?? "0");
+
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-4 sm:p-6">
       <header>
@@ -55,6 +77,35 @@ export default async function InsightsPage({
           nuevas transacciones en el mes.
         </p>
       </header>
+
+      {/* Sin categorizar widget (#628) */}
+      <Card className="border-amber-200 bg-amber-50/40 dark:border-amber-900 dark:bg-amber-950/15">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-amber-900 dark:text-amber-200">
+            Sin categorizar
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {uncategorizedCount === 0 ? (
+            <p className="text-muted-foreground text-sm">Todo está categorizado, fantástico.</p>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm">
+                {uncategorizedCount} transacci{uncategorizedCount === 1 ? "ón" : "ones"}
+                {" · "}
+                {formatMoney(uncategorizedCents, "COP")}
+              </p>
+              <Link
+                href="/settings/inbox"
+                className="text-xs text-amber-700 underline underline-offset-4 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100"
+              >
+                Revisar →
+              </Link>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <InsightsViewer
         ym={ym}
         summary={{
