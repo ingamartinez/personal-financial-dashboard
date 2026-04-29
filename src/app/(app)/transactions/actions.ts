@@ -11,6 +11,8 @@ import {
   counterparties,
   counterpartyType,
   ingestionLogs,
+  recurringGaps,
+  recurringTransactions,
   transactions,
   users,
 } from "@/lib/db/schema";
@@ -24,6 +26,17 @@ import type { ClassifyTxJobData } from "@/lib/queue/workers/classify-tx";
 import type { UserClassificationContext } from "@/lib/db/schema";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
+import { createLogger } from "@/lib/logger";
+import type {
+  LinkTxToRecurringInput,
+  LinkTxToRecurringResult,
+  UnlinkTxFromRecurringInput,
+  UnlinkTxFromRecurringResult,
+  RecurringOption,
+} from "./link-recurring-types";
+import { linkTxToRecurringSchema, unlinkTxFromRecurringSchema } from "./link-recurring-types";
+
+const log = createLogger({ module: "transactions/actions" });
 import { keyForParsed } from "@/lib/counterparties/alias-key";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { decimalStringToCents } from "@/lib/money";
@@ -1320,4 +1333,301 @@ export async function updateTransactionInstallments(
   revalidatePath("/");
   revalidatePath("/transactions");
   return { status: "ok" };
+}
+
+// ---------------------------------------------------------------------------
+// #621: Manual link / unlink between transactions and recurring forecasts.
+// ---------------------------------------------------------------------------
+
+/**
+ * Associate an existing transaction with a recurring forecast for a given
+ * month. Derives yearMonth from tx.occurredAt when not supplied.
+ *
+ * Tenant safety: every query pairs user_id on BOTH sides — tx user_id AND
+ * recurring user_id — so a cross-tenant link attempt is rejected by the
+ * owner check rather than leaking data.
+ *
+ * Side-effect: closes the corresponding recurring_gap (if any) by setting
+ * resolution='linked', resolution_tx_id, and resolved_at rather than
+ * deleting the row (audit trail).
+ */
+export async function linkTxToRecurring(
+  input: LinkTxToRecurringInput,
+): Promise<LinkTxToRecurringResult> {
+  const session = await getSessionUser();
+  const parsed = linkTxToRecurringSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "Input inválido" };
+  }
+  const { txId, recurringId } = parsed.data;
+
+  try {
+    const ym = await db.transaction(async (trx) => {
+      // 1. Fetch the tx — tenant-safe (user_id = session.id).
+      const [tx] = await trx
+        .select({
+          id: transactions.id,
+          occurredAt: transactions.occurredAt,
+          accountId: transactions.accountId,
+          recurringId: transactions.recurringId,
+        })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.id, txId),
+            notDeleted(transactions.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!tx) throw new Error("Transacción no encontrada");
+      if (tx.recurringId !== null) {
+        throw new Error(
+          `La transacción ya tiene un recurring asociado (ID ${tx.recurringId}). Quitar el link primero.`,
+        );
+      }
+
+      // 2. Derive yearMonth: use provided or derive from tx.occurredAt.
+      const resolvedYm =
+        parsed.data.yearMonth ??
+        `${tx.occurredAt.getUTCFullYear()}-${String(tx.occurredAt.getUTCMonth() + 1).padStart(2, "0")}`;
+
+      // 3. Fetch the recurring — tenant-safe (user_id = session.id, BOTH sides).
+      const [recurring] = await trx
+        .select({
+          id: recurringTransactions.id,
+          accountId: recurringTransactions.accountId,
+          active: recurringTransactions.active,
+        })
+        .from(recurringTransactions)
+        .where(
+          and(
+            eq(recurringTransactions.userId, session.id),
+            eq(recurringTransactions.id, recurringId),
+            notDeleted(recurringTransactions.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!recurring) throw new Error("Recurring no encontrado o no pertenece al usuario");
+      if (!recurring.active) throw new Error("El recurring está inactivo. Activalo primero.");
+
+      // 4. Check the (recurringId, yearMonth) slot is not already taken.
+      const [existingSlot] = await trx
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.recurringId, recurringId),
+            eq(transactions.recurringYearMonth, resolvedYm),
+            notDeleted(transactions.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (existingSlot) {
+        throw new Error(
+          `El mes ${resolvedYm} para este recurring ya está cubierto por la tx #${existingSlot.id}.`,
+        );
+      }
+
+      // 5. Account mismatch — warn via log but ALLOW (user may know better).
+      if (tx.accountId !== recurring.accountId) {
+        log.warn(
+          {
+            event: "tx_recurring_account_mismatch",
+            txId,
+            recurringId,
+            txAccountId: tx.accountId,
+            recurringAccountId: recurring.accountId,
+            userId: session.id,
+          },
+          "account mismatch on manual link — allowed by user",
+        );
+      }
+
+      // 6. Write the link.
+      await trx
+        .update(transactions)
+        .set({ recurringId, recurringYearMonth: resolvedYm, updatedAt: new Date() })
+        .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+
+      // 7. Close the gap if one exists, using resolution fields for audit trail.
+      const [closedGap] = await trx
+        .update(recurringGaps)
+        .set({
+          resolution: "linked",
+          resolutionTxId: txId,
+          resolvedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(recurringGaps.userId, session.id),
+            eq(recurringGaps.recurringId, recurringId),
+            eq(recurringGaps.yearMonth, resolvedYm),
+            isNull(recurringGaps.resolution),
+          ),
+        )
+        .returning({ id: recurringGaps.id });
+
+      return { ym: resolvedYm, gapId: closedGap?.id ?? null };
+    });
+
+    log.info(
+      { event: "tx_recurring_linked", txId, recurringId, yearMonth: ym.ym, userId: session.id },
+      "transaction linked to recurring",
+    );
+
+    emit({
+      type: "recurring-gap:resolved",
+      gapId: ym.gapId,
+      reason: "linked",
+      timestamp: Date.now(),
+    });
+
+    revalidatePath("/");
+    revalidatePath("/transactions");
+
+    return { ok: true, yearMonth: ym.ym };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Error inesperado";
+    return { ok: false, error: message };
+  }
+}
+
+/**
+ * Remove a recurring link from a transaction. Clears recurring_id and
+ * recurring_year_month, and reopens the corresponding recurring_gap (if it
+ * was closed with resolution='linked') so it becomes visible to the cron and
+ * to gap consumers again.
+ *
+ * The gap reopen is atomic with the tx field clear — both happen inside a
+ * single DB transaction. Only gaps with resolution='linked' are touched;
+ * 'synthetic' and 'skipped' gaps are left as-is.
+ *
+ * Idempotent: if the tx is not linked, returns ok:true (no-op).
+ */
+export async function unlinkTxFromRecurring(
+  input: UnlinkTxFromRecurringInput,
+): Promise<UnlinkTxFromRecurringResult> {
+  const session = await getSessionUser();
+  const parsed = unlinkTxFromRecurringSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "Input inválido" };
+  }
+  const { txId } = parsed.data;
+
+  try {
+    await db.transaction(async (trx) => {
+      // 1. Fetch the tx with both recurring fields — tenant-safe.
+      const [tx] = await trx
+        .select({
+          id: transactions.id,
+          recurringId: transactions.recurringId,
+          recurringYearMonth: transactions.recurringYearMonth,
+        })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.id, txId),
+            notDeleted(transactions.deletedAt),
+          ),
+        )
+        .limit(1);
+
+      if (!tx) throw new Error("Transacción no encontrada");
+
+      // Idempotent — if already unlinked, skip writing.
+      if (tx.recurringId === null) return;
+
+      // Capture BEFORE the clear — needed for the gap WHERE clause.
+      const priorRecurringId = tx.recurringId;
+      const priorYearMonth = tx.recurringYearMonth;
+
+      // 2. Clear the recurring link on the transaction.
+      await trx
+        .update(transactions)
+        .set({ recurringId: null, recurringYearMonth: null, updatedAt: new Date() })
+        .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+
+      // 3. Reopen the gap (if it was closed via manual link). Only touches
+      // resolution='linked' — leaves 'synthetic' and 'skipped' untouched.
+      // priorYearMonth CAN be null in theory (schema allows it), so only run
+      // the UPDATE when it is actually set.
+      if (priorYearMonth !== null) {
+        await trx
+          .update(recurringGaps)
+          .set({ resolution: null, resolutionTxId: null, resolvedAt: null })
+          .where(
+            and(
+              eq(recurringGaps.userId, session.id),
+              eq(recurringGaps.recurringId, priorRecurringId),
+              eq(recurringGaps.yearMonth, priorYearMonth),
+              eq(recurringGaps.resolution, "linked"),
+            ),
+          );
+      }
+    });
+
+    log.info(
+      { event: "tx_recurring_unlinked", txId, userId: session.id },
+      "transaction unlinked from recurring",
+    );
+
+    emit({
+      type: "transaction:updated",
+      id: txId,
+      source: "manual",
+      timestamp: Date.now(),
+    });
+
+    revalidatePath("/");
+    revalidatePath("/transactions");
+
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Error inesperado";
+    return { ok: false, error: message };
+  }
+}
+
+/**
+ * List active, non-deleted recurring transactions for the current user.
+ * Used to populate the link-to-recurring picker in the UI.
+ */
+export async function listActiveRecurrings(): Promise<RecurringOption[]> {
+  const session = await getSessionUser();
+
+  const rows = await db
+    .select({
+      id: recurringTransactions.id,
+      label: recurringTransactions.label,
+      amountCents: recurringTransactions.amountCents,
+      currency: recurringTransactions.currency,
+      dayOfMonth: recurringTransactions.dayOfMonth,
+      accountId: accounts.id,
+      accountName: accounts.name,
+      accountCurrency: accounts.currency,
+    })
+    .from(recurringTransactions)
+    .innerJoin(
+      accounts,
+      and(
+        eq(accounts.id, recurringTransactions.accountId),
+        // Tenant safety: pair user_id on the join so a corrupted accountId
+        // pointing at another user's account is rejected at the JOIN level
+        // rather than leaking data. See engram `per-user-table-join-tenant-safety`.
+        eq(accounts.userId, recurringTransactions.userId),
+      ),
+    )
+    .where(
+      and(
+        eq(recurringTransactions.userId, session.id),
+        eq(recurringTransactions.active, true),
+        notDeleted(recurringTransactions.deletedAt),
+      ),
+    )
+    .orderBy(asc(recurringTransactions.label));
+
+  return rows;
 }

@@ -913,11 +913,22 @@ export const recurringGaps = pgTable(
       .references(() => recurringTransactions.id, { onDelete: "cascade" }),
     yearMonth: varchar("year_month", { length: 7 }).notNull(),
     detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+    // #621: resolution tracking — set when a gap is closed via manual link,
+    // promote, dismiss, or auto-link. NULL means the gap is still open.
+    // Values: 'linked' | 'synthetic' | 'skipped' | 'auto-linked'
+    resolution: varchar("resolution", { length: 20 }),
+    resolutionTxId: integer("resolution_tx_id").references((): AnyPgColumn => transactions.id, {
+      onDelete: "set null",
+    }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("recurring_gaps_recurring_month_unique").on(t.recurringId, t.yearMonth),
     index("recurring_gaps_detected_idx").on(t.detectedAt),
     index("recurring_gaps_user_detected_idx").on(t.userId, t.detectedAt),
+    index("recurring_gaps_open_idx")
+      .on(t.userId, t.detectedAt)
+      .where(sql`${t.resolution} IS NULL`),
   ],
 );
 

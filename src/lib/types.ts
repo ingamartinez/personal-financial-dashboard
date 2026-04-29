@@ -81,4 +81,9 @@ export type TxRow = {
   // #455 (Epic G): populated by the sidecar query in /transactions page.tsx.
   // Undefined when no ambiguous Gmail receipts point at this tx.
   gmailAmbiguousReceipts?: GmailAmbiguousReceipt[];
+  // #621: recurring link — set when the tx is manually or auto-linked to a
+  // recurring_transaction row. Null when not linked.
+  recurringId: number | null;
+  recurringYearMonth: string | null;
+  recurringLabel: string | null;
 };

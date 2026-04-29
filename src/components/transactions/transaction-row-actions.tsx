@@ -1,9 +1,21 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { ArchiveIcon, CalendarClockIcon, MoreHorizontalIcon, RotateCcwIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  CalendarClockIcon,
+  LinkIcon,
+  MoreHorizontalIcon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  UnlinkIcon,
+} from "lucide-react";
 import { toast } from "sonner";
-import { archiveTransaction, restoreTransaction } from "@/app/(app)/transactions/actions";
+import {
+  archiveTransaction,
+  restoreTransaction,
+  unlinkTxFromRecurring,
+} from "@/app/(app)/transactions/actions";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,9 +31,13 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TcInstallmentsDialog } from "./tc-installments-dialog";
+import { LinkRecurringDialog } from "./link-recurring-dialog";
+import type { RecurringOption } from "@/app/(app)/transactions/link-recurring-types";
 import type { AccountType, Currency } from "@/lib/types";
 
 type Props = {
@@ -34,6 +50,12 @@ type Props = {
   currency: Currency;
   installmentsTotal: number;
   installmentRateEmX10k: number | null;
+  // #621: recurring link state — null when not linked.
+  recurringId: number | null;
+  recurringLabel: string | null;
+  // #621: list of active recurrings for the picker. Passed from the table
+  // (which receives it from the page) to avoid per-row server fetches.
+  activeRecurrings: RecurringOption[];
 };
 
 export function TransactionRowActions({
@@ -44,10 +66,27 @@ export function TransactionRowActions({
   currency,
   installmentsTotal,
   installmentRateEmX10k,
+  recurringId,
+  recurringLabel,
+  activeRecurrings,
 }: Props) {
   const [pending, startTransition] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [installmentsOpen, setInstallmentsOpen] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [unlinkConfirmOpen, setUnlinkConfirmOpen] = useState(false);
+
+  const onUnlink = () => {
+    startTransition(async () => {
+      const result = await unlinkTxFromRecurring({ txId });
+      setUnlinkConfirmOpen(false);
+      if (result.ok) {
+        toast.success("Link de recurring quitado");
+      } else {
+        toast.error("No se pudo quitar el link", { description: result.error });
+      }
+    });
+  };
 
   const onArchive = () => {
     startTransition(async () => {
@@ -94,7 +133,7 @@ export function TransactionRowActions({
             <MoreHorizontalIcon className="size-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuContent align="end" className="w-52">
           {accountType === "credit_card" && !isArchived ? (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -107,6 +146,48 @@ export function TransactionRowActions({
               Editar cuotas
             </DropdownMenuItem>
           ) : null}
+
+          {/* #621: recurring link/unlink */}
+          {!isArchived ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+                Recurring
+              </DropdownMenuLabel>
+              {recurringId !== null ? (
+                <>
+                  <DropdownMenuItem disabled className="gap-2">
+                    <RefreshCwIcon className="size-4 shrink-0" />
+                    <span className="truncate text-xs">{recurringLabel ?? `#${recurringId}`}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      setUnlinkConfirmOpen(true);
+                    }}
+                    disabled={pending}
+                    variant="destructive"
+                  >
+                    <UnlinkIcon className="size-4" />
+                    Quitar link
+                  </DropdownMenuItem>
+                </>
+              ) : (
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setLinkOpen(true);
+                  }}
+                  disabled={pending || activeRecurrings.length === 0}
+                >
+                  <LinkIcon className="size-4" />
+                  Linkear a recurring…
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
+
           {isArchived ? (
             <DropdownMenuItem onSelect={onRestore} disabled={pending}>
               <RotateCcwIcon className="size-4" />
@@ -139,6 +220,37 @@ export function TransactionRowActions({
           installmentRateEmX10k={installmentRateEmX10k}
         />
       ) : null}
+
+      {/* #621: link-to-recurring dialog */}
+      <LinkRecurringDialog
+        open={linkOpen}
+        onOpenChange={setLinkOpen}
+        txId={txId}
+        options={activeRecurrings}
+        onLinked={() => {
+          /* revalidatePath in the action handles cache bust */
+        }}
+      />
+
+      {/* #621: unlink confirm dialog */}
+      <AlertDialog open={unlinkConfirmOpen} onOpenChange={setUnlinkConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Quitar link de recurring?</AlertDialogTitle>
+            <AlertDialogDescription>
+              La transacción dejará de estar asociada a{" "}
+              <strong>{recurringLabel ?? `recurring #${recurringId}`}</strong>. El cron redetectará
+              el gap si hace falta en el próximo cierre de mes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={onUnlink} disabled={pending}>
+              {pending ? "Quitando…" : "Quitar link"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>

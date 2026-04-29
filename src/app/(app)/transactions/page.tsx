@@ -19,6 +19,7 @@ import {
   listTransactions,
   PAGE_SIZE,
 } from "@/lib/transactions/queries";
+import { listActiveRecurrings } from "@/app/(app)/transactions/actions";
 import { loadAmbiguousReceiptsForTxIds } from "@/lib/gmail/ambiguous";
 import { createLogger } from "@/lib/logger";
 
@@ -79,6 +80,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     unclassified,
     allCounterparties,
     needingRate,
+    activeRecurrings,
   ] = await Promise.all([
     listTransactions(session.id, filters),
     listAccounts(session.id),
@@ -95,6 +97,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     countUnclassified(session.id),
     listCounterparties(session.id),
     countNeedingRate(session.id),
+    listActiveRecurrings(),
   ]);
 
   // #455 (Epic G): sidecar query — attach ambiguous Gmail receipts to each
@@ -180,6 +183,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         categories={categories}
         allCounterparties={allCounterparties}
         highlightId={highlightId}
+        activeRecurrings={activeRecurrings}
       />
 
       <div className="flex items-center justify-between">
