@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
+  recurringDescriptionPatterns,
   recurringGaps,
   recurringTransactions,
   transactions,
@@ -15,7 +16,18 @@ const TEST_USER_EMAIL = "__autolink_other_user__@test.local";
 
 async function cleanup() {
   await db.execute(
+    sql`DELETE FROM recurring_link_observations WHERE recurring_id IN (SELECT id FROM recurring_transactions WHERE label LIKE '__autolink%')`,
+  );
+  await db.execute(
+    sql`DELETE FROM recurring_description_patterns WHERE recurring_id IN (SELECT id FROM recurring_transactions WHERE label LIKE '__autolink%')`,
+  );
+  await db.execute(
     sql`DELETE FROM recurring_gaps WHERE recurring_id IN (SELECT id FROM recurring_transactions WHERE label LIKE '__autolink%')`,
+  );
+  // Delete all transactions belonging to any __autolink account (catches both
+  // __autolink% descriptions AND custom descriptions seeded by #633 tests).
+  await db.execute(
+    sql`DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE ${"__autolink_test_account__%"})`,
   );
   await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__autolink%'`);
   await db.execute(sql`DELETE FROM recurring_transactions WHERE label LIKE '__autolink%'`);
@@ -705,5 +717,150 @@ describe("autoLinkTransaction cross-month", () => {
       .from(transactions)
       .where(eq(transactions.id, txId));
     expect(row.recurringId).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // #633: Description fingerprint fallback tests
+  // ---------------------------------------------------------------------------
+
+  it("#633: links via description fingerprint when amount differs", async () => {
+    const accountId = await seedAccount();
+    // Recurring estimated at -42000 but real payment is -44900.
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_netflix_633__",
+      amountCents: BigInt(-42000),
+      dayOfMonth: 15,
+    });
+
+    // Seed a pattern with observation_count = 2 (unambiguous).
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern: "NETFLIX",
+      observationCount: 2,
+      patternAmbiguous: false,
+    });
+
+    // Tx on day 15 of the month, amount -44900 (doesn't match exact -42000).
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-44900),
+      description: "NETFLIX*DL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+
+    expect(result.status).toBe("linked");
+    if (result.status !== "linked") throw new Error("should not reach");
+    expect(result.recurringId).toBe(recurringId);
+  });
+
+  it("#633: does NOT link via description when pattern has observation_count < 2", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_spotify_633__",
+      amountCents: BigInt(-42000),
+      dayOfMonth: 15,
+    });
+
+    // Pattern with observation_count = 1 — not enough signal.
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern: "SPOTIFY",
+      observationCount: 1,
+      patternAmbiguous: false,
+    });
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-44900),
+      description: "SPOTIFY P",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+  });
+
+  it("#633: Google Play ambiguity — pattern matches 2 recurrings → no auto-link via description", async () => {
+    const accountId = await seedAccount();
+    const recurringYouTubeId = await seedRecurring(accountId, {
+      label: "__autolink_gplay_yt_633__",
+      amountCents: BigInt(-21900),
+      dayOfMonth: 10,
+    });
+    const recurringGOneId = await seedRecurring(accountId, {
+      label: "__autolink_gplay_gone_633__",
+      amountCents: BigInt(-10900),
+      dayOfMonth: 10,
+    });
+
+    // Both recurrings share the "GOOGLE" pattern.
+    await db.insert(recurringDescriptionPatterns).values([
+      {
+        userId: TEST_USER_ID,
+        recurringId: recurringYouTubeId,
+        pattern: "GOOGLE",
+        observationCount: 3,
+        patternAmbiguous: true, // already flagged as ambiguous
+      },
+      {
+        userId: TEST_USER_ID,
+        recurringId: recurringGOneId,
+        pattern: "GOOGLE",
+        observationCount: 2,
+        patternAmbiguous: true,
+      },
+    ]);
+
+    // Tx with a completely different amount — won't match via amount.
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-19900),
+      description: "GOOGLE *PLAY YOUTUBE",
+    });
+
+    // Should not auto-link via description since both patterns are ambiguous.
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+
+    // Verify tx is not linked.
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("#633: amount-based match still works even when description is Google Play ambiguous", async () => {
+    const accountId = await seedAccount();
+    // Amount match takes precedence over description ambiguity.
+    const recurringYouTubeId = await seedRecurring(accountId, {
+      label: "__autolink_gplay_yt2_633__",
+      amountCents: BigInt(-21900),
+      dayOfMonth: 10,
+    });
+
+    // Ambiguous description pattern but amount is exact.
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: recurringYouTubeId,
+      pattern: "GOOGLE",
+      observationCount: 3,
+      patternAmbiguous: true,
+    });
+
+    // Tx with EXACT amount match — should link via amount path.
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-21900), // exact match
+      description: "GOOGLE *PLAY YOUTUBE",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+
+    expect(result.status).toBe("linked");
+    if (result.status !== "linked") throw new Error("should not reach");
+    expect(result.recurringId).toBe(recurringYouTubeId);
   });
 });
