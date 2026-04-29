@@ -148,3 +148,77 @@ describe("countTotal hideAdjustments", () => {
     expect(n).toBe(2);
   });
 });
+
+// #642: transferGroupId must be present in TxRow shape and populated for
+// paired transfer rows.
+describe("listTransactions transferGroupId", () => {
+  const PAIR_GROUP = "39ef646a-eb58-4259-9bfc-e1c62e75fc26";
+
+  afterEach(async () => {
+    await db.execute(
+      sql`DELETE FROM transactions WHERE description_raw LIKE ${"__test_tx_transfer%"}`,
+    );
+  });
+
+  it("returns transferGroupId=null for regular transactions", async () => {
+    await db.insert(transactions).values({
+      userId: USER_ID,
+      accountId: ACCOUNT_ID,
+      occurredAt: new Date("2026-04-15T12:00:00Z"),
+      amountCents: BigInt(-3000),
+      currency: "COP",
+      descriptionRaw: "__test_tx_transfer-regular",
+      categorySlug: "food",
+      classificationMethod: "manual",
+      source: "manual",
+    });
+
+    const { rows } = await listTransactions(USER_ID, {});
+    const row = rows.find((r) => r.descriptionRaw === "__test_tx_transfer-regular");
+    expect(row).toBeDefined();
+    expect(row!.transferGroupId).toBeNull();
+    expect(Object.prototype.hasOwnProperty.call(row, "transferGroupId")).toBe(true);
+  });
+
+  it("returns matching transferGroupId for both legs of a paired transfer", async () => {
+    await db.insert(transactions).values([
+      {
+        userId: USER_ID,
+        accountId: ACCOUNT_ID,
+        occurredAt: new Date("2026-04-16T10:00:00Z"),
+        amountCents: BigInt(-500000),
+        currency: "COP",
+        descriptionRaw: "__test_tx_transfer-leg-a",
+        categorySlug: null,
+        classificationMethod: "manual",
+        source: "sms",
+        channel: "transfer",
+        transferGroupId: PAIR_GROUP,
+      },
+      {
+        userId: USER_ID,
+        accountId: ACCOUNT_ID,
+        occurredAt: new Date("2026-04-16T10:00:00Z"),
+        amountCents: BigInt(500000),
+        currency: "COP",
+        descriptionRaw: "__test_tx_transfer-leg-b",
+        categorySlug: null,
+        classificationMethod: "manual",
+        source: "sms",
+        channel: "transfer",
+        transferGroupId: PAIR_GROUP,
+      },
+    ]);
+
+    const { rows } = await listTransactions(USER_ID, {});
+    const legA = rows.find((r) => r.descriptionRaw === "__test_tx_transfer-leg-a");
+    const legB = rows.find((r) => r.descriptionRaw === "__test_tx_transfer-leg-b");
+
+    expect(legA).toBeDefined();
+    expect(legB).toBeDefined();
+    expect(legA!.transferGroupId).toBe(PAIR_GROUP);
+    expect(legB!.transferGroupId).toBe(PAIR_GROUP);
+    expect(legA!.channel).toBe("transfer");
+    expect(legB!.channel).toBe("transfer");
+  });
+});

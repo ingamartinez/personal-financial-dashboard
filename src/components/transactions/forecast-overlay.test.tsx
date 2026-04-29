@@ -103,6 +103,9 @@ function makeTxRow(overrides: Partial<TxRow> = {}): TxRow {
     recurringId: null,
     recurringYearMonth: null,
     recurringLabel: null,
+    // #642: transfer pairing defaults
+    channel: "bank",
+    transferGroupId: null,
     ...overrides,
   };
 }

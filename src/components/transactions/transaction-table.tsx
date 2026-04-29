@@ -4,6 +4,7 @@ import { useEffect, useMemo } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   ArchiveIcon,
+  ArrowLeftRightIcon,
   CalendarClockIcon,
   ReceiptTextIcon,
   RefreshCwIcon,
@@ -124,6 +125,21 @@ function RecurringBadge({ label }: { label: string | null }) {
     >
       <RefreshCwIcon className="size-2.5" />
       {label ? <span className="max-w-[80px] truncate">{label}</span> : "Recurring"}
+    </Badge>
+  );
+}
+
+// #642: badge shown when a tx is part of a paired transfer (transfer_group_id set).
+function TransferBadge() {
+  return (
+    <Badge
+      variant="outline"
+      className="shrink-0 gap-1 border-teal-300 text-[10px] font-medium tracking-wide text-teal-700 uppercase dark:border-teal-700 dark:text-teal-300"
+      title="Transferencia interna — pareada con otra cuenta"
+      data-testid="transfer-badge"
+    >
+      <ArrowLeftRightIcon className="size-2.5" />
+      Transferencia
     </Badge>
   );
 }
@@ -379,6 +395,10 @@ export function TransactionTable({
                 const isHighlighted = tx.id === highlightId;
                 const isUnclassified = tx.classificationMethod === "unclassified";
                 const isArchived = tx.deletedAt !== null;
+                // #642: paired transfers have category_slug=NULL by design — suppress
+                // "Sin clasificar" styling and the "¿Por qué?" button for these rows.
+                const isPairedTransfer =
+                  tx.channel === "transfer" && tx.transferGroupId !== null;
                 const isLowConfidence =
                   confidenceBand(tx.classificationMethod, tx.classificationConfidence) === "low";
                 return (
@@ -434,6 +454,7 @@ export function TransactionTable({
                         {tx.recurringId !== null ? (
                           <RecurringBadge label={tx.recurringLabel} />
                         ) : null}
+                        {isPairedTransfer ? <TransferBadge /> : null}
                       </div>
                       <div className="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
                         <span className="truncate">{tx.accountName}</span>
@@ -443,7 +464,7 @@ export function TransactionTable({
                         <span
                           className={cn(
                             "shrink-0",
-                            isUnclassified && "text-destructive font-medium",
+                            isUnclassified && !isPairedTransfer && "text-destructive font-medium",
                           )}
                         >
                           {tx.classificationMethod}
@@ -469,10 +490,12 @@ export function TransactionTable({
                             method={tx.classificationMethod}
                             confidence={tx.classificationConfidence}
                           />
-                          <ClassificationReasonDialog
-                            txId={tx.id}
-                            method={tx.classificationMethod}
-                          />
+                          {!isPairedTransfer ? (
+                            <ClassificationReasonDialog
+                              txId={tx.id}
+                              method={tx.classificationMethod}
+                            />
+                          ) : null}
                         </div>
                       </div>
                     </TableCell>
@@ -574,6 +597,9 @@ export function TransactionTable({
             const isNew = newIds.has(tx.id);
             const isHighlighted = tx.id === highlightId;
             const isArchived = tx.deletedAt !== null;
+            // #642: paired transfers — same guard as desktop row.
+            const isPairedTransferMobile =
+              tx.channel === "transfer" && tx.transferGroupId !== null;
             return (
               <motion.li
                 key={tx.id}
@@ -617,6 +643,7 @@ export function TransactionTable({
                       {tx.recurringId !== null ? (
                         <RecurringBadge label={tx.recurringLabel} />
                       ) : null}
+                      {isPairedTransferMobile ? <TransferBadge /> : null}
                     </div>
                     {hasSecondaryDescription(tx) ? (
                       <p className="text-muted-foreground line-clamp-1 text-xs">
@@ -658,7 +685,14 @@ export function TransactionTable({
                   <Badge variant="outline" className="font-normal">
                     {sourceLabel[tx.source]}
                   </Badge>
-                  <Badge variant={methodVariant[tx.classificationMethod]} className="font-normal">
+                  <Badge
+                    variant={
+                      isPairedTransferMobile
+                        ? "outline"
+                        : methodVariant[tx.classificationMethod]
+                    }
+                    className="font-normal"
+                  >
                     {tx.classificationMethod}
                   </Badge>
                 </div>
@@ -675,7 +709,9 @@ export function TransactionTable({
                       method={tx.classificationMethod}
                       confidence={tx.classificationConfidence}
                     />
-                    <ClassificationReasonDialog txId={tx.id} method={tx.classificationMethod} />
+                    {!isPairedTransferMobile ? (
+                      <ClassificationReasonDialog txId={tx.id} method={tx.classificationMethod} />
+                    ) : null}
                   </div>
                 </div>
               </motion.li>

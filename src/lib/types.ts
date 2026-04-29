@@ -5,6 +5,7 @@ import {
   counterpartyType,
   currency,
   emailReceiptGateway,
+  txChannel,
   txSource,
 } from "@/lib/db/schema";
 
@@ -15,6 +16,7 @@ export type AccountType = (typeof accountType.enumValues)[number];
 export type Currency = (typeof currency.enumValues)[number];
 export type TransactionSource = (typeof txSource.enumValues)[number];
 export type ClassificationMethod = (typeof classificationMethod.enumValues)[number];
+export type TxChannel = (typeof txChannel.enumValues)[number];
 export type CounterpartyType = (typeof counterpartyType.enumValues)[number];
 export type CounterpartyKind = (typeof counterpartyKeyKind.enumValues)[number];
 export type EmailReceiptGateway = (typeof emailReceiptGateway.enumValues)[number];
@@ -86,4 +88,8 @@ export type TxRow = {
   recurringId: number | null;
   recurringYearMonth: string | null;
   recurringLabel: string | null;
+  // #642: transfer pairing. channel='transfer' means the tx is an internal
+  // move (pago TC, intra-account). transferGroupId links the two legs.
+  channel: TxChannel;
+  transferGroupId: string | null;
 };
