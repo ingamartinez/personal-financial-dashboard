@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  recurringGaps,
+  recurringTransactions,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import {
   buildExpectedDate,
   clampDay,
@@ -92,6 +98,7 @@ describe("nextYearMonth", () => {
 // ---------------------------------------------------------------------------
 
 const TEST_LABEL_PREFIX = "__eotest_";
+const TEST_USER_EMAIL_PREFIX = "__eotest_user_";
 const TEST_USER_ID = 1;
 
 async function cleanup() {
@@ -107,13 +114,21 @@ async function cleanup() {
     sql`DELETE FROM recurring_transactions WHERE label LIKE ${TEST_LABEL_PREFIX + "%"}`,
   );
   await db.execute(sql`DELETE FROM accounts WHERE name = ${"__eotest_account__"}`);
+  // Clean up ephemeral test users (cascades to their accounts/recurrings/gaps).
+  await db.execute(sql`DELETE FROM users WHERE email LIKE ${TEST_USER_EMAIL_PREFIX + "%"}`);
 }
 
-async function seedAccount() {
+/** Create a fresh user for cross-tenant tests. Cascades on cleanup. */
+async function seedUser(email: string): Promise<number> {
+  const [row] = await db.insert(users).values({ email, name: email }).returning({ id: users.id });
+  return row.id;
+}
+
+async function seedAccount(userId: number = TEST_USER_ID) {
   const [a] = await db
     .insert(accounts)
     .values({
-      userId: TEST_USER_ID,
+      userId,
       name: "__eotest_account__",
       institution: "Test",
       type: "savings",
@@ -131,12 +146,13 @@ async function seedRecurring(
     dayOfMonth: number;
     skippedMonths?: string[];
     active?: boolean;
+    userId?: number;
   },
 ) {
   const [r] = await db
     .insert(recurringTransactions)
     .values({
-      userId: TEST_USER_ID,
+      userId: opts.userId ?? TEST_USER_ID,
       accountId,
       label: opts.label,
       amountCents: opts.amountCents,
@@ -158,12 +174,13 @@ async function seedTx(
     recurringId?: number;
     recurringYearMonth?: string;
     source?: "manual" | "recurring";
+    userId?: number;
   },
 ) {
   const [t] = await db
     .insert(transactions)
     .values({
-      userId: TEST_USER_ID,
+      userId: opts.userId ?? TEST_USER_ID,
       accountId,
       occurredAt: new Date(`${opts.occurredOn}T12:00:00Z`),
       amountCents: opts.amountCents,
@@ -180,12 +197,12 @@ async function seedTx(
 async function seedGap(
   recurringId: number,
   yearMonth: string,
-  opts: { resolution?: string | null } = {},
+  opts: { resolution?: string | null; userId?: number } = {},
 ) {
   const [g] = await db
     .insert(recurringGaps)
     .values({
-      userId: TEST_USER_ID,
+      userId: opts.userId ?? TEST_USER_ID,
       recurringId,
       yearMonth,
       resolution: opts.resolution ?? null,
@@ -372,26 +389,47 @@ describe("getExpectedOccurrencesForMonth — integration", () => {
     expect(mine).toBeUndefined();
   });
 
-  it("tenant isolation — user 2 occurrences not returned for user 1", async () => {
-    // Seed a second user's account + recurring.
-    // First check if user 2 exists; if not, skip (vitest.setup.ts seeds user 1).
-    const u2Accounts = await db
-      .select({ id: accounts.id })
-      .from(accounts)
-      .where(and(eq(accounts.userId, 2), eq(accounts.name, "__eotest_account__")));
-    if (u2Accounts.length === 0) return; // user 2 doesn't exist in this test DB — skip
+  it("tenant isolation — each user sees only their own occurrences", async () => {
+    // Create two fresh ephemeral users so this test is self-contained.
+    const userAId = await seedUser(`${TEST_USER_EMAIL_PREFIX}A@test.local`);
+    const userBId = await seedUser(`${TEST_USER_EMAIL_PREFIX}B@test.local`);
 
-    const accountId = await seedAccount(); // user 1
-    const recurringId = await seedRecurring(accountId, {
-      label: `${TEST_LABEL_PREFIX}tenant_test`,
+    // Seed user A: one recurring with an open gap.
+    const accountAId = await seedAccount(userAId);
+    const recurringAId = await seedRecurring(accountAId, {
+      label: `${TEST_LABEL_PREFIX}tenant_A`,
       amountCents: BigInt(-100000),
       dayOfMonth: 15,
+      userId: userAId,
     });
-    await seedGap(recurringId, "2026-04", { resolution: null });
+    await seedGap(recurringAId, "2026-04", { resolution: null, userId: userAId });
 
-    // Query for userId=2 — should NOT return user 1's occurrences.
-    const result = await getExpectedOccurrencesForMonth(2, "2026-04");
-    const leaked = result.find((o) => o.recurringId === recurringId);
-    expect(leaked).toBeUndefined();
+    // Seed user B: a different recurring with an open gap.
+    const accountBId = await seedAccount(userBId);
+    const recurringBId = await seedRecurring(accountBId, {
+      label: `${TEST_LABEL_PREFIX}tenant_B`,
+      amountCents: BigInt(-200000),
+      dayOfMonth: 20,
+      userId: userBId,
+    });
+    await seedGap(recurringBId, "2026-04", { resolution: null, userId: userBId });
+
+    const today = new Date("2026-04-28T12:00:00Z");
+
+    // User A query: contains A's recurring, does NOT contain B's.
+    const resultA = await getExpectedOccurrencesForMonth(userAId, "2026-04", today);
+    const foundA = resultA.find((o) => o.recurringId === recurringAId);
+    const leakedBinA = resultA.find((o) => o.recurringId === recurringBId);
+    expect(foundA).toBeDefined();
+    expect(foundA!.status).toBe("atrasado"); // day 15, today Apr 28, > 5d threshold
+    expect(leakedBinA).toBeUndefined();
+
+    // User B query: contains B's recurring, does NOT contain A's.
+    const resultB = await getExpectedOccurrencesForMonth(userBId, "2026-04", today);
+    const foundB = resultB.find((o) => o.recurringId === recurringBId);
+    const leakedAinB = resultB.find((o) => o.recurringId === recurringAId);
+    expect(foundB).toBeDefined();
+    expect(foundB!.status).toBe("atrasado"); // day 20, today Apr 28, > 5d threshold
+    expect(leakedAinB).toBeUndefined();
   });
 });

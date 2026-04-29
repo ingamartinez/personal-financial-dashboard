@@ -3,6 +3,10 @@
 // #622: Server actions for forecast overlay row interactions.
 // These wrap the existing gap actions from settings/recurring/actions.ts
 // so the /transactions page can call them without duplicating logic.
+//
+// NOTE: getForecastOccurrences and ForecastOccurrence type have been moved to
+// @/lib/recurring/expected-occurrences — they accept userId as a parameter so
+// they must NOT live in a "use server" file (C1 tenant safety fix).
 
 import { revalidatePath } from "next/cache";
 import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
@@ -11,73 +15,12 @@ import { db } from "@/lib/db";
 import { accounts, recurringTransactions, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
-import {
-  getExpectedOccurrencesForMonth,
-  buildExpectedDate,
-} from "@/lib/recurring/expected-occurrences";
+import { buildExpectedDate } from "@/lib/recurring/expected-occurrences";
 import { promoteUpcoming, dismissUpcoming } from "@/app/(app)/settings/recurring/actions";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import { createLogger } from "@/lib/logger";
-import type { ExpectedOccurrence } from "@/lib/recurring/expected-occurrences";
 
 const log = createLogger({ module: "transactions/forecast-actions" });
-
-// ---------------------------------------------------------------------------
-// Types (put in a sibling types file pattern — but these are simple enough to inline)
-// ---------------------------------------------------------------------------
-
-export type ForecastOccurrence = ExpectedOccurrence & {
-  // Serialized-safe version: Date → string for RSC prop passing.
-  expectedDateIso: string;
-  accountName: string;
-  accountCurrency: string;
-};
-
-// ---------------------------------------------------------------------------
-// Get expected occurrences for a yearMonth (called from RSC page).
-// We need this as a regular async function (not "use server" action) so the
-// RSC page can call it directly. It's in this file for co-location with the
-// form actions.
-// ---------------------------------------------------------------------------
-
-export async function getForecastOccurrences(
-  userId: number,
-  yearMonth: string,
-  today?: Date,
-): Promise<ForecastOccurrence[]> {
-  const occurrences = await getExpectedOccurrencesForMonth(userId, yearMonth, today);
-
-  if (occurrences.length === 0) return [];
-
-  const accountIds = [...new Set(occurrences.map((o) => o.accountId))];
-  const accountRows = await db
-    .select({
-      id: accounts.id,
-      name: accounts.name,
-      currency: accounts.currency,
-    })
-    .from(accounts)
-    .where(
-      and(
-        eq(accounts.userId, userId),
-        inArray(accounts.id, accountIds),
-        notDeleted(accounts.deletedAt),
-      ),
-    );
-
-  const accountMap = new Map(accountRows.map((a) => [a.id, a]));
-
-  return occurrences
-    .filter((o) => accountMap.has(o.accountId))
-    .map((o) => {
-      const acc = accountMap.get(o.accountId)!;
-      return {
-        ...o,
-        expectedDateIso: o.expectedDate.toISOString(),
-        accountName: acc.name,
-        accountCurrency: acc.currency,
-      };
-    });
-}
 
 // ---------------------------------------------------------------------------
 // "Pagué $___ " → createSyntheticForGap
@@ -312,6 +255,6 @@ export async function getLinkCandidatesForForecast(
     currency: r.currency,
     descriptionRaw: r.descriptionRaw,
     merchant: r.merchant,
-    accountName: accountMap.get(r.accountId)?.name ?? "?",
+    accountName: formatAccountLabel(accountMap.get(r.accountId) ?? { name: "?", currency: "" }),
   }));
 }

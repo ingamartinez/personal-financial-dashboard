@@ -7,9 +7,10 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { notDeleted } from "@/lib/db/helpers";
-import { recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
+import { accounts, recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
 import type { Currency } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
+import { formatAccountLabel } from "@/lib/accounts/format";
 
 const log = createLogger({ module: "recurring/expected-occurrences" });
 
@@ -299,4 +300,67 @@ export async function countPendingOccurrences(
   ).length;
 
   return openGaps.length + noGapAtrasado;
+}
+
+// ---------------------------------------------------------------------------
+// getForecastOccurrences — enriches occurrences with account display info.
+// Lives here (NOT in a "use server" file) because it accepts userId as a
+// parameter — exposing it as a Server Action would allow any client to read
+// any user's forecast data by passing an arbitrary userId (#622 C1).
+// Callers (RSC pages) derive userId from getSessionUser() before calling.
+// ---------------------------------------------------------------------------
+
+export type ForecastOccurrence = ExpectedOccurrence & {
+  // Serialized-safe version: Date → string for RSC prop passing.
+  expectedDateIso: string;
+  accountName: string;
+  accountCurrency: string;
+};
+
+/**
+ * Enriches expected occurrences for a month with account display labels.
+ * Tenant-safe: the inner getExpectedOccurrencesForMonth filters by userId,
+ * and the accounts query also filters by userId.
+ *
+ * NOT a Server Action. Must stay in a regular (non-"use server") module.
+ * Callers must derive userId from getSessionUser() — never accept it over the wire.
+ */
+export async function getForecastOccurrences(
+  userId: number,
+  yearMonth: string,
+  today?: Date,
+): Promise<ForecastOccurrence[]> {
+  const occurrences = await getExpectedOccurrencesForMonth(userId, yearMonth, today);
+
+  if (occurrences.length === 0) return [];
+
+  const accountIds = [...new Set(occurrences.map((o) => o.accountId))];
+  const accountRows = await defaultDb
+    .select({
+      id: accounts.id,
+      name: accounts.name,
+      currency: accounts.currency,
+    })
+    .from(accounts)
+    .where(
+      and(
+        eq(accounts.userId, userId),
+        inArray(accounts.id, accountIds),
+        notDeleted(accounts.deletedAt),
+      ),
+    );
+
+  const accountMap = new Map(accountRows.map((a) => [a.id, a]));
+
+  return occurrences
+    .filter((o) => accountMap.has(o.accountId))
+    .map((o) => {
+      const acc = accountMap.get(o.accountId)!;
+      return {
+        ...o,
+        expectedDateIso: o.expectedDate.toISOString(),
+        accountName: formatAccountLabel(acc),
+        accountCurrency: acc.currency,
+      };
+    });
 }

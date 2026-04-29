@@ -34,7 +34,7 @@ import { NeedsReviewBadge } from "./needs-review-badge";
 import { TransactionRowActions } from "./transaction-row-actions";
 import { ForecastRowActions } from "./forecast-row-actions";
 import type { RecurringOption } from "@/app/(app)/transactions/link-recurring-types";
-import type { ForecastOccurrence } from "@/app/(app)/transactions/forecast-actions";
+import type { ForecastOccurrence } from "@/lib/recurring/expected-occurrences";
 import type { OccurrenceStatus } from "@/lib/recurring/expected-occurrences";
 
 const ROW_CLASSES =
@@ -556,8 +556,6 @@ export function TransactionTable({
                   </div>
                   <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs italic">
                     <span suppressHydrationWarning>{formatDate(expectedDate)}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>Esperado</span>
                   </div>
                 </motion.li>
               );

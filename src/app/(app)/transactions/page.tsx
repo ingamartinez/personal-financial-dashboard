@@ -20,7 +20,7 @@ import {
   PAGE_SIZE,
 } from "@/lib/transactions/queries";
 import { listActiveRecurrings } from "@/app/(app)/transactions/actions";
-import { getForecastOccurrences } from "@/app/(app)/transactions/forecast-actions";
+import { getForecastOccurrences } from "@/lib/recurring/expected-occurrences";
 import { loadAmbiguousReceiptsForTxIds } from "@/lib/gmail/ambiguous";
 import { createLogger } from "@/lib/logger";
 
