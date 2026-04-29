@@ -57,6 +57,13 @@ const NAMED_ENTITIES: Record<string, string> = {
   // Punctuation used in Spanish text
   iexcl: "¡",
   iquest: "¿",
+  // Smart quotes and ellipsis — ARQ emails use &rsquo; in "We&rsquo;ve debited"
+  // which breaks DEBITED_RE when left undecoded. See issue #641.
+  rsquo: "’", // ' right single quotation mark
+  lsquo: "‘", // ' left single quotation mark
+  rdquo: "”", // " right double quotation mark
+  ldquo: "“", // " left double quotation mark
+  hellip: "…", // … horizontal ellipsis
 };
 
 /**

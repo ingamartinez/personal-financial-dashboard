@@ -144,6 +144,35 @@ async function markReceiptSkipped(receiptId: number, userId: number): Promise<vo
     .where(and(eq(emailReceipts.id, receiptId), eq(emailReceipts.userId, userId)));
 }
 
+/**
+ * Mark a receipt as needing manual review — persists the failure so the cron
+ * loop stops re-processing it. Sets match_status='unmatched' (breaks the
+ * pending loop) and records the reason in parsed_payload for audit trail.
+ *
+ * To retry after extending the parser, run:
+ *   UPDATE email_receipts
+ *   SET match_status='pending', parsed_at=NULL, parsed_payload=NULL
+ *   WHERE id = <receiptId>;
+ *
+ * Mirrors markReceiptSkipped — deliberately kept separate so callers and
+ * metrics can distinguish "intentional skip" from "parse failure".
+ */
+async function markReceiptNeedsReview(
+  receiptId: number,
+  userId: number,
+  reason: string,
+): Promise<void> {
+  await db
+    .update(emailReceipts)
+    .set({
+      matchStatus: "unmatched",
+      parsedAt: new Date(),
+      parsedPayload: { error: { reason, kind: "needs_review" } },
+      updatedAt: new Date(),
+    })
+    .where(and(eq(emailReceipts.id, receiptId), eq(emailReceipts.userId, userId)));
+}
+
 // ---------------------------------------------------------------------------
 // Main ingestion entry point
 // ---------------------------------------------------------------------------
@@ -152,7 +181,8 @@ async function markReceiptSkipped(receiptId: number, userId: number): Promise<vo
  * Parse and ingest a single ARQ email receipt.
  *
  * Flow:
- *   1. Parser skip / needs_review → log and exit.
+ *   1. Parser skip → mark unmatched, log, exit.
+ *      Parser needs_review → mark unmatched with error payload (breaks retry loop), log, exit.
  *   2. Resolve ARQ Ahorros account for this user.
  *   3. Insert transaction with source='gmail_arq'. Idempotency by
  *      external_id=(accountId, 'arq-email-<receiptId>') — if the same receipt
@@ -182,8 +212,9 @@ export async function ingestArqEmail(
   if (parsed.kind === "needs_review") {
     log.warn(
       { userId, receiptId, reason: parsed.reason, event: "arq_email_needs_review" },
-      "ARQ email could not be parsed; leaving pending for retry",
+      "ARQ email could not be parsed; marking unmatched to break retry loop",
     );
+    await markReceiptNeedsReview(receiptId, userId, parsed.reason);
     return { status: "error", reason: `parser: ${parsed.reason}` };
   }
 
