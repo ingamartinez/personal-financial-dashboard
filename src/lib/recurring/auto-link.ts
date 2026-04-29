@@ -1,12 +1,21 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
-import { recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
+import {
+  recurringGaps,
+  recurringTransactions,
+  recurringDescriptionPatterns,
+  transactions,
+} from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { emit } from "@/lib/events/bus";
 import {
   DEFAULT_WINDOW_AFTER_DAYS,
   DEFAULT_WINDOW_BEFORE_DAYS,
 } from "@/lib/recurring/gap-detector";
+import {
+  recordRecurringLinkObservation,
+  tokeniseDescription,
+} from "@/lib/recurring/observation-recorder";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "recurring/auto-link" });
@@ -67,6 +76,7 @@ export async function autoLinkTransaction(
       amountCents: transactions.amountCents,
       occurredAt: transactions.occurredAt,
       recurringId: transactions.recurringId,
+      descriptionRaw: transactions.descriptionRaw,
     })
     .from(transactions)
     .where(
@@ -157,6 +167,17 @@ export async function autoLinkTransaction(
       timestamp: Date.now(),
     });
 
+    // #633: Record observation (auto, gap path).
+    recordRecurringLinkObservation(
+      { userId, recurringId: result.recurringId, txId, yearMonth: result.yearMonth, manual: false },
+      database,
+    ).catch((err) => {
+      log.error(
+        { err, event: "observation_record_failed", txId, recurringId: result.recurringId, userId },
+        "failed to record recurring link observation (gap path) — non-critical",
+      );
+    });
+
     return result;
   }
 
@@ -234,11 +255,101 @@ export async function autoLinkTransaction(
     }
   }
 
-  if (matchingDirect.length === 0) return { status: "no-open-gap" };
-  if (matchingDirect.length > 1)
-    return { status: "ambiguous", candidateCount: matchingDirect.length };
+  // ── Description fingerprint fallback (#633) ──────────────────────────────
+  // When the amount-based direct path finds no match, attempt a description
+  // fingerprint lookup. Uses patterns with observation_count >= 2 that are not
+  // marked ambiguous (Google Play caveat). Only active, non-deleted recurrings.
+  //
+  // Ambiguity rule preserved: if multiple recurrings match via description,
+  // no auto-link (user resolves). Amount-only path still works independently.
 
-  const directHit = matchingDirect[0];
+  let descriptionFallbackCandidates: DirectMatch[] = [];
+
+  if (matchingDirect.length === 0) {
+    const descToken = tokeniseDescription(tx.descriptionRaw);
+    if (descToken) {
+      // Fetch unambiguous patterns for this user + token with enough signal.
+      const matchingPatterns = await database
+        .select({
+          recurringId: recurringDescriptionPatterns.recurringId,
+          dayOfMonth: recurringTransactions.dayOfMonth,
+        })
+        .from(recurringDescriptionPatterns)
+        .innerJoin(
+          recurringTransactions,
+          and(
+            eq(recurringTransactions.id, recurringDescriptionPatterns.recurringId),
+            // Tenant-safety: pair user_id on both sides of the JOIN.
+            eq(recurringTransactions.userId, recurringDescriptionPatterns.userId),
+          ),
+        )
+        .where(
+          and(
+            eq(recurringDescriptionPatterns.userId, userId),
+            eq(recurringDescriptionPatterns.pattern, descToken),
+            eq(recurringDescriptionPatterns.patternAmbiguous, false),
+            // Require at least 2 observations before trusting the pattern.
+            sql`${recurringDescriptionPatterns.observationCount} >= 2`,
+            eq(recurringTransactions.active, true),
+            notDeleted(recurringTransactions.deletedAt),
+          ),
+        );
+
+      for (const c of matchingPatterns) {
+        const [prevYear, prevMonth] = prevYM(txYear, txMonth);
+        const [nextYear, nextMonth] = nextYM(txYear, txMonth);
+
+        const evaluations: Array<{ year: number; month: number }> = [
+          { year: prevYear, month: prevMonth },
+          { year: txYear, month: txMonth },
+          { year: nextYear, month: nextMonth },
+        ];
+
+        for (const { year, month } of evaluations) {
+          if (txInWindowForYearMonth(c.dayOfMonth, year, month)) {
+            const ym = `${year}-${String(month).padStart(2, "0")}`;
+            descriptionFallbackCandidates.push({
+              recurringId: c.recurringId,
+              matchedYearMonth: ym,
+            });
+            break;
+          }
+        }
+      }
+
+      // Deduplicate by recurringId (a pattern might match multiple windows for
+      // the same recurring — take the first).
+      const seen = new Set<number>();
+      descriptionFallbackCandidates = descriptionFallbackCandidates.filter((c) => {
+        if (seen.has(c.recurringId)) return false;
+        seen.add(c.recurringId);
+        return true;
+      });
+
+      if (descriptionFallbackCandidates.length > 1) {
+        log.info(
+          {
+            event: "auto_link_description_ambiguous",
+            txId,
+            descToken,
+            candidateCount: descriptionFallbackCandidates.length,
+            userId,
+          },
+          "description fingerprint ambiguous — multiple recurrings match",
+        );
+        return { status: "ambiguous", candidateCount: descriptionFallbackCandidates.length };
+      }
+    }
+  }
+
+  // Resolve final candidate: amount-based match takes priority; description fallback is secondary.
+  const allCandidates = matchingDirect.length > 0 ? matchingDirect : descriptionFallbackCandidates;
+
+  if (allCandidates.length === 0) return { status: "no-open-gap" };
+  if (allCandidates.length > 1)
+    return { status: "ambiguous", candidateCount: allCandidates.length };
+
+  const directHit = allCandidates[0];
   // Use the yearMonth derived from the window match (may be prev/next month).
   const directYearMonth = directHit.matchedYearMonth;
 
@@ -282,12 +393,16 @@ export async function autoLinkTransaction(
     throw err;
   }
 
+  const usedDescriptionFallback =
+    matchingDirect.length === 0 && descriptionFallbackCandidates.length === 1;
+
   log.info(
     {
       event: "auto_link_direct",
       txId,
       recurringId: directHit.recurringId,
       yearMonth: directYearMonth,
+      usedDescriptionFallback,
       userId,
     },
     "auto-linked tx directly to active recurring (no gap)",
@@ -298,6 +413,17 @@ export async function autoLinkTransaction(
     gapId: null,
     reason: "auto-linked",
     timestamp: Date.now(),
+  });
+
+  // #633: Record observation (auto, direct path).
+  recordRecurringLinkObservation(
+    { userId, recurringId: directHit.recurringId, txId, yearMonth: directYearMonth, manual: false },
+    database,
+  ).catch((err) => {
+    log.error(
+      { err, event: "observation_record_failed", txId, recurringId: directHit.recurringId, userId },
+      "failed to record recurring link observation (direct path) — non-critical",
+    );
   });
 
   return {

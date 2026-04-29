@@ -26,6 +26,7 @@ import type { ClassifyTxJobData } from "@/lib/queue/workers/classify-tx";
 import type { UserClassificationContext } from "@/lib/db/schema";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
+import { recordRecurringLinkObservation } from "@/lib/recurring/observation-recorder";
 import { createLogger } from "@/lib/logger";
 import type {
   LinkTxToRecurringInput,
@@ -1549,6 +1550,21 @@ export async function linkTxToRecurring(
       gapId: ym.gapId,
       reason: "linked",
       timestamp: Date.now(),
+    });
+
+    // #633: Record observation for the learning loop (manual=true — user drove this).
+    // Fire-and-forget; observation errors must never surface to the user.
+    recordRecurringLinkObservation({
+      userId: session.id,
+      recurringId,
+      txId,
+      yearMonth: ym.ym,
+      manual: true,
+    }).catch((err) => {
+      log.error(
+        { err, event: "observation_record_failed", txId, recurringId, userId: session.id },
+        "failed to record recurring link observation — non-critical",
+      );
     });
 
     revalidatePath("/");

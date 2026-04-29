@@ -18,6 +18,7 @@ import { AccountsGrid } from "@/components/dashboard/accounts-grid";
 import { UpcomingCard } from "@/components/dashboard/upcoming-card";
 import { MonthSwitcher } from "@/components/dashboard/month-switcher";
 import { RecurringPendingBanner } from "@/components/dashboard/recurring-pending-banner";
+import { RecurringProposalsBanner } from "@/components/dashboard/recurring-proposals-banner";
 import { SmsHealthCard } from "@/components/dashboard/sms-health-card";
 import { CreditCardsCard } from "@/components/dashboard/credit-cards-card";
 import { PendingConsolidationBanner } from "@/components/dashboard/pending-consolidation-banner";
@@ -159,6 +160,8 @@ export default async function DashboardPage({
         </section>
 
         <RecurringPendingBanner userId={session.id} />
+
+        <RecurringProposalsBanner />
 
         <section className="flex flex-col gap-4">
           <h2 className="text-eyebrow">Cuentas</h2>

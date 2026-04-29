@@ -484,6 +484,13 @@
       "when": 1777452421357,
       "tag": "0068_superb_fabian_cortez",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1777460383867,
+      "tag": "0069_sour_black_panther",
+      "breakpoints": true
     }
   ]
 }

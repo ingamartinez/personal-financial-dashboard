@@ -867,6 +867,11 @@ export const budgets = pgTable(
   ],
 );
 
+// #633: amount_type enum for recurring_transactions — 'fixed' is the default
+// (all existing rows). 'variable' is set by the learning loop when N consecutive
+// observations show non-uniform real amounts (EPM-style subscriptions).
+export const recurringAmountType = pgEnum("recurring_amount_type", ["fixed", "variable"]);
+
 export const recurringTransactions = pgTable(
   "recurring_transactions",
   {
@@ -886,6 +891,11 @@ export const recurringTransactions = pgTable(
     lastGeneratedAt: timestamp("last_generated_at", { withTimezone: true }),
     skippedMonths: jsonb("skipped_months").$type<string[]>().notNull().default([]),
     notes: text("notes"),
+    // #633: amount type — 'fixed' (default, all existing rows) or 'variable'
+    // (set by the learning loop when N consecutive observations show non-uniform
+    // real amounts). When 'variable', amount proposals are suppressed.
+    // amountType column references the enum defined just above recurringTransactions
+    amountType: recurringAmountType("amount_type").notNull().default("fixed"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
@@ -930,6 +940,123 @@ export const recurringGaps = pgTable(
     index("recurring_gaps_open_idx")
       .on(t.userId, t.detectedAt)
       .where(sql`${t.resolution} IS NULL`),
+  ],
+);
+
+// #633: Learning loop — observation + fingerprint + proposal tables.
+// Architecture invariant: transactions table = facts only. Observations and
+// proposals are SEPARATE tables. The learning loop NEVER mutates transactions
+// directly — only proposes changes the user accepts.
+
+// #633: proposal status enum — 'pending' is the initial state, transitions to
+// 'accepted' (user approved), 'rejected' (user dismissed), or 'expired' (cron
+// cleaned up stale pending proposals).
+export const recurringProposalStatus = pgEnum("recurring_proposal_status", [
+  "pending",
+  "accepted",
+  "rejected",
+  "expired",
+]);
+
+// #633: Append-only audit log for every tx ↔ recurring link event (manual + auto).
+// Single observation per link — idempotent via unique (user_id, recurring_id, tx_id, year_month).
+// applied=true once a proposal that references this observation is accepted.
+export const recurringLinkObservations = pgTable(
+  "recurring_link_observations",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recurringId: integer("recurring_id")
+      .notNull()
+      .references(() => recurringTransactions.id, { onDelete: "cascade" }),
+    txId: integer("tx_id")
+      .notNull()
+      .references(() => transactions.id, { onDelete: "cascade" }),
+    yearMonth: varchar("year_month", { length: 7 }).notNull(),
+    realAmountCents: bigint("real_amount_cents", { mode: "bigint" }).notNull(),
+    realCurrency: currency("real_currency").notNull(),
+    descriptionRaw: text("description_raw"),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    manual: boolean("manual").notNull().default(false),
+    applied: boolean("applied").notNull().default(false),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Idempotency: one observation per (user, recurring, tx, month).
+    uniqueIndex("recurring_link_observations_unique").on(
+      t.userId,
+      t.recurringId,
+      t.txId,
+      t.yearMonth,
+    ),
+    // Cron query: manual, unapplied observations grouped by recurring.
+    index("recurring_link_observations_pending_idx")
+      .on(t.userId, t.recurringId)
+      .where(sql`${t.manual} = true AND ${t.applied} = false`),
+    index("recurring_link_observations_recurring_idx").on(t.recurringId),
+  ],
+);
+
+// #633: Description fingerprint table — upserted after every link.
+// observation_count is incremented each time the same pattern is observed.
+// pattern_ambiguous=true when this pattern matches 2+ active recurrings for
+// the same user (Google Play caveat) — excluded from auto-link via description.
+export const recurringDescriptionPatterns = pgTable(
+  "recurring_description_patterns",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recurringId: integer("recurring_id")
+      .notNull()
+      .references(() => recurringTransactions.id, { onDelete: "cascade" }),
+    pattern: text("pattern").notNull(),
+    observationCount: integer("observation_count").notNull().default(1),
+    patternAmbiguous: boolean("pattern_ambiguous").notNull().default(false),
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One pattern per (user, recurring, pattern text) — upsert key.
+    uniqueIndex("recurring_description_patterns_unique").on(t.userId, t.recurringId, t.pattern),
+    // Auto-link lookup: patterns for a given user + pattern text (cross-recurring).
+    index("recurring_description_patterns_user_pattern_idx").on(t.userId, t.pattern),
+    index("recurring_description_patterns_recurring_idx").on(t.recurringId),
+  ],
+);
+
+// #633: Learning proposals — amount-update or variable-type change proposals
+// generated by the recurring-learning cron. User accepts/rejects via
+// /settings/recurring/learning. payload is typed by proposal_type:
+//   - amount_update: { newAmountCents: string, oldAmountCents: string, currency: string }
+//   - variable_flag:  { detectedAmounts: string[], currency: string }
+export const recurringProposals = pgTable(
+  "recurring_proposals",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recurringId: integer("recurring_id")
+      .notNull()
+      .references(() => recurringTransactions.id, { onDelete: "cascade" }),
+    proposalType: varchar("proposal_type", { length: 40 }).notNull(),
+    payload: jsonb("payload").notNull().default({}),
+    status: recurringProposalStatus("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (t) => [
+    // Cron query: pending proposals per user.
+    index("recurring_proposals_user_status_idx")
+      .on(t.userId, t.status)
+      .where(sql`${t.status} = 'pending'`),
+    index("recurring_proposals_recurring_idx").on(t.recurringId),
   ],
 );
 
