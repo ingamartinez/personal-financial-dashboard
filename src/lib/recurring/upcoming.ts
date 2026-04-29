@@ -3,11 +3,14 @@ import { db as defaultDb, type DB } from "@/lib/db";
 import { accounts, categories, recurringTransactions, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { formatAccountLabel } from "@/lib/accounts/format";
+import { createLogger } from "@/lib/logger";
 import {
   DEFAULT_WINDOW_AFTER_DAYS,
   DEFAULT_WINDOW_BEFORE_DAYS,
 } from "@/lib/recurring/gap-detector";
 import type { Currency } from "@/lib/types";
+
+const log = createLogger({ module: "recurring/upcoming" });
 
 // Default window for getUpcomingForWindow (#632).
 export const UPCOMING_WINDOW_BEFORE_DAYS = 5;
@@ -254,6 +257,21 @@ export type UpcomingWindowOptions = {
 export async function getUpcomingForWindow(
   opts: UpcomingWindowOptions,
   database: DB = defaultDb,
+): Promise<UpcomingItem[]> {
+  try {
+    return await getUpcomingForWindowImpl(opts, database);
+  } catch (err) {
+    log.error(
+      { err, userId: opts.userId, event: "upcoming_window_failed" },
+      "upcoming window query failed",
+    );
+    throw err;
+  }
+}
+
+async function getUpcomingForWindowImpl(
+  opts: UpcomingWindowOptions,
+  database: DB,
 ): Promise<UpcomingItem[]> {
   const {
     userId,
