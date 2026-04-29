@@ -163,6 +163,9 @@ export async function autoLinkTransaction(
   // ── Direct-recurring path (no gap exists yet — current month) ────────────
   // Fetch active, non-deleted recurrings for this user+account+amount.
   // Window filtering is done in JS (same constants as gap path).
+  // Cross-month extension (#632): for each candidate we evaluate expectedDate
+  // for [txYearMonth-1, txYearMonth, txYearMonth+1] so a tx paid early for
+  // next month (e.g. April 29 for May 1 recurring) is matched correctly.
   const directCandidates = await database
     .select({
       recurringId: recurringTransactions.id,
@@ -182,22 +185,66 @@ export async function autoLinkTransaction(
   const txYearMonth = toYearMonth(tx.occurredAt);
   const [txYear, txMonth] = txYearMonth.split("-").map(Number);
 
-  const matchingDirect = directCandidates.filter((c) => {
-    const effectiveDay = Math.min(c.dayOfMonth, daysInMonth(txYear, txMonth));
-    const expected = new Date(Date.UTC(txYear, txMonth - 1, effectiveDay));
+  /**
+   * Evaluate expectedDate for a given yearMonth (year, month 1-based).
+   * Returns whether the tx falls in the match window for that month.
+   */
+  function txInWindowForYearMonth(
+    dayOfMonth: number,
+    year: number,
+    month: number,
+  ): boolean {
+    const effectiveDay = Math.min(dayOfMonth, daysInMonth(year, month));
+    const expected = new Date(Date.UTC(year, month - 1, effectiveDay));
     const windowStart = new Date(expected.getTime() - DEFAULT_WINDOW_BEFORE_DAYS * 86400000);
     const windowEnd = new Date(
       expected.getTime() + DEFAULT_WINDOW_AFTER_DAYS * 86400000 + 86399999,
     );
     const t = tx.occurredAt.getTime();
     return t >= windowStart.getTime() && t <= windowEnd.getTime();
-  });
+  }
+
+  /** Derive year/month for prev month (handles Jan → Dec rollover). */
+  function prevYM(y: number, m: number): [number, number] {
+    return m === 1 ? [y - 1, 12] : [y, m - 1];
+  }
+
+  /** Derive year/month for next month (handles Dec → Jan rollover). */
+  function nextYM(y: number, m: number): [number, number] {
+    return m === 12 ? [y + 1, 1] : [y, m + 1];
+  }
+
+  type DirectMatch = { recurringId: number; matchedYearMonth: string };
+
+  const matchingDirect: DirectMatch[] = [];
+
+  for (const c of directCandidates) {
+    const [prevYear, prevMonth] = prevYM(txYear, txMonth);
+    const [nextYear, nextMonth] = nextYM(txYear, txMonth);
+
+    const evaluations: Array<{ year: number; month: number }> = [
+      { year: prevYear, month: prevMonth },
+      { year: txYear, month: txMonth },
+      { year: nextYear, month: nextMonth },
+    ];
+
+    for (const { year, month } of evaluations) {
+      if (txInWindowForYearMonth(c.dayOfMonth, year, month)) {
+        const ym = `${year}-${String(month).padStart(2, "0")}`;
+        matchingDirect.push({ recurringId: c.recurringId, matchedYearMonth: ym });
+        // Only count one yearMonth per recurring (first match wins, sorted prev→curr→next).
+        break;
+      }
+    }
+  }
 
   if (matchingDirect.length === 0) return { status: "no-open-gap" };
   if (matchingDirect.length > 1)
     return { status: "ambiguous", candidateCount: matchingDirect.length };
 
   const directHit = matchingDirect[0];
+  // Use the yearMonth derived from the window match (may be prev/next month).
+  const directYearMonth = directHit.matchedYearMonth;
 
   try {
     await database.transaction(async (trx) => {
@@ -205,7 +252,7 @@ export async function autoLinkTransaction(
         .update(transactions)
         .set({
           recurringId: directHit.recurringId,
-          recurringYearMonth: txYearMonth,
+          recurringYearMonth: directYearMonth,
           updatedAt: new Date(),
         })
         .where(
@@ -231,7 +278,7 @@ export async function autoLinkTransaction(
       causeMsg.includes("transactions_recurring_unique")
     ) {
       log.info(
-        { txId, recurringId: directHit.recurringId, yearMonth: txYearMonth, userId },
+        { txId, recurringId: directHit.recurringId, yearMonth: directYearMonth, userId },
         "direct auto-link: slot already taken — skipping",
       );
       return { status: "no-open-gap" };
@@ -244,7 +291,7 @@ export async function autoLinkTransaction(
       event: "auto_link_direct",
       txId,
       recurringId: directHit.recurringId,
-      yearMonth: txYearMonth,
+      yearMonth: directYearMonth,
       userId,
     },
     "auto-linked tx directly to active recurring (no gap)",
@@ -261,6 +308,6 @@ export async function autoLinkTransaction(
     status: "linked",
     gapId: null,
     recurringId: directHit.recurringId,
-    yearMonth: txYearMonth,
+    yearMonth: directYearMonth,
   };
 }

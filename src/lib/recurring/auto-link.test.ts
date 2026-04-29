@@ -560,3 +560,150 @@ describe("autoLinkTransaction direct-recurring path", () => {
     expect(gaps.length).toBe(0);
   });
 });
+
+// ── Cross-month auto-link (#632) ─────────────────────────────────────────────
+describe("autoLinkTransaction cross-month", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("tx on April 29 links to May 1 recurring (window [Apr 21, May 6])", async () => {
+    const accountId = await seedAccount();
+    // Recurring fires on day 1. Today is April 29 — within 5d before May 1.
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink cross-month next",
+      amountCents: BigInt(-330010),
+      dayOfMonth: 1,
+    });
+    // tx on April 29 (expected window: May 1 - 10d = Apr 21 to May 1 + 5d = May 6)
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-29",
+      amountCents: BigInt(-330010),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      // Must link to May's yearMonth (the cross-month evaluation)
+      expect(result.yearMonth).toBe("2026-05");
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.gapId).toBeNull();
+    }
+
+    const [linked] = await db
+      .select({ recurringYearMonth: transactions.recurringYearMonth })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringYearMonth).toBe("2026-05");
+  });
+
+  it("tx on Jan 2 links to December recurring (day 30 → window [Dec 20, Jan 4])", async () => {
+    const accountId = await seedAccount();
+    // Recurring fires on day 30. Jan 2 is within [Dec 20, Jan 4].
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink cross-month prev",
+      amountCents: BigInt(-50000),
+      dayOfMonth: 30,
+    });
+    // tx on Jan 2, 2026. Expected date for Dec 2025: Dec 30. Window: [Dec 20, Jan 4].
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-01-02",
+      amountCents: BigInt(-50000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.yearMonth).toBe("2025-12");
+      expect(result.recurringId).toBe(recurringId);
+    }
+
+    const [linked] = await db
+      .select({ recurringYearMonth: transactions.recurringYearMonth })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringYearMonth).toBe("2025-12");
+  });
+
+  it("Feb 28 with day-30 recurring clamps to Feb 28 → match works (issue: clamp)", async () => {
+    const accountId = await seedAccount();
+    // Recurring fires on day 30. Feb 2026 has 28 days → clamped to Feb 28.
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink cross-month feb-clamp",
+      amountCents: BigInt(-75000),
+      dayOfMonth: 30,
+    });
+    // tx on Feb 28, 2026. Expected: Feb 28 (clamped). Window: [Feb 18, Mar 5].
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-02-28",
+      amountCents: BigInt(-75000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.yearMonth).toBe("2026-02");
+      expect(result.recurringId).toBe(recurringId);
+    }
+  });
+
+  it("Dec 30 tx links to Jan next-year recurring (day 1, window [Dec 22, Jan 6])", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink cross-month dec30",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 1,
+    });
+    // tx on Dec 30, 2025. Expected: Jan 1, 2026. Window: [Dec 22, Jan 6].
+    const txId = await seedTx(accountId, {
+      occurredOn: "2025-12-30",
+      amountCents: BigInt(-100000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.yearMonth).toBe("2026-01");
+      expect(result.recurringId).toBe(recurringId);
+    }
+
+    const [linked] = await db
+      .select({ recurringYearMonth: transactions.recurringYearMonth })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringYearMonth).toBe("2026-01");
+  });
+
+  it("multiple matches across months → ambiguous (no link)", async () => {
+    const accountId = await seedAccount();
+    // Two recurrings: day 30 (evaluates Jan window) and day 1 (evaluates Jan and Feb windows).
+    // tx on Feb 1 2026 — day-30 recurring: Dec 30 window [Dec 20, Jan 4] NO. Jan 30 window [Jan 20, Feb 4] YES.
+    // day-1 recurring: Jan 1 window [Dec 22, Jan 6] NO. Feb 1 window [Jan 22, Feb 6] YES.
+    // → 2 matches across months → ambiguous.
+    await seedRecurring(accountId, {
+      label: "__autolink cross-month amb A",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 30,
+    });
+    await seedRecurring(accountId, {
+      label: "__autolink cross-month amb B",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 1,
+    });
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-02-01",
+      amountCents: BigInt(-100000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("ambiguous");
+    if (result.status === "ambiguous") {
+      expect(result.candidateCount).toBe(2);
+    }
+    // Verify tx not linked
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+});
