@@ -744,6 +744,123 @@ A healthy worker will show `worker_init` in logs at startup and `job_completed` 
 
 ---
 
+## 15. Bull-Board architecture (and pitfalls)
+
+> Read this before changing anything in `src/lib/queue/bull-board.ts`,
+> `src/app/api/admin/queues/`, the Bull-Board entries in `next.config.ts`,
+> or the http.Server bootstrap in `src/instrumentation.node.ts`. Engram
+> topic key `architecture/bull-board-nextjs16` has the full forensic.
+
+### How it works
+
+```
+browser
+  │  GET /api/admin/queues/static/js/main.xxx.js
+  ▼
+Next.js Route Handler  (src/app/api/admin/queues/[[...slug]]/route.ts)
+  │  1. requireAdmin()  → 401/403 if not admin (gate fires before any proxy)
+  │  2. fetch('http://127.0.0.1:<port>/static/js/main.xxx.js')
+  ▼
+internal http.Server  (started in src/instrumentation.node.ts)
+  │  hosts @bull-board/express app natively
+  │  binds 127.0.0.1:0 (random port stashed in globalThis)
+  ▼
+@bull-board/express  →  res.render() / pipe(res) over a real Node Stream
+```
+
+The internal http.Server binds to `127.0.0.1:0` — the kernel picks an
+unused ephemeral port, the chosen port is stashed in
+`globalThis.__findashBullBoardPort` and read by the Route Handler. No
+external port exposure (loopback only); auth always happens at the
+Next.js edge before any proxy hop.
+
+### Why this design
+
+The earlier approach was a Proxy-mocked `ServerResponse` so Bull-Board's
+Express app could run inside a Next.js Route Handler. **It does not
+work and cannot be made to work.**
+
+Bull-Board's Express adapter does:
+- `res.render('index')` (EJS template) — needs Express's response prototype
+- `fs.createReadStream(file).pipe(res)` (static assets) — needs a real
+  Writable Stream / EventEmitter with backpressure (`on('drain')`,
+  `emit('drain')`, etc.)
+- Various `res.app`, `res.req`, `res.locals` runtime assignments
+
+A Web Fetch `Response` is none of those. Pipe hangs forever waiting
+for `drain` events that never fire; render is undefined; static assets
+time out at the Cloudflare edge (524) after 100 seconds. **The internal
+http.Server gives Bull-Board a real Node response with all the contracts
+it needs.** No proxy magic; just network bytes between the Route Handler
+and the loopback socket.
+
+### Pitfall table — every dead-end and its dispatch
+
+If you find yourself re-discovering one of these, stop and re-read this
+section.
+
+| Failure mode | What you'll see | Why it fails | Don't do this |
+|---|---|---|---|
+| Turbopack build error on `.ejs` | `Unknown module type` at build | Turbopack statically traces `require.resolve()` arguments and chokes on `.ejs` | `require.resolve('@bull-board/ui/dist/index.ejs')` |
+| Runtime ResolveMessage on package.json | `Cannot find module '@bull-board/ui/package.json'` from `[root-of-the-server]__*.js` | Turbopack rewrites `require.resolve()` to its own module map; package.json paths not exposed at runtime | `require.resolve('@bull-board/ui/package.json')` |
+| ejs not in standalone bundle | `MODULE_NOT_FOUND ejs` from Express's view engine resolver | `bun add ejs` is necessary but NOT sufficient — standalone tracer only follows static imports, not Express's runtime require | Adding ejs only to package.json without `outputFileTracingIncludes` |
+| `outputFileTracingIncludes` route key with brackets | Tracer skips your include silently | Glob keys treat `[[...slug]]` as a character class | Use `'/*'` global key (ejs is ~50KB, overhead trivial) |
+| `@bull-board/ui/package.json` missing on disk | Same as ResolveMessage above, but at runtime not at our code's call site | @bull-board/express does `require('@bull-board/ui/package.json')` internally; without externalize, Turbopack bundles the chunk and drops the package.json | Don't bundle @bull-board — externalize all 3 packages and trace-include them |
+| `res.render is not a function` | TypeError in viewHandler at ExpressAdapter.js:104 | Proxy `set` trap dropped Express's runtime `res.render` assignment | Don't try to mock ServerResponse with a Proxy |
+| `socket.destroy is not a function` | uncaughtException from `endReadableNT` | Mock socket on nodeReq missing `destroy()` method | Don't try to mock IncomingMessage's socket either |
+| Static assets hang 100s → Cloudflare 524 | `pipe()` waits for `on('drain')` that never fires | A Proxy is not a Stream, no real backpressure | Don't pipe through a Proxy. Run a real http.Server. |
+| Bull-Board reports `queueCount: 0` | Dashboard renders but shows no queues | Module-scoped `Map` in `src/lib/queue/index.ts` — Next.js standalone duplicates module instances across route chunks | Pin `queueRegistry`, `redis`, `workerRegistry` to `globalThis` |
+| Deploy fails on `apt-get install` | `sudo: a password is required` | The `deploy` user has narrow sudoers, not `NOPASSWD: ALL` | Add literal commands to `/etc/sudoers.d/` |
+| Deploy step env var rejected | `sudo: you are not allowed to set DEBIAN_FRONTEND` | `env_check` strips unlisted env vars | Drop the env var; `apt-get -y -qq` is enough |
+
+### Test locally before deploying
+
+After ANY change to bull-board, the queue lib, or the route handler,
+verify locally before pushing. Six prior deploys to prod were
+guess-and-pray attempts that could have been avoided. Recipe (engram
+topic key `testing/local-admin-routes`):
+
+```bash
+# 1. deps running
+redis-cli ping
+psql -d findash -c "SELECT id, email, role FROM users WHERE role='admin'"
+
+# 2. dev server with bypass (DEV_AUTH_BYPASS=1 must be inline if not in .env.local)
+kill $(pgrep -f "next dev") 2>/dev/null; rm -rf .next
+nohup env DEV_AUTH_BYPASS=1 bun run dev > /tmp/findash-dev.log 2>&1 &
+disown
+
+# 3. wait for ready
+until curl -fsS -o /dev/null http://localhost:3100/api/health; do sleep 3; done
+
+# 4. login as admin (Host MUST be localhost — tailscale 404s)
+rm -f /tmp/cookies.txt
+curl -c /tmp/cookies.txt -fsS -o /dev/null \
+  "http://localhost:3100/api/dev/login?email=ing.amartinez94@gmail.com&redirect=/"
+
+# 5. exercise the actual paths the browser will hit
+curl -b /tmp/cookies.txt -fsS -o /tmp/r1 \
+  -w 'http=%{http_code} type=%{content_type}\n' \
+  "http://localhost:3100/api/admin/queues"
+
+JS_PATH=$(grep -oE 'static/js/main\.[a-z0-9]+\.js' /tmp/r1 | head -1)
+curl -b /tmp/cookies.txt -fsS -o /tmp/r2 \
+  -w 'http=%{http_code} size=%{size_download} time=%{time_total}\n' \
+  "http://localhost:3100/api/admin/queues/$JS_PATH"
+
+curl -b /tmp/cookies.txt -fsS -o /tmp/r3 \
+  -w 'http=%{http_code}\n' \
+  "http://localhost:3100/api/admin/queues/api/queues"
+```
+
+Pass criteria: all three return 200 in <1s, JSON response includes
+all 6 queues with non-zero `counts`. The static asset (`r2`) is the
+most sensitive — it failed 100s timeout in prod even when HTML and API
+worked. If anything is slow or hangs, fix it locally; do NOT push and
+hope.
+
+---
+
 ## 12. Engram keys for deeper context
 
 Prior SDD planning artifacts for this deployment can be retrieved by future agents:
