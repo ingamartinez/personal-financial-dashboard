@@ -166,8 +166,11 @@ const NOW = new Date("2026-04-01T10:00:00Z");
 // ---------------------------------------------------------------------------
 
 describe("ingestArqEmail — counterparty linking", () => {
-  it("happy path — new ingest links counterparty", async () => {
-    const html = buildReceivedHtml("CODEBRANCH LLC", "2,180");
+  it("happy path — new ingest links counterparty (and normalizes the alias)", async () => {
+    // Mixed case input: proves normalizeName uppercases the alias value
+    // even though the parser preserves casing in counterpartyName.
+    // (The parser already collapses internal whitespace via /\s+/g, " ").
+    const html = buildReceivedHtml("Codebranch Llc", "2,180");
     const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-1`, html);
 
     const result = await ingestArqEmail(USER_A, receiptId, html, NOW);
@@ -181,14 +184,14 @@ describe("ingestArqEmail — counterparty linking", () => {
       .where(eq(transactions.userId, USER_A));
     expect(tx.counterpartyId).not.toBeNull();
 
-    // One counterparty row created with the correct display name.
+    // Display name preserves the original (post-parse) casing.
     const [cp] = await db
       .select({ displayName: counterparties.displayName })
       .from(counterparties)
       .where(eq(counterparties.userId, USER_A));
-    expect(cp.displayName).toBe("CODEBRANCH LLC");
+    expect(cp.displayName).toBe("Codebranch Llc");
 
-    // One alias row with normalized name value.
+    // Alias VALUE is the uppercased normalized form — proves normalizeName ran.
     const [alias] = await db
       .select({ kind: counterpartyAliases.kind, value: counterpartyAliases.value })
       .from(counterpartyAliases)
@@ -197,11 +200,22 @@ describe("ingestArqEmail — counterparty linking", () => {
     expect(alias.value).toBe("CODEBRANCH LLC");
   });
 
-  it("idempotency — same receipt twice returns duplicated, no new counterparty rows", async () => {
+  it("idempotency — same receipt twice returns duplicated, first call still linked counterparty", async () => {
     const html = buildReceivedHtml("CODEBRANCH LLC", "2,180");
     const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-2`, html);
 
-    await ingestArqEmail(USER_A, receiptId, html, NOW);
+    const result1 = await ingestArqEmail(USER_A, receiptId, html, NOW);
+    expect(result1.status).toBe("inserted");
+
+    // Confirm the FIRST call actually linked the counterparty — without this,
+    // the test would still pass even if resolveCounterpartyByKey silently
+    // returned null on the first call.
+    const [tx] = await db
+      .select({ counterpartyId: transactions.counterpartyId })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+    expect(tx.counterpartyId).not.toBeNull();
+
     const result2 = await ingestArqEmail(USER_A, receiptId, html, NOW);
 
     expect(result2.status).toBe("duplicated");

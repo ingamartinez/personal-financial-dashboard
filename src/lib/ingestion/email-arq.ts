@@ -235,23 +235,25 @@ export async function ingestArqEmail(
     fx: fxMetadata,
   };
 
-  // --- Counterparty resolution (#637) ---
-  // Both transfer_received and transfer_sent populate counterpartyName.
-  // We always use kind="name" for ARQ — there is no account number or QR key
-  // available in ARQ emails, so the normalized display name is the only stable key.
-  // Do NOT use inheritedCategory here — email-arq has its own category logic.
-  const cpResolution = await resolveCounterpartyByKey(
-    userId,
-    {
-      kind: "name",
-      value: normalizeName(parsed.counterpartyName),
-      initialDisplayName: parsed.counterpartyName,
-    },
-    db,
-  );
-
   // --- Insert ---
   try {
+    // --- Counterparty resolution (#637) ---
+    // Both transfer_received and transfer_sent populate counterpartyName.
+    // Always kind="name" for ARQ — there is no account number or QR key
+    // available, so the normalized display name is the only stable key.
+    // Do NOT use inheritedCategory — email-arq has its own category logic.
+    // Inside the try so resolver errors return { status: "error" } instead of
+    // throwing through the outcome contract.
+    const cpResolution = await resolveCounterpartyByKey(
+      userId,
+      {
+        kind: "name",
+        value: normalizeName(parsed.counterpartyName),
+        initialDisplayName: parsed.counterpartyName,
+      },
+      db,
+    );
+
     const result = await db
       .insert(transactions)
       .values({
