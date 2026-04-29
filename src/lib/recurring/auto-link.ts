@@ -96,6 +96,10 @@ export async function autoLinkTransaction(
     .where(
       and(
         eq(recurringGaps.userId, userId),
+        // Defense-in-depth tenant pairing on the JOINed per-user table.
+        // The gap.userId is already filtered, but pairing recurringTransactions.userId
+        // matches the documented per-user-table-join-tenant-safety convention.
+        eq(recurringTransactions.userId, userId),
         eq(recurringTransactions.accountId, tx.accountId),
         eq(recurringTransactions.amountCents, tx.amountCents),
       ),
@@ -215,9 +219,17 @@ export async function autoLinkTransaction(
   } catch (err: unknown) {
     // The unique partial index transactions_recurring_unique will throw if
     // another tx already claimed this (recurringId, yearMonth) slot.
-    // Drizzle wraps the native pg error — check for "Failed query" wrapper.
+    // Match the constraint name precisely — "Failed query" alone is too broad
+    // (it matches connection errors, FK violations, etc.) and would silently
+    // swallow real failures. Drizzle wraps the pg error with "Failed query …"
+    // and exposes the underlying PostgresError on err.cause, which carries the
+    // constraint_name. Check both surfaces so the precise match is reliable.
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("Failed query") || msg.includes("transactions_recurring_unique")) {
+    const causeMsg = err instanceof Error && err.cause instanceof Error ? err.cause.message : "";
+    if (
+      msg.includes("transactions_recurring_unique") ||
+      causeMsg.includes("transactions_recurring_unique")
+    ) {
       log.info(
         { txId, recurringId: directHit.recurringId, yearMonth: txYearMonth, userId },
         "direct auto-link: slot already taken — skipping",
