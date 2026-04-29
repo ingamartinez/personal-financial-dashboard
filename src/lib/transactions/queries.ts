@@ -130,6 +130,9 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
       recurringId: transactions.recurringId,
       recurringYearMonth: transactions.recurringYearMonth,
       recurringLabel: recurringTransactions.label,
+      // #642: transfer pairing
+      channel: transactions.channel,
+      transferGroupId: transactions.transferGroupId,
     })
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
@@ -187,6 +190,8 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
     recurringId: r.recurringId,
     recurringYearMonth: r.recurringYearMonth,
     recurringLabel: r.recurringLabel ?? null,
+    channel: r.channel,
+    transferGroupId: r.transferGroupId ?? null,
   }));
 
   return { rows: shaped, nextCursor };
