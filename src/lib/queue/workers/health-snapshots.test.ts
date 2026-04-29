@@ -22,7 +22,12 @@ import { healthSnapshotsProcessor, type HealthSnapshotsJobData } from "./health-
 // ---------------------------------------------------------------------------
 
 function makeJob(data: HealthSnapshotsJobData = {}): Job<HealthSnapshotsJobData> {
-  return { id: "test-job-health-snapshots", data } as unknown as Job<HealthSnapshotsJobData>;
+  return {
+    id: "test-job-health-snapshots",
+    data,
+    updateProgress: vi.fn().mockResolvedValue(undefined),
+    log: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Job<HealthSnapshotsJobData>;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,5 +86,19 @@ describe("healthSnapshotsProcessor", () => {
 
     // Should complete without error — churned count is logged.
     await expect(healthSnapshotsProcessor(makeJob())).resolves.toBeUndefined();
+  });
+
+  it("calls updateProgress at start and done — Bull-Board contract", async () => {
+    mocks.snapshotAllActiveUsers.mockResolvedValueOnce([
+      { ok: true, userId: 1, data: { churnSignalFlag: false } },
+      { ok: true, userId: 2, data: { churnSignalFlag: false } },
+    ]);
+
+    const job = makeJob();
+    await healthSnapshotsProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ users: 0 }));
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
   });
 });

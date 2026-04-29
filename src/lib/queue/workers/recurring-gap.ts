@@ -24,7 +24,14 @@ export type RecurringGapJobData = Record<string, never>;
 export async function recurringGapProcessor(job: Job<RecurringGapJobData>): Promise<void> {
   log.info({ event: "recurring_gap_start", jobId: job.id }, "recurring-gap started");
 
+  await job.updateProgress({ users: 0, total: 0 });
+  await job.log("start: running closePreviousMonthForAllUsers");
+
   const results = await closePreviousMonthForAllUsers();
+
+  const okCount = results.filter((r) => r.ok).length;
+  const failedCount = results.filter((r) => !r.ok).length;
+  const totalGapsClosed = okCount;
 
   for (const entry of results) {
     if (entry.ok) {
@@ -40,12 +47,17 @@ export async function recurringGapProcessor(job: Job<RecurringGapJobData>): Prom
     }
   }
 
+  await job.updateProgress({ done: true, users: results.length, totalGapsClosed });
+  await job.log(
+    `done: users=${results.length} gapsClosed=${totalGapsClosed} failed=${failedCount}`,
+  );
+
   log.info(
     {
       event: "recurring_gap_done",
       total: results.length,
-      ok: results.filter((r) => r.ok).length,
-      failed: results.filter((r) => !r.ok).length,
+      ok: okCount,
+      failed: failedCount,
       jobId: job.id,
     },
     "recurring-gap complete",

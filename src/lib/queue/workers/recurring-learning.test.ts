@@ -39,7 +39,11 @@ const { recurringLearningProcessor } = await import("./recurring-learning");
 const TAG = "test-rlearning-633";
 
 function mockJob(): Job {
-  return { id: "test-job-id" } as unknown as Job;
+  return {
+    id: "test-job-id",
+    updateProgress: vi.fn().mockResolvedValue(undefined),
+    log: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Job;
 }
 
 async function seedUser(email: string): Promise<number> {
@@ -386,6 +390,17 @@ describe("recurringLearningProcessor", () => {
 
     // Cleanup extra recurring.
     await db.execute(sql`DELETE FROM recurring_transactions WHERE id = ${recurringBId}`);
+  });
+
+  it("calls updateProgress at start and done — Bull-Board contract", async () => {
+    // No observations — empty run still exercises start + done progress calls.
+    const job = mockJob();
+    const result = await recurringLearningProcessor(job);
+
+    expect(result.usersProcessed).toBe(0);
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ users: 0 }));
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
   });
 
   it("tenant isolation: userA observations do not trigger userB proposals", async () => {

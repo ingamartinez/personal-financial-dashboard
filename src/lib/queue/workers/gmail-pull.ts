@@ -65,6 +65,9 @@ export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<vo
       "gmail-pull single-user",
     );
 
+    await job.updateProgress({ userId, phase: "auth" });
+    await job.log(`start: mode=single-user userId=${userId}`);
+
     const result = await pullForUser(userId, opts);
 
     log.info(
@@ -79,11 +82,25 @@ export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<vo
       "gmail-pull single-user done",
     );
 
+    await job.updateProgress({
+      done: true,
+      userId,
+      pulled: result.pulled,
+      skipped: result.skipped,
+      errors: result.errors.length,
+    });
+    await job.log(
+      `done: userId=${userId} pulled=${result.pulled} skipped=${result.skipped} errors=${result.errors.length}`,
+    );
+
     return;
   }
 
   // mode === "all"
   const { opts = {} } = job.data;
+
+  await job.updateProgress({ users: 0, total: 0 });
+  await job.log("start: mode=all pulling all active connections");
 
   const results = await pullAllActiveConnections({}, opts);
 
@@ -101,6 +118,16 @@ export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<vo
       jobId: job.id,
     },
     "gmail pull cron tick",
+  );
+
+  await job.updateProgress({
+    done: true,
+    totalPulled,
+    totalSkipped,
+    withErrors,
+  });
+  await job.log(
+    `done: users=${results.length} pulled=${totalPulled} skipped=${totalSkipped} withErrors=${withErrors}`,
   );
 }
 

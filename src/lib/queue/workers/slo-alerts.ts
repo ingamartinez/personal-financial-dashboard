@@ -21,6 +21,9 @@ export type SloAlertsJobData = Record<string, never>;
 export async function sloAlertsProcessor(job: Job<SloAlertsJobData>): Promise<void> {
   log.info({ event: "slo_alerts_start", jobId: job.id }, "slo-alerts started");
 
+  await job.updateProgress({ phase: "checking" });
+  await job.log("start: evaluating SLOs");
+
   const decisions = await checkAndAlertSlos();
 
   const fired = decisions.filter((d) => d.action === "fire").length;
@@ -30,6 +33,11 @@ export async function sloAlertsProcessor(job: Job<SloAlertsJobData>): Promise<vo
   log.info(
     { total: decisions.length, fired, resolved, noops, event: "slo_alerts_checked", jobId: job.id },
     "slo-alerts tick",
+  );
+
+  await job.updateProgress({ done: true, fired, resolved });
+  await job.log(
+    `done: total=${decisions.length} fired=${fired} resolved=${resolved} noops=${noops}`,
   );
 }
 

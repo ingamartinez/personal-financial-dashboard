@@ -22,7 +22,12 @@ import { recurringGapProcessor, type RecurringGapJobData } from "./recurring-gap
 // ---------------------------------------------------------------------------
 
 function makeJob(data: RecurringGapJobData = {}): Job<RecurringGapJobData> {
-  return { id: "test-job-recurring-gap", data } as unknown as Job<RecurringGapJobData>;
+  return {
+    id: "test-job-recurring-gap",
+    data,
+    updateProgress: vi.fn().mockResolvedValue(undefined),
+    log: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Job<RecurringGapJobData>;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,5 +75,18 @@ describe("recurringGapProcessor", () => {
 
     await expect(recurringGapProcessor(makeJob())).resolves.toBeUndefined();
     expect(mocks.closePreviousMonthForAllUsers).toHaveBeenCalledOnce();
+  });
+
+  it("calls updateProgress at start and done — Bull-Board contract", async () => {
+    mocks.closePreviousMonthForAllUsers.mockResolvedValueOnce([
+      { ok: true, userId: 1, result: { yearMonth: "2026-03" } },
+    ]);
+
+    const job = makeJob();
+    await recurringGapProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ users: 0 }));
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
   });
 });

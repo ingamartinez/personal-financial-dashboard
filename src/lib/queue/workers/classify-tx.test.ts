@@ -27,7 +27,12 @@ const { classifyTxProcessor } = await import("./classify-tx");
 // ---------------------------------------------------------------------------
 
 function makeJob(data: ClassifyTxJobData): Job<ClassifyTxJobData> {
-  return { id: "test-job-1", data } as unknown as Job<ClassifyTxJobData>;
+  return {
+    id: "test-job-1",
+    data,
+    updateProgress: vi.fn().mockResolvedValue(undefined),
+    log: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Job<ClassifyTxJobData>;
 }
 
 const defaultPipelineResult = {
@@ -146,6 +151,41 @@ describe('classifyTxProcessor — mode "drain-pending"', () => {
     await expect(
       classifyTxProcessor(makeJob({ userId: 1, mode: "drain-pending" })),
     ).rejects.toThrow("timeout");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bull-Board contract: updateProgress called at start and done
+// ---------------------------------------------------------------------------
+
+describe("Bull-Board contract — updateProgress + log", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("specific mode: calls updateProgress at start and done", async () => {
+    mocks.classifyUnclassifiedBatch.mockResolvedValueOnce(defaultPipelineResult);
+
+    const job = makeJob({ userId: 1, mode: "specific", txIds: [10, 11] });
+    await classifyTxProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ mode: "specific" }));
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
+  });
+
+  it("drain-pending mode: calls updateProgress at start and done", async () => {
+    mocks.countUnclassified.mockResolvedValueOnce(20).mockResolvedValueOnce(0);
+    mocks.classifyUnclassifiedBatch.mockResolvedValueOnce(defaultPipelineResult);
+
+    const job = makeJob({ userId: 1, mode: "drain-pending" });
+    await classifyTxProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "drain-pending" }),
+    );
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
   });
 });
 
