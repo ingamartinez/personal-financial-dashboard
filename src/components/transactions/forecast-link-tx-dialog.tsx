@@ -63,6 +63,10 @@ export function ForecastLinkTxDialog({
   const [selectedTxId, setSelectedTxId] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // Stable async fetch — only async (Promise) setState so the effect can call
+  // it without triggering react-hooks/set-state-in-effect. Wrapped in
+  // useCallback with recurringId + yearMonth so the effect deps are exhaustive
+  // and the closure captures the correct slot on every re-render.
   const loadCandidates = useCallback(
     (all: boolean) => {
       getLinkCandidatesForForecast({
@@ -83,22 +87,25 @@ export function ForecastLinkTxDialog({
   );
 
   // Reset + load when dialog opens or showAll toggle changes.
-  // The null reset happens right before the async call, but OUTSIDE the effect
-  // body to avoid the react-hooks/set-state-in-effect lint rule.
+  // Synchronous resets (setCandidates/setLoadError) live here — outside the
+  // effect body — to satisfy react-hooks/set-state-in-effect. The effect
+  // itself only calls loadCandidates (async setState only).
   function triggerLoad(all: boolean) {
     setCandidates(null);
     setLoadError(null);
     loadCandidates(all);
   }
 
-  // Load candidates when the dialog first opens.
-  // We track a ref to avoid re-loading when unrelated state changes.
+  // Load candidates when the dialog opens or when the forecast slot changes
+  // (recurringId / yearMonth). Using loadCandidates (stable via useCallback)
+  // prevents stale-closure races when the dialog is reused between rows.
+  // showAll is always reset to false before the dialog re-opens (see onClose),
+  // so we always start with the narrow filter on open/slot-change.
   useEffect(() => {
     if (open) {
-      triggerLoad(showAll);
+      loadCandidates(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, recurringId, yearMonth, loadCandidates]);
 
   // Reset state when dialog closes.
   function onClose(next: boolean) {
