@@ -22,7 +22,7 @@ import { SmsHealthCard } from "@/components/dashboard/sms-health-card";
 import { CreditCardsCard } from "@/components/dashboard/credit-cards-card";
 import { PendingConsolidationBanner } from "@/components/dashboard/pending-consolidation-banner";
 import { PayPeriodNudge } from "@/components/dashboard/pay-period-nudge";
-import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
+import { getUpcomingForWindow } from "@/lib/recurring/upcoming";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { getSmsHealthSnapshot } from "@/lib/ingestion/sms-health";
 import { getSessionUser } from "@/lib/auth/session";
@@ -46,8 +46,6 @@ export default async function DashboardPage({
   const refDate = refDateFromYearMonth(ym);
   const isFuture = isFutureYearMonth(ym, now);
   const monthLabel = formatYearMonth(ym);
-  const [refYear, refMonth] = ym.split("-").map(Number);
-
   const session = await getSessionUser();
   const fx = await getCurrentFxRate();
 
@@ -77,13 +75,8 @@ export default async function DashboardPage({
       getCategoryBreakdown(session.id, fx.rate, range),
       getTopExpenses(session.id, fx.rate, range, 5),
       getAccountStatuses(session.id),
-      getUpcomingForMonth({
-        userId: session.id,
-        year: refYear,
-        month: refMonth,
-        includeDismissed: true,
-        today: now,
-      }),
+      // #632: window-based query (today ±5d, cross-month, un-matched only).
+      getUpcomingForWindow({ userId: session.id, today: now }),
       getSmsHealthSnapshot(session.id, now),
       // Bank truth — TC summary stays on calendar regardless of cycle mode.
       getCreditCardsSummary(session.id, fx.rate, now),
@@ -152,7 +145,7 @@ export default async function DashboardPage({
             period={period}
             isFuture={isFuture}
           />
-          <UpcomingCard items={upcomingItems} monthLabel={monthLabel} />
+          <UpcomingCard items={upcomingItems} windowLabel="±5d desde hoy" />
         </section>
 
         <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
