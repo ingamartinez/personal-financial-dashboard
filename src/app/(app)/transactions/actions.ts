@@ -206,6 +206,72 @@ export async function confirmClassification(input: {
   return { status: "ok" };
 }
 
+/**
+ * Mark a tx as "no me acuerdo" from the review inbox. Sets category to
+ * "otros" and method to "user_uncategorized" so the row exits the inbox
+ * permanently.
+ *
+ * This is a NULL signal — it does NOT log to classification_corrections and
+ * is explicitly excluded from the learning loop. `detectAndEnqueueRuleProposals`
+ * reads only from classification_corrections, so this action never influences
+ * auto-rule proposals.
+ *
+ * Only fires when the tx is currently rule/ai (same guard as confirmClassification).
+ */
+export async function markUncategorized(input: {
+  txId: number;
+}): Promise<{ status: "ok" } | { status: "error"; message: string }> {
+  const session = await getSessionUser();
+  const parsed = confirmSchema.safeParse(input);
+  if (!parsed.success) return { status: "error", message: "Input inválido." };
+
+  const updated = await db.transaction(async (trx) => {
+    const [current] = await trx
+      .select({
+        method: transactions.classificationMethod,
+        confidence: transactions.classificationConfidence,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.id, parsed.data.txId),
+          inArray(transactions.classificationMethod, ["rule", "ai"]),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!current) return [];
+
+    const reason = JSON.stringify({
+      confirmed_from: current.method,
+      confidence: current.confidence,
+      action: "user_uncategorized",
+    }).slice(0, 200);
+
+    return trx
+      .update(transactions)
+      .set({
+        categorySlug: "otros",
+        classificationMethod: "user_uncategorized",
+        classificationConfidence: 100,
+        classificationReason: reason,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.userId, session.id), eq(transactions.id, parsed.data.txId)))
+      .returning({ id: transactions.id });
+  });
+
+  if (updated.length === 0) {
+    return { status: "error", message: "Transacción no está pendiente de revisión." };
+  }
+
+  revalidatePath("/settings/inbox");
+  revalidatePath("/transactions");
+  return { status: "ok" };
+}
+
 // Amount arrives as a decimal STRING so we can parse to bigint cents via
 // integer arithmetic (see `decimalStringToCents`). Never accept a number
 // here — `number * 100` loses precision for values like 9.995.

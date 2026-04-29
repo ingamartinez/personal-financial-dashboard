@@ -1,0 +1,1 @@
+ALTER TYPE "public"."classification_method" ADD VALUE 'user_uncategorized';

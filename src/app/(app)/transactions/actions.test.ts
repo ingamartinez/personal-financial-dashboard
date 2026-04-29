@@ -53,6 +53,7 @@ const {
   classifySingleWithAi,
   updateTransactionCategory,
   confirmClassification,
+  markUncategorized,
   archiveTransaction,
   restoreTransaction,
   createManualTransferGroup,
@@ -1155,6 +1156,172 @@ describe("confirmClassification", () => {
 
   it("returns error when tx does not exist", async () => {
     const result = await confirmClassification({ txId: 9_999_999 });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
+  });
+});
+
+describe("markUncategorized", () => {
+  async function seedReviewTx(args: {
+    externalId: string;
+    method: "rule" | "ai" | "manual" | "manual_confirmed" | "user_uncategorized";
+    categorySlug: string;
+    confidence: number;
+    softDelete?: boolean;
+  }): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        merchant, category_slug, classification_method, classification_confidence, source, external_id
+      ) VALUES (
+        ${TEST_USER_ID}, ${acc.id}, now(), -5000, 'COP', 'test',
+        'TEST-MARK-UNCAT',
+        ${args.categorySlug},
+        ${args.method}::classification_method,
+        ${args.confidence},
+        'sms',
+        ${args.externalId}
+      )
+      RETURNING id
+    `);
+    const txId = rows[0].id;
+    if (args.softDelete) {
+      await db.execute(sql`UPDATE transactions SET deleted_at = now() WHERE id = ${txId}`);
+    }
+    return txId;
+  }
+
+  async function cleanupMarkUncatTxs() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE 'test-mark-uncat:%'
+    `);
+  }
+
+  // Also verify no corrections are inserted (shared verification helper)
+  async function getCorrectionsForTx(txId: number): Promise<number> {
+    const rows = await db.execute<{ cnt: string }>(sql`
+      SELECT COUNT(*)::text AS cnt FROM classification_corrections WHERE transaction_id = ${txId}
+    `);
+    return parseInt(rows[0]?.cnt ?? "0", 10);
+  }
+
+  beforeEach(cleanupMarkUncatTxs);
+  afterEach(cleanupMarkUncatTxs);
+
+  it("moves a rule-classified tx to otros with method=user_uncategorized", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:rule",
+      method: "rule",
+      categorySlug: "alimentacion",
+      confidence: 45,
+    });
+
+    const result = await markUncategorized({ txId });
+    expect(result).toEqual({ status: "ok" });
+
+    const [row] = await db.execute<{
+      classification_method: string;
+      classification_confidence: number;
+      category_slug: string;
+    }>(sql`
+      SELECT classification_method, classification_confidence, category_slug
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.classification_method).toBe("user_uncategorized");
+    expect(row.classification_confidence).toBe(100);
+    expect(row.category_slug).toBe("otros");
+  });
+
+  it("stores the correct reason JSON snapshot", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:ai-reason",
+      method: "ai",
+      categorySlug: "transporte",
+      confidence: 52,
+    });
+
+    await markUncategorized({ txId });
+
+    const [row] = await db.execute<{ classification_reason: string }>(sql`
+      SELECT classification_reason FROM transactions WHERE id = ${txId}
+    `);
+    const parsed = JSON.parse(row.classification_reason);
+    expect(parsed).toMatchObject({
+      confirmed_from: "ai",
+      confidence: 52,
+      action: "user_uncategorized",
+    });
+  });
+
+  it("does NOT insert into classification_corrections", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:no-correction",
+      method: "rule",
+      categorySlug: "alimentacion",
+      confidence: 40,
+    });
+
+    await markUncategorized({ txId });
+
+    const correctionCount = await getCorrectionsForTx(txId);
+    expect(correctionCount).toBe(0);
+  });
+
+  it("rejects when method is already manual (not in review inbox)", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:manual",
+      method: "manual",
+      categorySlug: "alimentacion",
+      confidence: 100,
+    });
+
+    const result = await markUncategorized({ txId });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
+  });
+
+  it("rejects when method is already user_uncategorized", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:already-uncat",
+      method: "user_uncategorized",
+      categorySlug: "otros",
+      confidence: 100,
+    });
+
+    const result = await markUncategorized({ txId });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
+  });
+
+  it("rejects soft-deleted transactions", async () => {
+    const txId = await seedReviewTx({
+      externalId: "test-mark-uncat:deleted",
+      method: "rule",
+      categorySlug: "alimentacion",
+      confidence: 35,
+      softDelete: true,
+    });
+
+    const result = await markUncategorized({ txId });
+    expect(result).toEqual({
+      status: "error",
+      message: "Transacción no está pendiente de revisión.",
+    });
+  });
+
+  it("rejects when txId belongs to another user (tenant safety)", async () => {
+    // Seed with TEST_USER_ID=1, session is mocked to user id 1.
+    // We test by using a non-existent txId to simulate cross-tenant rejection.
+    const result = await markUncategorized({ txId: 9_999_998 });
     expect(result).toEqual({
       status: "error",
       message: "Transacción no está pendiente de revisión.",

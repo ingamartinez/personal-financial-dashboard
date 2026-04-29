@@ -38,6 +38,9 @@ export async function registerNode() {
   const { createHealthSnapshotsWorker } = await import("@/lib/queue/workers/health-snapshots");
   const { createSloAlertsWorker } = await import("@/lib/queue/workers/slo-alerts");
   const { createGmailPullWorker } = await import("@/lib/queue/workers/gmail-pull");
+  const { createClassificationAutoUncategorizeWorker } = await import(
+    "@/lib/queue/workers/classification-auto-uncategorize"
+  );
   const log = createLogger({ module: "instrumentation" });
 
   // -------------------------------------------------------------------------
@@ -73,6 +76,10 @@ export async function registerNode() {
   // gmail-pull: every 5 min — fan-out to all active connections
   const gmailPullQueue = createQueue("gmail-pull");
   createGmailPullWorker();
+
+  // classification-auto-uncategorize: daily at 04:00 COT
+  const classificationAutoUncategorizeQueue = createQueue("classification-auto-uncategorize");
+  createClassificationAutoUncategorizeWorker();
 
   // Graceful shutdown is idempotent — safe to call once after all workers are
   // registered.
@@ -139,9 +146,21 @@ export async function registerNode() {
     },
   );
 
+  // 04:00 COT daily — bulk-move stale low-confidence inbox rows (>30d, <60%)
+  // to "otros" with user_uncategorized. Null-signal: does NOT feed the learning
+  // loop. Same semantics as the user clicking "No me acuerdo" (#628).
+  await classificationAutoUncategorizeQueue.add(
+    "auto-uncategorize",
+    {},
+    {
+      repeat: { pattern: "0 4 * * *", tz: "America/Bogota" },
+      jobId: "classification-auto-uncategorize-recurring",
+    },
+  );
+
   log.info(
     { event: "workers_registered" },
-    "BullMQ workers registered: fx-refresh (15 6,18 * * *), recurring-gap (0 6 5 * *), health-snapshots (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *) America/Bogota; classify-tx on-demand",
+    "BullMQ workers registered: fx-refresh (15 6,18 * * *), recurring-gap (0 6 5 * *), health-snapshots (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *), classification-auto-uncategorize (0 4 * * *) America/Bogota; classify-tx on-demand",
   );
 
   // -------------------------------------------------------------------------

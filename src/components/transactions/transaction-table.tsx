@@ -66,6 +66,7 @@ const methodVariant: Record<
   manual: "outline",
   manual_confirmed: "outline",
   unclassified: "destructive",
+  user_uncategorized: "outline",
 };
 
 function AdjustmentBadge() {

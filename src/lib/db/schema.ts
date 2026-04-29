@@ -227,6 +227,7 @@ export const classificationMethod = pgEnum("classification_method", [
   "manual",
   "manual_confirmed",
   "unclassified",
+  "user_uncategorized",
 ]);
 
 export const counterpartyType = pgEnum("counterparty_type", ["person", "merchant", "unknown"]);
