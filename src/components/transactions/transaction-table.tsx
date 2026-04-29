@@ -598,6 +598,12 @@ export function TransactionTable({
             const isHighlighted = tx.id === highlightId;
             const isArchived = tx.deletedAt !== null;
             // #642: paired transfers — same guard as desktop row.
+            // NOTE: the method-label `<Badge>` below relies on
+            // `methodVariant["unclassified"] = "destructive"` AND on
+            // `isPairedTransferMobile` overriding it to "outline". If a future
+            // change adds a `text-destructive` span here mirroring desktop's
+            // line 467, include the explicit guard:
+            //   tx.classificationMethod === "unclassified" && !isPairedTransferMobile
             const isPairedTransferMobile =
               tx.channel === "transfer" && tx.transferGroupId !== null;
             return (

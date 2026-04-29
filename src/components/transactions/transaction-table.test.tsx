@@ -190,4 +190,29 @@ describe("TransactionTable — paired transfer suppresses 'Sin clasificar'", () 
     const porqueBtns = screen.getAllByLabelText("¿Por qué esta categoría?");
     expect(porqueBtns.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("does NOT apply destructive styling on paired transfer even when method is 'unclassified'", () => {
+    // Theoretical edge case: a transfer that arrives before classification.
+    // The `isUnclassified && !isPairedTransfer` guard at desktop line 467 must
+    // suppress the red text. This test locks in that behavior.
+    const tx = makeTxRow({
+      id: 202,
+      channel: "transfer",
+      transferGroupId: TRANSFER_GROUP_ID,
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    // Desktop renders the method label as a span; assert no destructive class.
+    const methodLabels = screen.getAllByText("unclassified");
+    for (const label of methodLabels) {
+      expect(label).not.toHaveClass("text-destructive");
+    }
+
+    // ¿Por qué? must still be suppressed.
+    const porqueBtns = screen.queryAllByLabelText("¿Por qué esta categoría?");
+    expect(porqueBtns).toHaveLength(0);
+  });
 });
