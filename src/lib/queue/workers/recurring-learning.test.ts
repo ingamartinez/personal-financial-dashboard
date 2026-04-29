@@ -339,6 +339,55 @@ describe("recurringLearningProcessor", () => {
     expect(proposals).toHaveLength(1);
   });
 
+  it("expiry sweep: proposals older than 30 days are set to expired; fresh ones stay pending", async () => {
+    // Seed a 31-day-old pending proposal (stale).
+    const [staleRow] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringAId,
+        proposalType: "amount_update",
+        payload: { stale: true },
+        status: "pending",
+        createdAt: new Date(Date.now() - 31 * 86400000),
+      })
+      .returning({ id: recurringProposals.id });
+
+    // Seed a second recurring so the fresh proposal doesn't conflict.
+    const recurringBId = await seedRecurring(userAId, accountAId, BigInt(-42000));
+
+    // Seed a fresh pending proposal (1 day old).
+    const [freshRow] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringBId,
+        proposalType: "amount_update",
+        payload: { fresh: true },
+        status: "pending",
+        createdAt: new Date(Date.now() - 86400000),
+      })
+      .returning({ id: recurringProposals.id });
+
+    await recurringLearningProcessor(mockJob());
+
+    const [stale] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, staleRow.id));
+
+    const [fresh] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, freshRow.id));
+
+    expect(stale?.status).toBe("expired");
+    expect(fresh?.status).toBe("pending");
+
+    // Cleanup extra recurring.
+    await db.execute(sql`DELETE FROM recurring_transactions WHERE id = ${recurringBId}`);
+  });
+
   it("tenant isolation: userA observations do not trigger userB proposals", async () => {
     const userBId = await seedUser(`${TAG}-userB@test.local`);
     const accountBId = await seedAccount(userBId);

@@ -161,7 +161,7 @@ export default async function DashboardPage({
 
         <RecurringPendingBanner userId={session.id} />
 
-        <RecurringProposalsBanner userId={session.id} />
+        <RecurringProposalsBanner />
 
         <section className="flex flex-col gap-4">
           <h2 className="text-eyebrow">Cuentas</h2>

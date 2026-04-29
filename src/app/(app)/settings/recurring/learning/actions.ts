@@ -222,15 +222,17 @@ export async function expireProposal(input: ProposalActionInput): Promise<Propos
 }
 
 /**
- * Count pending proposals for a given user — used by the dashboard banner.
- * Exported as a plain async function (not a server action) so it can be called
- * from RSC without the "use server" boundary.
+ * Count pending proposals for the current session user — used by the dashboard banner.
+ * Derives userId from getSessionUser() internally. Never accepts userId as a parameter
+ * because this file is "use server" and every async export is an invocable server action.
  */
-export async function countPendingProposals(userId: number): Promise<number> {
+export async function countPendingProposals(): Promise<number> {
+  const session = await getSessionUser();
+
   const result = await db
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(recurringProposals)
-    .where(and(eq(recurringProposals.userId, userId), eq(recurringProposals.status, "pending")))
+    .where(and(eq(recurringProposals.userId, session.id), eq(recurringProposals.status, "pending")))
     .limit(1);
 
   return result[0]?.count ?? 0;

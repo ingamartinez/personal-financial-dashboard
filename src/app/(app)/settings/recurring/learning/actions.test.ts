@@ -373,18 +373,26 @@ describe("countPendingProposals", () => {
     userAId = await seedUser(`${TAG}-userA@test.local`);
     accountAId = await seedAccount(userAId);
     recurringAId = await seedRecurring(userAId, accountAId, BigInt(-42000));
+    // Point the session mock at the freshly-seeded user.
+    mockGetSessionUser.mockResolvedValue({
+      id: userAId,
+      email: `${TAG}-userA@test.local`,
+      name: "UserA",
+      role: "user" as const,
+      active: true,
+    });
   });
 
   afterEach(cleanup);
 
   it("returns 0 when no pending proposals", async () => {
-    const count = await countPendingProposals(userAId);
+    const count = await countPendingProposals();
     expect(count).toBe(0);
   });
 
   it("returns correct count of pending proposals", async () => {
     await seedProposal(userAId, recurringAId, "amount_update", {});
-    const count = await countPendingProposals(userAId);
+    const count = await countPendingProposals();
     expect(count).toBe(1);
   });
 
@@ -395,7 +403,7 @@ describe("countPendingProposals", () => {
       .set({ status: "accepted" })
       .where(eq(recurringProposals.id, proposalId));
 
-    const count = await countPendingProposals(userAId);
+    const count = await countPendingProposals();
     expect(count).toBe(0);
   });
 });

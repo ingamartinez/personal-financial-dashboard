@@ -5,8 +5,8 @@ import Link from "next/link";
 import { SparklesIcon } from "lucide-react";
 import { countPendingProposals } from "@/app/(app)/settings/recurring/learning/actions";
 
-export async function RecurringProposalsBanner({ userId }: { userId: number }) {
-  const count = await countPendingProposals(userId);
+export async function RecurringProposalsBanner() {
+  const count = await countPendingProposals();
   if (count === 0) return null;
 
   return (

@@ -14,7 +14,7 @@
 // are skipped to avoid flooding the user.
 
 import type { Job } from "bullmq";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, lte, sql } from "drizzle-orm";
 
 import { createLogger } from "@/lib/logger";
 import { db } from "@/lib/db";
@@ -64,6 +64,19 @@ export async function recurringLearningProcessor(
   log.info({ event: "recurring_learning_start", jobId: job.id }, "recurring-learning started");
 
   const result: LearningResult = { usersProcessed: 0, proposalsCreated: 0, errors: 0 };
+
+  // Step 0: expire pending proposals older than 30 days BEFORE generating new ones.
+  // This is a global sweep (all users), idempotent on retry — runs outside per-row tx.
+  const cutoff = new Date(Date.now() - 30 * 86400000);
+  const expired = await db
+    .update(recurringProposals)
+    .set({ status: "expired", decidedAt: new Date() })
+    .where(and(eq(recurringProposals.status, "pending"), lte(recurringProposals.createdAt, cutoff)))
+    .returning({ id: recurringProposals.id });
+  log.info(
+    { event: "recurring_learning_expired", count: expired.length },
+    "expired stale pending proposals",
+  );
 
   // Step 1: find all (user_id, recurring_id) pairs with unapplied manual observations.
   // We use a raw SQL aggregation to get per-group stats efficiently.
@@ -125,108 +138,117 @@ export async function recurringLearningProcessor(
     usersSeen.add(userId);
 
     try {
-      // Check for an existing pending proposal of any type for this recurring.
-      const [existingPending] = await db
-        .select({ id: recurringProposals.id })
-        .from(recurringProposals)
-        .where(
-          and(
-            eq(recurringProposals.userId, userId),
-            eq(recurringProposals.recurringId, recurringId),
-            eq(recurringProposals.status, "pending"),
-          ),
-        )
-        .limit(1);
+      // Wrap SELECT + INSERT in a transaction to prevent race conditions from
+      // a manual Bull-Board trigger racing with the scheduled daily run.
+      const created = await db.transaction(async (trx) => {
+        // Check for an existing pending proposal of any type for this recurring.
+        const [existingPending] = await trx
+          .select({ id: recurringProposals.id })
+          .from(recurringProposals)
+          .where(
+            and(
+              eq(recurringProposals.userId, userId),
+              eq(recurringProposals.recurringId, recurringId),
+              eq(recurringProposals.status, "pending"),
+            ),
+          )
+          .limit(1);
 
-      if (existingPending) {
-        // A proposal is already pending — skip until user decides.
-        continue;
-      }
+        if (existingPending) {
+          // A proposal is already pending — skip until user decides.
+          return 0;
+        }
 
-      const distinctAmounts = [...new Set(amounts.map((a) => a.toString()))].map((s) => BigInt(s));
-
-      // ── Variable-flag check ───────────────────────────────────────────────
-      // N≥3 observations with >1 distinct amount → flag as variable.
-      if (obsCount >= MIN_OBSERVATIONS_FOR_VARIABLE_FLAG && distinctAmounts.length > 1) {
-        const payload: VariableFlagPayload = {
-          detectedAmounts: distinctAmounts.map((a) => a.toString()),
-          currency,
-          observationCount: obsCount,
-        };
-
-        await db.insert(recurringProposals).values({
-          userId,
-          recurringId,
-          proposalType: "variable_flag",
-          payload,
-        });
-
-        log.info(
-          {
-            event: "recurring_learning_proposal_variable",
-            userId,
-            recurringId,
-            obsCount,
-            distinctAmountsCount: distinctAmounts.length,
-          },
-          "variable_flag proposal created",
+        const distinctAmounts = [...new Set(amounts.map((a) => a.toString()))].map((s) =>
+          BigInt(s),
         );
 
-        result.proposalsCreated++;
-        continue;
-      }
-
-      // ── Amount-update check ───────────────────────────────────────────────
-      // N≥2 observations all showing the SAME amount that differs by >5%.
-      if (obsCount >= MIN_OBSERVATIONS_FOR_AMOUNT_UPDATE && distinctAmounts.length === 1) {
-        const newAmount = distinctAmounts[0];
-
-        // Sign-convention: amounts are signed (negative for expenses).
-        // Compare magnitudes with Math.abs to handle the sign correctly.
-        // Use Number() for comparisons since ES2017 target bans BigInt literals (0n).
-        const newAmountNum = Number(newAmount);
-        const estimatedAmountNum = Number(estimatedAmount);
-        const absNew = Math.abs(newAmountNum);
-        const absEst = Math.abs(estimatedAmountNum);
-
-        // Avoid divide-by-zero for zero-amount recurrings.
-        if (absEst === 0) continue;
-
-        // Express drift as a fraction. Using Number() is safe here — we only
-        // need a rough 5% comparison, not bigint precision.
-        const drift = Math.abs(absNew - absEst) / absEst;
-
-        if (drift > AMOUNT_DRIFT_THRESHOLD) {
-          const payload: AmountUpdatePayload = {
-            newAmountCents: newAmount.toString(),
-            oldAmountCents: estimatedAmount.toString(),
+        // ── Variable-flag check ─────────────────────────────────────────────
+        // N≥3 observations with >1 distinct amount → flag as variable.
+        if (obsCount >= MIN_OBSERVATIONS_FOR_VARIABLE_FLAG && distinctAmounts.length > 1) {
+          const payload: VariableFlagPayload = {
+            detectedAmounts: distinctAmounts.map((a) => a.toString()),
             currency,
             observationCount: obsCount,
           };
 
-          await db.insert(recurringProposals).values({
+          await trx.insert(recurringProposals).values({
             userId,
             recurringId,
-            proposalType: "amount_update",
+            proposalType: "variable_flag",
             payload,
           });
 
           log.info(
             {
-              event: "recurring_learning_proposal_amount",
+              event: "recurring_learning_proposal_variable",
               userId,
               recurringId,
-              estimatedAmount: estimatedAmount.toString(),
-              newAmount: newAmount.toString(),
-              driftPct: Math.round(drift * 100),
               obsCount,
+              distinctAmountsCount: distinctAmounts.length,
             },
-            "amount_update proposal created",
+            "variable_flag proposal created",
           );
 
-          result.proposalsCreated++;
+          return 1;
         }
-      }
+
+        // ── Amount-update check ─────────────────────────────────────────────
+        // N≥2 observations all showing the SAME amount that differs by >5%.
+        if (obsCount >= MIN_OBSERVATIONS_FOR_AMOUNT_UPDATE && distinctAmounts.length === 1) {
+          const newAmount = distinctAmounts[0];
+
+          // Sign-convention: amounts are signed (negative for expenses).
+          // Compare magnitudes with Math.abs to handle the sign correctly.
+          // Use Number() for comparisons since ES2017 target bans BigInt literals (0n).
+          const newAmountNum = Number(newAmount);
+          const estimatedAmountNum = Number(estimatedAmount);
+          const absNew = Math.abs(newAmountNum);
+          const absEst = Math.abs(estimatedAmountNum);
+
+          // Avoid divide-by-zero for zero-amount recurrings.
+          if (absEst === 0) return 0;
+
+          // Express drift as a fraction. Using Number() is safe here — we only
+          // need a rough 5% comparison, not bigint precision.
+          const drift = Math.abs(absNew - absEst) / absEst;
+
+          if (drift > AMOUNT_DRIFT_THRESHOLD) {
+            const payload: AmountUpdatePayload = {
+              newAmountCents: newAmount.toString(),
+              oldAmountCents: estimatedAmount.toString(),
+              currency,
+              observationCount: obsCount,
+            };
+
+            await trx.insert(recurringProposals).values({
+              userId,
+              recurringId,
+              proposalType: "amount_update",
+              payload,
+            });
+
+            log.info(
+              {
+                event: "recurring_learning_proposal_amount",
+                userId,
+                recurringId,
+                estimatedAmount: estimatedAmount.toString(),
+                newAmount: newAmount.toString(),
+                driftPct: Math.round(drift * 100),
+                obsCount,
+              },
+              "amount_update proposal created",
+            );
+
+            return 1;
+          }
+        }
+
+        return 0;
+      });
+
+      result.proposalsCreated += created;
     } catch (err) {
       log.error(
         {
