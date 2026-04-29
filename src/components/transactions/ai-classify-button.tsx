@@ -46,10 +46,12 @@ export function AiClassifyButton({ unclassified }: { unclassified: number }) {
  * Enqueues a single drain-pending job that drains ALL pending transactions for
  * the session user. The worker runs until empty (capped at 2000 txs).
  *
- * Note on idempotency: BullMQ deduplicates by jobId (`drain-<userId>`), so
- * multiple clicks while a drain is already running are no-ops at the queue
- * level. The button has no local "is draining" state — relying on this server-
- * side dedup avoids polling the job status from the client.
+ * Note on idempotency: BullMQ deduplicates via the `deduplication` option
+ * (`drain-<userId>`). Unlike the old `jobId`-based approach, the dedup key is
+ * automatically cleaned up when the job completes — so subsequent clicks after
+ * a completed drain correctly enqueue a new job. The server action returns
+ * `alreadyRunning: true` when an active job was deduplicated; the toast surfaces
+ * this truthfully instead of lying "Encolados N" when nothing was actually added.
  */
 export function DrainAllPendingButton({ unclassified }: { unclassified: number }) {
   const router = useRouter();
@@ -61,6 +63,10 @@ export function DrainAllPendingButton({ unclassified }: { unclassified: number }
     startTransition(async () => {
       try {
         const res = await enqueueClassifyAllPending();
+        if (res.alreadyRunning) {
+          toast.info("Ya hay un drain corriendo — mirá /admin/queues");
+          return;
+        }
         if (res.enqueued === 0) {
           toast.info("No pending transactions to classify");
           return;

@@ -9,7 +9,10 @@ import type { CounterpartyKind } from "@/lib/types";
 const queueMocks = vi.hoisted(() => {
   const addMock = vi.fn().mockResolvedValue({ id: "mock-job-id" });
   const queueInstance = { add: addMock };
-  return { addMock, queueInstance };
+  // Redis GET mock: default null (no dedup key = no live drain)
+  const redisGetMock = vi.fn().mockResolvedValue(null);
+  const redisInstance = { get: redisGetMock };
+  return { addMock, queueInstance, redisGetMock, redisInstance };
 });
 
 // `revalidatePath` requires a Next.js request context that vitest's node
@@ -40,9 +43,10 @@ vi.mock("@/lib/classification/ai", async () => {
   };
 });
 
-// Stub the BullMQ queue so runAiClassifier tests don't need a live Redis.
+// Stub the BullMQ queue and Redis so drain/classify tests don't need live Redis.
 vi.mock("@/lib/queue", () => ({
   createQueue: vi.fn().mockReturnValue(queueMocks.queueInstance),
+  getRedisConnection: vi.fn().mockReturnValue(queueMocks.redisInstance),
 }));
 
 const {
@@ -2165,6 +2169,9 @@ describe("enqueueClassifyAllPending (#592)", () => {
   beforeEach(async () => {
     await cleanupDrainTxs();
     queueMocks.addMock.mockClear();
+    queueMocks.redisGetMock.mockClear();
+    // Default: no dedup key in Redis = no live drain running
+    queueMocks.redisGetMock.mockResolvedValue(null);
   });
   afterEach(cleanupDrainTxs);
 
@@ -2182,6 +2189,7 @@ describe("enqueueClassifyAllPending (#592)", () => {
     const result = await enqueueClassifyAllPending();
 
     expect(result.enqueued).toBeGreaterThanOrEqual(1);
+    expect(result.alreadyRunning).toBeFalsy();
     expect(queueMocks.addMock).toHaveBeenCalledOnce();
 
     const [, jobData, jobOpts] = queueMocks.addMock.mock.calls[0];
@@ -2189,8 +2197,9 @@ describe("enqueueClassifyAllPending (#592)", () => {
     expect(jobData.userId).toBe(TEST_USER_ID);
     // drain-pending carries no txIds — the worker fetches them incrementally
     expect("txIds" in jobData).toBe(false);
-    // Idempotent jobId
-    expect(jobOpts.jobId).toBe(`drain-${TEST_USER_ID}`);
+    // Uses deduplication (not jobId) so completed jobs don't block re-adds
+    expect(jobOpts.deduplication?.id).toBe(`drain-${TEST_USER_ID}`);
+    expect(jobOpts.jobId).toBeUndefined();
   });
 
   it("returns the total pending count (not capped at batch size)", async () => {
@@ -2207,13 +2216,15 @@ describe("enqueueClassifyAllPending (#592)", () => {
     expect(queueMocks.addMock).toHaveBeenCalledOnce();
   });
 
-  it("uses a per-user idempotent jobId (drain-<userId>)", async () => {
+  it("uses deduplication.id = drain-<userId> (not jobId)", async () => {
     await seedUnclassifiedTx(`${EXT_PREFIX}:idem`);
 
     await enqueueClassifyAllPending();
 
     const [, , opts] = queueMocks.addMock.mock.calls[0];
-    expect(opts.jobId).toBe(`drain-${TEST_USER_ID}`);
+    expect(opts.deduplication?.id).toBe(`drain-${TEST_USER_ID}`);
+    // The old jobId approach is gone — it caused completed jobs to block re-adds
+    expect(opts.jobId).toBeUndefined();
   });
 
   it("does NOT update any transaction rows synchronously", async () => {
@@ -2225,6 +2236,55 @@ describe("enqueueClassifyAllPending (#592)", () => {
       SELECT classification_method FROM transactions WHERE id = ${txId}
     `);
     expect(row.classification_method).toBe("unclassified");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Deduplication regression tests (#646)
+  // ---------------------------------------------------------------------------
+
+  it("(dedup) returns { enqueued: pendingCount } when no prior drain exists — Test 1", async () => {
+    await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t1`);
+    // redisGetMock returns null by default — dedup key absent, no live drain
+    queueMocks.redisGetMock.mockResolvedValueOnce(null);
+
+    const result = await enqueueClassifyAllPending();
+
+    expect(result.enqueued).toBeGreaterThanOrEqual(1);
+    expect(result.alreadyRunning).toBeFalsy();
+    // Dedup key was read before add; add was called once
+    expect(queueMocks.redisGetMock).toHaveBeenCalledOnce();
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
+  });
+
+  it("(dedup) returns { enqueued: 0, alreadyRunning: true } when drain is active — Test 2", async () => {
+    await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t2`);
+    // Simulate an existing live drain: dedup key present in Redis
+    queueMocks.redisGetMock.mockResolvedValueOnce("42");
+
+    const result = await enqueueClassifyAllPending();
+
+    expect(result.enqueued).toBe(0);
+    expect(result.alreadyRunning).toBe(true);
+    // Short-circuited before queue.add — dedup detected via Redis GET
+    expect(queueMocks.addMock).not.toHaveBeenCalled();
+  });
+
+  it("(dedup) re-enqueues after a completed drain — Test 3 (regression: jobId blocked this)", async () => {
+    await seedUnclassifiedTx(`${EXT_PREFIX}:dedup-t3`);
+    // First call: dedup key is present (drain is running) → alreadyRunning
+    queueMocks.redisGetMock.mockResolvedValueOnce("42");
+    const first = await enqueueClassifyAllPending();
+    expect(first.alreadyRunning).toBe(true);
+    expect(queueMocks.addMock).not.toHaveBeenCalled();
+
+    // Second call: drain completed, BullMQ removed the dedup key → key absent
+    // This is the regression test: the old jobId approach kept the completed job
+    // hash in the completed set and blocked all future adds forever.
+    queueMocks.redisGetMock.mockResolvedValueOnce(null);
+    const second = await enqueueClassifyAllPending();
+    expect(second.enqueued).toBeGreaterThanOrEqual(1);
+    expect(second.alreadyRunning).toBeFalsy();
+    expect(queueMocks.addMock).toHaveBeenCalledOnce();
   });
 });
 
