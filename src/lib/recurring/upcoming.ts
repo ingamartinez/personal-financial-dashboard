@@ -385,9 +385,7 @@ async function getUpcomingForWindowImpl(
   }
 
   // Heuristic: unlinked txs in a broad range around the window for fallback matching.
-  const heuristicWindowStart = new Date(
-    windowStart.getTime() - matchWindowBeforeDays * 86400000,
-  );
+  const heuristicWindowStart = new Date(windowStart.getTime() - matchWindowBeforeDays * 86400000);
   const heuristicWindowEnd = new Date(
     windowEnd.getTime() + matchWindowAfterDays * 86400000 + 86399999,
   );
@@ -430,9 +428,7 @@ async function getUpcomingForWindowImpl(
       if (explicitTxId !== undefined) continue; // already matched — skip
 
       // Heuristic fallback: tx in same account + same amount in match window.
-      const matchHeurStart = new Date(
-        expectedDate.getTime() - matchWindowBeforeDays * 86400000,
-      );
+      const matchHeurStart = new Date(expectedDate.getTime() - matchWindowBeforeDays * 86400000);
       const matchHeurEnd = new Date(
         expectedDate.getTime() + matchWindowAfterDays * 86400000 + 86399999,
       );
@@ -446,8 +442,7 @@ async function getUpcomingForWindowImpl(
       if (heuristicMatch) continue; // already covered — skip
 
       // Determine status.
-      const status: UpcomingStatus =
-        expectedDate <= todayDate ? "overdue" : "upcoming";
+      const status: UpcomingStatus = expectedDate <= todayDate ? "overdue" : "upcoming";
 
       items.push({
         recurringId: r.id,

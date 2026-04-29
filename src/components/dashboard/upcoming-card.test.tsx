@@ -12,7 +12,11 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: routerRefresh }),
 }));
 vi.mock("next/link", () => ({
-  default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
+  default: ({
+    href,
+    children,
+    ...props
+  }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
     <a href={href} {...props}>
       {children}
     </a>
@@ -99,15 +103,18 @@ function makeItem(overrides: Partial<UpcomingCardItem> = {}): UpcomingCardItem {
 describe("UpcomingCard", () => {
   it("renders empty state when items list is empty", () => {
     render(<UpcomingCard items={[]} />);
-    expect(
-      screen.getByText(/Sin recurrentes pendientes/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Sin recurrentes pendientes/i)).toBeInTheDocument();
   });
 
   it("renders item labels and amounts", () => {
     const items = [
       makeItem({ label: "Arriendo", amountCents: "-150000000" }),
-      makeItem({ recurringId: 2, label: "Internet", amountCents: "-8000000", yearMonth: "2026-04" }),
+      makeItem({
+        recurringId: 2,
+        label: "Internet",
+        amountCents: "-8000000",
+        yearMonth: "2026-04",
+      }),
     ];
     render(<UpcomingCard items={items} />);
     expect(screen.getByText("Arriendo")).toBeInTheDocument();

@@ -189,11 +189,7 @@ export async function autoLinkTransaction(
    * Evaluate expectedDate for a given yearMonth (year, month 1-based).
    * Returns whether the tx falls in the match window for that month.
    */
-  function txInWindowForYearMonth(
-    dayOfMonth: number,
-    year: number,
-    month: number,
-  ): boolean {
+  function txInWindowForYearMonth(dayOfMonth: number, year: number, month: number): boolean {
     const effectiveDay = Math.min(dayOfMonth, daysInMonth(year, month));
     const expected = new Date(Date.UTC(year, month - 1, effectiveDay));
     const windowStart = new Date(expected.getTime() - DEFAULT_WINDOW_BEFORE_DAYS * 86400000);

@@ -1,27 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import {
-  accounts,
-  recurringTransactions,
-  transactions,
-  users,
-} from "@/lib/db/schema";
+import { accounts, recurringTransactions, transactions, users } from "@/lib/db/schema";
 import { getUpcomingForWindow } from "./upcoming";
 
 const TEST_USER_ID = 1;
 const TEST_USER2_EMAIL = "__upcoming_window_u2__@test.local";
 
 async function cleanup() {
-  await db.execute(
-    sql`DELETE FROM transactions WHERE description_raw LIKE '__upwin%'`,
-  );
-  await db.execute(
-    sql`DELETE FROM recurring_transactions WHERE label LIKE '__upwin%'`,
-  );
-  await db.execute(
-    sql`DELETE FROM accounts WHERE name LIKE '__upwin%'`,
-  );
+  await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__upwin%'`);
+  await db.execute(sql`DELETE FROM recurring_transactions WHERE label LIKE '__upwin%'`);
+  await db.execute(sql`DELETE FROM accounts WHERE name LIKE '__upwin%'`);
   await db.execute(sql`DELETE FROM users WHERE email = ${TEST_USER2_EMAIL}`);
 }
 

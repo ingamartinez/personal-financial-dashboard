@@ -70,10 +70,7 @@ function CandidateRow({
         <div className="text-muted-foreground truncate text-xs">{c.accountName}</div>
       </div>
       <div
-        className={cn(
-          "shrink-0 tabular-nums",
-          isExpense ? "text-rose-600" : "text-emerald-600",
-        )}
+        className={cn("shrink-0 tabular-nums", isExpense ? "text-rose-600" : "text-emerald-600")}
       >
         <Money cents={c.amountCents} currency={c.currency as Currency} />
       </div>
@@ -116,7 +113,12 @@ export function ForecastLinkTxDialog({
         })
         .catch((err) => {
           setLoadError(err instanceof Error ? err.message : "Error cargando candidatos");
-          setResult({ sugeridas: [], todas: [], recurringAmountCents: expectedAmountCents, recurringCurrency: currency });
+          setResult({
+            sugeridas: [],
+            todas: [],
+            recurringAmountCents: expectedAmountCents,
+            recurringCurrency: currency,
+          });
         });
     },
     [recurringId, yearMonth, expectedAmountCents, currency],
@@ -247,7 +249,7 @@ export function ForecastLinkTxDialog({
               {/* Sugeridas section */}
               {hasSugeridas ? (
                 <div className="flex flex-col gap-1">
-                  <p className="text-muted-foreground px-1 pt-1 text-xs font-medium uppercase tracking-wide">
+                  <p className="text-muted-foreground px-1 pt-1 text-xs font-medium tracking-wide uppercase">
                     Sugeridas
                   </p>
                   {filteredSugeridas.map((c) => (
@@ -265,7 +267,7 @@ export function ForecastLinkTxDialog({
               {filteredTodas.length > 0 ? (
                 <div className="flex flex-col gap-1">
                   {hasSugeridas ? (
-                    <p className="text-muted-foreground px-1 pt-2 text-xs font-medium uppercase tracking-wide">
+                    <p className="text-muted-foreground px-1 pt-2 text-xs font-medium tracking-wide uppercase">
                       Todas
                     </p>
                   ) : null}

@@ -97,7 +97,7 @@ export function UpcomingCard({
               </Link>
             </p>
           ) : (
-            <ul className="max-h-72 overflow-y-auto flex flex-col divide-y">
+            <ul className="flex max-h-72 flex-col divide-y overflow-y-auto">
               {items.map((item) => {
                 const cents = BigInt(item.amountCents);
                 return (

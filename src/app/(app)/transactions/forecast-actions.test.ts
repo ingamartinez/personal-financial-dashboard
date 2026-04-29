@@ -44,17 +44,11 @@ async function cleanup() {
 }
 
 async function seedUser(email: string): Promise<number> {
-  const [row] = await db
-    .insert(users)
-    .values({ email, name: email })
-    .returning({ id: users.id });
+  const [row] = await db.insert(users).values({ email, name: email }).returning({ id: users.id });
   return row.id;
 }
 
-async function seedAccount(
-  userId: number,
-  currency: "COP" | "USD" = "COP",
-): Promise<number> {
+async function seedAccount(userId: number, currency: "COP" | "USD" = "COP"): Promise<number> {
   const [row] = await db
     .insert(accounts)
     .values({
