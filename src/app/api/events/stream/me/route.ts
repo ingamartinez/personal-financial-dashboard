@@ -36,13 +36,15 @@ export async function GET(req: Request) {
       safeEnqueue(`: hello\n\n`);
 
       const onEvent = (event: AppEvent) => {
-        // Forward if event belongs to this user, or if it is an admin broadcast
-        // and the current session has the admin role.
-        const isOwn = event.userId === userId;
-        const isAdminBroadcast =
-          "audience" in event && event.audience === "admin" && role === "admin";
-
-        if (!isOwn && !isAdminBroadcast) return;
+        // notification:created carries an explicit audience that overrides the
+        // default userId-scoped delivery. audience: "admin" goes ONLY to admin
+        // sessions — even if event.userId matches a non-admin session, that
+        // user must not receive an admin-only notification.
+        if (event.type === "notification:created" && event.audience === "admin") {
+          if (role !== "admin") return;
+        } else if (event.userId !== userId) {
+          return;
+        }
 
         safeEnqueue(`data: ${JSON.stringify(event)}\n\n`);
       };

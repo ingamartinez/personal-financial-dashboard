@@ -83,6 +83,18 @@ function makeRequest() {
   return { req, controller };
 }
 
+/**
+ * Drains the Node event loop so any chunks synchronously enqueued by a bus
+ * `emit()` propagate to the ReadableStream reader. setImmediate runs after
+ * pending I/O callbacks; three cycles is deterministically enough without
+ * relying on wall-clock time.
+ */
+async function flush() {
+  for (let i = 0; i < 3; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -134,7 +146,7 @@ describe("GET /api/events/stream/me", () => {
     });
 
     // Give the stream a tick to process.
-    await new Promise((r) => setTimeout(r, 10));
+    await flush();
 
     controller.abort();
     const chunks = await reading;
@@ -163,7 +175,7 @@ describe("GET /api/events/stream/me", () => {
       timestamp: 456,
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await flush();
     controller.abort();
     const chunks = await reading;
 
@@ -199,7 +211,7 @@ describe("GET /api/events/stream/me", () => {
       },
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await flush();
     controller.abort();
     const chunks = await reading;
 
@@ -232,11 +244,48 @@ describe("GET /api/events/stream/me", () => {
       },
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await flush();
     controller.abort();
     const chunks = await reading;
 
     const text = chunks.join("");
     expect(text).not.toContain('"type":"notification:created"');
+  });
+
+  it("does NOT leak admin-broadcast notification:created to a non-admin user even when event.userId matches the session", async () => {
+    // Regression for an early-design bug where the filter short-circuited on
+    // "event belongs to me" before checking audience. An admin-only
+    // notification whose userId happened to match a non-admin session would
+    // be delivered to that user.
+    const USER_ID = 77;
+    mockGetSessionUserOrNull.mockResolvedValue(
+      makeSession({ id: USER_ID, role: "user" }),
+    );
+
+    const { req, controller } = makeRequest();
+    const res = await GET(req);
+
+    const reading = readChunks(res.body!, controller.signal);
+
+    emit({
+      type: "notification:created",
+      userId: USER_ID, // SAME as the session
+      audience: "admin",
+      notificationId: 11,
+      payload: {
+        title: "Admin alert about this user",
+        body: "Confidential",
+        priority: "high",
+        type: "system_alert",
+      },
+    });
+
+    await flush();
+    controller.abort();
+    const chunks = await reading;
+
+    const text = chunks.join("");
+    expect(text).not.toContain('"type":"notification:created"');
+    expect(text).not.toContain('"audience":"admin"');
   });
 });
