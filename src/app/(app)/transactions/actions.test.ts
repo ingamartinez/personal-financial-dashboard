@@ -60,6 +60,7 @@ const {
   updateTransactionInstallments,
   runAiClassifier,
   enqueueClassifyAllPending,
+  setTransactionCounterparty,
 } = await import("./actions");
 const { classifySingleWithAi: classifySingleWithAiLib } = await import("@/lib/classification/ai");
 const mockAiClassifySingle = vi.mocked(classifySingleWithAiLib);
@@ -2224,5 +2225,321 @@ describe("enqueueClassifyAllPending (#592)", () => {
       SELECT classification_method FROM transactions WHERE id = ${txId}
     `);
     expect(row.classification_method).toBe("unclassified");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setTransactionCounterparty
+// ---------------------------------------------------------------------------
+
+describe("setTransactionCounterparty", () => {
+  const CPSET_EXT = "test-cpset";
+  const CPSET_ALIAS = "test-cpset-";
+
+  // Helper: seed a tx with no counterparty and a given merchant value
+  async function seedTxForCpSet(args: {
+    externalId: string;
+    merchant?: string | null;
+    counterpartyId?: number | null;
+  }): Promise<number> {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        merchant, counterparty_id, category_slug, classification_method, source, external_id, raw_data
+      ) VALUES (
+        ${TEST_USER_ID}, ${acc.id}, now(), -5000, 'COP', 'test tx',
+        ${args.merchant ?? null},
+        ${args.counterpartyId ?? null},
+        null,
+        'unclassified'::classification_method,
+        'manual',
+        ${args.externalId},
+        '{}'::jsonb
+      )
+      RETURNING id
+    `);
+    return rows[0].id;
+  }
+
+  // Helper: seed a counterparty with an alias owned by TEST_USER_ID
+  async function seedCpForCpSet(args: {
+    displayName: string;
+    aliasKind?: string;
+    aliasValue?: string;
+  }): Promise<number> {
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO counterparties (user_id, display_name, type)
+      VALUES (${TEST_USER_ID}, ${args.displayName}, 'unknown')
+      RETURNING id
+    `);
+    const cpId = rows[0].id;
+    if (args.aliasKind && args.aliasValue) {
+      await db.execute(sql`
+        INSERT INTO counterparty_aliases (user_id, counterparty_id, kind, value)
+        VALUES (
+          ${TEST_USER_ID}, ${cpId},
+          ${args.aliasKind}::counterparty_key_kind,
+          ${args.aliasValue}
+        )
+      `);
+    }
+    return cpId;
+  }
+
+  async function cleanupCpSet() {
+    await db.execute(sql`
+      DELETE FROM transactions WHERE external_id LIKE ${CPSET_EXT + ":%"}
+    `);
+    await db.execute(sql`
+      DELETE FROM counterparties
+      WHERE id IN (
+        SELECT counterparty_id FROM counterparty_aliases WHERE value LIKE ${CPSET_ALIAS + "%"}
+      )
+         OR display_name LIKE ${CPSET_ALIAS + "%"}
+    `);
+    // Also clean tenant-isolation test users
+    await db.execute(sql`
+      DELETE FROM users WHERE email LIKE 'tenant-cpset-%@test.local'
+    `);
+  }
+
+  beforeEach(async () => {
+    await cleanupCpSet();
+  });
+
+  afterEach(async () => {
+    await cleanupCpSet();
+  });
+
+  it("links an existing counterparty and auto-aliases the tx merchant", async () => {
+    const cpId = await seedCpForCpSet({
+      displayName: `${CPSET_ALIAS}amazon`,
+      aliasKind: "name",
+      aliasValue: `${CPSET_ALIAS}amazon`,
+    });
+    const txId = await seedTxForCpSet({
+      externalId: `${CPSET_EXT}:link-existing`,
+      merchant: "AMAZN MKTPL",
+    });
+
+    const res = await setTransactionCounterparty({ txId, counterpartyId: cpId });
+    expect(res.status).toBe("ok");
+
+    // tx is now linked
+    const [txRow] = await db.execute<{ counterparty_id: number }>(sql`
+      SELECT counterparty_id FROM transactions WHERE id = ${txId}
+    `);
+    expect(txRow.counterparty_id).toBe(cpId);
+
+    // auto-alias from merchant inserted
+    const aliases = await db.execute<{ id: number }>(sql`
+      SELECT id FROM counterparty_aliases
+      WHERE user_id = ${TEST_USER_ID}
+        AND counterparty_id = ${cpId}
+        AND kind = 'name'
+        AND value = 'AMAZN MKTPL'
+    `);
+    expect(aliases.length).toBeGreaterThan(0);
+  });
+
+  it("creates a new counterparty by displayName and links", async () => {
+    const txId = await seedTxForCpSet({
+      externalId: `${CPSET_EXT}:create-new`,
+      merchant: "RAPPI",
+    });
+
+    const res = await setTransactionCounterparty({
+      txId,
+      counterpartyId: null,
+      displayName: "Rappi",
+    });
+    expect(res.status).toBe("ok");
+
+    // tx has a counterparty now
+    const [txRow] = await db.execute<{ counterparty_id: number }>(sql`
+      SELECT counterparty_id FROM transactions WHERE id = ${txId}
+    `);
+    expect(txRow.counterparty_id).not.toBeNull();
+    const newCpId = txRow.counterparty_id;
+
+    // counterparty row has right display_name
+    const [cp] = await db.execute<{ display_name: string }>(sql`
+      SELECT display_name FROM counterparties WHERE id = ${newCpId}
+    `);
+    expect(cp.display_name).toBe("Rappi");
+
+    // alias for normalized name exists
+    const [alias] = await db.execute<{ value: string }>(sql`
+      SELECT value FROM counterparty_aliases
+      WHERE counterparty_id = ${newCpId} AND kind = 'name'
+    `);
+    expect(alias.value).toBe("RAPPI");
+
+    // auto-alias for merchant also exists (ON CONFLICT DO NOTHING — same value)
+    const aliases = await db.execute<{ id: number }>(sql`
+      SELECT id FROM counterparty_aliases
+      WHERE counterparty_id = ${newCpId} AND kind = 'name' AND value = 'RAPPI'
+    `);
+    expect(aliases.length).toBe(1);
+  });
+
+  it("unlinks an existing counterparty when both null", async () => {
+    const cpId = await seedCpForCpSet({
+      displayName: `${CPSET_ALIAS}unlink-test`,
+    });
+    const txId = await seedTxForCpSet({
+      externalId: `${CPSET_EXT}:unlink`,
+      counterpartyId: cpId,
+    });
+
+    const res = await setTransactionCounterparty({ txId, counterpartyId: null });
+    expect(res.status).toBe("ok");
+
+    const [txRow] = await db.execute<{ counterparty_id: number | null }>(sql`
+      SELECT counterparty_id FROM transactions WHERE id = ${txId}
+    `);
+    expect(txRow.counterparty_id).toBeNull();
+  });
+
+  it("rejects tx owned by another user (tenant safety)", async () => {
+    // Create a second user
+    const userBEmail = `tenant-cpset-${Date.now()}-${Math.random()}@test.local`;
+    let userBId: number | undefined;
+    try {
+      const [userB] = await db.execute<{ id: number }>(sql`
+        INSERT INTO users (email, name, created_at, updated_at)
+        VALUES (${userBEmail}, 'User B', now(), now())
+        RETURNING id
+      `);
+      userBId = userB.id;
+
+      // Seed a tx owned by USER_B
+      const [acc] = await db.execute<{ id: number }>(sql`
+        SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+      `);
+      const [txRow] = await db.execute<{ id: number }>(sql`
+        INSERT INTO transactions (
+          user_id, account_id, occurred_at, amount_cents, currency,
+          description_raw, classification_method, source, external_id, raw_data
+        ) VALUES (
+          ${userBId}, ${acc.id}, now(), -1000, 'COP', 'other user tx',
+          'unclassified'::classification_method, 'manual',
+          ${CPSET_EXT + ":tenant-safety"},
+          '{}'::jsonb
+        )
+        RETURNING id
+      `);
+      const txId = txRow.id;
+
+      // USER_A (session = 1) tries to assign a counterparty to USER_B's tx
+      const res = await setTransactionCounterparty({ txId, counterpartyId: null });
+      expect(res.status).toBe("error");
+
+      // tx unchanged
+      const [row] = await db.execute<{ counterparty_id: number | null }>(sql`
+        SELECT counterparty_id FROM transactions WHERE id = ${txId}
+      `);
+      expect(row.counterparty_id).toBeNull();
+    } finally {
+      if (userBId) {
+        await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
+      }
+    }
+  });
+
+  it("rejects counterparty owned by another user (cross-tenant)", async () => {
+    const userBEmail = `tenant-cpset-${Date.now()}-${Math.random()}@test.local`;
+    let userBId: number | undefined;
+    try {
+      const [userB] = await db.execute<{ id: number }>(sql`
+        INSERT INTO users (email, name, created_at, updated_at)
+        VALUES (${userBEmail}, 'User B', now(), now())
+        RETURNING id
+      `);
+      userBId = userB.id;
+
+      // Counterparty owned by USER_B
+      const [cpRow] = await db.execute<{ id: number }>(sql`
+        INSERT INTO counterparties (user_id, display_name, type)
+        VALUES (${userBId}, 'Other User CP', 'unknown')
+        RETURNING id
+      `);
+      const otherCpId = cpRow.id;
+
+      // tx owned by USER_A
+      const txId = await seedTxForCpSet({ externalId: `${CPSET_EXT}:cross-tenant-cp` });
+
+      // USER_A tries to link USER_B's counterparty
+      const res = await setTransactionCounterparty({ txId, counterpartyId: otherCpId });
+      expect(res.status).toBe("error");
+
+      // tx unchanged
+      const [row] = await db.execute<{ counterparty_id: number | null }>(sql`
+        SELECT counterparty_id FROM transactions WHERE id = ${txId}
+      `);
+      expect(row.counterparty_id).toBeNull();
+    } finally {
+      if (userBId) {
+        await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
+      }
+    }
+  });
+
+  it("is idempotent on auto-alias (ON CONFLICT DO NOTHING)", async () => {
+    const cpId = await seedCpForCpSet({
+      displayName: `${CPSET_ALIAS}idem-test`,
+      aliasKind: "name",
+      aliasValue: `${CPSET_ALIAS}idem-test`,
+    });
+    const txId = await seedTxForCpSet({
+      externalId: `${CPSET_EXT}:idempotent`,
+      merchant: "IDEM MERCHANT",
+    });
+
+    // Call twice — second should not fail on UNIQUE constraint
+    const res1 = await setTransactionCounterparty({ txId, counterpartyId: cpId });
+    const res2 = await setTransactionCounterparty({ txId, counterpartyId: cpId });
+    expect(res1.status).toBe("ok");
+    expect(res2.status).toBe("ok");
+
+    // Only one alias row for this merchant
+    const aliases = await db.execute<{ id: number }>(sql`
+      SELECT id FROM counterparty_aliases
+      WHERE user_id = ${TEST_USER_ID}
+        AND counterparty_id = ${cpId}
+        AND kind = 'name'
+        AND value = 'IDEM MERCHANT'
+    `);
+    expect(aliases.length).toBe(1);
+  });
+
+  it("does NOT create auto-alias when merchant is null", async () => {
+    const cpId = await seedCpForCpSet({
+      displayName: `${CPSET_ALIAS}no-merchant`,
+      aliasKind: "name",
+      aliasValue: `${CPSET_ALIAS}no-merchant`,
+    });
+    const txId = await seedTxForCpSet({
+      externalId: `${CPSET_EXT}:no-merchant`,
+      merchant: null,
+    });
+
+    const aliasBefore = await db.execute<{ id: number }>(sql`
+      SELECT id FROM counterparty_aliases
+      WHERE counterparty_id = ${cpId} AND kind = 'name' AND value != ${CPSET_ALIAS + "no-merchant"}
+    `);
+
+    const res = await setTransactionCounterparty({ txId, counterpartyId: cpId });
+    expect(res.status).toBe("ok");
+
+    // No new alias rows created for NULL merchant
+    const aliasAfter = await db.execute<{ id: number }>(sql`
+      SELECT id FROM counterparty_aliases
+      WHERE counterparty_id = ${cpId} AND kind = 'name' AND value != ${CPSET_ALIAS + "no-merchant"}
+    `);
+    expect(aliasAfter.length).toBe(aliasBefore.length);
   });
 });
