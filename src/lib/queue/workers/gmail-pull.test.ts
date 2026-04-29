@@ -24,7 +24,12 @@ import { gmailPullProcessor, type GmailPullJobData } from "./gmail-pull";
 // ---------------------------------------------------------------------------
 
 function makeJob(data: GmailPullJobData): Job<GmailPullJobData> {
-  return { id: "test-job-gmail-pull", data } as unknown as Job<GmailPullJobData>;
+  return {
+    id: "test-job-gmail-pull",
+    data,
+    updateProgress: vi.fn().mockResolvedValue(undefined),
+    log: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Job<GmailPullJobData>;
 }
 
 const emptyResult = {
@@ -129,5 +134,37 @@ describe("gmailPullProcessor — mode: single-user", () => {
     await expect(gmailPullProcessor(makeJob({ mode: "single-user", userId: 1 }))).rejects.toThrow(
       "Gmail API timeout",
     );
+  });
+
+  it("calls updateProgress at start and done — Bull-Board contract", async () => {
+    mocks.pullForUser.mockResolvedValueOnce({ ...emptyResult, userId: 5, pulled: 4, skipped: 1 });
+
+    const job = makeJob({ mode: "single-user", userId: 5 });
+    await gmailPullProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 5, phase: "auth" }),
+    );
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
+  });
+});
+
+describe("gmailPullProcessor — mode: all — Bull-Board contract", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("calls updateProgress at start and done", async () => {
+    mocks.pullAllActiveConnections.mockResolvedValueOnce([
+      { ...emptyResult, userId: 1, pulled: 3 },
+    ]);
+
+    const job = makeJob({ mode: "all" });
+    await gmailPullProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ users: 0 }));
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
   });
 });

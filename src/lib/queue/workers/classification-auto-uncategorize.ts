@@ -34,6 +34,9 @@ export async function classificationAutoUncategorizeProcessor(
     "classification-auto-uncategorize started",
   );
 
+  await job.updateProgress({ users: 0, total: 0 });
+  await job.log("start: scanning stale low-confidence inbox rows");
+
   const result = await db
     .update(transactions)
     .set({
@@ -62,6 +65,9 @@ export async function classificationAutoUncategorizeProcessor(
     { event: "auto_uncategorize_completed", rowsUpdated },
     "auto-uncategorize batch finished",
   );
+
+  await job.updateProgress({ done: true, totalMoved: rowsUpdated, totalUsers: 0 });
+  await job.log(`done: moved=${rowsUpdated} rows to category=otros`);
 
   return { rowsUpdated };
 }

@@ -24,10 +24,14 @@ export type HealthSnapshotsJobData = Record<string, never>;
 export async function healthSnapshotsProcessor(job: Job<HealthSnapshotsJobData>): Promise<void> {
   log.info({ event: "health_snapshots_start", jobId: job.id }, "health-snapshots started");
 
+  await job.updateProgress({ users: 0, total: 0 });
+  await job.log("start: running snapshotAllActiveUsers");
+
   const results = await snapshotAllActiveUsers();
 
   const churned = results.filter((r) => r.ok && r.data.churnSignalFlag).length;
   const failed = results.filter((r) => !r.ok).length;
+  const snapshotsTaken = results.filter((r) => r.ok).length;
 
   log.info(
     { total: results.length, churned, failed, event: "user_health_snapshots_done", jobId: job.id },
@@ -42,6 +46,11 @@ export async function healthSnapshotsProcessor(job: Job<HealthSnapshotsJobData>)
       );
     }
   }
+
+  await job.updateProgress({ done: true, snapshotsTaken, totalUsers: results.length });
+  await job.log(
+    `done: users=${results.length} snapshots=${snapshotsTaken} churned=${churned} failed=${failed}`,
+  );
 }
 
 /**

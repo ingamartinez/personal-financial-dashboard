@@ -22,7 +22,12 @@ import { sloAlertsProcessor, type SloAlertsJobData } from "./slo-alerts";
 // ---------------------------------------------------------------------------
 
 function makeJob(data: SloAlertsJobData = {}): Job<SloAlertsJobData> {
-  return { id: "test-job-slo-alerts", data } as unknown as Job<SloAlertsJobData>;
+  return {
+    id: "test-job-slo-alerts",
+    data,
+    updateProgress: vi.fn().mockResolvedValue(undefined),
+    log: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Job<SloAlertsJobData>;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,5 +73,19 @@ describe("sloAlertsProcessor", () => {
     mocks.checkAndAlertSlos.mockRejectedValueOnce(new Error("Telegram API unreachable"));
 
     await expect(sloAlertsProcessor(makeJob())).rejects.toThrow("Telegram API unreachable");
+  });
+
+  it("calls updateProgress at start and done — Bull-Board contract", async () => {
+    mocks.checkAndAlertSlos.mockResolvedValueOnce([
+      { action: "fire", sloKey: "parse_success" },
+      { action: "noop", sloKey: "classify_success" },
+    ]);
+
+    const job = makeJob();
+    await sloAlertsProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "checking" }));
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
   });
 });

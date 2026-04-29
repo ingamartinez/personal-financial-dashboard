@@ -61,6 +61,8 @@ function makeJob(
   return {
     id: "test-job-auto-uncat",
     data,
+    updateProgress: vi.fn().mockResolvedValue(undefined),
+    log: vi.fn().mockResolvedValue(undefined),
   } as unknown as Job<ClassificationAutoUncategorizeJobData>;
 }
 
@@ -134,6 +136,17 @@ describe("classificationAutoUncategorizeProcessor", () => {
     await expect(classificationAutoUncategorizeProcessor(makeJob())).rejects.toThrow(
       "db connection lost",
     );
+  });
+
+  it("calls updateProgress at start and done — Bull-Board contract", async () => {
+    mocks.dbUpdateSetWhereReturning.mockResolvedValueOnce([{ id: 1 }, { id: 2 }]);
+
+    const job = makeJob();
+    await classificationAutoUncategorizeProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ users: 0 }));
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
+    expect(job.log).toHaveBeenCalled();
   });
 
   it("stores the correct classificationReason JSON in the set call", async () => {

@@ -63,6 +63,9 @@ export async function recurringLearningProcessor(
 ): Promise<LearningResult> {
   log.info({ event: "recurring_learning_start", jobId: job.id }, "recurring-learning started");
 
+  await job.updateProgress({ users: 0, total: 0 });
+  await job.log("start: expiring stale proposals + scanning observations");
+
   const result: LearningResult = { usersProcessed: 0, proposalsCreated: 0, errors: 0 };
 
   // Step 0: expire pending proposals older than 30 days BEFORE generating new ones.
@@ -77,6 +80,7 @@ export async function recurringLearningProcessor(
     { event: "recurring_learning_expired", count: expired.length },
     "expired stale pending proposals",
   );
+  await job.log(`expired: stale proposals expired=${expired.length}`);
 
   // Step 1: find all (user_id, recurring_id) pairs with unapplied manual observations.
   // We use a raw SQL aggregation to get per-group stats efficiently.
@@ -135,7 +139,16 @@ export async function recurringLearningProcessor(
       continue;
     }
 
+    const isNewUser = !usersSeen.has(userId);
     usersSeen.add(userId);
+
+    if (isNewUser) {
+      await job.updateProgress({
+        users: usersSeen.size,
+        total: groups.length,
+        proposals: result.proposalsCreated,
+      });
+    }
 
     try {
       // Wrap SELECT + INSERT in a transaction to prevent race conditions from
@@ -274,6 +287,15 @@ export async function recurringLearningProcessor(
       errors: result.errors,
     },
     "recurring-learning complete",
+  );
+
+  await job.updateProgress({
+    done: true,
+    proposalsGenerated: result.proposalsCreated,
+    totalUsers: result.usersProcessed,
+  });
+  await job.log(
+    `done: users=${result.usersProcessed} proposals=${result.proposalsCreated} errors=${result.errors}`,
   );
 
   return result;

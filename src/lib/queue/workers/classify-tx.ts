@@ -36,7 +36,20 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       "classifying specific txIds",
     );
 
+    await job.updateProgress({ mode, userId, pending: txIds.length });
+    await job.log(`start: mode=specific txIds=${txIds.length} userId=${userId}`);
+
     const result = await classifyUnclassifiedBatch(userId, { txIds });
+
+    await job.updateProgress({
+      done: true,
+      totalAiClassified: result.aiClassified,
+      totalRuleClassified: result.ruleClassified,
+      totalSkipped: result.skipped,
+    });
+    await job.log(
+      `done: picked=${result.picked} ai=${result.aiClassified} rule=${result.ruleClassified} skipped=${result.skipped}`,
+    );
 
     log.info(
       {
@@ -64,11 +77,20 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
   let totalRuleClassified = 0;
   let totalSkipped = 0;
   let iterations = 0;
+  let drainStartLogged = false;
 
   while (iterations < MAX_DRAIN_ITERATIONS) {
     iterations++;
 
     const pendingCount = await countUnclassified(userId);
+
+    // Emit start progress on first iteration, using the actual pending count.
+    if (!drainStartLogged) {
+      await job.updateProgress({ mode, userId, pending: pendingCount });
+      await job.log(`drain start: userId=${userId} pending=${pendingCount}`);
+      drainStartLogged = true;
+    }
+
     log.info(
       { event: "classify_drain_tick", userId, pendingCount, iteration: iterations, jobId: job.id },
       "drain-pending tick",
@@ -87,6 +109,15 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
         },
         "classify-tx drain-pending complete — no more pending",
       );
+      await job.updateProgress({
+        done: true,
+        totalAiClassified,
+        totalRuleClassified,
+        totalSkipped,
+      });
+      await job.log(
+        `drain complete: userId=${userId} iterations=${iterations} ai=${totalAiClassified} rule=${totalRuleClassified} skipped=${totalSkipped}`,
+      );
       return;
     }
 
@@ -95,6 +126,18 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
     totalAiClassified += result.aiClassified;
     totalRuleClassified += result.ruleClassified;
     totalSkipped += result.skipped;
+
+    await job.updateProgress({
+      iteration: iterations,
+      picked: result.picked,
+      aiClassified: result.aiClassified,
+      ruleClassified: result.ruleClassified,
+      skipped: result.skipped,
+      pending: pendingCount,
+    });
+    await job.log(
+      `iteration ${iterations}: picked=${result.picked} ai=${result.aiClassified} rule=${result.ruleClassified} skipped=${result.skipped} pending=${pendingCount}`,
+    );
 
     log.info(
       {
@@ -123,6 +166,9 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
         },
         "drain-pending stalled: pendingCount > 0 but pipeline picked 0 — aborting",
       );
+      await job.log(
+        `stalled: userId=${userId} pendingCount=${pendingCount} iteration=${iterations} — aborting`,
+      );
       return;
     }
   }
@@ -138,6 +184,10 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       jobId: job.id,
     },
     "classify-tx drain-pending reached iteration limit — stopping",
+  );
+  await job.updateProgress({ done: true, totalAiClassified, totalRuleClassified, totalSkipped });
+  await job.log(
+    `limit reached: maxIterations=${MAX_DRAIN_ITERATIONS} ai=${totalAiClassified} rule=${totalRuleClassified}`,
   );
 }
 

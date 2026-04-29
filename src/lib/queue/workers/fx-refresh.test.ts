@@ -29,7 +29,12 @@ import { fxRefreshProcessor, type FxRefreshJobData } from "./fx-refresh";
 // ---------------------------------------------------------------------------
 
 function makeJob(data: FxRefreshJobData = {}): Job<FxRefreshJobData> {
-  return { id: "test-job-1", data } as unknown as Job<FxRefreshJobData>;
+  return {
+    id: "test-job-1",
+    data,
+    updateProgress: vi.fn().mockResolvedValue(undefined),
+    log: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Job<FxRefreshJobData>;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,5 +104,21 @@ describe("fxRefreshProcessor", () => {
     // Should complete without error regardless of the reason tag.
     await expect(fxRefreshProcessor(makeJob({ reason: "boot-backfill" }))).resolves.toBeUndefined();
     expect(mocks.upsertFxRate).toHaveBeenCalledOnce();
+  });
+
+  it("calls updateProgress at start and done — Bull-Board contract", async () => {
+    mocks.fetchTrm.mockResolvedValueOnce({
+      rate: 4200,
+      asOf: "2026-04-28",
+      source: "trm",
+    });
+    mocks.upsertFxRate.mockResolvedValueOnce(undefined);
+
+    const job = makeJob();
+    await fxRefreshProcessor(job);
+
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "fetching" }));
+    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "done" }));
+    expect(job.log).toHaveBeenCalled();
   });
 });

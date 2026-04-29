@@ -19,7 +19,14 @@ export async function fxRefreshProcessor(job: Job<FxRefreshJobData>): Promise<vo
   const trigger = job.data.reason ?? "scheduled";
   log.info({ event: "fx_refresh_start", trigger, jobId: job.id }, "fx-refresh started");
 
+  await job.updateProgress({ phase: "fetching" });
+  await job.log(`start: trigger=${trigger}`);
+
   const trm = await fetchTrm();
+
+  await job.updateProgress({ phase: "persisted", source: trm.source });
+  await job.log(`fetched: rate=${trm.rate} asOf=${trm.asOf} source=${trm.source}`);
+
   await upsertFxRate({
     base: "USD",
     quote: "COP",
@@ -27,6 +34,9 @@ export async function fxRefreshProcessor(job: Job<FxRefreshJobData>): Promise<vo
     asOf: trm.asOf,
     source: trm.source,
   });
+
+  await job.updateProgress({ phase: "done", source: trm.source, rate: trm.rate });
+  await job.log(`done: rate=${trm.rate} asOf=${trm.asOf}`);
 
   log.info(
     { event: "fx_refresh_done", rate: trm.rate, observedAt: trm.asOf, trigger },
