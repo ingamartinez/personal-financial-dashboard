@@ -1319,13 +1319,57 @@ describe("markUncategorized", () => {
   });
 
   it("rejects when txId belongs to another user (tenant safety)", async () => {
-    // Seed with TEST_USER_ID=1, session is mocked to user id 1.
-    // We test by using a non-existent txId to simulate cross-tenant rejection.
-    const result = await markUncategorized({ txId: 9_999_998 });
-    expect(result).toEqual({
-      status: "error",
-      message: "Transacción no está pendiente de revisión.",
-    });
+    // Seed a real row under a different user_id and prove that markUncategorized
+    // — running with session.id = TEST_USER_ID = 1 — cannot touch it. A regression
+    // that drops `eq(transactions.userId, session.id)` from the WHERE would leak
+    // here. Cleanup via CASCADE on user delete.
+    const uniqueEmail = `mark-uncat-tenant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
+    const [otherUser] = await db.execute<{ id: number }>(sql`
+      INSERT INTO users (email, name)
+      VALUES (${uniqueEmail}, 'Tenant Test')
+      RETURNING id
+    `);
+    const [otherAcc] = await db.execute<{ id: number }>(sql`
+      INSERT INTO accounts (user_id, name, institution, type, currency)
+      VALUES (${otherUser.id}, 'Other Bank', 'OTHER', 'savings', 'COP')
+      RETURNING id
+    `);
+    // category_slug NULL avoids needing to seed per-user categories (FK is on
+    // (user_id, category_slug) and only fires when category_slug IS NOT NULL).
+    const [otherTx] = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        merchant, category_slug, classification_method, classification_confidence,
+        source, external_id
+      ) VALUES (
+        ${otherUser.id}, ${otherAcc.id}, now(), -5000, 'COP', 'cross-tenant',
+        'CROSS-TENANT', NULL, 'rule'::classification_method, 45,
+        'sms', 'test-mark-uncat:cross-tenant'
+      )
+      RETURNING id
+    `);
+
+    try {
+      const result = await markUncategorized({ txId: otherTx.id });
+      expect(result).toEqual({
+        status: "error",
+        message: "Transacción no está pendiente de revisión.",
+      });
+
+      const [row] = await db.execute<{
+        classification_method: string;
+        category_slug: string | null;
+        user_id: number;
+      }>(sql`
+        SELECT classification_method, category_slug, user_id
+        FROM transactions WHERE id = ${otherTx.id}
+      `);
+      expect(row.classification_method).toBe("rule");
+      expect(row.category_slug).toBeNull();
+      expect(row.user_id).toBe(otherUser.id);
+    } finally {
+      await db.execute(sql`DELETE FROM users WHERE id = ${otherUser.id}`);
+    }
   });
 });
 

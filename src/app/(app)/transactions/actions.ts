@@ -269,6 +269,7 @@ export async function markUncategorized(input: {
 
   revalidatePath("/settings/inbox");
   revalidatePath("/transactions");
+  revalidatePath("/insights");
   return { status: "ok" };
 }
 
