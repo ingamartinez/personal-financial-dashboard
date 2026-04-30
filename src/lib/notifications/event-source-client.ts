@@ -6,6 +6,7 @@ export type EventStreamOptions = {
   url: string;
   onEvent: (event: AppEvent) => void;
   onError?: (err: Error) => void;
+  onOpen?: () => void;
 };
 
 export type EventStreamHandle = {
@@ -24,7 +25,7 @@ const BACKOFF_STEPS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
  * client. The eslint-disable below is intentional — do not remove it.
  */
 export function createEventStream(opts: EventStreamOptions): EventStreamHandle {
-  const { url, onEvent, onError } = opts;
+  const { url, onEvent, onError, onOpen } = opts;
 
   let source: EventSource | null = null;
   let backoffIndex = 0;
@@ -35,6 +36,12 @@ export function createEventStream(opts: EventStreamOptions): EventStreamHandle {
     if (closed) return;
 
     source = new EventSource(url);
+
+    // Wire onOpen so reconnects also fire it — callers use it to close the
+    // SSR→SSE race window (e.g. re-fetch unread count after connection opens).
+    source.onopen = () => {
+      onOpen?.();
+    };
 
     source.onmessage = (e: MessageEvent) => {
       // Reset backoff on a successful message — the connection is live.
