@@ -368,7 +368,32 @@ async function processPendingBancolombiaReceipts(userId: number): Promise<void> 
   for (const receipt of pending) {
     try {
       const parsed = parseBancolombiaEmail(receipt.rawHtml);
-      await ingestParsedEmail(userId, parsed, receipt.id);
+      // Capture result to emit gmail_source_mismatch on real-time/cron path.
+      // Backfill intentionally skips per-row emit — the aggregated
+      // gmail_backfill_complete notification carries the sourceMismatches count.
+      const ingest = await ingestParsedEmail(userId, parsed, receipt.id);
+      if (ingest.status === "duplicated" && ingest.flaggedMismatch && ingest.txId) {
+        emitNotification(userId, {
+          type: "gmail_source_mismatch",
+          entityId: String(ingest.txId),
+          priority: "medium",
+          title: "Movimiento con info diferente",
+          body: "Encontramos un email cuyo monto/fecha/comercio difiere del movimiento ya registrado. Revisalo.",
+          actionUrl: `/transactions/${ingest.txId}`,
+          metadata: { txId: ingest.txId, receiptId: receipt.id, gateway: "bancolombia" },
+        }).catch((err) =>
+          log.error(
+            {
+              err,
+              userId,
+              txId: ingest.txId,
+              receiptId: receipt.id,
+              event: "gmail_source_mismatch_emit_failed",
+            },
+            "gmail_source_mismatch emit failed",
+          ),
+        );
+      }
     } catch (err) {
       log.error(
         {

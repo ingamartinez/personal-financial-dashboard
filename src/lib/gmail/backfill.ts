@@ -424,6 +424,9 @@ export async function backfillBancolombia(
         report.inserted++;
       } else if (outcome.status === "duplicated") {
         report.matchedExisting++;
+        // Per-row gmail_source_mismatch emit is intentionally skipped here —
+        // backfill processes batches and the aggregated gmail_backfill_complete
+        // notification carries the sourceMismatches count instead.
         if (outcome.flaggedMismatch) report.sourceMismatches++;
       } else if (outcome.status === "error") {
         report.errors.push({

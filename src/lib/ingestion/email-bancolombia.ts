@@ -128,7 +128,7 @@ export async function ingestParsedEmail(
       );
     }
     await markReceiptMatched(receiptId, userId, match.id, parsed);
-    return { status: "duplicated", flaggedMismatch };
+    return { status: "duplicated", flaggedMismatch, txId: match.id };
   }
 
   // No existing tx covers this event — insert fresh through the shared
