@@ -42,6 +42,7 @@ export async function registerNode() {
     await import("@/lib/queue/workers/classification-auto-uncategorize");
   const { createRecurringLearningWorker } = await import("@/lib/queue/workers/recurring-learning");
   const { createBudgetCheckWorker } = await import("@/lib/queue/workers/budget-check");
+  const { createSmsDriftCheckWorker } = await import("@/lib/queue/workers/sms-drift-check");
   const log = createLogger({ module: "instrumentation" });
 
   // -------------------------------------------------------------------------
@@ -90,6 +91,10 @@ export async function registerNode() {
   // auto-uncategorize (04:00); budget alarms notify once per calendar month.
   const budgetCheckQueue = createQueue("budget-check");
   createBudgetCheckWorker();
+
+  // sms-drift-check: nightly 22:30 COT — detect users with SMS baseline but 0 SMS today
+  const smsDriftCheckQueue = createQueue("sms-drift-check");
+  createSmsDriftCheckWorker();
 
   // Graceful shutdown is idempotent — safe to call once after all workers are
   // registered.
@@ -195,9 +200,21 @@ export async function registerNode() {
     },
   );
 
+  // 22:30 COT daily — detect users with a 7-day SMS baseline but 0 SMS today.
+  // Fires at 22:30 (well within the day) so the alert lands before the user
+  // sleeps (#660).
+  await smsDriftCheckQueue.add(
+    "sms-drift-check",
+    {},
+    {
+      repeat: { pattern: "30 22 * * *", tz: "America/Bogota" },
+      jobId: "sms-drift-check-recurring",
+    },
+  );
+
   log.info(
     { event: "workers_registered" },
-    "BullMQ workers registered: fx-refresh (15 6,18 * * *), recurring-gap (0 6 5 * *), health-snapshots (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *), classification-auto-uncategorize (0 4 * * *), recurring-learning (0 4 * * *), budget-check (0 4 * * *) America/Bogota; classify-tx on-demand",
+    "BullMQ workers registered: fx-refresh (15 6,18 * * *), recurring-gap (0 6 5 * *), health-snapshots (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *), classification-auto-uncategorize (0 4 * * *), recurring-learning (0 4 * * *), budget-check (0 4 * * *), sms-drift-check (30 22 * * *) America/Bogota; classify-tx on-demand",
   );
 
   // -------------------------------------------------------------------------
