@@ -1,10 +1,21 @@
 import { sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "classification/proposals" });
+
+export type ProposalRow = {
+  id: number;
+  userId: number;
+  merchant: string;
+  categorySlug: string;
+};
 
 export type DetectProposalsResult = {
   scanned: number;
   inserted: number;
   skipped: number;
+  proposals: ProposalRow[];
 };
 
 /**
@@ -22,8 +33,9 @@ export async function detectAndEnqueueRuleProposals(
 ): Promise<DetectProposalsResult> {
   const insertResult = await database.execute<{
     scanned: string;
-    inserted: string;
+    inserted_count: string;
     skipped: string;
+    proposals: ProposalRow[] | null;
   }>(sql`
     WITH candidates AS (
       SELECT
@@ -56,18 +68,51 @@ export async function detectAndEnqueueRuleProposals(
       INSERT INTO rule_proposals (user_id, merchant, category_slug, correction_txn_ids, status)
       SELECT user_id, merchant, new_category_slug, txn_ids, 'pending'
       FROM insertable
-      RETURNING id
+      RETURNING id, user_id, merchant, category_slug
     )
     SELECT
       (SELECT count(*) FROM candidates)::text AS scanned,
-      (SELECT count(*) FROM inserted)::text AS inserted,
-      ((SELECT count(*) FROM candidates) - (SELECT count(*) FROM inserted))::text AS skipped
+      (SELECT count(*) FROM inserted)::text AS inserted_count,
+      ((SELECT count(*) FROM candidates) - (SELECT count(*) FROM inserted))::text AS skipped,
+      COALESCE(
+        (SELECT jsonb_agg(jsonb_build_object(
+          'id', id,
+          'userId', user_id,
+          'merchant', merchant,
+          'categorySlug', category_slug
+        )) FROM inserted),
+        '[]'::jsonb
+      ) AS proposals
   `);
 
-  const row = insertResult[0] ?? { scanned: "0", inserted: "0", skipped: "0" };
+  const row = insertResult[0] ?? { scanned: "0", inserted_count: "0", skipped: "0", proposals: [] };
+
+  // postgres.js returns jsonb columns as already-parsed JS objects — no JSON.parse needed.
+  const rawProposals = row.proposals ?? [];
+  const proposals: ProposalRow[] = (Array.isArray(rawProposals) ? rawProposals : []).map((p) => ({
+    id: Number(p.id),
+    userId: Number(p.userId),
+    merchant: p.merchant,
+    categorySlug: p.categorySlug,
+  }));
+
+  const inserted = Number(row.inserted_count);
+
+  if (proposals.length !== inserted) {
+    log.error(
+      {
+        event: "rule_proposals_count_mismatch",
+        inserted,
+        proposalsLength: proposals.length,
+      },
+      "rule_proposals inserted count diverged from proposals array length — data may be incomplete",
+    );
+  }
+
   return {
     scanned: Number(row.scanned),
-    inserted: Number(row.inserted),
+    inserted,
     skipped: Number(row.skipped),
+    proposals,
   };
 }
