@@ -26,11 +26,12 @@ export async function listNotifications(
   }
 
   if (cursor !== undefined) {
-    // Cursor-based pagination: descending by createdAt then id.
-    // Cursor is the id of the last item from the previous page.
-    // We use a subquery approach: items with id < cursor (since we're
-    // ordering descending by createdAt, we need to page by id when
-    // createdAt values can tie).
+    // cursor = id of the last item from the previous page. Because ORDER BY is
+    // (createdAt DESC, id DESC) and id is monotonic (serial PK), the last item
+    // on each page has the smallest `id` within its `createdAt` bucket. Therefore
+    // `id < cursor` cleanly excludes every row already returned, including ties on
+    // createdAt. WARNING: this only holds while ORDER BY remains (createdAt DESC,
+    // id DESC). Changing the sort direction breaks the cursor semantics.
     conditions.push(lt(notifications.id, cursor));
   }
 

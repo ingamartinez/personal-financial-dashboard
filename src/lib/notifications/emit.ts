@@ -5,6 +5,9 @@ import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "notifications/emit" });
 
+// canary_alert_fired is intentionally omitted: the canary system was removed (#593).
+// Phase 4 emitters must NOT emit canary notifications until the canary system is
+// rebuilt and a new sub-issue is opened.
 export type NotificationType =
   | "gmail_token_expired"
   | "gmail_connected"
@@ -32,7 +35,10 @@ export type NotificationPriority = "high" | "medium" | "low";
 
 export interface EmitNotificationInput {
   type: NotificationType;
-  entityId?: string | null;
+  // Required: dedup discriminator. Use String(rowId) for entity-scoped events, or a stable
+  // synthetic string (e.g. "sms-drift-2026-04-25") for daily/period-scoped events. Never
+  // null — Postgres NULLs are DISTINCT in unique indexes, which breaks idempotent emit.
+  entityId: string;
   audience?: NotificationAudience; // default 'user'
   title: string;
   body: string;
@@ -60,7 +66,7 @@ export async function emitNotification(
     .values({
       userId,
       type: input.type,
-      entityId: input.entityId ?? null,
+      entityId: input.entityId,
       audience: input.audience ?? "user",
       title: input.title,
       body: input.body,

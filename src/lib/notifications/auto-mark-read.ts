@@ -6,6 +6,11 @@ import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "notifications/auto-mark-read" });
 
+// Bus events that resolve a previously-emitted notification. Adding a new entry
+// here is the only place to wire a new auto-mark-read mapping.
+//
+// canary:resolved is intentionally absent — the canary system was removed (#593)
+// and canary_alert_fired notifications are not part of NotificationType.
 const RESOLUTION_MAP: Record<
   string,
   { notificationType: string; getEntityId: (event: AppEvent) => string | null }

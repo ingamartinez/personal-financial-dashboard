@@ -56,7 +56,7 @@ async function createNotification(
     .values({
       userId,
       type: opts.type ?? "slo_alert_fired",
-      entityId: opts.entityId ?? null,
+      entityId: opts.entityId ?? `actions-test-${userId}-${crypto.randomUUID()}`,
       audience: "user",
       title: opts.title ?? "Test notification",
       body: "Test body",

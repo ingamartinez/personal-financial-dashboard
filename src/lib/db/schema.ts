@@ -1695,7 +1695,11 @@ export const notifications = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     type: varchar("type", { length: 64 }).notNull(),
-    entityId: text("entity_id"), // nullable for daily/period-scoped notifications
+    // entity_id is the dedup discriminator. Use the row PK (e.g. String(gapId)) when an
+    // entity exists; use a synthetic stable string for daily/period-scoped events
+    // (e.g. "sms-drift-2026-04-25", "budget-{slug}-{ym}"). Never null — Postgres treats
+    // NULLs as DISTINCT in unique indexes by default, which would defeat dedup.
+    entityId: text("entity_id").notNull(),
     audience: varchar("audience", { length: 16 }).notNull().default("user"), // 'user' | 'admin'
     title: varchar("title", { length: 200 }).notNull(),
     body: text("body").notNull(),

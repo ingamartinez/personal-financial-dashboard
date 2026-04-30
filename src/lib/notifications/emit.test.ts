@@ -199,18 +199,39 @@ describe("emitNotification", () => {
     expect(third!.id).not.toBe(first!.id);
   });
 
-  it("allows entityId: null (no dedup on null entity)", async () => {
-    const a = await emitNotification(userId, {
+  it("dedups synthetic period-scoped entityId across two emits", async () => {
+    // Daily/period-scoped notifications use a stable synthetic string as entity_id
+    // (e.g. "sms-drift-2026-04-25", "budget-foo-2026-04"). The dedup partial index
+    // must treat these identically to entity-keyed notifications.
+    const synthetic = "insights-2026-04";
+
+    const first = await emitNotification(userId, {
       type: "insights_report_ready",
-      entityId: null,
+      entityId: synthetic,
       title: "Insights ready",
       body: "Your monthly insights are ready",
     });
+    expect(first).not.toBeNull();
 
-    // NOTE: null entityId still participates in the partial unique index.
-    // A second call with the same (user, type, null) while unread will also dedup.
-    expect(a).not.toBeNull();
-    expect(a!.id).toBeTypeOf("number");
+    const second = await emitNotification(userId, {
+      type: "insights_report_ready",
+      entityId: synthetic,
+      title: "Duplicate",
+      body: "Should be deduped",
+    });
+    expect(second).toBeNull();
+
+    const rows = await db
+      .select()
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.userId, userId),
+          eq(notifications.type, "insights_report_ready"),
+          eq(notifications.entityId, synthetic),
+        ),
+      );
+    expect(rows).toHaveLength(1);
   });
 
   it("stores default audience=user and priority=medium when omitted", async () => {

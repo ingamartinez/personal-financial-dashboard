@@ -498,6 +498,13 @@
       "when": 1777506941589,
       "tag": "0070_striped_toad_men",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1777507959126,
+      "tag": "0071_perpetual_sharon_carter",
+      "breakpoints": true
     }
   ]
 }

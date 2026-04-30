@@ -40,7 +40,7 @@ async function createNotification(
     .values({
       userId,
       type: opts.type,
-      entityId: opts.entityId ?? null,
+      entityId: opts.entityId ?? `amr-test-${userId}-${crypto.randomUUID()}`,
       audience: "user",
       title: "Test notification",
       body: "Test body",
@@ -148,9 +148,12 @@ describe("registerAutoMarkRead", () => {
   });
 
   it("no-ops when recurring-gap:resolved has gapId=null (synthetic auto-link)", async () => {
+    // The notification has SOME entity_id (NOT NULL schema constraint).
+    // The no-op behavior under test is the listener bailing on event.gapId === null,
+    // independent of any pre-existing notification's entity_id.
     const id = await createNotification(userA, {
       type: "recurring_gap_detected",
-      entityId: null,
+      entityId: "synthetic-test-gap",
     });
 
     emit({
