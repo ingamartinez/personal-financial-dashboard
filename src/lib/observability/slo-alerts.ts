@@ -4,6 +4,7 @@ import { parserEvents, sloAlerts, telegramBots, telegramSessions, users } from "
 import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 import { createLogger } from "@/lib/logger";
 import { createTelegramClient } from "@/lib/telegram/client";
+import { emitNotification } from "@/lib/notifications/emit";
 
 const log = createLogger({ module: "slo-alerts" });
 
@@ -108,6 +109,14 @@ export async function checkAndAlertSlos(database: DB = db): Promise<SloDecision[
   const now = new Date();
   const decisions: SloDecision[] = [];
 
+  // Look up the admin once per invocation — reused by both Telegram dispatch
+  // and the emitNotification call so we avoid a redundant query per SLO.
+  const [admin] = await database
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.role, "admin"), eq(users.active, true)))
+    .limit(1);
+
   for (const cfg of SLO_ALERTS) {
     const computed = await cfg.compute(now, database);
 
@@ -128,13 +137,40 @@ export async function checkAndAlertSlos(database: DB = db): Promise<SloDecision[
         log.error({ err, event: "slo_telegram_dispatch_failed" }, "telegram dispatch failed");
         return "telegram_error";
       });
-      await database.insert(sloAlerts).values({
-        sloKey: cfg.key,
-        rate: decision.rate.toFixed(4),
-        target: cfg.target.toFixed(4),
-        samples: decision.samples,
-        notificationStatus: status,
-      });
+      const [alertRow] = await database
+        .insert(sloAlerts)
+        .values({
+          sloKey: cfg.key,
+          rate: decision.rate.toFixed(4),
+          target: cfg.target.toFixed(4),
+          samples: decision.samples,
+          notificationStatus: status,
+        })
+        .returning({ id: sloAlerts.id });
+
+      if (admin && alertRow) {
+        const targetPct = (decision.target * 100).toFixed(0);
+        await emitNotification(admin.id, {
+          type: "slo_alert_fired",
+          entityId: String(alertRow.id),
+          audience: "admin",
+          title: `SLO en alerta: ${cfg.label}`,
+          body: `Burn rate ${(decision.rate * 100).toFixed(1)}% bajo el target ${targetPct}%.`,
+          actionUrl: "/admin/slo",
+          priority: "high",
+          metadata: { alertId: alertRow.id, sloName: cfg.label, burnRate: decision.rate },
+        }).catch((emitErr: unknown) => {
+          log.error(
+            {
+              err: emitErr,
+              adminId: admin.id,
+              alertId: alertRow.id,
+              event: "emit_slo_alert_fired_failed",
+            },
+            "failed to emit slo_alert_fired notification",
+          );
+        });
+      }
     } else if (decision.action === "resolve") {
       await database
         .update(sloAlerts)

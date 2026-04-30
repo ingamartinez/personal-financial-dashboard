@@ -19,6 +19,7 @@ import type { ParsedStatement } from "@/lib/reconciliation/parsers/types";
 import { applyPagoTcRouting } from "@/lib/reconciliation/pago-tc-router";
 import { classifyByRuleThenEnqueue } from "@/lib/classification/enqueue";
 import { createLogger } from "@/lib/logger";
+import { emitNotification } from "@/lib/notifications/emit";
 import { expandReconcileWindow } from "./window";
 
 const log = createLogger({ module: "reconciliation-actions" });
@@ -382,6 +383,35 @@ export async function applyReconcile(input: ApplyReconcileInput) {
     },
     "reconciliation applied",
   );
+
+  // #657 — notify user when reconciliation flags transactions.
+  if (result.status === "applied" && result.flagged > 0) {
+    await emitNotification(session.id, {
+      type: "reconciliation_flagged_txns",
+      entityId: String(result.statementImportId),
+      audience: "user",
+      title: `Reconciliación: ${result.flagged} movimiento(s) marcados`,
+      body: "Encontramos diferencias entre el extracto y tus transacciones. Revisalos para ajustar.",
+      actionUrl: `/transactions?status=flagged&accountId=${accountId}`,
+      priority: "high",
+      metadata: {
+        statementImportId: result.statementImportId,
+        flagged: result.flagged,
+        accountId,
+      },
+    }).catch((emitErr: unknown) => {
+      log.error(
+        {
+          err: emitErr,
+          userId: session.id,
+          accountId,
+          statementImportId: result.statementImportId,
+          event: "emit_reconciliation_flagged_txns_failed",
+        },
+        "failed to emit reconciliation_flagged_txns notification",
+      );
+    });
+  }
 
   // #591 — classify newly-inserted reconciliation rows. Mirrors the flow
   // used by /imports commit functions: rules engine first (in-place update),

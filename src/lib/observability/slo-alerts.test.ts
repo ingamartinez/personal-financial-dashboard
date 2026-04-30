@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { parserEvents, sloAlerts, type ParserEventKind } from "@/lib/db/schema";
+import * as emitModule from "@/lib/notifications/emit";
 import {
   ALERT_MIN_SAMPLES,
   SLO_ALERTS,
@@ -175,5 +176,59 @@ describe("checkAndAlertSlos — fire/resolve cycle", () => {
     const [decision] = await checkAndAlertSlos();
     expect(decision.action).toBe("noop");
     if (decision.action === "noop") expect(decision.reason).toBe("healthy");
+  });
+});
+
+// ── Wave 1 emitter: slo_alert_fired (#657) ────────────────────────────────
+
+describe("checkAndAlertSlos — slo_alert_fired emitter", () => {
+  beforeEach(cleanup);
+  afterEach(() => {
+    vi.restoreAllMocks();
+    return cleanup();
+  });
+
+  it("emits slo_alert_fired once with correct type, entityId, audience when firing", async () => {
+    const spy = vi.spyOn(emitModule, "emitNotification").mockResolvedValue({ id: 999 });
+
+    // 70% success rate over 25 samples → fires.
+    for (let i = 0; i < 18; i++) await seedEvent("parse_outcome_success", 30);
+    for (let i = 0; i < 7; i++) await seedEvent("parse_needs_review", 30);
+
+    const [decision] = await checkAndAlertSlos();
+    expect(decision.action).toBe("fire");
+
+    // Retrieve the inserted alert row id to assert entityId.
+    const [alertRow] = await db
+      .select({ id: sloAlerts.id })
+      .from(sloAlerts)
+      .where(eq(sloAlerts.sloKey, "parse_success"));
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(
+      expect.any(Number), // adminId — varies by test DB seed
+      expect.objectContaining({
+        type: "slo_alert_fired",
+        entityId: String(alertRow.id),
+        audience: "admin",
+        priority: "high",
+      }),
+    );
+  });
+
+  it("does NOT emit on noop tick (already_alerted dedup)", async () => {
+    const spy = vi.spyOn(emitModule, "emitNotification").mockResolvedValue({ id: 999 });
+
+    for (let i = 0; i < 18; i++) await seedEvent("parse_outcome_success", 30);
+    for (let i = 0; i < 7; i++) await seedEvent("parse_needs_review", 30);
+
+    // First tick fires.
+    await checkAndAlertSlos();
+    spy.mockClear();
+
+    // Second tick must noop — emitter must NOT fire again.
+    const [second] = await checkAndAlertSlos();
+    expect(second.action).toBe("noop");
+    expect(spy).not.toHaveBeenCalled();
   });
 });

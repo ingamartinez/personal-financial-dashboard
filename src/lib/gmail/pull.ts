@@ -27,6 +27,7 @@ import { applyEnrichment } from "@/lib/gmail/enrich";
 import { pushToUser } from "@/lib/telegram/push";
 import { renderReauthNudge } from "@/lib/telegram/formatter";
 import { loadPendingAmbiguousReceipt } from "@/lib/telegram/disambiguation-query";
+import { emitNotification } from "@/lib/notifications/emit";
 
 const log = createLogger({ module: "gmail/pull" });
 
@@ -515,6 +516,26 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
           },
           "receipt has ambiguous tx candidates; persisted for user disambiguation",
         );
+        await emitNotification(userId, {
+          type: "gmail_disambiguation_required",
+          entityId: String(receipt.id),
+          audience: "user",
+          title: "Movimiento ambiguo: requiere tu confirmación",
+          body: "Encontramos varios candidatos que matchean este recibo. Elegí cuál corresponde.",
+          actionUrl: "/settings/integrations",
+          priority: "high",
+          metadata: { receiptId: receipt.id, gatewayId },
+        }).catch((emitErr: unknown) => {
+          log.error(
+            {
+              err: emitErr,
+              userId,
+              receiptId: receipt.id,
+              event: "emit_disambiguation_required_failed",
+            },
+            "failed to emit gmail_disambiguation_required notification",
+          );
+        });
       } else {
         // unmatched: persist the status so it's queryable, but leave it
         // eligible for re-attempt on future pulls.
@@ -719,6 +740,26 @@ export async function pullForUser(
               "re-auth nudge threw",
             );
           });
+          await emitNotification(userId, {
+            type: "gmail_token_expired",
+            entityId: String(connRow.id),
+            audience: "user",
+            title: "Gmail desconectado",
+            body: "Findash dejó de leer tus recibos. Reconectá tu cuenta para seguir recibiendo movimientos.",
+            actionUrl: "/settings/integrations",
+            priority: "high",
+            metadata: { connectionId: connRow.id },
+          }).catch((emitErr: unknown) => {
+            log.error(
+              {
+                err: emitErr,
+                userId,
+                connectionId: connRow.id,
+                event: "emit_gmail_token_expired_failed",
+              },
+              "failed to emit gmail_token_expired notification",
+            );
+          });
         }
       }
       return { userId, pulled: 0, skipped: 0, byGateway, errors, connectionId: null };
@@ -778,6 +819,26 @@ export async function pullForUser(
         log.error(
           { err: nudgeErr, userId, event: "reauth_nudge_failed" },
           "re-auth nudge threw during invalid_grant handling",
+        );
+      });
+      await emitNotification(userId, {
+        type: "gmail_token_expired",
+        entityId: String(authed.connection.id),
+        audience: "user",
+        title: "Gmail desconectado",
+        body: "Findash dejó de leer tus recibos. Reconectá tu cuenta para seguir recibiendo movimientos.",
+        actionUrl: "/settings/integrations",
+        priority: "high",
+        metadata: { connectionId: authed.connection.id, gmailEmail: authed.connection.gmailEmail },
+      }).catch((emitErr: unknown) => {
+        log.error(
+          {
+            err: emitErr,
+            userId,
+            connectionId: authed.connection.id,
+            event: "emit_gmail_token_expired_failed",
+          },
+          "failed to emit gmail_token_expired notification",
         );
       });
       return {
