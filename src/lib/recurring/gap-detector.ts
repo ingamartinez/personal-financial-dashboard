@@ -2,6 +2,10 @@ import { and, asc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { recurringGaps, recurringTransactions, transactions, users } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { createLogger } from "@/lib/logger";
+import { emitNotification } from "@/lib/notifications/emit";
+
+const log = createLogger({ module: "recurring/gap-detector" });
 
 const DEFAULT_WINDOW_BEFORE_DAYS = 10;
 const DEFAULT_WINDOW_AFTER_DAYS = 5;
@@ -170,6 +174,26 @@ export async function detectGapsForMonth(
 
     if (inserted.length > 0) {
       result.gapsCreated += 1;
+      const gapId = inserted[0]!.id;
+      emitNotification(userId, {
+        type: "recurring_gap_detected",
+        entityId: String(gapId),
+        title: "Recurrente sin movimiento detectado",
+        body: "Esperábamos un cargo este período y no llegó. Confirmá si lo recibiste por otro canal o si saltó este mes.",
+        actionUrl: "/settings/recurring",
+        priority: "medium",
+        metadata: {
+          recurringId: r.id,
+          gapId,
+          yearMonth,
+          expectedAmountCents: r.amountCents,
+        },
+      }).catch((err: unknown) => {
+        log.error(
+          { err, userId, gapId, event: "recurring_gap_emit_failed" },
+          "failed to emit recurring_gap_detected notification",
+        );
+      });
     } else {
       result.gapsAlreadyOpen += 1;
     }

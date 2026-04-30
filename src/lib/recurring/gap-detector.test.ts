@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -13,6 +13,17 @@ import {
   detectGapsForMonth,
   previousYearMonth,
 } from "./gap-detector";
+
+// ---------------------------------------------------------------------------
+// emitNotification mock — shared across all test suites
+// ---------------------------------------------------------------------------
+const mocks = vi.hoisted(() => ({
+  emitNotification: vi.fn().mockResolvedValue({ id: 999 }),
+}));
+
+vi.mock("@/lib/notifications/emit", () => ({
+  emitNotification: mocks.emitNotification,
+}));
 
 const TEST_ACCOUNT = "__gap_test_account__";
 
@@ -391,6 +402,104 @@ describe("closePreviousMonthForAllUsers (integration)", () => {
       .innerJoin(recurringTransactions, eq(recurringGaps.recurringId, recurringTransactions.id))
       .where(and(eq(recurringTransactions.userId, u2.id), eq(recurringGaps.yearMonth, "2026-04")));
     expect(u2Gaps.length).toBe(1);
+  });
+});
+
+describe("recurring_gap_detected notification emit", () => {
+  beforeEach(async () => {
+    await cleanup();
+    mocks.emitNotification.mockClear();
+  });
+  afterEach(cleanup);
+
+  it("fires emitNotification once when a new gap is created", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__gap_test notify",
+      amountCents: BigInt(-150000),
+      dayOfMonth: 5,
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.gapsCreated).toBe(1);
+
+    // Allow the fire-and-forget promise to settle
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mocks.emitNotification).toHaveBeenCalledTimes(1);
+
+    const [calledUserId, calledInput] = mocks.emitNotification.mock.calls[0]!;
+    expect(calledUserId).toBe(TEST_USER_ID);
+
+    // Retrieve the gap id inserted so we can verify entityId
+    const gaps = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.yearMonth, "2026-04"));
+    const gapId = gaps[0]!.id;
+
+    expect(calledInput).toMatchObject({
+      type: "recurring_gap_detected",
+      entityId: String(gapId),
+      priority: "medium",
+    });
+  });
+
+  it("does NOT fire emitNotification when the gap already exists (idempotent re-run)", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__gap_test notify idem",
+      amountCents: BigInt(-150000),
+      dayOfMonth: 5,
+    });
+
+    // First run — creates the gap and should emit
+    await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    await new Promise((r) => setTimeout(r, 0));
+    mocks.emitNotification.mockClear();
+
+    // Second run — gap already exists (ON CONFLICT DO NOTHING returns empty)
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.gapsAlreadyOpen).toBe(1);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mocks.emitNotification).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire emitNotification when the tx is auto-linked (no gap path taken)", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__gap_test notify autolink",
+      amountCents: BigInt(-200000),
+      dayOfMonth: 10,
+    });
+    await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-200000),
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(1);
+    expect(result.gapsCreated).toBe(0);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mocks.emitNotification).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire emitNotification when the month is intentionally skipped", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__gap_test notify skip",
+      amountCents: BigInt(-49000),
+      dayOfMonth: 10,
+      skippedMonths: ["2026-04"],
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.skippedIntentionally).toBe(1);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mocks.emitNotification).not.toHaveBeenCalled();
   });
 });
 
