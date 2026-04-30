@@ -177,6 +177,19 @@ describe("listNotifications", () => {
     expect(result.items[0]!.title).toBe("High priority");
     expect(result.items[0]!.priority).toBe("high");
   });
+
+  it("priority filter is additive with userId guard — does NOT leak across tenants", async () => {
+    // Regression: ensure the priority condition is AND-ed with the userId guard,
+    // not OR-ed (which would let userA see userB's high-priority rows).
+    mockGetSessionUser.mockResolvedValue({ id: userA });
+    await createNotification(userA, { title: "userA high", priority: "high" });
+    await createNotification(userB, { title: "userB high", priority: "high" });
+
+    const result = await listNotifications({ priority: "high" });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.title).toBe("userA high");
+  });
 });
 
 // ---------------------------------------------------------------------------
