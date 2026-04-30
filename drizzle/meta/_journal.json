@@ -491,6 +491,13 @@
       "when": 1777460383867,
       "tag": "0069_sour_black_panther",
       "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1777506941589,
+      "tag": "0070_striped_toad_men",
+      "breakpoints": true
     }
   ]
 }

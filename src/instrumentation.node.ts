@@ -89,6 +89,10 @@ export async function registerNode() {
   // registered.
   registerGracefulShutdown();
 
+  // #505: Auto-mark notifications as read when their underlying event resolves.
+  const { registerAutoMarkRead } = await import("@/lib/notifications/auto-mark-read");
+  registerAutoMarkRead();
+
   // -------------------------------------------------------------------------
   // Register recurring schedules
   // -------------------------------------------------------------------------

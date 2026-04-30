@@ -77,4 +77,24 @@ describe("event bus", () => {
       expect(event.payload.priority).toBe("high");
     }
   });
+
+  it("delivers disambiguation:resolved event to subscriber", () => {
+    const received: AppEvent[] = [];
+    cleanups.push(subscribe((e) => received.push(e)));
+
+    emit({
+      type: "disambiguation:resolved",
+      userId: 7,
+      receiptId: 42,
+      timestamp: Date.now(),
+    });
+
+    expect(received).toHaveLength(1);
+    const event = received[0];
+    expect(event.type).toBe("disambiguation:resolved");
+    if (event.type === "disambiguation:resolved") {
+      expect(event.userId).toBe(7);
+      expect(event.receiptId).toBe(42);
+    }
+  });
 });
