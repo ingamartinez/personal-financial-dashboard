@@ -34,9 +34,6 @@ vi.mock("@/components/transactions/forecast-row-actions", () => ({
 vi.mock("@/components/transactions/counterparty-dialog", () => ({
   CounterpartyDialog: () => null,
 }));
-vi.mock("@/components/transactions/counterparty-cell", () => ({
-  CounterpartyCell: () => <span data-testid="counterparty-cell" />,
-}));
 vi.mock("@/components/transactions/confidence-badge", () => ({
   ConfidenceBadge: () => null,
   confidenceBand: () => null,

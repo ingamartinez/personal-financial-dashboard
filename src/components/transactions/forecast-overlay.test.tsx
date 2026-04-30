@@ -39,9 +39,6 @@ vi.mock("@/components/transactions/classification-reason-dialog", () => ({
 vi.mock("@/components/transactions/counterparty-dialog", () => ({
   CounterpartyDialog: () => null,
 }));
-vi.mock("@/components/transactions/counterparty-cell", () => ({
-  CounterpartyCell: () => <span data-testid="counterparty-cell" />,
-}));
 vi.mock("@/components/transactions/confidence-badge", () => ({
   ConfidenceBadge: () => null,
   confidenceBand: () => "medium",
