@@ -89,9 +89,7 @@ export async function detectAndEnqueueRuleProposals(
 
   // postgres.js returns jsonb columns as already-parsed JS objects — no JSON.parse needed.
   const rawProposals = row.proposals ?? [];
-  const proposals: ProposalRow[] = (
-    Array.isArray(rawProposals) ? rawProposals : []
-  ).map((p) => ({
+  const proposals: ProposalRow[] = (Array.isArray(rawProposals) ? rawProposals : []).map((p) => ({
     id: Number(p.id),
     userId: Number(p.userId),
     merchant: p.merchant,

@@ -113,10 +113,7 @@ export async function ruleProposalsProcessor(
     `done: scanned=${summary.scanned} inserted=${summary.inserted} skipped=${summary.skipped} emitted=${summary.emitted}`,
   );
 
-  log.info(
-    { event: "rule_proposals_done", jobId: job.id, ...summary },
-    "rule-proposals complete",
-  );
+  log.info({ event: "rule_proposals_done", jobId: job.id, ...summary }, "rule-proposals complete");
 
   return summary;
 }

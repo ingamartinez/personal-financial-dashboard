@@ -156,7 +156,9 @@ describe("ruleProposalsProcessor", () => {
     const job = mockJob();
     await ruleProposalsProcessor(job);
 
-    expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "detecting" }));
+    expect(job.updateProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: "detecting" }),
+    );
     expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "emitting" }));
     expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
     expect(job.log).toHaveBeenCalled();
