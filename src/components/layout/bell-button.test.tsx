@@ -15,9 +15,37 @@ const mocks = vi.hoisted(() => {
   const unreadCount = vi.fn<() => Promise<{ count: number }>>();
   const toastFn = vi.fn();
   const toastError = vi.fn();
+  const routerPush = vi.fn();
 
-  return { listNotifications, markAsRead, markAllAsRead, unreadCount, toastFn, toastError };
+  return {
+    listNotifications,
+    markAsRead,
+    markAllAsRead,
+    unreadCount,
+    toastFn,
+    toastError,
+    routerPush,
+  };
 });
+
+// ---------------------------------------------------------------------------
+// Mock next/navigation — useRouter requires App Router context in tests
+// ---------------------------------------------------------------------------
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mocks.routerPush }),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock browser notification helpers — avoid touching real Notification API
+// ---------------------------------------------------------------------------
+vi.mock("@/lib/notifications/browser-permissions", () => ({
+  getBrowserNotificationPermission: vi.fn().mockReturnValue("denied"),
+  requestBrowserNotificationPermission: vi.fn().mockResolvedValue("denied"),
+}));
+
+vi.mock("@/lib/notifications/browser-display", () => ({
+  maybeShowBrowserNotification: vi.fn(),
+}));
 
 // ---------------------------------------------------------------------------
 // Mock server actions
