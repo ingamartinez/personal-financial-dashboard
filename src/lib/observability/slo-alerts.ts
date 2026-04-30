@@ -4,6 +4,7 @@ import { parserEvents, sloAlerts, telegramBots, telegramSessions, users } from "
 import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 import { createLogger } from "@/lib/logger";
 import { createTelegramClient } from "@/lib/telegram/client";
+import { emit as busEmit } from "@/lib/events/bus";
 import { emitNotification } from "@/lib/notifications/emit";
 
 const log = createLogger({ module: "slo-alerts" });
@@ -109,8 +110,11 @@ export async function checkAndAlertSlos(database: DB = db): Promise<SloDecision[
   const now = new Date();
   const decisions: SloDecision[] = [];
 
-  // Look up the admin once per invocation — reused by both Telegram dispatch
-  // and the emitNotification call so we avoid a redundant query per SLO.
+  // Look up the admin once per invocation. Used by:
+  //   - dispatchTelegramAlert (admin id + session lookup), passed as parameter
+  //   - emitNotification (admin id is the notification owner; SSE filter routes
+  //     by audience='admin', not userId)
+  //   - busEmit('slo:resolved') in the resolve branch (carries userId for the bus)
   const [admin] = await database
     .select({ id: users.id })
     .from(users)
@@ -130,7 +134,7 @@ export async function checkAndAlertSlos(database: DB = db): Promise<SloDecision[
     const decision = decideSloAction(cfg, computed, latestUnresolved ?? null);
 
     if (decision.action === "fire") {
-      const status = await dispatchTelegramAlert(database, cfg, {
+      const status = await dispatchTelegramAlert(database, cfg, admin?.id ?? null, {
         rate: decision.rate,
         samples: decision.samples,
       }).catch((err) => {
@@ -176,6 +180,18 @@ export async function checkAndAlertSlos(database: DB = db): Promise<SloDecision[
         .update(sloAlerts)
         .set({ resolvedAt: now })
         .where(eq(sloAlerts.id, decision.alertId));
+
+      // Pair with auto-mark-read: a resolved SLO must mark the bell notification
+      // read. Without this emit, slo_alert_fired notifications stay unread forever
+      // even after the SLO recovers.
+      if (admin) {
+        busEmit({
+          type: "slo:resolved",
+          userId: admin.id,
+          alertId: decision.alertId,
+          timestamp: now.getTime(),
+        });
+      }
     }
 
     decisions.push(decision);
@@ -187,26 +203,22 @@ export async function checkAndAlertSlos(database: DB = db): Promise<SloDecision[
 async function dispatchTelegramAlert(
   database: DB,
   cfg: SloAlertConfig,
+  adminId: number | null,
   computed: { rate: number; samples: number },
 ): Promise<string> {
-  const [admin] = await database
-    .select({ id: users.id })
-    .from(users)
-    .where(and(eq(users.role, "admin"), eq(users.active, true)))
-    .limit(1);
-  if (!admin) return "no_admin";
+  if (adminId === null) return "no_admin";
 
   const [bot] = await database
     .select()
     .from(telegramBots)
-    .where(eq(telegramBots.userId, admin.id))
+    .where(eq(telegramBots.userId, adminId))
     .limit(1);
   if (!bot) return "no_bot";
 
   const [session] = await database
     .select({ chatId: telegramSessions.chatId })
     .from(telegramSessions)
-    .where(eq(telegramSessions.userId, admin.id))
+    .where(eq(telegramSessions.userId, adminId))
     .orderBy(desc(telegramSessions.updatedAt))
     .limit(1);
   if (!session) return "no_session";

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { parserEvents, sloAlerts, type ParserEventKind } from "@/lib/db/schema";
+import * as busModule from "@/lib/events/bus";
 import * as emitModule from "@/lib/notifications/emit";
 import {
   ALERT_MIN_SAMPLES,
@@ -230,5 +231,29 @@ describe("checkAndAlertSlos — slo_alert_fired emitter", () => {
     const [second] = await checkAndAlertSlos();
     expect(second.action).toBe("noop");
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("emits slo:resolved on the bus when the SLO recovers (auto-mark-read pairing)", async () => {
+    const busSpy = vi.spyOn(busModule, "emit");
+
+    // Fire first.
+    for (let i = 0; i < 18; i++) await seedEvent("parse_outcome_success", 30);
+    for (let i = 0; i < 7; i++) await seedEvent("parse_needs_review", 30);
+    await checkAndAlertSlos();
+    busSpy.mockClear();
+
+    // Recover.
+    for (let i = 0; i < 200; i++) await seedEvent("parse_outcome_success", 15);
+    const [decision] = await checkAndAlertSlos();
+    expect(decision.action).toBe("resolve");
+
+    // Without this bus emit, slo_alert_fired notifications stay unread forever.
+    const resolvedCalls = busSpy.mock.calls.filter(([event]) => event.type === "slo:resolved");
+    expect(resolvedCalls).toHaveLength(1);
+    const event = resolvedCalls[0]![0];
+    if (event.type === "slo:resolved") {
+      expect(event.alertId).toBe(decision.action === "resolve" ? decision.alertId : -1);
+      expect(typeof event.userId).toBe("number");
+    }
   });
 });
