@@ -30,6 +30,7 @@ import {
 } from "@/lib/gmail/backfill";
 import { applyRejection } from "@/lib/gmail/disambiguate";
 import { loadPendingAmbiguousReceipt } from "@/lib/telegram/disambiguation-query";
+import { emitNotification } from "@/lib/notifications/emit";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "telegram/commands" });
@@ -274,6 +275,39 @@ async function handleBackfillConfirm(opts: {
       },
     });
     await client.sendMessage({ chat_id: chatId, text: renderBackfillResult(report) });
+    if (!report.canceled) {
+      const entityId = `backfill-${userId}-${session.backfill.from}-${session.backfill.to}`;
+      const body =
+        report.errors.length === 0
+          ? `Procesamos ${report.totalEmails} email(s). Insertamos ${report.inserted} nuevo(s).`
+          : `Procesamos ${report.totalEmails} email(s). Insertamos ${report.inserted}, con ${report.errors.length} error(es).`;
+      emitNotification(userId, {
+        type: "gmail_backfill_complete",
+        entityId,
+        priority: "low",
+        title: "Backfill Bancolombia completado",
+        body,
+        actionUrl: "/transactions",
+        metadata: {
+          totalEmails: report.totalEmails,
+          inserted: report.inserted,
+          parsed: report.parsed,
+          alreadyStored: report.alreadyStored,
+          matchedExisting: report.matchedExisting,
+          needsReview: report.needsReview,
+          sourceMismatches: report.sourceMismatches,
+          errorCount: report.errors.length,
+          durationMs: report.durationMs,
+          fromISO: session.backfill.from,
+          toISO: session.backfill.to,
+        },
+      }).catch((err) =>
+        log.error(
+          { err, userId, event: "gmail_backfill_emit_failed" },
+          "gmail_backfill_complete emit failed",
+        ),
+      );
+    }
   } catch (err) {
     if (err instanceof BackfillConnectionError) {
       await client.sendMessage({
