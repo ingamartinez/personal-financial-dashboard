@@ -18,7 +18,8 @@ import { and, eq, lte, sql } from "drizzle-orm";
 
 import { createLogger } from "@/lib/logger";
 import { db } from "@/lib/db";
-import { recurringProposals } from "@/lib/db/schema";
+import { recurringProposals, recurringTransactions } from "@/lib/db/schema";
+import { emitNotification } from "@/lib/notifications/emit";
 import { createWorker } from "@/lib/queue";
 
 const log = createLogger({ module: "worker/recurring-learning" });
@@ -54,6 +55,10 @@ export type LearningResult = {
   proposalsCreated: number;
   errors: number;
 };
+
+type ProposalOutcome =
+  | { count: 0 }
+  | { count: 1; proposalId: number; proposalKind: "variable_flag" | "amount_update" };
 
 /**
  * Core processor — exported separately for tests (no live Worker needed).
@@ -153,7 +158,7 @@ export async function recurringLearningProcessor(
     try {
       // Wrap SELECT + INSERT in a transaction to prevent race conditions from
       // a manual Bull-Board trigger racing with the scheduled daily run.
-      const created = await db.transaction(async (trx) => {
+      const outcome = await db.transaction(async (trx): Promise<ProposalOutcome> => {
         // Check for an existing pending proposal of any type for this recurring.
         const [existingPending] = await trx
           .select({ id: recurringProposals.id })
@@ -169,7 +174,7 @@ export async function recurringLearningProcessor(
 
         if (existingPending) {
           // A proposal is already pending — skip until user decides.
-          return 0;
+          return { count: 0 };
         }
 
         const distinctAmounts = [...new Set(amounts.map((a) => a.toString()))].map((s) =>
@@ -185,12 +190,15 @@ export async function recurringLearningProcessor(
             observationCount: obsCount,
           };
 
-          await trx.insert(recurringProposals).values({
-            userId,
-            recurringId,
-            proposalType: "variable_flag",
-            payload,
-          });
+          const [inserted] = await trx
+            .insert(recurringProposals)
+            .values({
+              userId,
+              recurringId,
+              proposalType: "variable_flag",
+              payload,
+            })
+            .returning({ id: recurringProposals.id });
 
           log.info(
             {
@@ -199,11 +207,12 @@ export async function recurringLearningProcessor(
               recurringId,
               obsCount,
               distinctAmountsCount: distinctAmounts.length,
+              proposalId: inserted?.id,
             },
             "variable_flag proposal created",
           );
 
-          return 1;
+          return { count: 1, proposalId: inserted!.id, proposalKind: "variable_flag" };
         }
 
         // ── Amount-update check ─────────────────────────────────────────────
@@ -220,7 +229,7 @@ export async function recurringLearningProcessor(
           const absEst = Math.abs(estimatedAmountNum);
 
           // Avoid divide-by-zero for zero-amount recurrings.
-          if (absEst === 0) return 0;
+          if (absEst === 0) return { count: 0 };
 
           // Express drift as a fraction. Using Number() is safe here — we only
           // need a rough 5% comparison, not bigint precision.
@@ -234,12 +243,15 @@ export async function recurringLearningProcessor(
               observationCount: obsCount,
             };
 
-            await trx.insert(recurringProposals).values({
-              userId,
-              recurringId,
-              proposalType: "amount_update",
-              payload,
-            });
+            const [inserted] = await trx
+              .insert(recurringProposals)
+              .values({
+                userId,
+                recurringId,
+                proposalType: "amount_update",
+                payload,
+              })
+              .returning({ id: recurringProposals.id });
 
             log.info(
               {
@@ -250,18 +262,54 @@ export async function recurringLearningProcessor(
                 newAmount: newAmount.toString(),
                 driftPct: Math.round(drift * 100),
                 obsCount,
+                proposalId: inserted?.id,
               },
               "amount_update proposal created",
             );
 
-            return 1;
+            return { count: 1, proposalId: inserted!.id, proposalKind: "amount_update" };
           }
         }
 
-        return 0;
+        return { count: 0 };
       });
 
-      result.proposalsCreated += created;
+      result.proposalsCreated += outcome.count;
+
+      // Emit notification if a proposal was created.
+      if (outcome.count === 1) {
+        // Fetch the recurring label for the notification body.
+        const [recurring] = await db
+          .select({ label: recurringTransactions.label })
+          .from(recurringTransactions)
+          .where(eq(recurringTransactions.id, recurringId))
+          .limit(1);
+
+        await emitNotification(userId, {
+          type: "recurring_proposal_ready",
+          entityId: String(outcome.proposalId),
+          priority: "medium",
+          title: "Sugerencia para recurrente",
+          body: `Detectamos un patrón nuevo en ${recurring?.label ?? "un recurrente"}. Revisá la propuesta.`,
+          actionUrl: "/recurring",
+          metadata: {
+            proposalId: outcome.proposalId,
+            recurringId,
+            proposalKind: outcome.proposalKind,
+          },
+        });
+
+        log.info(
+          {
+            event: "recurring_proposal_notification_emitted",
+            userId,
+            recurringId,
+            proposalId: outcome.proposalId,
+            proposalKind: outcome.proposalKind,
+          },
+          "recurring_proposal_ready notification emitted",
+        );
+      }
     } catch (err) {
       log.error(
         {

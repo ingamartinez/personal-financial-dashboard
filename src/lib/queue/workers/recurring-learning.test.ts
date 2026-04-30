@@ -26,6 +26,13 @@ vi.mock("@/lib/queue", () => ({
   }),
 }));
 
+// emitNotification is mocked to avoid hitting the notifications table and the
+// SSE bus during integration tests. We spy on it to assert emit calls.
+const emitMocks = vi.hoisted(() => ({ emitNotification: vi.fn() }));
+vi.mock("@/lib/notifications/emit", () => ({
+  emitNotification: emitMocks.emitNotification,
+}));
+
 // ---------------------------------------------------------------------------
 // Lazy import (after mocks)
 // ---------------------------------------------------------------------------
@@ -125,6 +132,8 @@ describe("recurringLearningProcessor", () => {
   let recurringAId: number;
 
   beforeEach(async () => {
+    emitMocks.emitNotification.mockReset();
+    emitMocks.emitNotification.mockResolvedValue({ id: 1 });
     await cleanup();
     userAId = await seedUser(`${TAG}-userA@test.local`);
     accountAId = await seedAccount(userAId);
@@ -456,5 +465,268 @@ describe("recurringLearningProcessor", () => {
     await db.execute(sql`DELETE FROM recurring_transactions WHERE id = ${recurringBId}`);
     await db.execute(sql`DELETE FROM accounts WHERE id = ${accountBId}`);
     await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
+  });
+
+  // ── New: notification emitter tests ─────────────────────────────────────
+
+  it("emits recurring_proposal_ready when an amount_update proposal is created", async () => {
+    const tx1 = await seedTx(userAId, accountAId, BigInt(-44900));
+    const tx2 = await seedTx(userAId, accountAId, BigInt(-44900));
+
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx1,
+        yearMonth: "2026-03",
+        realAmountCents: BigInt(-44900),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx2,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-44900),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+    ]);
+
+    await recurringLearningProcessor(mockJob());
+
+    expect(emitMocks.emitNotification).toHaveBeenCalledOnce();
+
+    const [calledUserId, calledInput] = emitMocks.emitNotification.mock.calls[0] as [
+      number,
+      {
+        type: string;
+        entityId: string;
+        metadata: { proposalKind: string; recurringId: number; proposalId: number };
+      },
+    ];
+
+    expect(calledUserId).toBe(userAId);
+    expect(calledInput.type).toBe("recurring_proposal_ready");
+    expect(calledInput.metadata.proposalKind).toBe("amount_update");
+    expect(calledInput.metadata.recurringId).toBe(recurringAId);
+    // entityId must be the stringified proposalId (never null).
+    expect(calledInput.entityId).toBe(String(calledInput.metadata.proposalId));
+    expect(calledInput.metadata.proposalId).toBeGreaterThan(0);
+  });
+
+  it("emits recurring_proposal_ready when a variable_flag proposal is created", async () => {
+    const tx1 = await seedTx(userAId, accountAId, BigInt(-42000));
+    const tx2 = await seedTx(userAId, accountAId, BigInt(-55000));
+    const tx3 = await seedTx(userAId, accountAId, BigInt(-31000));
+
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx1,
+        yearMonth: "2026-02",
+        realAmountCents: BigInt(-42000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx2,
+        yearMonth: "2026-03",
+        realAmountCents: BigInt(-55000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx3,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-31000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+    ]);
+
+    await recurringLearningProcessor(mockJob());
+
+    expect(emitMocks.emitNotification).toHaveBeenCalledOnce();
+
+    const [, calledInput] = emitMocks.emitNotification.mock.calls[0] as [
+      number,
+      { metadata: { proposalKind: string } },
+    ];
+    expect(calledInput.metadata.proposalKind).toBe("variable_flag");
+  });
+
+  it("does NOT emit when existing pending proposal causes skip (idempotent guard)", async () => {
+    const tx1 = await seedTx(userAId, accountAId, BigInt(-44900));
+    const tx2 = await seedTx(userAId, accountAId, BigInt(-44900));
+
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx1,
+        yearMonth: "2026-03",
+        realAmountCents: BigInt(-44900),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx2,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-44900),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+    ]);
+
+    // Pre-existing pending proposal — the processor should skip and NOT emit.
+    await db.insert(recurringProposals).values({
+      userId: userAId,
+      recurringId: recurringAId,
+      proposalType: "amount_update",
+      payload: { existing: true },
+      status: "pending",
+    });
+
+    await recurringLearningProcessor(mockJob());
+
+    expect(emitMocks.emitNotification).not.toHaveBeenCalled();
+  });
+
+  it("emits one notification per user in a multi-user run", async () => {
+    const userBId = await seedUser(`${TAG}-userB@test.local`);
+    const accountBId = await seedAccount(userBId);
+    const recurringBId = await seedRecurring(userBId, accountBId, BigInt(-42000));
+
+    // UserA: 2 qualifying observations.
+    const txA1 = await seedTx(userAId, accountAId, BigInt(-44900));
+    const txA2 = await seedTx(userAId, accountAId, BigInt(-44900));
+
+    // UserB: 2 qualifying observations (different amount, same drift).
+    const txB1 = await seedTx(userBId, accountBId, BigInt(-50000));
+    const txB2 = await seedTx(userBId, accountBId, BigInt(-50000));
+
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: txA1,
+        yearMonth: "2026-03",
+        realAmountCents: BigInt(-44900),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: txA2,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-44900),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+      {
+        userId: userBId,
+        recurringId: recurringBId,
+        txId: txB1,
+        yearMonth: "2026-03",
+        realAmountCents: BigInt(-50000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountBId,
+        manual: true,
+        applied: false,
+      },
+      {
+        userId: userBId,
+        recurringId: recurringBId,
+        txId: txB2,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-50000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountBId,
+        manual: true,
+        applied: false,
+      },
+    ]);
+
+    await recurringLearningProcessor(mockJob());
+
+    // One emit per user.
+    expect(emitMocks.emitNotification).toHaveBeenCalledTimes(2);
+
+    const calledUserIds = emitMocks.emitNotification.mock.calls.map(
+      (args: unknown[]) => args[0] as number,
+    );
+    expect(calledUserIds).toContain(userAId);
+    expect(calledUserIds).toContain(userBId);
+
+    // Cleanup userB
+    await db.execute(sql`DELETE FROM recurring_proposals WHERE user_id = ${userBId}`);
+    await db.execute(sql`DELETE FROM recurring_link_observations WHERE user_id = ${userBId}`);
+    await db.execute(
+      sql`DELETE FROM transactions WHERE description_raw = ${TAG + "-tx"} AND user_id = ${userBId}`,
+    );
+    await db.execute(sql`DELETE FROM recurring_transactions WHERE id = ${recurringBId}`);
+    await db.execute(sql`DELETE FROM accounts WHERE id = ${accountBId}`);
+    await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
+  });
+
+  it("does NOT emit when no proposals are created (observations below threshold)", async () => {
+    // Only 1 observation — below MIN_OBSERVATIONS_FOR_AMOUNT_UPDATE (2).
+    const tx1 = await seedTx(userAId, accountAId, BigInt(-44900));
+
+    await db.insert(recurringLinkObservations).values({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: tx1,
+      yearMonth: "2026-04",
+      realAmountCents: BigInt(-44900),
+      realCurrency: "COP",
+      descriptionRaw: `${TAG}-tx`,
+      accountId: accountAId,
+      manual: true,
+      applied: false,
+    });
+
+    await recurringLearningProcessor(mockJob());
+
+    expect(emitMocks.emitNotification).not.toHaveBeenCalled();
   });
 });

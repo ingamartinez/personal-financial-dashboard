@@ -4,6 +4,7 @@ import { and, inArray, isNull, lt, sql } from "drizzle-orm";
 import { createLogger } from "@/lib/logger";
 import { db } from "@/lib/db";
 import { transactions } from "@/lib/db/schema";
+import { emitNotification } from "@/lib/notifications/emit";
 import { createWorker } from "@/lib/queue";
 
 const log = createLogger({ module: "worker/classification-auto-uncategorize" });
@@ -57,7 +58,7 @@ export async function classificationAutoUncategorizeProcessor(
         isNull(transactions.deletedAt),
       ),
     )
-    .returning({ id: transactions.id });
+    .returning({ id: transactions.id, userId: transactions.userId });
 
   const rowsUpdated = result.length;
 
@@ -66,7 +67,36 @@ export async function classificationAutoUncategorizeProcessor(
     "auto-uncategorize batch finished",
   );
 
-  await job.updateProgress({ done: true, totalMoved: rowsUpdated, totalUsers: 0 });
+  // Group by userId and emit one notification per affected user.
+  // Build the map outside the if so totalUsers is always in scope for updateProgress.
+  const countByUser = new Map<number, number>();
+  for (const row of result) {
+    countByUser.set(row.userId, (countByUser.get(row.userId) ?? 0) + 1);
+  }
+
+  if (countByUser.size > 0) {
+    // todayISODate in America/Bogota timezone for stable daily entityId.
+    const todayISODate = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+
+    for (const [userId, batchSize] of countByUser) {
+      await emitNotification(userId, {
+        type: "classification_auto_uncategorized",
+        entityId: `auto-uncat-${userId}-${todayISODate}`,
+        priority: "medium",
+        title: 'Movimientos archivados a "otros"',
+        body: 'Algunos movimientos sin categoría desde hace tiempo se movieron a "otros". Revisá si querés re-categorizarlos.',
+        actionUrl: "/transactions?categorySlug=otros",
+        metadata: { todayISODate, batchSize },
+      });
+
+      log.info(
+        { event: "auto_uncategorize_notification_emitted", userId, batchSize, todayISODate },
+        "classification_auto_uncategorized notification emitted",
+      );
+    }
+  }
+
+  await job.updateProgress({ done: true, totalMoved: rowsUpdated, totalUsers: countByUser.size });
   await job.log(`done: moved=${rowsUpdated} rows to category=otros`);
 
   return { rowsUpdated };
