@@ -519,6 +519,8 @@ export function TransactionTable({
                         recurringId={tx.recurringId}
                         recurringLabel={tx.recurringLabel}
                         activeRecurrings={activeRecurrings}
+                        counterparty={tx.counterparty}
+                        allCounterparties={allCounterparties}
                       />
                     </TableCell>
                   </motion.tr>
@@ -676,6 +678,8 @@ export function TransactionTable({
                       recurringId={tx.recurringId}
                       recurringLabel={tx.recurringLabel}
                       activeRecurrings={activeRecurrings}
+                      counterparty={tx.counterparty}
+                      allCounterparties={allCounterparties}
                     />
                   </div>
                 </div>

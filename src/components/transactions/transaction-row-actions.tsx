@@ -9,6 +9,7 @@ import {
   RefreshCwIcon,
   RotateCcwIcon,
   UnlinkIcon,
+  UserIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -37,8 +38,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TcInstallmentsDialog } from "./tc-installments-dialog";
 import { LinkRecurringDialog } from "./link-recurring-dialog";
+import { LinkCounterpartyDialog } from "./link-counterparty-dialog";
 import type { RecurringOption } from "@/app/(app)/transactions/link-recurring-types";
-import type { AccountType, Currency } from "@/lib/types";
+import type { AccountType, CounterpartyBrief, CounterpartyValue, Currency } from "@/lib/types";
 
 type Props = {
   txId: number;
@@ -56,6 +58,9 @@ type Props = {
   // #621: list of active recurrings for the picker. Passed from the table
   // (which receives it from the page) to avoid per-row server fetches.
   activeRecurrings: RecurringOption[];
+  // #683: counterparty data for the kebab menu dialog.
+  counterparty: CounterpartyValue | null;
+  allCounterparties: CounterpartyBrief[];
 };
 
 export function TransactionRowActions({
@@ -69,12 +74,15 @@ export function TransactionRowActions({
   recurringId,
   recurringLabel,
   activeRecurrings,
+  counterparty,
+  allCounterparties,
 }: Props) {
   const [pending, startTransition] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [installmentsOpen, setInstallmentsOpen] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [unlinkConfirmOpen, setUnlinkConfirmOpen] = useState(false);
+  const [cpDialogOpen, setCpDialogOpen] = useState(false);
 
   const onUnlink = () => {
     startTransition(async () => {
@@ -185,6 +193,19 @@ export function TransactionRowActions({
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
+
+              {/* #683: counterparty assignment */}
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setCpDialogOpen(true);
+                }}
+                disabled={pending}
+              >
+                <UserIcon className="size-4" />
+                Contraparte…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
             </>
           ) : null}
 
@@ -230,6 +251,15 @@ export function TransactionRowActions({
         onLinked={() => {
           /* revalidatePath in the action handles cache bust */
         }}
+      />
+
+      {/* #683: counterparty dialog */}
+      <LinkCounterpartyDialog
+        open={cpDialogOpen}
+        onOpenChange={setCpDialogOpen}
+        txId={txId}
+        current={counterparty}
+        options={allCounterparties}
       />
 
       {/* #621: unlink confirm dialog */}
