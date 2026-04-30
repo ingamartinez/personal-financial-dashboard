@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getSessionUser } from "@/lib/auth/session";
 import { createLogger } from "@/lib/logger";
 import { resetUserData } from "@/lib/reset/reset";
+import { emitNotification } from "@/lib/notifications/emit";
 
 const log = createLogger({ module: "reset.actions" });
 
@@ -43,6 +44,22 @@ export async function resetUserDataAction(
     revalidatePath("/insights");
     revalidatePath("/settings/snapshots");
     revalidatePath("/settings/reset");
+
+    const todayISODate = new Date().toISOString().slice(0, 10);
+    await emitNotification(session.id, {
+      type: "reset_complete",
+      entityId: `reset-${session.id}-${todayISODate}`,
+      priority: "medium",
+      title: "Datos reseteados",
+      body: "Tu cuenta volvió al estado inicial. Podés re-importar movimientos cuando quieras.",
+      actionUrl: "/transactions",
+      metadata: { todayISODate },
+    }).catch((emitErr: unknown) => {
+      log.error(
+        { err: emitErr, userId: session.id, event: "emit_reset_complete_failed" },
+        "failed to emit reset_complete notification",
+      );
+    });
 
     return {
       status: "ok",

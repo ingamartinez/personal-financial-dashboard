@@ -10,6 +10,7 @@ import {
   restoreSnapshotForUser,
   type CreatedSnapshot,
 } from "@/lib/snapshots/create";
+import { emitNotification } from "@/lib/notifications/emit";
 
 const log = createLogger({ module: "snapshots.actions" });
 
@@ -81,6 +82,22 @@ export async function restoreSnapshotAction(
     revalidatePath("/settings/snapshots");
     revalidatePath("/");
     revalidatePath("/transactions");
+
+    await emitNotification(session.id, {
+      type: "snapshot_restored",
+      entityId: String(snapshotId),
+      priority: "medium",
+      title: "Snapshot restaurado",
+      body: "Tu cuenta volvió al estado del snapshot seleccionado.",
+      actionUrl: "/transactions",
+      metadata: { snapshotId },
+    }).catch((emitErr: unknown) => {
+      log.error(
+        { err: emitErr, userId: session.id, snapshotId, event: "emit_snapshot_restored_failed" },
+        "failed to emit snapshot_restored notification",
+      );
+    });
+
     return { status: "ok" };
   } catch (err) {
     log.error(
