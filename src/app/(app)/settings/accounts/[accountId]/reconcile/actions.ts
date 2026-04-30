@@ -384,6 +384,34 @@ export async function applyReconcile(input: ApplyReconcileInput) {
     "reconciliation applied",
   );
 
+  // #662 — notify user when reconciliation is applied successfully.
+  if (result.status === "applied") {
+    await emitNotification(session.id, {
+      type: "statement_import_complete",
+      entityId: String(result.statementImportId),
+      priority: "medium",
+      title: "Reconciliación aplicada",
+      body: `Importamos el extracto correctamente. ${result.inserted} movimientos nuevos reconciliados.`,
+      actionUrl: `/transactions?accountId=${accountId}`,
+      metadata: {
+        statementImportId: result.statementImportId,
+        inserted: result.inserted,
+        flagged: result.flagged,
+      },
+    }).catch((emitErr: unknown) => {
+      log.error(
+        {
+          err: emitErr,
+          userId: session.id,
+          accountId,
+          statementImportId: result.statementImportId,
+          event: "emit_statement_import_complete_failed",
+        },
+        "failed to emit statement_import_complete notification",
+      );
+    });
+  }
+
   // #657 — notify user when reconciliation flags transactions.
   if (result.status === "applied" && result.flagged > 0) {
     await emitNotification(session.id, {

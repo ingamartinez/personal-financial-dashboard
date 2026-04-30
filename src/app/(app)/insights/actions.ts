@@ -9,6 +9,10 @@ import { getSessionUser } from "@/lib/auth/session";
 import { buildInsightsSummary, generateInsightsReport, hashSummary } from "@/lib/ai/insights";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { getFinancialPeriod } from "@/lib/dashboard/period";
+import { createLogger } from "@/lib/logger";
+import { emitNotification } from "@/lib/notifications/emit";
+
+const log = createLogger({ module: "insights.actions" });
 
 const ymSchema = z.string().regex(/^\d{4}-\d{2}$/);
 
@@ -55,6 +59,27 @@ export async function generateInsight(ym: string) {
     });
 
   revalidatePath("/insights");
+
+  await emitNotification(session.id, {
+    type: "insights_report_ready",
+    entityId: String(parsed),
+    priority: "low",
+    title: "Reporte de insights listo",
+    body: `Tu análisis de ${parsed} está listo para revisar.`,
+    actionUrl: `/insights?yearMonth=${parsed}`,
+    metadata: { yearMonth: parsed },
+  }).catch((emitErr: unknown) => {
+    log.error(
+      {
+        err: emitErr,
+        userId: session.id,
+        yearMonth: parsed,
+        event: "emit_insights_report_ready_failed",
+      },
+      "failed to emit insights_report_ready notification",
+    );
+  });
+
   return { ym: parsed, generatedAt: new Date().toISOString() };
 }
 

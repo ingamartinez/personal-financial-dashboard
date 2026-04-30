@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { gmailConnections } from "@/lib/db/schema";
 import { getSessionUserOrNull } from "@/lib/auth/session";
@@ -8,6 +8,7 @@ import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 import { GMAIL_SCOPES, newOAuth2ClientForFlow } from "@/lib/gmail/client";
 import { InvalidOAuthStateError, verifyOAuthState } from "@/lib/gmail/oauth-state";
 import { createLogger } from "@/lib/logger";
+import { emitNotification } from "@/lib/notifications/emit";
 
 const log = createLogger({ module: "gmail/oauth/callback" });
 
@@ -192,9 +193,41 @@ export async function GET(req: NextRequest) {
       });
   });
 
+  // Fetch the connection id for the notification entityId. The upsert above
+  // either inserted or updated the active row — either way it exists now.
+  const [conn] = await db
+    .select({ id: gmailConnections.id })
+    .from(gmailConnections)
+    .where(
+      and(
+        eq(gmailConnections.userId, sessionUser.id),
+        eq(gmailConnections.gmailEmail, gmailEmail),
+        isNull(gmailConnections.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  const connectionId = conn?.id ?? 0;
+
   log.info(
     { userId: sessionUser.id, gmailEmail, event: "gmail_oauth_connected" },
     "Gmail connected",
   );
+
+  await emitNotification(sessionUser.id, {
+    type: "gmail_connected",
+    entityId: String(connectionId),
+    priority: "low",
+    title: "Gmail conectado",
+    body: `Empezamos a leer recibos desde ${gmailEmail}.`,
+    actionUrl: "/settings/integrations",
+    metadata: { gmailEmail, connectionId },
+  }).catch((emitErr: unknown) => {
+    log.error(
+      { err: emitErr, userId: sessionUser.id, gmailEmail, event: "emit_gmail_connected_failed" },
+      "failed to emit gmail_connected notification",
+    );
+  });
+
   return redirectToSettings("success");
 }
