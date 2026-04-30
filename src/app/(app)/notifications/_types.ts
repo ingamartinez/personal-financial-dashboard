@@ -19,6 +19,7 @@ export interface NotificationRow {
 
 export interface ListNotificationsInput {
   unreadOnly?: boolean;
+  priority?: "high" | "medium" | "low";
   limit?: number;
   cursor?: number;
 }

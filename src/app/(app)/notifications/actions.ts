@@ -9,6 +9,7 @@ import type { ListNotificationsInput, ListNotificationsResult, NotificationRow }
 
 const listSchema = z.object({
   unreadOnly: z.boolean().optional().default(false),
+  priority: z.enum(["high", "medium", "low"]).optional(),
   limit: z.number().int().min(1).max(100).default(50),
   cursor: z.number().int().positive().optional(),
 });
@@ -17,12 +18,16 @@ export async function listNotifications(
   input: ListNotificationsInput = {},
 ): Promise<ListNotificationsResult> {
   const session = await getSessionUser();
-  const { unreadOnly, limit, cursor } = listSchema.parse(input);
+  const { unreadOnly, priority, limit, cursor } = listSchema.parse(input);
 
   const conditions = [eq(notifications.userId, session.id)];
 
   if (unreadOnly) {
     conditions.push(isNull(notifications.readAt));
+  }
+
+  if (priority !== undefined) {
+    conditions.push(eq(notifications.priority, priority));
   }
 
   if (cursor !== undefined) {
