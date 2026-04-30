@@ -69,10 +69,17 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
   }
 
   // mode === "drain-pending"
-  log.info(
-    { event: "classify_drain_start", userId, jobId: job.id },
-    "classify-tx drain-pending started",
-  );
+
+  // BullMQ types job.id as `string | undefined`, but every call to queue.add()
+  // for this worker passes an explicit jobId option, so the runtime value is
+  // always a string. Fail loud if that invariant breaks rather than emitting
+  // bus events with a corrupt jobId (e.g. the literal string "undefined" from
+  // String(undefined)) — the UI's `event.jobId === currentJobId` filter would
+  // silently mismatch and the drain would appear to never complete.
+  if (!job.id) throw new Error("classify-tx: BullMQ job.id is undefined");
+  const jobId = job.id;
+
+  log.info({ event: "classify_drain_start", userId, jobId }, "classify-tx drain-pending started");
 
   let totalAiClassified = 0;
   let totalRuleClassified = 0;
@@ -125,8 +132,7 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       emit({
         type: "job:done",
         jobName: "classify-tx",
-        // job.id is string | undefined in BullMQ types; String() guards the undefined case.
-        jobId: String(job.id),
+        jobId,
         userId,
         classifiedCount: totalAiClassified + totalRuleClassified,
         skippedCount: totalSkipped,
@@ -156,7 +162,7 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
     emit({
       type: "job:progress",
       jobName: "classify-tx",
-      jobId: String(job.id),
+      jobId: jobId,
       userId,
       processed: totalAiClassified + totalRuleClassified,
       total: pendingCountAtStart,
@@ -197,7 +203,7 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       emit({
         type: "job:done",
         jobName: "classify-tx",
-        jobId: String(job.id),
+        jobId: jobId,
         userId,
         classifiedCount: totalAiClassified + totalRuleClassified,
         skippedCount: totalSkipped,
@@ -226,7 +232,7 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
   emit({
     type: "job:done",
     jobName: "classify-tx",
-    jobId: String(job.id),
+    jobId: jobId,
     userId,
     classifiedCount: totalAiClassified + totalRuleClassified,
     skippedCount: totalSkipped,

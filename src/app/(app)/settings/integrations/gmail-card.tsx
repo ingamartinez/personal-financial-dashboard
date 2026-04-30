@@ -94,6 +94,12 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
   // Whether a pull is currently in progress (job:progress received).
   const [pulling, setPulling] = useState(false);
 
+  // Which button triggered the in-flight pull. Drives spinner placement so both
+  // buttons don't show "Sincronizando…" simultaneously after the useTransition
+  // resolves (which happens as soon as the server action returns, not when the
+  // worker finishes).
+  const [triggeredBy, setTriggeredBy] = useState<"incremental" | "rebootstrap" | null>(null);
+
   // Local state for the date picker — initialised from server prop.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => {
@@ -129,6 +135,7 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
       currentJobIdRef.current = null;
       setCurrentJobId(null);
       setPulling(false);
+      setTriggeredBy(null);
       router.refresh();
     }
   });
@@ -169,6 +176,7 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
       if (res.jobId) {
         currentJobIdRef.current = res.jobId;
         setCurrentJobId(res.jobId);
+        setTriggeredBy("incremental");
       }
       toast.success("Refrescando Gmail…");
     });
@@ -180,6 +188,7 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
       if (res.jobId) {
         currentJobIdRef.current = res.jobId;
         setCurrentJobId(res.jobId);
+        setTriggeredBy("rebootstrap");
       }
       toast.success("Refrescando Gmail…");
     });
@@ -285,7 +294,7 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
               ) : null}
 
               <Button variant="outline" onClick={onRefreshNow} disabled={pullButtonsDisabled}>
-                {pulling && !pullingRebootstrap ? (
+                {pulling && triggeredBy === "incremental" ? (
                   <>
                     <Loader2 className="mr-2 size-4 animate-spin" />
                     Sincronizando…
@@ -298,7 +307,7 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button variant="destructive" disabled={pullButtonsDisabled}>
-                    {pulling && !pullingIncremental ? (
+                    {pulling && triggeredBy === "rebootstrap" ? (
                       <>
                         <Loader2 className="mr-2 size-4 animate-spin" />
                         Sincronizando…
