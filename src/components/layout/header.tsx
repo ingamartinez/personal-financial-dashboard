@@ -9,6 +9,7 @@ import { CurrencyModeToggle } from "./currency-mode-toggle";
 import { Nav } from "./nav";
 import { ThemeToggle } from "./theme-toggle";
 import { UserMenu } from "./user-menu";
+import { BellButton } from "./bell-button";
 
 type HeaderProps = {
   user: {
@@ -16,9 +17,10 @@ type HeaderProps = {
     name: string;
     pictureUrl?: string | null;
   } | null;
+  initialUnreadCount: number;
 };
 
-export function Header({ user }: HeaderProps) {
+export function Header({ user, initialUnreadCount }: HeaderProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -36,6 +38,7 @@ export function Header({ user }: HeaderProps) {
         <div className="ml-auto flex items-center gap-1">
           {user ? <CurrencyModeToggle /> : null}
           <ThemeToggle />
+          {user ? <BellButton initialCount={initialUnreadCount} /> : null}
           {user ? <UserMenu user={user} /> : null}
           <div className="md:hidden">
             <Sheet open={open} onOpenChange={setOpen}>

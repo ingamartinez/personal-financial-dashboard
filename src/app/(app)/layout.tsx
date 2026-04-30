@@ -8,6 +8,7 @@ import { getCurrentFxRate } from "@/lib/fx/repo";
 import { getUiPreferences } from "@/lib/preferences/repo";
 import { DEFAULT_DISPLAY_CURRENCY_MODE } from "@/lib/db/schema";
 import { auth } from "@/auth";
+import { unreadCount } from "@/app/(app)/notifications/actions";
 
 export default async function AppLayout({
   children,
@@ -27,16 +28,16 @@ export default async function AppLayout({
   // MoneyModeProvider feeds every `<Money>` / `<AnimatedMoney>` in the tree.
   // When the user is unauthenticated we fall back to native mode with no rate
   // so the toggle renders a no-op until login.
-  const [prefs, fx] = sessionUser
-    ? await Promise.all([getUiPreferences(sessionUser.id), getCurrentFxRate()])
-    : [{ displayCurrencyMode: DEFAULT_DISPLAY_CURRENCY_MODE }, null];
+  const [prefs, fx, unread] = sessionUser
+    ? await Promise.all([getUiPreferences(sessionUser.id), getCurrentFxRate(), unreadCount()])
+    : [{ displayCurrencyMode: DEFAULT_DISPLAY_CURRENCY_MODE }, null, { count: 0 }];
 
   return (
     <MoneyModeProvider
       mode={prefs.displayCurrencyMode}
       fxRate={fx ? { rate: fx.rate, source: fx.source } : null}
     >
-      <Header user={headerUser} />
+      <Header user={headerUser} initialUnreadCount={unread.count} />
       <Breadcrumbs />
       <div className="flex flex-1 flex-col">{children}</div>
       <QuickExpenseFab />
