@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { parserEvents, sloAlerts, type ParserEventKind } from "@/lib/db/schema";
+import { parserEvents, sloAlerts, users, type ParserEventKind } from "@/lib/db/schema";
+import * as busModule from "@/lib/events/bus";
+import * as emitModule from "@/lib/notifications/emit";
 import {
   ALERT_MIN_SAMPLES,
   SLO_ALERTS,
@@ -175,5 +177,109 @@ describe("checkAndAlertSlos — fire/resolve cycle", () => {
     const [decision] = await checkAndAlertSlos();
     expect(decision.action).toBe("noop");
     if (decision.action === "noop") expect(decision.reason).toBe("healthy");
+  });
+});
+
+// ── Wave 1 emitter: slo_alert_fired (#657) ────────────────────────────────
+
+describe("checkAndAlertSlos — slo_alert_fired emitter", () => {
+  // The emitter gates on `if (admin && alertRow)`. CI starts with a clean DB
+  // (no admin), so we ensure at least one active admin exists before these
+  // tests. Local DBs may already have a bootstrap admin (e.g. user id=1),
+  // and `checkAndAlertSlos` can pick either — so we don't pin to a specific
+  // admin id; we only assert that the emitter was called with SOME admin id.
+  const TEST_ADMIN_EMAIL = "slo-alerts-test-admin@findash.test";
+
+  beforeAll(async () => {
+    await db
+      .insert(users)
+      .values({
+        email: TEST_ADMIN_EMAIL,
+        name: "SLO Alerts Test Admin",
+        role: "admin",
+        active: true,
+      })
+      .onConflictDoUpdate({
+        target: users.email,
+        set: { role: "admin", active: true },
+      });
+  });
+
+  afterAll(async () => {
+    await db.delete(users).where(eq(users.email, TEST_ADMIN_EMAIL));
+  });
+
+  beforeEach(cleanup);
+  afterEach(() => {
+    vi.restoreAllMocks();
+    return cleanup();
+  });
+
+  it("emits slo_alert_fired once with correct type, entityId, audience when firing", async () => {
+    const spy = vi.spyOn(emitModule, "emitNotification").mockResolvedValue({ id: 999 });
+
+    // 70% success rate over 25 samples → fires.
+    for (let i = 0; i < 18; i++) await seedEvent("parse_outcome_success", 30);
+    for (let i = 0; i < 7; i++) await seedEvent("parse_needs_review", 30);
+
+    const [decision] = await checkAndAlertSlos();
+    expect(decision.action).toBe("fire");
+
+    // Retrieve the inserted alert row id to assert entityId.
+    const [alertRow] = await db
+      .select({ id: sloAlerts.id })
+      .from(sloAlerts)
+      .where(eq(sloAlerts.sloKey, "parse_success"));
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(
+      expect.any(Number), // admin id — varies (bootstrap user, seed user, or our beforeAll admin)
+      expect.objectContaining({
+        type: "slo_alert_fired",
+        entityId: String(alertRow.id),
+        audience: "admin",
+        priority: "high",
+      }),
+    );
+  });
+
+  it("does NOT emit on noop tick (already_alerted dedup)", async () => {
+    const spy = vi.spyOn(emitModule, "emitNotification").mockResolvedValue({ id: 999 });
+
+    for (let i = 0; i < 18; i++) await seedEvent("parse_outcome_success", 30);
+    for (let i = 0; i < 7; i++) await seedEvent("parse_needs_review", 30);
+
+    // First tick fires.
+    await checkAndAlertSlos();
+    spy.mockClear();
+
+    // Second tick must noop — emitter must NOT fire again.
+    const [second] = await checkAndAlertSlos();
+    expect(second.action).toBe("noop");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("emits slo:resolved on the bus when the SLO recovers (auto-mark-read pairing)", async () => {
+    const busSpy = vi.spyOn(busModule, "emit");
+
+    // Fire first.
+    for (let i = 0; i < 18; i++) await seedEvent("parse_outcome_success", 30);
+    for (let i = 0; i < 7; i++) await seedEvent("parse_needs_review", 30);
+    await checkAndAlertSlos();
+    busSpy.mockClear();
+
+    // Recover.
+    for (let i = 0; i < 200; i++) await seedEvent("parse_outcome_success", 15);
+    const [decision] = await checkAndAlertSlos();
+    expect(decision.action).toBe("resolve");
+
+    // Without this bus emit, slo_alert_fired notifications stay unread forever.
+    const resolvedCalls = busSpy.mock.calls.filter(([event]) => event.type === "slo:resolved");
+    expect(resolvedCalls).toHaveLength(1);
+    const event = resolvedCalls[0]![0];
+    if (event.type === "slo:resolved") {
+      expect(event.alertId).toBe(decision.action === "resolve" ? decision.alertId : -1);
+      expect(typeof event.userId).toBe("number");
+    }
   });
 });
