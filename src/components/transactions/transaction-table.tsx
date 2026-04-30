@@ -28,7 +28,6 @@ import { useNewIds } from "@/lib/hooks/use-new-ids";
 import { hasSecondaryDescription, primaryDescription } from "@/lib/transactions/description";
 import type { CounterpartyBrief, TxRow } from "@/lib/transactions/queries";
 import { CategoryCell, type CategoryOption } from "./category-cell";
-import { CounterpartyCell } from "./counterparty-cell";
 import { ClassificationReasonDialog } from "./classification-reason-dialog";
 import { ConfidenceBadge, confidenceBand } from "./confidence-badge";
 import { CounterpartyDialog } from "./counterparty-dialog";
@@ -478,11 +477,11 @@ export function TransactionTable({
                     </TableCell>
                     <TableCell className="px-4">
                       <div className="flex flex-col gap-1">
-                        <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
-                        <CounterpartyCell
+                        <CategoryCell
                           txId={tx.id}
-                          counterparty={tx.counterparty}
-                          options={allCounterparties}
+                          value={tx.categorySlug}
+                          options={categories}
+                          channel={tx.channel}
                         />
                         <div className="flex flex-wrap items-center gap-1">
                           <ConfidenceBadge
@@ -700,11 +699,11 @@ export function TransactionTable({
                 </div>
 
                 <div className="flex flex-col gap-1">
-                  <CategoryCell txId={tx.id} value={tx.categorySlug} options={categories} />
-                  <CounterpartyCell
+                  <CategoryCell
                     txId={tx.id}
-                    counterparty={tx.counterparty}
-                    options={allCounterparties}
+                    value={tx.categorySlug}
+                    options={categories}
+                    channel={tx.channel}
                   />
                   <div className="flex flex-wrap items-center gap-1">
                     <ConfidenceBadge
