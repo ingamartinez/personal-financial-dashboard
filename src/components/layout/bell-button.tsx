@@ -197,9 +197,16 @@ export function BellButton({ initialCount }: BellButtonProps) {
       // Re-fetch the unread count to close the SSR→SSE race window where a
       // notification may have arrived between the SSR render and SSE connect.
       onOpen: () => {
-        void unreadCount().then(({ count: serverCount }) => {
-          setCount(serverCount);
-        });
+        // Tolerate failure: if the session expired or the server hiccups,
+        // keep the last-known count rather than surfacing an unhandled rejection.
+        // The user will discover the auth state on next navigation.
+        void unreadCount()
+          .then(({ count: serverCount }) => {
+            setCount(serverCount);
+          })
+          .catch(() => {
+            // intentionally silent — stale count is preferable to a spurious error
+          });
       },
     },
   );
