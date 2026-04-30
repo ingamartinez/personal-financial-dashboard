@@ -33,7 +33,9 @@ export type IngestOutcome =
   // `flaggedMismatch` is set by the email pipeline when a duplicate was
   // detected AND the existing tx had divergences that were recorded on the
   // tx's `source_mismatch_details`. SMS callers leave it undefined.
-  | { status: "duplicated"; flaggedMismatch?: boolean }
+  // `txId` is included when status is "duplicated" and a matching tx was
+  // found — used by the gmail_source_mismatch emitter in pull.ts.
+  | { status: "duplicated"; flaggedMismatch?: boolean; txId?: number }
   | { status: "skipped"; reason: string }
   | { status: "error"; reason: string };
 
