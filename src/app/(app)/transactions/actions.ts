@@ -608,6 +608,7 @@ export async function createManualEntry(input: {
 export async function enqueueClassifyAllPending(): Promise<{
   enqueued: number;
   alreadyRunning?: boolean;
+  jobId: string | null;
 }> {
   const session = await getSessionUser();
 
@@ -615,7 +616,7 @@ export async function enqueueClassifyAllPending(): Promise<{
   // `countUnclassified` already filters by userId + notDeleted.
   const pendingCount = await countUnclassified(session.id);
 
-  if (pendingCount === 0) return { enqueued: 0 };
+  if (pendingCount === 0) return { enqueued: 0, jobId: null };
 
   // Check the BullMQ deduplication key BEFORE calling queue.add().
   // BullMQ stores the dedup key at `{prefix}:{queueName}:de:{id}` — it exists
@@ -627,11 +628,12 @@ export async function enqueueClassifyAllPending(): Promise<{
   const dedupKey = `bull:classify-tx:de:drain-${session.id}`;
   const existing = await redis.get(dedupKey);
   if (existing) {
-    return { enqueued: 0, alreadyRunning: true };
+    // alreadyRunning: no Redis dedup-key extraction in this PR — return null.
+    return { enqueued: 0, alreadyRunning: true, jobId: null };
   }
 
   const queue = createQueue<ClassifyTxJobData>("classify-tx");
-  await queue.add(
+  const job = await queue.add(
     "classify-tx",
     { userId: session.id, mode: "drain-pending" },
     {
@@ -647,7 +649,7 @@ export async function enqueueClassifyAllPending(): Promise<{
   revalidatePath("/");
   revalidatePath("/transactions");
 
-  return { enqueued: pendingCount };
+  return { enqueued: pendingCount, jobId: job.id ?? null };
 }
 
 export async function runAiClassifier(): Promise<{ enqueued: number }> {

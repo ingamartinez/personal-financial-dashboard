@@ -4,6 +4,7 @@ import { createLogger } from "@/lib/logger";
 import { pullForUser, pullAllActiveConnections } from "@/lib/gmail/pull";
 import type { PullOpts } from "@/lib/gmail/pull";
 import { createWorker } from "@/lib/queue";
+import { emit } from "@/lib/events/bus";
 
 const log = createLogger({ module: "worker/gmail-pull" });
 
@@ -60,13 +61,27 @@ export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<vo
   if (mode === "single-user") {
     const { userId, opts = {} } = job.data;
 
-    log.info(
-      { event: "gmail_pull_single_user_start", userId, jobId: job.id },
-      "gmail-pull single-user",
-    );
+    // BullMQ types job.id as `string | undefined`, but every call to queue.add()
+    // for this worker passes an explicit jobId option, so the runtime value is
+    // always a string. Fail loud if that invariant breaks rather than emitting
+    // bus events with a corrupt jobId — the UI's `event.jobId === currentJobId`
+    // filter would silently mismatch and the spinner would spin forever.
+    if (!job.id) throw new Error("gmail-pull: BullMQ job.id is undefined");
+    const jobId = job.id;
+
+    log.info({ event: "gmail_pull_single_user_start", userId, jobId }, "gmail-pull single-user");
 
     await job.updateProgress({ userId, phase: "auth" });
     await job.log(`start: mode=single-user userId=${userId}`);
+
+    emit({
+      type: "job:progress",
+      jobName: "gmail-pull",
+      jobId,
+      userId,
+      phase: "pulling",
+      timestamp: Date.now(),
+    });
 
     const result = await pullForUser(userId, opts);
 
@@ -92,6 +107,16 @@ export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<vo
     await job.log(
       `done: userId=${userId} pulled=${result.pulled} skipped=${result.skipped} errors=${result.errors.length}`,
     );
+
+    emit({
+      type: "job:done",
+      jobName: "gmail-pull",
+      jobId,
+      userId,
+      newTxCount: result.pulled,
+      processedCount: result.pulled + result.skipped,
+      timestamp: Date.now(),
+    });
 
     return;
   }

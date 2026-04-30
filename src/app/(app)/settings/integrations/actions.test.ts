@@ -176,15 +176,15 @@ describe("setBootstrapSinceDateAction", () => {
 describe("triggerIncrementalPullAction", () => {
   beforeEach(() => {
     mockQueueAdd.mockReset();
-    mockQueueAdd.mockResolvedValue({});
+    mockQueueAdd.mockResolvedValue({ id: "test-incremental-job-id" });
   });
 
-  it("returns { triggered: true } immediately", async () => {
+  it("returns triggered=true with the BullMQ jobId so the UI can subscribe to SSE progress", async () => {
     mockGetSessionUser.mockResolvedValue({ id: userA });
 
     const result = await triggerIncrementalPullAction();
 
-    expect(result).toEqual({ triggered: true });
+    expect(result).toEqual({ triggered: true, jobId: "test-incremental-job-id" });
   });
 
   it("enqueues a single-user gmail-pull job WITHOUT overrideSince (uses cursor)", async () => {
@@ -210,15 +210,15 @@ describe("triggerIncrementalPullAction", () => {
 describe("triggerRebootstrapAction", () => {
   beforeEach(() => {
     mockQueueAdd.mockReset();
-    mockQueueAdd.mockResolvedValue({});
+    mockQueueAdd.mockResolvedValue({ id: "test-rebootstrap-job-id" });
   });
 
-  it("returns { triggered: true } immediately", async () => {
+  it("returns triggered=true with the BullMQ jobId so the UI can subscribe to SSE progress", async () => {
     mockGetSessionUser.mockResolvedValue({ id: userA });
 
     const result = await triggerRebootstrapAction();
 
-    expect(result).toEqual({ triggered: true });
+    expect(result).toEqual({ triggered: true, jobId: "test-rebootstrap-job-id" });
   });
 
   it("enqueues with overrideSince set to the stored bootstrapSinceDate", async () => {

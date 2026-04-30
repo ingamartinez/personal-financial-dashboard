@@ -4,6 +4,7 @@ import { createLogger } from "@/lib/logger";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { countUnclassified } from "@/lib/transactions/queries";
 import { createWorker } from "@/lib/queue";
+import { emit } from "@/lib/events/bus";
 
 const log = createLogger({ module: "worker/classify-tx" });
 
@@ -68,16 +69,25 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
   }
 
   // mode === "drain-pending"
-  log.info(
-    { event: "classify_drain_start", userId, jobId: job.id },
-    "classify-tx drain-pending started",
-  );
+
+  // BullMQ types job.id as `string | undefined`, but every call to queue.add()
+  // for this worker passes an explicit jobId option, so the runtime value is
+  // always a string. Fail loud if that invariant breaks rather than emitting
+  // bus events with a corrupt jobId (e.g. the literal string "undefined" from
+  // String(undefined)) — the UI's `event.jobId === currentJobId` filter would
+  // silently mismatch and the drain would appear to never complete.
+  if (!job.id) throw new Error("classify-tx: BullMQ job.id is undefined");
+  const jobId = job.id;
+
+  log.info({ event: "classify_drain_start", userId, jobId }, "classify-tx drain-pending started");
 
   let totalAiClassified = 0;
   let totalRuleClassified = 0;
   let totalSkipped = 0;
   let iterations = 0;
   let drainStartLogged = false;
+  // Capture the initial pending count so job:progress can report total.
+  let pendingCountAtStart = 0;
 
   while (iterations < MAX_DRAIN_ITERATIONS) {
     iterations++;
@@ -86,6 +96,7 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
 
     // Emit start progress on first iteration, using the actual pending count.
     if (!drainStartLogged) {
+      pendingCountAtStart = pendingCount;
       await job.updateProgress({ mode, userId, pending: pendingCount });
       await job.log(`drain start: userId=${userId} pending=${pendingCount}`);
       drainStartLogged = true;
@@ -118,6 +129,15 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       await job.log(
         `drain complete: userId=${userId} iterations=${iterations} ai=${totalAiClassified} rule=${totalRuleClassified} skipped=${totalSkipped}`,
       );
+      emit({
+        type: "job:done",
+        jobName: "classify-tx",
+        jobId,
+        userId,
+        classifiedCount: totalAiClassified + totalRuleClassified,
+        skippedCount: totalSkipped,
+        timestamp: Date.now(),
+      });
       return;
     }
 
@@ -138,6 +158,17 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
     await job.log(
       `iteration ${iterations}: picked=${result.picked} ai=${result.aiClassified} rule=${result.ruleClassified} skipped=${result.skipped} pending=${pendingCount}`,
     );
+
+    emit({
+      type: "job:progress",
+      jobName: "classify-tx",
+      jobId: jobId,
+      userId,
+      processed: totalAiClassified + totalRuleClassified,
+      total: pendingCountAtStart,
+      pending: pendingCount,
+      timestamp: Date.now(),
+    });
 
     log.info(
       {
@@ -169,6 +200,15 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       await job.log(
         `stalled: userId=${userId} pendingCount=${pendingCount} iteration=${iterations} — aborting`,
       );
+      emit({
+        type: "job:done",
+        jobName: "classify-tx",
+        jobId: jobId,
+        userId,
+        classifiedCount: totalAiClassified + totalRuleClassified,
+        skippedCount: totalSkipped,
+        timestamp: Date.now(),
+      });
       return;
     }
   }
@@ -189,6 +229,15 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
   await job.log(
     `limit reached: maxIterations=${MAX_DRAIN_ITERATIONS} ai=${totalAiClassified} rule=${totalRuleClassified}`,
   );
+  emit({
+    type: "job:done",
+    jobName: "classify-tx",
+    jobId: jobId,
+    userId,
+    classifiedCount: totalAiClassified + totalRuleClassified,
+    skippedCount: totalSkipped,
+    timestamp: Date.now(),
+  });
 }
 
 /**

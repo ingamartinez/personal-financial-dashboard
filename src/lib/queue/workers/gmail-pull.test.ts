@@ -9,11 +9,16 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   pullForUser: vi.fn(),
   pullAllActiveConnections: vi.fn(),
+  emit: vi.fn(),
 }));
 
 vi.mock("@/lib/gmail/pull", () => ({
   pullForUser: mocks.pullForUser,
   pullAllActiveConnections: mocks.pullAllActiveConnections,
+}));
+
+vi.mock("@/lib/events/bus", () => ({
+  emit: mocks.emit,
 }));
 
 import type { Job } from "bullmq";
@@ -166,5 +171,79 @@ describe("gmailPullProcessor — mode: all — Bull-Board contract", () => {
     expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ users: 0 }));
     expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ done: true }));
     expect(job.log).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bus emit — single-user emits job:progress + job:done; all mode does NOT
+// ---------------------------------------------------------------------------
+
+describe("bus emit — single-user mode", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits job:progress (phase=pulling) then job:done with correct counts", async () => {
+    mocks.pullForUser.mockResolvedValueOnce({
+      ...emptyResult,
+      userId: 42,
+      pulled: 7,
+      skipped: 3,
+    });
+
+    await gmailPullProcessor(makeJob({ mode: "single-user", userId: 42 }));
+
+    const progressCalls = mocks.emit.mock.calls.filter(
+      (args) => (args[0] as { type: string }).type === "job:progress",
+    );
+    const doneCalls = mocks.emit.mock.calls.filter(
+      (args) => (args[0] as { type: string }).type === "job:done",
+    );
+
+    expect(progressCalls).toHaveLength(1);
+    expect(progressCalls[0][0]).toMatchObject({
+      type: "job:progress",
+      jobName: "gmail-pull",
+      jobId: "test-job-gmail-pull",
+      userId: 42,
+      phase: "pulling",
+    });
+
+    expect(doneCalls).toHaveLength(1);
+    expect(doneCalls[0][0]).toMatchObject({
+      type: "job:done",
+      jobName: "gmail-pull",
+      jobId: "test-job-gmail-pull",
+      userId: 42,
+      newTxCount: 7,
+      processedCount: 10, // pulled(7) + skipped(3)
+    });
+  });
+});
+
+describe("bus emit — all mode does NOT emit job:* events", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not emit any bus events in all mode", async () => {
+    mocks.pullAllActiveConnections.mockResolvedValueOnce([
+      { ...emptyResult, userId: 1, pulled: 5 },
+    ]);
+
+    await gmailPullProcessor(makeJob({ mode: "all" }));
+
+    const jobEvents = mocks.emit.mock.calls.filter((args) =>
+      (args[0] as { type: string }).type.startsWith("job:"),
+    );
+    expect(jobEvents).toHaveLength(0);
   });
 });

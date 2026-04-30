@@ -9,6 +9,7 @@ import type { ClassifyTxJobData } from "./classify-tx";
 const mocks = vi.hoisted(() => ({
   classifyUnclassifiedBatch: vi.fn(),
   countUnclassified: vi.fn(),
+  emit: vi.fn(),
 }));
 
 vi.mock("@/lib/classification/pipeline", () => ({
@@ -18,6 +19,10 @@ vi.mock("@/lib/classification/pipeline", () => ({
 
 vi.mock("@/lib/transactions/queries", () => ({
   countUnclassified: mocks.countUnclassified,
+}));
+
+vi.mock("@/lib/events/bus", () => ({
+  emit: mocks.emit,
 }));
 
 const { classifyTxProcessor } = await import("./classify-tx");
@@ -233,5 +238,122 @@ describe("tenant isolation — specific mode (call-routing only)", () => {
         expect(callOpts?.txIds).toEqual(userBTxIds);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bus emit — drain-pending emits job:progress + job:done; specific does NOT
+// ---------------------------------------------------------------------------
+
+describe("bus emit — drain-pending mode", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("emits job:progress after each batch and job:done on completion", async () => {
+    // 2 iterations: 40 pending → 20 pending → 0 pending
+    mocks.countUnclassified
+      .mockResolvedValueOnce(40)
+      .mockResolvedValueOnce(20)
+      .mockResolvedValueOnce(0);
+    mocks.classifyUnclassifiedBatch
+      .mockResolvedValueOnce({
+        ...defaultPipelineResult,
+        aiClassified: 10,
+        ruleClassified: 5,
+        skipped: 5,
+      })
+      .mockResolvedValueOnce(defaultPipelineResult);
+
+    await classifyTxProcessor(makeJob({ userId: 7, mode: "drain-pending" }));
+
+    const progressCalls = mocks.emit.mock.calls.filter(
+      (args) => (args[0] as { type: string }).type === "job:progress",
+    );
+    const doneCalls = mocks.emit.mock.calls.filter(
+      (args) => (args[0] as { type: string }).type === "job:done",
+    );
+
+    // One progress per batch iteration (2 iterations), one done at the end.
+    expect(progressCalls).toHaveLength(2);
+    expect(doneCalls).toHaveLength(1);
+
+    // First progress: after first batch (10+5=15 processed, total=40, pending=40)
+    expect(progressCalls[0][0]).toMatchObject({
+      type: "job:progress",
+      jobName: "classify-tx",
+      jobId: "test-job-1",
+      userId: 7,
+      processed: 15,
+      total: 40,
+    });
+
+    // Done event: classifiedCount = all ai+rule classified
+    expect(doneCalls[0][0]).toMatchObject({
+      type: "job:done",
+      jobName: "classify-tx",
+      jobId: "test-job-1",
+      userId: 7,
+    });
+    const doneEvent = doneCalls[0][0] as { classifiedCount: number; skippedCount: number };
+    expect(typeof doneEvent.classifiedCount).toBe("number");
+    expect(typeof doneEvent.skippedCount).toBe("number");
+  });
+
+  it("emits job:done immediately when pendingCount is already 0", async () => {
+    mocks.countUnclassified.mockResolvedValueOnce(0);
+
+    await classifyTxProcessor(makeJob({ userId: 1, mode: "drain-pending" }));
+
+    const doneCalls = mocks.emit.mock.calls.filter(
+      (args) => (args[0] as { type: string }).type === "job:done",
+    );
+    expect(doneCalls).toHaveLength(1);
+    expect(doneCalls[0][0]).toMatchObject({
+      type: "job:done",
+      jobName: "classify-tx",
+      userId: 1,
+      classifiedCount: 0,
+      skippedCount: 0,
+    });
+
+    const progressCalls = mocks.emit.mock.calls.filter(
+      (args) => (args[0] as { type: string }).type === "job:progress",
+    );
+    expect(progressCalls).toHaveLength(0);
+  });
+
+  it("emits job:done on stall guard exit", async () => {
+    mocks.countUnclassified.mockResolvedValue(5);
+    mocks.classifyUnclassifiedBatch.mockResolvedValueOnce({
+      ...defaultPipelineResult,
+      picked: 0,
+    });
+
+    await classifyTxProcessor(makeJob({ userId: 1, mode: "drain-pending" }));
+
+    const doneCalls = mocks.emit.mock.calls.filter(
+      (args) => (args[0] as { type: string }).type === "job:done",
+    );
+    expect(doneCalls).toHaveLength(1);
+    expect(doneCalls[0][0].type).toBe("job:done");
+    expect(doneCalls[0][0].jobName).toBe("classify-tx");
+  });
+});
+
+describe("bus emit — specific mode does NOT emit job:* events", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("does not emit any bus events in specific mode", async () => {
+    mocks.classifyUnclassifiedBatch.mockResolvedValueOnce(defaultPipelineResult);
+
+    await classifyTxProcessor(makeJob({ userId: 1, mode: "specific", txIds: [10, 11] }));
+
+    const jobEvents = mocks.emit.mock.calls.filter((args) =>
+      (args[0] as { type: string }).type.startsWith("job:"),
+    );
+    expect(jobEvents).toHaveLength(0);
   });
 });
