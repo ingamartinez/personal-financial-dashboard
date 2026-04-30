@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { parserEvents, sloAlerts, type ParserEventKind } from "@/lib/db/schema";
+import { parserEvents, sloAlerts, users, type ParserEventKind } from "@/lib/db/schema";
 import * as busModule from "@/lib/events/bus";
 import * as emitModule from "@/lib/notifications/emit";
 import {
@@ -183,6 +183,32 @@ describe("checkAndAlertSlos — fire/resolve cycle", () => {
 // ── Wave 1 emitter: slo_alert_fired (#657) ────────────────────────────────
 
 describe("checkAndAlertSlos — slo_alert_fired emitter", () => {
+  // The emitter gates on `if (admin && alertRow)`. CI starts with a clean DB
+  // (no admin), so we ensure at least one active admin exists before these
+  // tests. Local DBs may already have a bootstrap admin (e.g. user id=1),
+  // and `checkAndAlertSlos` can pick either — so we don't pin to a specific
+  // admin id; we only assert that the emitter was called with SOME admin id.
+  const TEST_ADMIN_EMAIL = "slo-alerts-test-admin@findash.test";
+
+  beforeAll(async () => {
+    await db
+      .insert(users)
+      .values({
+        email: TEST_ADMIN_EMAIL,
+        name: "SLO Alerts Test Admin",
+        role: "admin",
+        active: true,
+      })
+      .onConflictDoUpdate({
+        target: users.email,
+        set: { role: "admin", active: true },
+      });
+  });
+
+  afterAll(async () => {
+    await db.delete(users).where(eq(users.email, TEST_ADMIN_EMAIL));
+  });
+
   beforeEach(cleanup);
   afterEach(() => {
     vi.restoreAllMocks();
@@ -207,7 +233,7 @@ describe("checkAndAlertSlos — slo_alert_fired emitter", () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith(
-      expect.any(Number), // adminId — varies by test DB seed
+      expect.any(Number), // admin id — varies (bootstrap user, seed user, or our beforeAll admin)
       expect.objectContaining({
         type: "slo_alert_fired",
         entityId: String(alertRow.id),

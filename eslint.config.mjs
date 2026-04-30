@@ -35,6 +35,9 @@ const eslintConfig = defineConfig([
     // /settings/widgets fetches them from here). Linting them against
     // next-ts rules produces false positives.
     "public/widgets/scriptable/**",
+    // Claude Code tooling directory — agent worktrees, settings, transcripts.
+    // Not source code; lint here would re-walk every isolated agent worktree.
+    ".claude/**",
   ]),
 ]);
 
