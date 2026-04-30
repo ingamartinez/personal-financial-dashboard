@@ -2,6 +2,7 @@
 
 import { useTransition, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { BellIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,11 @@ import {
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import type { NotificationRow } from "@/app/(app)/notifications/_types";
 import { cn } from "@/lib/utils";
+import {
+  getBrowserNotificationPermission,
+  requestBrowserNotificationPermission,
+} from "@/lib/notifications/browser-permissions";
+import { maybeShowBrowserNotification } from "@/lib/notifications/browser-display";
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -151,6 +157,7 @@ type BellButtonProps = {
 };
 
 export function BellButton({ initialCount }: BellButtonProps) {
+  const router = useRouter();
   const [count, setCount] = useState(initialCount);
   const [items, setItems] = useState<NotificationRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -189,6 +196,29 @@ export function BellButton({ initialCount }: BellButtonProps) {
           toast(event.payload.title, {
             description: event.payload.body,
           });
+
+          // ---------------------------------------------------------------------------
+          // Browser-native notification (Phase 6): fires only when the tab is hidden.
+          // Request permission lazily on the first high-priority event if not yet set.
+          // ---------------------------------------------------------------------------
+          void (async () => {
+            const permission = getBrowserNotificationPermission();
+            const effectivePermission =
+              permission === "default" ? await requestBrowserNotificationPermission() : permission;
+
+            if (effectivePermission === "granted") {
+              maybeShowBrowserNotification(
+                {
+                  title: event.payload.title,
+                  body: event.payload.body,
+                  tag: String(event.notificationId),
+                  priority: event.payload.priority,
+                  actionUrl: event.payload.actionUrl,
+                },
+                (url) => router.push(url),
+              );
+            }
+          })();
         }
       }
     },
