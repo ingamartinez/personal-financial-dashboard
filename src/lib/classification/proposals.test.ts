@@ -70,6 +70,7 @@ describe("detectAndEnqueueRuleProposals", () => {
 
     expect(result.scanned).toBe(0);
     expect(result.inserted).toBe(0);
+    expect(result.proposals).toEqual([]);
 
     const proposals = await db.execute(sql`
       SELECT 1 FROM rule_proposals WHERE user_id = ${TEST_USER_ID}
@@ -92,6 +93,14 @@ describe("detectAndEnqueueRuleProposals", () => {
 
     expect(result.scanned).toBe(1);
     expect(result.inserted).toBe(1);
+    expect(result.proposals).toHaveLength(1);
+    expect(result.proposals[0]).toMatchObject({
+      userId: TEST_USER_ID,
+      merchant,
+      categorySlug: "alimentacion",
+    });
+    expect(typeof result.proposals[0]!.id).toBe("number");
+    expect(result.proposals[0]!.id).toBeGreaterThan(0);
 
     const [row] = await db.execute<{
       merchant: string;
@@ -132,6 +141,7 @@ describe("detectAndEnqueueRuleProposals", () => {
     const result = await detectAndEnqueueRuleProposals();
 
     expect(result.inserted).toBe(0);
+    expect(result.proposals).toEqual([]);
   });
 
   it("is idempotent — running twice does not create duplicate pending proposals", async () => {
@@ -148,8 +158,10 @@ describe("detectAndEnqueueRuleProposals", () => {
     const second = await detectAndEnqueueRuleProposals();
 
     expect(first.inserted).toBe(1);
+    expect(first.proposals).toHaveLength(1);
     expect(second.inserted).toBe(0);
     expect(second.scanned).toBe(1);
+    expect(second.proposals).toEqual([]);
 
     const proposals = await db.execute(sql`
       SELECT 1 FROM rule_proposals WHERE user_id = ${TEST_USER_ID} AND merchant = ${merchant}
@@ -200,6 +212,40 @@ describe("detectAndEnqueueRuleProposals", () => {
 
     const result = await detectAndEnqueueRuleProposals();
     expect(result.inserted).toBe(1);
+    expect(result.proposals).toHaveLength(1);
+  });
+
+  it("proposals[] content matches the inserted rule_proposals row", async () => {
+    const merchant = `${MERCHANT_PREFIX}CONTENT`;
+    for (let i = 0; i < 3; i++) {
+      await seedCorrection({
+        merchant,
+        newCategory: "alimentacion",
+        externalId: `${MERCHANT_PREFIX}content-${i}`,
+      });
+    }
+
+    const result = await detectAndEnqueueRuleProposals();
+
+    expect(result.inserted).toBe(1);
+    expect(result.proposals).toHaveLength(1);
+
+    const proposal = result.proposals[0]!;
+    expect(proposal.userId).toBe(TEST_USER_ID);
+    expect(proposal.merchant).toBe(merchant);
+    expect(proposal.categorySlug).toBe("alimentacion");
+    expect(typeof proposal.id).toBe("number");
+    expect(proposal.id).toBeGreaterThan(0);
+
+    // Cross-check: the id in proposals[] must match an actual row in rule_proposals.
+    const [dbRow] = await db.execute<{ id: number; merchant: string; category_slug: string }>(sql`
+      SELECT id, merchant, category_slug
+      FROM rule_proposals WHERE id = ${proposal.id} AND user_id = ${TEST_USER_ID}
+    `);
+    expect(dbRow).toBeDefined();
+    expect(dbRow.id).toBe(proposal.id);
+    expect(dbRow.merchant).toBe(merchant);
+    expect(dbRow.category_slug).toBe("alimentacion");
   });
 
   it("ignores corrections with null merchant", async () => {
