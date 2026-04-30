@@ -105,9 +105,8 @@ export async function registerNode() {
   registerAutoMarkRead();
 
   // #664: Emit gmail_pull_completed notification when a user-triggered Gmail sync finishes.
-  const { registerGmailPullCompletionEmitter } = await import(
-    "@/lib/notifications/gmail-pull-completion"
-  );
+  const { registerGmailPullCompletionEmitter } =
+    await import("@/lib/notifications/gmail-pull-completion");
   registerGmailPullCompletionEmitter();
 
   // -------------------------------------------------------------------------
