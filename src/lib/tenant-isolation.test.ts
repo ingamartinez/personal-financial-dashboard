@@ -72,6 +72,10 @@ async function createTransaction(
   amountCents: bigint,
   occurredAt: Date,
   externalId: string,
+  overrides: Partial<{
+    channel: "bank" | "manual" | "transfer";
+    categorySlug: string | null;
+  }> = {},
 ): Promise<number> {
   const [row] = await db
     .insert(transactions)
@@ -82,10 +86,11 @@ async function createTransaction(
       amountCents,
       currency: "COP",
       descriptionRaw: `${TAG} ${externalId}`,
-      categorySlug: "otros",
+      categorySlug: overrides.categorySlug !== undefined ? overrides.categorySlug : "otros",
       classificationMethod: "manual",
       source: "manual",
       externalId,
+      ...(overrides.channel !== undefined ? { channel: overrides.channel } : {}),
     })
     .returning({ id: transactions.id });
   return row.id;
@@ -204,6 +209,17 @@ describe("#183 tenant isolation", () => {
     await createTransaction(userA, accountA, BigInt(-1000), new Date("2026-04-10"), `${TAG}-A-tx1`);
     await createTransaction(userA, accountA, BigInt(-2000), new Date("2026-04-12"), `${TAG}-A-tx2`);
     await createTransaction(userB, accountB, BigInt(-3000), new Date("2026-04-10"), `${TAG}-B-tx1`);
+    // Transfer fixture (#685): a TC payment for userA — channel='transfer',
+    // no category. The dashboard queries (getMonthlyFlow, getCategoryBreakdown,
+    // getTopExpenses) must exclude it so the expense totals stay at 3000, not 8000.
+    await createTransaction(
+      userA,
+      accountA,
+      BigInt(-5000),
+      new Date("2026-04-15"),
+      `${TAG}-A-tx3-transfer`,
+      { channel: "transfer", categorySlug: null },
+    );
 
     cpA = await createCounterparty(userA, `${TAG}-A cp`);
     cpB = await createCounterparty(userB, `${TAG}-B cp`);
@@ -242,7 +258,8 @@ describe("#183 tenant isolation", () => {
     it("returns only userA's transactions", async () => {
       const { rows } = await listTransactions(userA, {});
       const ours = rows.filter((r) => r.descriptionRaw.includes(TAG));
-      expect(ours).toHaveLength(2);
+      // 2 regular expenses + 1 transfer fixture (#685)
+      expect(ours).toHaveLength(3);
       expect(ours.every((r) => r.descriptionRaw.includes(`${TAG}-A`))).toBe(true);
     });
 
@@ -294,12 +311,14 @@ describe("#183 tenant isolation", () => {
 
   it("dashboard queries are scoped per user", async () => {
     const [nwA, nwB] = await Promise.all([getNetWorth(userA, 4000), getNetWorth(userB, 4000)]);
-    // Each user has two -1000 / -2000 txs on their own account (and no opening
-    // balance), so derived net worth = -3000 for both. #368: net worth is
-    // derived from SUM(transactions.amount_cents), not the stored column.
+    // #368: net worth is derived from SUM(transactions.amount_cents) — all
+    // transactions including transfers, which is correct (transfers move money
+    // between accounts and both legs contribute to net worth).
+    // userA: -1000 + -2000 (expenses) + -5000 (transfer fixture, #685) = -8000.
+    // userB: -3000 (single expense) = -3000.
     // The assertion we actually care about is that each user's value reflects
     // ONLY their own txs — not leakage across tenants.
-    expect(nwA.totalCopCents).toBe(BigInt(-3000));
+    expect(nwA.totalCopCents).toBe(BigInt(-8000));
     expect(nwB.totalCopCents).toBe(BigInt(-3000));
 
     const statusesA = await getAccountStatuses(userA);

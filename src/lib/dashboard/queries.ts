@@ -6,6 +6,7 @@ import { toCop } from "@/lib/money";
 import { groupCreditCards, listAccountsDetailed } from "@/lib/accounts/queries";
 import { computeNextPayment } from "@/lib/accounts/next-payment";
 import { currentCalendarMonth } from "@/lib/dashboard/period";
+import { formatAccountLabel } from "@/lib/accounts/format";
 import type { AccountType, CounterpartyType, Currency } from "@/lib/types";
 
 /** @deprecated Use `currentCalendarMonth` from `@/lib/dashboard/period` for
@@ -144,6 +145,7 @@ export async function getMonthlyFlow(
         eq(transactions.userId, userId),
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
+        sql`${transactions.channel} <> 'transfer'`,
         notAdjustment(transactions.isAdjustment),
         notDeleted(transactions.deletedAt),
       ),
@@ -261,6 +263,7 @@ export async function getCategoryBreakdown(
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
+        sql`${transactions.channel} <> 'transfer'`,
         notAdjustment(transactions.isAdjustment),
         notDeleted(transactions.deletedAt),
       ),
@@ -319,6 +322,7 @@ export async function getTopExpenses(
       amountCents: transactions.amountCents,
       currency: transactions.currency,
       accountName: accounts.name,
+      accountCurrency: accounts.currency,
       cpId: counterparties.id,
       cpDisplayName: counterparties.displayName,
       cpType: counterparties.type,
@@ -339,6 +343,7 @@ export async function getTopExpenses(
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
+        sql`${transactions.channel} <> 'transfer'`,
         notAdjustment(transactions.isAdjustment),
         notDeleted(transactions.deletedAt),
       ),
@@ -359,7 +364,7 @@ export async function getTopExpenses(
     amountCents: r.amountCents,
     currency: r.currency,
     amountCopCents: toCop(BigInt(-1) * r.amountCents, r.currency, copPerUsd),
-    accountName: r.accountName,
+    accountName: formatAccountLabel({ name: r.accountName, currency: r.accountCurrency }),
   }));
 }
 
