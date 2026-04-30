@@ -65,6 +65,12 @@ export type AppEvent =
       userId: number;
       alertId: number;
       timestamp: number;
+    }
+  | {
+      type: "disambiguation:resolved";
+      userId: number;
+      receiptId: number;
+      timestamp: number;
     };
 
 // globalThis singleton survives Turbopack HMR, which otherwise re-evaluates

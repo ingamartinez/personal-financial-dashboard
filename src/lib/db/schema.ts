@@ -1683,3 +1683,44 @@ export const arqStatementImports = pgTable(
     index("arq_statement_imports_account_period_idx").on(t.userId, t.accountId, t.periodEnd),
   ],
 );
+
+// #505: Persistent notification store for Epic N — Real-time Notifications System.
+// Notifications are per-user, idempotently emitted (dedup via partial unique index),
+// and auto-marked-read when the underlying event resolves through another channel.
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: varchar("type", { length: 64 }).notNull(),
+    // entity_id is the dedup discriminator. Use the row PK (e.g. String(gapId)) when an
+    // entity exists; use a synthetic stable string for daily/period-scoped events
+    // (e.g. "sms-drift-2026-04-25", "budget-{slug}-{ym}"). Never null — Postgres treats
+    // NULLs as DISTINCT in unique indexes by default, which would defeat dedup.
+    entityId: text("entity_id").notNull(),
+    audience: varchar("audience", { length: 16 }).notNull().default("user"), // 'user' | 'admin'
+    title: varchar("title", { length: 200 }).notNull(),
+    body: text("body").notNull(),
+    actionUrl: varchar("action_url", { length: 500 }),
+    priority: varchar("priority", { length: 16 }).notNull().default("medium"), // 'high' | 'medium' | 'low'
+    metadata: jsonb("metadata")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Idempotent emit: cannot insert a duplicate (user, type, entity) while still unread.
+    uniqueIndex("notifications_dedup_unique")
+      .on(t.userId, t.type, t.entityId)
+      .where(sql`${t.readAt} IS NULL`),
+    // Bell counter — fast unread fetch per user, newest first.
+    index("notifications_unread_idx")
+      .on(t.userId, t.createdAt.desc())
+      .where(sql`${t.readAt} IS NULL`),
+    // Page list — full history per user.
+    index("notifications_user_created_idx").on(t.userId, t.createdAt.desc()),
+  ],
+);
