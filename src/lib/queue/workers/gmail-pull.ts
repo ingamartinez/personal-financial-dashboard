@@ -4,6 +4,7 @@ import { createLogger } from "@/lib/logger";
 import { pullForUser, pullAllActiveConnections } from "@/lib/gmail/pull";
 import type { PullOpts } from "@/lib/gmail/pull";
 import { createWorker } from "@/lib/queue";
+import { emit } from "@/lib/events/bus";
 
 const log = createLogger({ module: "worker/gmail-pull" });
 
@@ -68,6 +69,16 @@ export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<vo
     await job.updateProgress({ userId, phase: "auth" });
     await job.log(`start: mode=single-user userId=${userId}`);
 
+    emit({
+      type: "job:progress",
+      jobName: "gmail-pull",
+      // job.id is string | undefined in BullMQ types; String() guards the undefined case.
+      jobId: String(job.id),
+      userId,
+      phase: "pulling",
+      timestamp: Date.now(),
+    });
+
     const result = await pullForUser(userId, opts);
 
     log.info(
@@ -92,6 +103,16 @@ export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<vo
     await job.log(
       `done: userId=${userId} pulled=${result.pulled} skipped=${result.skipped} errors=${result.errors.length}`,
     );
+
+    emit({
+      type: "job:done",
+      jobName: "gmail-pull",
+      jobId: String(job.id),
+      userId,
+      newTxCount: result.pulled,
+      processedCount: result.pulled + result.skipped,
+      timestamp: Date.now(),
+    });
 
     return;
   }

@@ -4,6 +4,7 @@ import { createLogger } from "@/lib/logger";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { countUnclassified } from "@/lib/transactions/queries";
 import { createWorker } from "@/lib/queue";
+import { emit } from "@/lib/events/bus";
 
 const log = createLogger({ module: "worker/classify-tx" });
 
@@ -78,6 +79,8 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
   let totalSkipped = 0;
   let iterations = 0;
   let drainStartLogged = false;
+  // Capture the initial pending count so job:progress can report total.
+  let pendingCountAtStart = 0;
 
   while (iterations < MAX_DRAIN_ITERATIONS) {
     iterations++;
@@ -86,6 +89,7 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
 
     // Emit start progress on first iteration, using the actual pending count.
     if (!drainStartLogged) {
+      pendingCountAtStart = pendingCount;
       await job.updateProgress({ mode, userId, pending: pendingCount });
       await job.log(`drain start: userId=${userId} pending=${pendingCount}`);
       drainStartLogged = true;
@@ -118,6 +122,16 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       await job.log(
         `drain complete: userId=${userId} iterations=${iterations} ai=${totalAiClassified} rule=${totalRuleClassified} skipped=${totalSkipped}`,
       );
+      emit({
+        type: "job:done",
+        jobName: "classify-tx",
+        // job.id is string | undefined in BullMQ types; String() guards the undefined case.
+        jobId: String(job.id),
+        userId,
+        classifiedCount: totalAiClassified + totalRuleClassified,
+        skippedCount: totalSkipped,
+        timestamp: Date.now(),
+      });
       return;
     }
 
@@ -138,6 +152,17 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
     await job.log(
       `iteration ${iterations}: picked=${result.picked} ai=${result.aiClassified} rule=${result.ruleClassified} skipped=${result.skipped} pending=${pendingCount}`,
     );
+
+    emit({
+      type: "job:progress",
+      jobName: "classify-tx",
+      jobId: String(job.id),
+      userId,
+      processed: totalAiClassified + totalRuleClassified,
+      total: pendingCountAtStart,
+      pending: pendingCount,
+      timestamp: Date.now(),
+    });
 
     log.info(
       {
@@ -169,6 +194,15 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       await job.log(
         `stalled: userId=${userId} pendingCount=${pendingCount} iteration=${iterations} — aborting`,
       );
+      emit({
+        type: "job:done",
+        jobName: "classify-tx",
+        jobId: String(job.id),
+        userId,
+        classifiedCount: totalAiClassified + totalRuleClassified,
+        skippedCount: totalSkipped,
+        timestamp: Date.now(),
+      });
       return;
     }
   }
@@ -189,6 +223,15 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
   await job.log(
     `limit reached: maxIterations=${MAX_DRAIN_ITERATIONS} ai=${totalAiClassified} rule=${totalRuleClassified}`,
   );
+  emit({
+    type: "job:done",
+    jobName: "classify-tx",
+    jobId: String(job.id),
+    userId,
+    classifiedCount: totalAiClassified + totalRuleClassified,
+    skippedCount: totalSkipped,
+    timestamp: Date.now(),
+  });
 }
 
 /**

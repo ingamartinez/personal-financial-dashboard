@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { CalendarIcon, Trash2Icon } from "lucide-react";
+import { CalendarIcon, Loader2, Trash2Icon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -26,6 +26,7 @@ import {
   triggerIncrementalPullAction,
   triggerRebootstrapAction,
 } from "./actions";
+import { useNotificationStream } from "@/lib/notifications/use-notification-stream";
 
 type ConnectionStatus = "active" | "expired" | "revoked" | "error";
 
@@ -85,6 +86,14 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
   const [pullingIncremental, startIncrementalPull] = useTransition();
   const [pullingRebootstrap, startRebootstrapPull] = useTransition();
 
+  // Track the running gmail-pull job for SSE filtering.
+  // Single state: only one pull can be in flight at a time (BullMQ jobId dedup).
+  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
+  const currentJobIdRef = useRef<string | null>(null);
+
+  // Whether a pull is currently in progress (job:progress received).
+  const [pulling, setPulling] = useState(false);
+
   // Local state for the date picker — initialised from server prop.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => {
@@ -105,6 +114,24 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
     }
     router.replace("/settings/integrations");
   }, [feedback, router]);
+
+  useNotificationStream((event) => {
+    const jobId = currentJobIdRef.current;
+    if (!jobId) return;
+
+    if (event.type === "job:progress" && event.jobName === "gmail-pull" && event.jobId === jobId) {
+      setPulling(true);
+      return;
+    }
+
+    if (event.type === "job:done" && event.jobName === "gmail-pull" && event.jobId === jobId) {
+      toast.success(`✓ ${event.newTxCount} tx nuevas`);
+      currentJobIdRef.current = null;
+      setCurrentJobId(null);
+      setPulling(false);
+      router.refresh();
+    }
+  });
 
   function onDisconnect() {
     if (state.kind !== "connected") return;
@@ -138,17 +165,23 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
 
   function onRefreshNow() {
     startIncrementalPull(async () => {
-      await triggerIncrementalPullAction();
+      const res = await triggerIncrementalPullAction();
+      if (res.jobId) {
+        currentJobIdRef.current = res.jobId;
+        setCurrentJobId(res.jobId);
+      }
       toast.success("Refrescando Gmail…");
-      setTimeout(() => router.refresh(), 8000);
     });
   }
 
   function onRebootstrap() {
     startRebootstrapPull(async () => {
-      await triggerRebootstrapAction();
+      const res = await triggerRebootstrapAction();
+      if (res.jobId) {
+        currentJobIdRef.current = res.jobId;
+        setCurrentJobId(res.jobId);
+      }
       toast.success("Refrescando Gmail…");
-      setTimeout(() => router.refresh(), 8000);
     });
   }
 
@@ -162,6 +195,9 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
         : state.connection.bootstrapSinceDate
       : null;
   const bootstrapLabel = formatBootstrapDate(effectiveBootstrapIso);
+
+  const isJobRunning = currentJobId !== null;
+  const pullButtonsDisabled = pullingIncremental || pullingRebootstrap || isJobRunning;
 
   return (
     <Card>
@@ -248,18 +284,28 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
                 </Button>
               ) : null}
 
-              <Button
-                variant="outline"
-                onClick={onRefreshNow}
-                disabled={pullingIncremental || pullingRebootstrap}
-              >
-                Refrescar ahora
+              <Button variant="outline" onClick={onRefreshNow} disabled={pullButtonsDisabled}>
+                {pulling && !pullingRebootstrap ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    Sincronizando…
+                  </>
+                ) : (
+                  "Refrescar ahora"
+                )}
               </Button>
 
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button variant="destructive" disabled={pullingRebootstrap || pullingIncremental}>
-                    Re-bootstrap desde {bootstrapLabel}
+                  <Button variant="destructive" disabled={pullButtonsDisabled}>
+                    {pulling && !pullingIncremental ? (
+                      <>
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                        Sincronizando…
+                      </>
+                    ) : (
+                      `Re-bootstrap desde ${bootstrapLabel}`
+                    )}
                   </Button>
                 </AlertDialogTrigger>
                 <AlertDialogContent>

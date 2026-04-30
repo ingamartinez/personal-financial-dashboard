@@ -97,4 +97,31 @@ describe("event bus", () => {
       expect(event.receiptId).toBe(42);
     }
   });
+
+  it("delivers job:progress (classify-tx) event to subscriber", () => {
+    const received: AppEvent[] = [];
+    cleanups.push(subscribe((e) => received.push(e)));
+
+    emit({
+      type: "job:progress",
+      jobName: "classify-tx",
+      jobId: "job-99",
+      userId: 3,
+      processed: 10,
+      total: 50,
+      pending: 40,
+      timestamp: 1000,
+    });
+
+    expect(received).toHaveLength(1);
+    const event = received[0];
+    expect(event.type).toBe("job:progress");
+    if (event.type === "job:progress" && event.jobName === "classify-tx") {
+      expect(event.jobId).toBe("job-99");
+      expect(event.userId).toBe(3);
+      expect(event.processed).toBe(10);
+      expect(event.total).toBe(50);
+      expect(event.pending).toBe(40);
+    }
+  });
 });

@@ -71,6 +71,42 @@ export type AppEvent =
       userId: number;
       receiptId: number;
       timestamp: number;
+    }
+  | {
+      type: "job:progress";
+      jobName: "classify-tx";
+      jobId: string;
+      userId: number;
+      processed: number;
+      total: number;
+      pending: number;
+      timestamp: number;
+    }
+  | {
+      type: "job:progress";
+      jobName: "gmail-pull";
+      jobId: string;
+      userId: number;
+      phase: "pulling";
+      timestamp: number;
+    }
+  | {
+      type: "job:done";
+      jobName: "classify-tx";
+      jobId: string;
+      userId: number;
+      classifiedCount: number;
+      skippedCount: number;
+      timestamp: number;
+    }
+  | {
+      type: "job:done";
+      jobName: "gmail-pull";
+      jobId: string;
+      userId: number;
+      newTxCount: number;
+      processedCount: number;
+      timestamp: number;
     };
 
 // globalThis singleton survives Turbopack HMR, which otherwise re-evaluates

@@ -50,7 +50,7 @@ export async function triggerIncrementalPullAction(): Promise<TriggerPullResult>
   // BullMQ will retry on transient failures. The 5-min cron is still the
   // reliable fallback for missed pulls (#593).
   const queue = createQueue<GmailPullJobData>("gmail-pull");
-  await queue.add(
+  const job = await queue.add(
     "gmail-pull",
     { mode: "single-user", userId: session.id },
     { jobId: `gmail-pull-user-${session.id}-${Date.now()}` },
@@ -58,7 +58,7 @@ export async function triggerIncrementalPullAction(): Promise<TriggerPullResult>
 
   log.info({ userId: session.id, event: "incremental_pull_triggered" }, "incremental pull queued");
 
-  return { triggered: true };
+  return { triggered: true, jobId: job.id ?? null };
 }
 
 export async function triggerRebootstrapAction(): Promise<TriggerPullResult> {
@@ -77,7 +77,7 @@ export async function triggerRebootstrapAction(): Promise<TriggerPullResult> {
   // Enqueue a single-user re-bootstrap job. More reliable than queueMicrotask
   // — persists in Redis across SIGTERM, BullMQ retries on transient failures.
   const queue = createQueue<GmailPullJobData>("gmail-pull");
-  await queue.add(
+  const job = await queue.add(
     "gmail-pull",
     { mode: "single-user", userId: session.id, opts: { overrideSince } },
     { jobId: `gmail-pull-rebootstrap-${session.id}-${Date.now()}` },
@@ -88,5 +88,5 @@ export async function triggerRebootstrapAction(): Promise<TriggerPullResult> {
     "re-bootstrap pull queued",
   );
 
-  return { triggered: true };
+  return { triggered: true, jobId: job.id ?? null };
 }
