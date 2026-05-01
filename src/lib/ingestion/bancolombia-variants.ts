@@ -859,14 +859,31 @@ export type RoutableAccount = {
   id: number;
   currency: Currency;
   metadata: AccountMetadata | null;
+  /**
+   * The parent physical_card's last4, when this account is linked to one.
+   * Null for standalone accounts (savings, single-currency debit, etc.).
+   * Used as a fallback by resolveAccountFromLast4 when metadata.last4s is
+   * empty — handles the multi-currency drift class (#693).
+   */
+  physicalCardLast4: string | null;
 };
 
 /**
- * Resolves an account by (last4, currency) against a list of accounts whose
- * `metadata.last4s` declares the identifiers that route to them. Both must
- * match for dual-currency cards (e.g. Mastercard *7291 COP vs USD) to work.
+ * Resolve an account by last4 + currency from a list of routable accounts.
  *
- * Returns null when no account claims that last4+currency pair.
+ * Two-source resolution to handle the multi-currency drift class (#693):
+ *   1. metadata.last4s (per-account list, form-managed; can be empty/inconsistent)
+ *   2. physicalCardLast4 (parent card's last4 from physical_cards.last4; always
+ *      present when the account is linked to a physical card)
+ *
+ * Within an account, source #1 is checked first. Source #2 is the FALLBACK —
+ * consulted ONLY when metadata.last4s does not contain the sought last4 for
+ * THAT account. So an account with metadata.last4s=["X"] and
+ * physicalCardLast4="Y" called with last4="Y" matches via the fallback;
+ * called with last4="Z" (which neither source contains) does not match.
+ *
+ * Currency must match in either case. Returns the first account that
+ * satisfies the conditions, or null if none does.
  */
 export function resolveAccountFromLast4(
   last4: string,
@@ -874,10 +891,10 @@ export function resolveAccountFromLast4(
   accounts: RoutableAccount[],
 ): RoutableAccount | null {
   for (const acc of accounts) {
+    if (acc.currency !== currency) continue;
     const last4s = acc.metadata?.last4s ?? [];
-    if (last4s.includes(last4) && acc.currency === currency) {
-      return acc;
-    }
+    if (last4s.includes(last4)) return acc;
+    if (acc.physicalCardLast4 === last4) return acc;
   }
   return null;
 }

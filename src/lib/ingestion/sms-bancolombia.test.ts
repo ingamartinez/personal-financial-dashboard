@@ -665,13 +665,29 @@ describe("parseSmsBancolombia — skip reasons", () => {
 });
 
 describe("resolveAccountFromLast4", () => {
+  // Base fixtures — no physical_card parent (standalone accounts).
   const accounts: RoutableAccount[] = [
-    { id: 1, currency: "COP", metadata: { last4s: ["6126", "1802"] } },
-    { id: 2, currency: "USD", metadata: { last4s: ["7073", "1356"] } },
-    { id: 5, currency: "COP", metadata: { last4s: ["2575"], network: "visa" } },
-    { id: 6, currency: "COP", metadata: { last4s: ["7291"], network: "mastercard" } },
-    { id: 7, currency: "USD", metadata: { last4s: ["7291"], network: "mastercard" } },
-    { id: 3, currency: "COP", metadata: null },
+    { id: 1, currency: "COP", metadata: { last4s: ["6126", "1802"] }, physicalCardLast4: null },
+    { id: 2, currency: "USD", metadata: { last4s: ["7073", "1356"] }, physicalCardLast4: null },
+    {
+      id: 5,
+      currency: "COP",
+      metadata: { last4s: ["2575"], network: "visa" },
+      physicalCardLast4: null,
+    },
+    {
+      id: 6,
+      currency: "COP",
+      metadata: { last4s: ["7291"], network: "mastercard" },
+      physicalCardLast4: null,
+    },
+    {
+      id: 7,
+      currency: "USD",
+      metadata: { last4s: ["7291"], network: "mastercard" },
+      physicalCardLast4: null,
+    },
+    { id: 3, currency: "COP", metadata: null, physicalCardLast4: null },
   ];
 
   it("routes savings account via its account number last-4", () => {
@@ -702,6 +718,70 @@ describe("resolveAccountFromLast4", () => {
     expect(resolveAccountFromLast4("6126", "COP", accounts)?.id).toBe(1);
     // account with metadata: null (id=3) should not match anything
     expect(resolveAccountFromLast4("", "COP", accounts)).toBeNull();
+  });
+
+  // physical_card fallback tests (#693) ————————————————————————————————————
+  // Models the real prod drift: metadata.last4s is empty on the child account
+  // but the parent physical_card has the correct last4.
+
+  it("falls back to physicalCardLast4 when metadata.last4s is empty", () => {
+    // Simulates MC *8268 USD child with empty metadata — the real prod failure
+    // (ingestion_log 153, DigitalOcean USD$12.30).
+    const withFallback: RoutableAccount[] = [
+      { id: 10, currency: "USD", metadata: { last4s: [] }, physicalCardLast4: "8268" },
+    ];
+    expect(resolveAccountFromLast4("8268", "USD", withFallback)?.id).toBe(10);
+  });
+
+  it("falls back to physicalCardLast4 when metadata is null", () => {
+    const withFallback: RoutableAccount[] = [
+      { id: 11, currency: "COP", metadata: null, physicalCardLast4: "5367" },
+    ];
+    expect(resolveAccountFromLast4("5367", "COP", withFallback)?.id).toBe(11);
+  });
+
+  it("matches via metadata.last4s when both sources are consistent", () => {
+    // Consistent child — metadata path should fire first; result is the same.
+    const consistent: RoutableAccount[] = [
+      { id: 12, currency: "COP", metadata: { last4s: ["8268"] }, physicalCardLast4: "8268" },
+    ];
+    expect(resolveAccountFromLast4("8268", "COP", consistent)?.id).toBe(12);
+  });
+
+  it("does not match via physicalCardLast4 when currency mismatches", () => {
+    // physicalCardLast4 matches the digit but the account is USD, not COP.
+    const wrongCurrency: RoutableAccount[] = [
+      { id: 13, currency: "USD", metadata: { last4s: [] }, physicalCardLast4: "8268" },
+    ];
+    expect(resolveAccountFromLast4("8268", "COP", wrongCurrency)).toBeNull();
+  });
+
+  it("does not match when both sources are empty/null", () => {
+    const noMatch: RoutableAccount[] = [
+      { id: 14, currency: "COP", metadata: { last4s: [] }, physicalCardLast4: null },
+    ];
+    expect(resolveAccountFromLast4("8268", "COP", noMatch)).toBeNull();
+  });
+
+  it("disambiguates multi-currency pair via physicalCardLast4 fallback", () => {
+    // Real-world: same physical card, 2 child accounts. COP child has metadata,
+    // USD child has empty metadata but physicalCardLast4 set (#693 scenario).
+    const pair: RoutableAccount[] = [
+      { id: 20, currency: "COP", metadata: { last4s: ["8268"] }, physicalCardLast4: "8268" },
+      { id: 21, currency: "USD", metadata: { last4s: [] }, physicalCardLast4: "8268" },
+    ];
+    expect(resolveAccountFromLast4("8268", "COP", pair)?.id).toBe(20);
+    expect(resolveAccountFromLast4("8268", "USD", pair)?.id).toBe(21);
+  });
+
+  it("falls back to physicalCardLast4 when metadata.last4s holds a different last4", () => {
+    // Account where metadata is non-empty but contains the WRONG last4 —
+    // the fallback must still fire because the sought value is absent from
+    // metadata.last4s for THIS account (per-account check, not per-list).
+    const acc: RoutableAccount[] = [
+      { id: 99, currency: "USD", metadata: { last4s: ["9999"] }, physicalCardLast4: "8268" },
+    ];
+    expect(resolveAccountFromLast4("8268", "USD", acc)?.id).toBe(99);
   });
 });
 
