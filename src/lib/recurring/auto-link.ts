@@ -1,7 +1,8 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import {
   recurringGaps,
+  recurringLinkObservations,
   recurringTransactions,
   recurringDescriptionPatterns,
   transactions,
@@ -16,9 +17,99 @@ import {
   recordRecurringLinkObservation,
   tokeniseDescription,
 } from "@/lib/recurring/observation-recorder";
+import { detectPriceHike } from "@/lib/recurring/price-hike-detector";
+import { emitNotification } from "@/lib/notifications/emit";
+import { formatMoney } from "@/lib/money";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "recurring/auto-link" });
+
+// ---------------------------------------------------------------------------
+// Price-hike detection helper (#701)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire-and-forget: fetch last 4 observations for the given recurring (scoped to
+ * userId, skipping variable-type recurrings), run the detector, and emit a
+ * notification on hike. Non-critical — errors are logged and swallowed.
+ */
+async function maybeEmitPriceHikeNotification(
+  userId: number,
+  recurringId: number,
+  database: DB,
+): Promise<void> {
+  // Skip if the recurring is variable — variable recurrings fluctuate by design.
+  const [rec] = await database
+    .select({ amountType: recurringTransactions.amountType })
+    .from(recurringTransactions)
+    .where(
+      and(
+        eq(recurringTransactions.id, recurringId),
+        eq(recurringTransactions.userId, userId),
+        notDeleted(recurringTransactions.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  if (!rec || rec.amountType === "variable") return;
+
+  // Fetch last 4 observations for this recurring, most recent first.
+  const recent = await database
+    .select({
+      realAmountCents: recurringLinkObservations.realAmountCents,
+      observedAt: recurringLinkObservations.observedAt,
+    })
+    .from(recurringLinkObservations)
+    .where(
+      and(
+        eq(recurringLinkObservations.userId, userId),
+        eq(recurringLinkObservations.recurringId, recurringId),
+      ),
+    )
+    .orderBy(desc(recurringLinkObservations.observedAt))
+    .limit(4);
+
+  const hike = detectPriceHike(recurringId, recent);
+  if (!hike) return;
+
+  const absOld = hike.oldAmountCents < BigInt(0) ? -hike.oldAmountCents : hike.oldAmountCents;
+  const absNew = hike.newAmountCents < BigInt(0) ? -hike.newAmountCents : hike.newAmountCents;
+  const oldFormatted = formatMoney(absOld, "COP");
+  const newFormatted = formatMoney(absNew, "COP");
+  const pctStr = Math.round(hike.deltaPct).toString();
+  const sinceStr = hike.sinceDate.toLocaleDateString("es-CO", {
+    month: "short",
+    day: "numeric",
+  });
+
+  await emitNotification(userId, {
+    type: "subscription_price_hike",
+    entityId: `price-hike-${recurringId}-${hike.newAmountCents.toString()}`,
+    title: `Suscripción subió de ${oldFormatted} a ${newFormatted}`,
+    body: `+${pctStr}% desde ${sinceStr}. Revisar /subscriptions`,
+    actionUrl: "/subscriptions",
+    priority: "medium",
+    metadata: {
+      recurringId,
+      oldAmountCents: hike.oldAmountCents.toString(),
+      newAmountCents: hike.newAmountCents.toString(),
+      deltaPct: hike.deltaPct,
+      sinceDate: hike.sinceDate.toISOString(),
+    },
+  });
+
+  log.info(
+    {
+      event: "subscription_price_hike_emitted",
+      userId,
+      recurringId,
+      oldAmountCents: hike.oldAmountCents.toString(),
+      newAmountCents: hike.newAmountCents.toString(),
+      deltaPct: hike.deltaPct,
+    },
+    "subscription price hike notification emitted",
+  );
+}
 
 export type AutoLinkResult =
   | { status: "no-open-gap" }
@@ -172,12 +263,30 @@ export async function autoLinkTransaction(
     recordRecurringLinkObservation(
       { userId, recurringId: result.recurringId, txId, yearMonth: result.yearMonth, manual: false },
       database,
-    ).catch((err) => {
-      log.error(
-        { err, event: "observation_record_failed", txId, recurringId: result.recurringId, userId },
-        "failed to record recurring link observation (gap path) — non-critical",
-      );
-    });
+    )
+      .then(() => {
+        // #701: After observation is recorded, check for price hike (fire-and-forget).
+        maybeEmitPriceHikeNotification(userId, result.recurringId, database).catch(
+          (err: unknown) => {
+            log.error(
+              { err, event: "price_hike_emit_failed", recurringId: result.recurringId, userId },
+              "failed to emit subscription price hike notification (gap path) — non-critical",
+            );
+          },
+        );
+      })
+      .catch((err) => {
+        log.error(
+          {
+            err,
+            event: "observation_record_failed",
+            txId,
+            recurringId: result.recurringId,
+            userId,
+          },
+          "failed to record recurring link observation (gap path) — non-critical",
+        );
+      });
 
     return result;
   }
@@ -421,12 +530,30 @@ export async function autoLinkTransaction(
   recordRecurringLinkObservation(
     { userId, recurringId: directHit.recurringId, txId, yearMonth: directYearMonth, manual: false },
     database,
-  ).catch((err) => {
-    log.error(
-      { err, event: "observation_record_failed", txId, recurringId: directHit.recurringId, userId },
-      "failed to record recurring link observation (direct path) — non-critical",
-    );
-  });
+  )
+    .then(() => {
+      // #701: After observation is recorded, check for price hike (fire-and-forget).
+      maybeEmitPriceHikeNotification(userId, directHit.recurringId, database).catch(
+        (err: unknown) => {
+          log.error(
+            { err, event: "price_hike_emit_failed", recurringId: directHit.recurringId, userId },
+            "failed to emit subscription price hike notification (direct path) — non-critical",
+          );
+        },
+      );
+    })
+    .catch((err) => {
+      log.error(
+        {
+          err,
+          event: "observation_record_failed",
+          txId,
+          recurringId: directHit.recurringId,
+          userId,
+        },
+        "failed to record recurring link observation (direct path) — non-critical",
+      );
+    });
 
   return {
     status: "linked",

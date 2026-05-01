@@ -28,7 +28,8 @@ export type NotificationType =
   | "budget_exceeded"
   | "invite_code_exhausted"
   | "classification_auto_uncategorized"
-  | "recurring_proposal_ready";
+  | "recurring_proposal_ready"
+  | "subscription_price_hike";
 
 export type NotificationAudience = "user" | "admin";
 export type NotificationPriority = "high" | "medium" | "low";

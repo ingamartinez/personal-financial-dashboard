@@ -426,4 +426,208 @@ describe("getSubscriptions", () => {
       sql`DELETE FROM accounts WHERE name = '__test_usd_account2__' AND user_id = 1`,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // #701: price-hike enrichment
+  // -------------------------------------------------------------------------
+
+  /**
+   * Insert synthetic observations for a recurring directly via raw SQL.
+   * We use raw SQL to avoid importing the full observation-recorder (which
+   * requires a real linked tx). We generate synthetic tx_id values by
+   * inserting placeholder transactions first.
+   *
+   * @param userId        Owner of the observations.
+   * @param recurringId   The recurring to attach observations to.
+   * @param accountId     Account id (needed for the tx FK).
+   * @param amounts       Array of amountCents values, OLDEST FIRST.
+   *                      Each gets a distinct observed_at offset.
+   */
+  async function insertObservations(
+    userId: number,
+    recurringId: number,
+    accountId: number,
+    amounts: bigint[],
+  ): Promise<void> {
+    const baseTs = new Date("2026-01-01T00:00:00Z");
+    for (let i = 0; i < amounts.length; i++) {
+      const observedAt = new Date(baseTs.getTime() + i * 30 * 24 * 60 * 60 * 1000);
+      const observedAtStr = observedAt.toISOString();
+      const yearMonth = `${observedAt.getUTCFullYear()}-${String(observedAt.getUTCMonth() + 1).padStart(2, "0")}`;
+      const amount = amounts[i]!;
+
+      // Insert a minimal transaction to satisfy the FK.
+      const [txRow] = await db.execute<{ id: number }>(sql`
+        INSERT INTO transactions (user_id, account_id, description_raw, amount_cents, currency, occurred_at, source)
+        VALUES (
+          ${userId}, ${accountId},
+          ${`__test_obs_tx_${recurringId}_${i}`},
+          ${amount.toString()}::bigint, 'COP',
+          ${observedAtStr}::timestamptz,
+          'manual'::tx_source
+        )
+        RETURNING id
+      `);
+      const txId = txRow!.id;
+
+      await db.execute(sql`
+        INSERT INTO recurring_link_observations
+          (user_id, recurring_id, tx_id, year_month, real_amount_cents, real_currency, account_id, manual, observed_at)
+        VALUES
+          (${userId}, ${recurringId}, ${txId}, ${yearMonth}, ${amount.toString()}::bigint, 'COP', ${accountId}, false, ${observedAtStr}::timestamptz)
+        ON CONFLICT DO NOTHING
+      `);
+    }
+  }
+
+  async function cleanupObsAndTxs(): Promise<void> {
+    await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__test_obs_tx_%'`);
+  }
+
+  it("fixed subscription with ≥4 qualifying observations gets priceHike populated", async () => {
+    const accountId = await getAccountId(1);
+    await ensureSuscripcionesCategory(1);
+
+    const label = `${TEST_LABEL_PREFIX}hike_fixed`;
+    const { id: recurringId } = await insertRecurring(1, accountId, {
+      label,
+      amountType: "fixed",
+      amountCents: BigInt(-2_800_000),
+    });
+
+    // Insert 4 observations oldest→newest: 3 at -2_200_000, then 1 at -2_800_000.
+    await insertObservations(1, recurringId, accountId, [
+      BigInt(-2_200_000),
+      BigInt(-2_200_000),
+      BigInt(-2_200_000),
+      BigInt(-2_800_000),
+    ]);
+
+    const { rows } = await getSubscriptions(1, "native", 4200);
+    const found = rows.find((r) => r.label === label);
+    expect(found).toBeDefined();
+    expect(found!.priceHike).not.toBeNull();
+    expect(found!.priceHike!.oldAmountCents).toBe(BigInt(-2_200_000));
+    expect(found!.priceHike!.newAmountCents).toBe(BigInt(-2_800_000));
+    expect(found!.priceHike!.deltaPct).toBeGreaterThan(15);
+
+    await cleanupObsAndTxs();
+  });
+
+  it("variable subscription never gets priceHike even with hike-shaped observations", async () => {
+    const accountId = await getAccountId(1);
+    await ensureSuscripcionesCategory(1);
+
+    const label = `${TEST_LABEL_PREFIX}hike_variable`;
+    const { id: recurringId } = await insertRecurring(1, accountId, {
+      label,
+      amountType: "variable",
+      amountCents: BigInt(-2_800_000),
+    });
+
+    // Insert 4 hike-shaped observations — these should be ignored for variable rows.
+    await insertObservations(1, recurringId, accountId, [
+      BigInt(-2_200_000),
+      BigInt(-2_200_000),
+      BigInt(-2_200_000),
+      BigInt(-2_800_000),
+    ]);
+
+    const { rows } = await getSubscriptions(1, "native", 4200);
+    const found = rows.find((r) => r.label === label);
+    expect(found).toBeDefined();
+    expect(found!.priceHike).toBeNull();
+
+    await cleanupObsAndTxs();
+  });
+
+  it("row without enough history (<4 obs) gets no priceHike", async () => {
+    const accountId = await getAccountId(1);
+    await ensureSuscripcionesCategory(1);
+
+    const label = `${TEST_LABEL_PREFIX}hike_insufficient`;
+    const { id: recurringId } = await insertRecurring(1, accountId, {
+      label,
+      amountType: "fixed",
+      amountCents: BigInt(-2_800_000),
+    });
+
+    // Insert only 3 observations (need 4 minimum).
+    await insertObservations(1, recurringId, accountId, [
+      BigInt(-2_200_000),
+      BigInt(-2_200_000),
+      BigInt(-2_800_000),
+    ]);
+
+    const { rows } = await getSubscriptions(1, "native", 4200);
+    const found = rows.find((r) => r.label === label);
+    expect(found).toBeDefined();
+    expect(found!.priceHike).toBeNull();
+
+    await cleanupObsAndTxs();
+  });
+
+  it("tenant isolation: user 1 hike calc does not see user 2 observations", async () => {
+    // Setup user 2.
+    const uniqueEmail = `${TEST_LABEL_PREFIX}hike_user2@test.local`;
+    const [user2Row] = await db.execute<{ id: number }>(sql`
+      INSERT INTO users (email, name)
+      VALUES (${uniqueEmail}, 'Hike Tenant Test User 2')
+      ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
+      RETURNING id
+    `);
+    const user2Id = user2Row!.id;
+
+    const [acc2Row] = await db.execute<{ id: number }>(sql`
+      INSERT INTO accounts (user_id, name, institution, type, currency)
+      VALUES (${user2Id}, '__test_hike_acc2__', 'Test Bank', 'savings', 'COP')
+      RETURNING id
+    `);
+    const accountId2 = acc2Row!.id;
+
+    await db.execute(sql`
+      INSERT INTO categories (user_id, slug, name, parent_slug, sort_order)
+      VALUES (${user2Id}, 'suscripciones', 'Suscripciones', NULL, 10)
+      ON CONFLICT (user_id, slug) DO NOTHING
+    `);
+
+    // User 1 row: only 2 observations (not enough for hike alone).
+    const accountId1 = await getAccountId(1);
+    await ensureSuscripcionesCategory(1);
+
+    const label1 = `${TEST_LABEL_PREFIX}hike_tenant1`;
+    const { id: recurringId1 } = await insertRecurring(1, accountId1, {
+      label: label1,
+      amountType: "fixed",
+      amountCents: BigInt(-2_800_000),
+    });
+    await insertObservations(1, recurringId1, accountId1, [BigInt(-2_200_000), BigInt(-2_800_000)]);
+
+    // User 2 has 4 qualifying observations for a DIFFERENT recurring.
+    // These must NOT bleed into user 1's calculation.
+    const label2 = `${TEST_LABEL_PREFIX}hike_tenant2`;
+    const { id: recurringId2 } = await insertRecurring(user2Id, accountId2, {
+      label: label2,
+      amountType: "fixed",
+      amountCents: BigInt(-2_800_000),
+    });
+    await insertObservations(user2Id, recurringId2, accountId2, [
+      BigInt(-2_200_000),
+      BigInt(-2_200_000),
+      BigInt(-2_200_000),
+      BigInt(-2_800_000),
+    ]);
+
+    // User 1 should see NO hike (only 2 obs, < 4 required).
+    const { rows } = await getSubscriptions(1, "native", 4200);
+    const found1 = rows.find((r) => r.label === label1);
+    expect(found1).toBeDefined();
+    expect(found1!.priceHike).toBeNull();
+
+    // User 1 results must NOT include user 2's recurring.
+    expect(rows.find((r) => r.label === label2)).toBeUndefined();
+
+    await cleanupObsAndTxs();
+    await db.execute(sql`DELETE FROM accounts WHERE name = '__test_hike_acc2__'`);
+  });
 });
