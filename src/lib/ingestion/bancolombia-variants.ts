@@ -869,17 +869,21 @@ export type RoutableAccount = {
 };
 
 /**
- * Resolves an account by (last4, currency) against a list of accounts.
+ * Resolve an account by last4 + currency from a list of routable accounts.
  *
  * Two-source resolution to handle the multi-currency drift class (#693):
- *   - metadata.last4s is the per-account list (form-managed, can be empty)
- *   - physicalCardLast4 is the parent card's last4 (always present when linked)
+ *   1. metadata.last4s (per-account list, form-managed; can be empty/inconsistent)
+ *   2. physicalCardLast4 (parent card's last4 from physical_cards.last4; always
+ *      present when the account is linked to a physical card)
  *
- * Match if EITHER source includes last4 AND currency matches. Prefer
- * metadata.last4s first (existing behavior, no change for correct data).
- * Falls back to physicalCardLast4 only when metadata.last4s has no match.
+ * Within an account, source #1 is checked first. Source #2 is the FALLBACK —
+ * consulted ONLY when metadata.last4s does not contain the sought last4 for
+ * THAT account. So an account with metadata.last4s=["X"] and
+ * physicalCardLast4="Y" called with last4="Y" matches via the fallback;
+ * called with last4="Z" (which neither source contains) does not match.
  *
- * Returns null when no account claims that last4+currency pair.
+ * Currency must match in either case. Returns the first account that
+ * satisfies the conditions, or null if none does.
  */
 export function resolveAccountFromLast4(
   last4: string,

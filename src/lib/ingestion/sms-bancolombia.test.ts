@@ -773,6 +773,16 @@ describe("resolveAccountFromLast4", () => {
     expect(resolveAccountFromLast4("8268", "COP", pair)?.id).toBe(20);
     expect(resolveAccountFromLast4("8268", "USD", pair)?.id).toBe(21);
   });
+
+  it("falls back to physicalCardLast4 when metadata.last4s holds a different last4", () => {
+    // Account where metadata is non-empty but contains the WRONG last4 —
+    // the fallback must still fire because the sought value is absent from
+    // metadata.last4s for THIS account (per-account check, not per-list).
+    const acc: RoutableAccount[] = [
+      { id: 99, currency: "USD", metadata: { last4s: ["9999"] }, physicalCardLast4: "8268" },
+    ];
+    expect(resolveAccountFromLast4("8268", "USD", acc)?.id).toBe(99);
+  });
 });
 
 describe("parseSmsBancolombia — cartera_tc (#688)", () => {
