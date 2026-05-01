@@ -9,10 +9,15 @@ const log = createLogger({ module: "gmail/parsers/apple" });
 //   INVOICE (parse):   "Invoice" + ("Order ID:" or "ORDER ID") + Order details + Subtotal/TOTAL
 //   RECEIPT (parse):   "Receipt" + "Order ID:" — same parse path as Invoice
 //   RECENT_PURCHASE:   "Recent Purchase" — security alert, skip
-//   SUBSCRIPTION_CONFIRMED: "Subscription Confirmed" — free trial, no charge, skip
+//   SUBSCRIPTION_CONFIRMED: "Subscription Confirmed" — free trial OR duplicate of
+//                           a separate Invoice email for the same charge, skip
 //   SUBSCRIPTION_EXPIRING:  "Subscription Expir" — upcoming expiry, no charge, skip
 //   DEVELOPER_AGREEMENT:    "signed the following agreement" — skip
-//   OTHER (family, etc.):   no billing data, skip
+//   SECURITY_ALERT:         "iniciar sesión" / "sign in to iCloud" login alert, skip
+//   BILLING_PROBLEM:        "Billing Problem" payment-failure notice, skip
+//   FAMILY_WELCOME:         "bienvenida a En familia" / "Welcome to Family Sharing", skip
+//   ICLOUD_UPGRADE_CONFIRMATION: "Date of Upgrade" storage plan upgrade notice
+//                                (no charge — first bill arrives separately as Invoice), skip
 //
 // Amount: Colombian Apple COP format uses period as thousands separator.
 //   "$ 29.900" = 29 900 COP = 2 990 000 cents
@@ -145,6 +150,39 @@ export const appleParser: GatewayParser = {
         /Developer\s+Agreement/i.test(text)
       ) {
         return { kind: "skipped", reason: "developer_agreement" };
+      }
+
+      // iCloud / Apple Account security alert — login from new device.
+      // Spanish prod sample: "se ha usado para iniciar sesión en iCloud".
+      // English variant phrased as "used to sign in to iCloud" / "sign in to your Apple Account".
+      if (
+        /se\s+ha\s+usado\s+para\s+iniciar\s+sesi[oó]n/i.test(text) ||
+        /used\s+to\s+sign\s+in\s+to\s+(?:iCloud|your\s+Apple)/i.test(text)
+      ) {
+        return { kind: "skipped", reason: "security_alert" };
+      }
+
+      // Payment-failure notification — "Billing Problem" / Spanish equivalent.
+      // No charge has happened; user is being asked to update payment info.
+      if (/Billing\s+Problem/i.test(text) || /Problema\s+de\s+facturaci[oó]n/i.test(text)) {
+        return { kind: "skipped", reason: "billing_problem" };
+      }
+
+      // Family Sharing welcome — sent when the family organizer accepts the role.
+      // No billing data.
+      if (
+        /bienvenida\s+a\s+En\s+familia/i.test(text) ||
+        /Welcome\s+to\s+Family\s+Sharing/i.test(text)
+      ) {
+        return { kind: "skipped", reason: "family_welcome" };
+      }
+
+      // iCloud+ storage plan upgrade Confirmation. The user upgraded mid-cycle;
+      // the first actual charge arrives later as a normal Invoice email. The
+      // discriminator "Date of Upgrade" is unique to this email type — it does
+      // not appear in regular Invoices or Receipts.
+      if (/Date\s+of\s+Upgrade/i.test(text)) {
+        return { kind: "skipped", reason: "icloud_upgrade_confirmation" };
       }
 
       // ----- Invoice / Receipt parse -----
