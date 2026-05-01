@@ -221,11 +221,78 @@ describe("appleParser — skip conditions", () => {
     if (r.kind === "skipped") expect(r.reason).toBe("developer_agreement");
   });
 
-  it("skips family welcome email (no invoice/billing signals)", () => {
-    const html = `<html><body><p>Te damos la bienvenida a En familia, Alejandro!</p><p>Como persona que organiza la familia, puedes invitar hasta a otros cinco miembros.</p></body></html>`;
+  it("skips iCloud security alert (Spanish login from new device)", () => {
+    // Sanitized from prod email_receipts.id=915.
+    const html = `<html><body><p>Hola, Test User:</p>
+      <p>Tu cuenta de Apple ( test@example.com ) se ha usado para iniciar sesión en iCloud en un navegador web.</p>
+      <p>Fecha y hora: 24 de febrero de 2026, 11:46 PST</p>
+      <p>Sistema operativo: Windows</p>
+      <p>Si la información mencionada más arriba te resulta familiar, puedes ignorar este mensaje.</p>
+      <p>Atentamente, Soporte técnico de Apple</p>
+    </body></html>`;
     const r = appleParser.parse(html);
-    expect(r.kind).toBe("needs_review");
-    if (r.kind === "needs_review") expect(r.reason).toBe("unrecognized_apple_email_type");
+    expect(r.kind).toBe("skipped");
+    if (r.kind === "skipped") expect(r.reason).toBe("security_alert");
+  });
+
+  it("skips iCloud security alert (English variant)", () => {
+    const html = `<html><body><p>Hello Test User,</p>
+      <p>Your Apple Account ( test@example.com ) was used to sign in to iCloud via a web browser.</p>
+      <p>If the information above looks familiar, you can ignore this message.</p>
+      <p>Sincerely, Apple Support</p>
+    </body></html>`;
+    const r = appleParser.parse(html);
+    expect(r.kind).toBe("skipped");
+    if (r.kind === "skipped") expect(r.reason).toBe("security_alert");
+  });
+
+  it("skips Billing Problem notification (no charge yet)", () => {
+    // Sanitized from prod email_receipts.id=907.
+    const html = `<html><body><p>Billing Problem</p>
+      <p>Apple TV (1 month) $ 29.900/month</p>
+      <p>Dear Test User, There is a problem with your payment method which may prevent the renewal of this subscription.</p>
+      <p>To avoid losing access to your service, please update your payment information.</p>
+      <p>Update Payment Information</p>
+      <p>Sincerely, Apple</p>
+    </body></html>`;
+    const r = appleParser.parse(html);
+    expect(r.kind).toBe("skipped");
+    if (r.kind === "skipped") expect(r.reason).toBe("billing_problem");
+  });
+
+  it("skips family welcome email (Spanish)", () => {
+    // Sanitized from prod email_receipts.id=897/909.
+    const html = `<html><body><p>¡Te damos la bienvenida a En familia, Test User!</p>
+      <p>Como persona que organiza la familia, puedes invitar hasta a otros cinco miembros de la familia y darles acceso a los servicios que quieres compartir.</p>
+    </body></html>`;
+    const r = appleParser.parse(html);
+    expect(r.kind).toBe("skipped");
+    if (r.kind === "skipped") expect(r.reason).toBe("family_welcome");
+  });
+
+  it("skips family welcome email (English variant)", () => {
+    const html = `<html><body><p>Welcome to Family Sharing, Test User!</p>
+      <p>As the family organizer, you can invite up to five other family members.</p>
+    </body></html>`;
+    const r = appleParser.parse(html);
+    expect(r.kind).toBe("skipped");
+    if (r.kind === "skipped") expect(r.reason).toBe("family_welcome");
+  });
+
+  it("skips iCloud+ storage upgrade Confirmation (no charge until next cycle)", () => {
+    // Sanitized from prod email_receipts.id=927.
+    const html = `<html><body><p>Confirmation iCloud+ 1 month Renews monthly for $ 12.900</p>
+      <p>Dear Test User, This email confirms your storage plan upgrade:</p>
+      <p>App iCloud</p>
+      <p>Plan iCloud+ with 200 GB of storage</p>
+      <p>Date of Upgrade 13 January 2026</p>
+      <p>Renewal Price $ 12.900/month</p>
+      <p>Your subscription automatically renews for $ 12.900/month starting 13 February 2026 until cancelled.</p>
+      <p>Sincerely, Apple</p>
+    </body></html>`;
+    const r = appleParser.parse(html);
+    expect(r.kind).toBe("skipped");
+    if (r.kind === "skipped") expect(r.reason).toBe("icloud_upgrade_confirmation");
   });
 });
 
