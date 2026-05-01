@@ -43,6 +43,9 @@ type BudgetRow = {
   amountCents: string;
   spentCents: string;
   currency: Currency;
+  // #527: tooltip + data-quality flags from the per-row frozen-TRM aggregation.
+  hadFrozenTrmConversion?: boolean;
+  missingTrmCount?: number;
 };
 
 type EditorState = { open: boolean; editing: BudgetRow | null };
@@ -232,7 +235,16 @@ function BudgetCard({
           />
         </div>
         <div className="flex items-center justify-between text-xs tabular-nums">
-          <span className={cn(over ? "font-medium text-rose-600" : "text-muted-foreground")}>
+          <span
+            className={cn(over ? "font-medium text-rose-600" : "text-muted-foreground")}
+            title={
+              row.hadFrozenTrmConversion
+                ? `Convertido con TRM histórica${
+                    row.missingTrmCount ? ` · ${row.missingTrmCount} sin TRM` : ""
+                  }`
+                : undefined
+            }
+          >
             <Money cents={spent} currency={row.currency} /> /{" "}
             <Money cents={amount} currency={row.currency} />
           </span>

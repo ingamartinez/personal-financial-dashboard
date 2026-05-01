@@ -1,6 +1,8 @@
 import { getSessionUser } from "@/lib/auth/session";
 import { getBudgetsOverview } from "@/lib/budgets/queries";
 import { getFinancialPeriod } from "@/lib/dashboard/period";
+import { getUiPreferences } from "@/lib/preferences/repo";
+import { getCurrentFxRate } from "@/lib/fx/repo";
 import { BudgetsManager } from "./budgets-manager";
 
 export const dynamic = "force-dynamic";
@@ -27,12 +29,18 @@ export default async function BudgetsPage({
   // statements) are NOT in scope here.
   const [y, m] = ym.split("-").map(Number);
   const refDate = new Date(Date.UTC(y, m - 1, 15));
-  const period = await getFinancialPeriod(session.id, refDate);
+  const [period, prefs, fx] = await Promise.all([
+    getFinancialPeriod(session.id, refDate),
+    getUiPreferences(session.id),
+    getCurrentFxRate(),
+  ]);
 
-  const { categories: cats, items } = await getBudgetsOverview(session.id, ym, {
-    start: period.start,
-    end: period.end,
-  });
+  const { categories: cats, items } = await getBudgetsOverview(
+    session.id,
+    ym,
+    { start: period.start, end: period.end },
+    { displayCurrencyMode: prefs.displayCurrencyMode, copPerUsd: fx.rate },
+  );
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
