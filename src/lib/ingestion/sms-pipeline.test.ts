@@ -353,6 +353,7 @@ async function cleanupCartera() {
   const ids = rows.filter((r) => r.email.endsWith(TAG_CARTERA)).map((r) => r.id);
   if (ids.length === 0) return;
   await db.delete(transactions).where(inArray(transactions.userId, ids));
+  await db.delete(parserEvents).where(inArray(parserEvents.userId, ids));
   await db.delete(accounts).where(inArray(accounts.userId, ids));
   await db.delete(users).where(inArray(users.id, ids));
 }

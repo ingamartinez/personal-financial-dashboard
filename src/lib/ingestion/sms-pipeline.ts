@@ -666,19 +666,26 @@ async function ingestCarteraTc(
     return { status: "error", reason: result.errorReason };
   }
 
-  // Emit transaction:created for both legs. We don't have individual txIds
-  // from insertNewCarteraTcPair, so emit a generic event for the pair.
+  // Emit one transaction:created per leg, each carrying the real DB id and the
+  // leg's own accountId. Mirrors the pattern used by ingestTcStatementPayment.
   emit({
     type: "transaction:created",
     userId,
-    id: 0, // placeholder — cartera_tc is a pair; callers should query by transferGroupId
+    id: result.txIds.savings,
+    source: cfg.source,
+    timestamp: Date.now(),
+  });
+  emit({
+    type: "transaction:created",
+    userId,
+    id: result.txIds.tc,
     source: cfg.source,
     timestamp: Date.now(),
   });
 
-  // Return status "inserted" — we don't have a single primary txId; use 0 as
-  // a sentinel. Callers that need the actual IDs query by transferGroupId.
-  return { status: "inserted", txId: 0 };
+  // Contract: IngestOutcome carries a single txId. Return the savings leg —
+  // it's the one that originated from the SMS notification.
+  return { status: "inserted", txId: result.txIds.savings };
 }
 
 function buildTxFields(

@@ -161,6 +161,43 @@ describe("insertNewCarteraTcPair — integration against findash_test", () => {
     });
   });
 
+  it("returns txIds with both leg ids > 0 and savings maps to savingsAccountId", async () => {
+    const result = await insertNewCarteraTcPair({
+      userId,
+      savingsAccountId,
+      tcAccountId,
+      amountCents: AMOUNT,
+      currency: "COP",
+      occurredAt: OCCURRED_AT,
+      installmentsTotal: INSTALLMENTS,
+      installmentRateEmX10k: RATE,
+      source: "csv_reconcile",
+      externalIdSavings: `${TAG}-txids-savings`,
+      externalIdTc: `${TAG}-txids-tc`,
+    });
+
+    expect(result.status).toBe("inserted");
+    if (result.status !== "inserted") return;
+
+    // Both leg ids must be real DB ids (> 0).
+    expect(result.txIds.savings).toBeGreaterThan(0);
+    expect(result.txIds.tc).toBeGreaterThan(0);
+    expect(result.txIds.savings).not.toBe(result.txIds.tc);
+
+    // Verify savings id maps to savingsAccountId and tc id to tcAccountId.
+    const [savingsRow] = await db
+      .select({ accountId: transactions.accountId })
+      .from(transactions)
+      .where(eq(transactions.id, result.txIds.savings));
+    const [tcRow] = await db
+      .select({ accountId: transactions.accountId })
+      .from(transactions)
+      .where(eq(transactions.id, result.txIds.tc));
+
+    expect(savingsRow?.accountId).toBe(savingsAccountId);
+    expect(tcRow?.accountId).toBe(tcAccountId);
+  });
+
   it("duplicate detection: returns `duplicated` on second call with same externalIds", async () => {
     const sharedOpts = {
       userId,

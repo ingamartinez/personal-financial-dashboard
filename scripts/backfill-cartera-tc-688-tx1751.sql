@@ -112,14 +112,14 @@ BEGIN
     now()
   );
 
-  -- Resolve the orphaned ingestion log (log id=134)
+  -- Resolve the orphaned ingestion log (log id=134).
+  -- Point resolved_txn_id to tx 1751 (the savings row corrected from the SMS).
+  -- The TC leg can be cross-referenced via its external_id 'cartera-tc-688-backfill-1751-tc'.
   UPDATE ingestion_logs
   SET status       = 'resolved',
       resolved_at  = now(),
       resolution   = 'retried_success',
-      resolved_txn_id = (
-        SELECT id FROM transactions WHERE external_id = 'cartera-tc-688-backfill-1751-tc'
-      )
+      resolved_txn_id = 1751
   WHERE id = 134;
 
 END
