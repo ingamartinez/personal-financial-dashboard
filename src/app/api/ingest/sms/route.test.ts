@@ -32,6 +32,9 @@ async function cleanup() {
     DELETE FROM transactions WHERE external_id LIKE ${TEST_EXTERNAL_ID_PREFIX + "%"}
   `);
   await db.execute(sql`DELETE FROM ingestion_logs WHERE source = 'sms'`);
+  // parser_events are written for every ingest attempt; scope to user 1 since
+  // this file operates entirely as TEST_USER_ID = 1.
+  await db.execute(sql`DELETE FROM parser_events WHERE user_id = ${TEST_USER_ID}`);
   await db.execute(sql`
     DELETE FROM counterparties WHERE id IN (
       SELECT counterparty_id FROM counterparty_aliases
