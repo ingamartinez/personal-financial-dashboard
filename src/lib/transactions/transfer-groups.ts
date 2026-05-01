@@ -13,6 +13,11 @@ import type { Currency, TransactionSource } from "@/lib/types";
 // ingest attempt of the same SMS hits the unique (account_id, external_id)
 // index and rolls the group back (status="duplicated"). Callers that don't
 // dedupe (manual UI) pass `null`.
+//
+// `installmentsTotal` and `installmentRateEmX10k` are optional and only
+// meaningful for TC debit legs of a cartera TC pair (#687). Default behavior
+// is unchanged when omitted: installmentsTotal defaults to 1 (single payment)
+// and installmentRateEmX10k defaults to null (inherit from account bucket).
 export type TransferLeg = {
   accountId: number;
   amountCents: bigint;
@@ -26,13 +31,18 @@ export type TransferLeg = {
   externalId?: string | null;
   rawData?: Record<string, unknown>;
   notes?: string | null;
+  /** Number of monthly installments. Only meaningful for cartera TC legs. Defaults to 1. */
+  installmentsTotal?: number;
+  /** Rate in percent × 10000 (EM/MV). 1.39% EM → 13900. Null = inherit from account bucket. */
+  installmentRateEmX10k?: number | null;
 };
 
 export type TransferGroupValidationError =
   | "empty"
   | "single-leg"
   | "unbalanced"
-  | "missing-opposite-signs";
+  | "missing-opposite-signs"
+  | "rate-without-plan";
 
 export type TransferGroupValidationResult =
   | { ok: true }
@@ -55,6 +65,20 @@ export function validateTransferGroupLegs(legs: TransferLeg[]): TransferGroupVal
 
   if (!hasPositive || !hasNegative) return { ok: false, reason: "missing-opposite-signs" };
   if (sum !== BigInt(0)) return { ok: false, reason: "unbalanced" };
+
+  // A non-null installmentRateEmX10k on a leg with installmentsTotal <= 1 is
+  // meaningless — a rate only has meaning when there is a multi-installment
+  // plan. Guard here so callers get a clear error instead of silently storing
+  // a rate that will never be used.
+  for (const leg of legs) {
+    if (
+      leg.installmentRateEmX10k != null &&
+      (leg.installmentsTotal == null || leg.installmentsTotal <= 1)
+    ) {
+      return { ok: false, reason: "rate-without-plan" };
+    }
+  }
+
   return { ok: true };
 }
 
@@ -110,6 +134,8 @@ export async function insertTransferGroup(opts: {
             externalId: leg.externalId ?? null,
             rawData: leg.rawData ?? {},
             notes: leg.notes ?? null,
+            installmentsTotal: leg.installmentsTotal ?? 1,
+            installmentRateEmX10k: leg.installmentRateEmX10k ?? null,
           })
           .onConflictDoNothing({
             target: [transactions.accountId, transactions.externalId],

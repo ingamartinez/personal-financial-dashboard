@@ -299,6 +299,95 @@ describe("archiveTransferGroup / restoreTransferGroup", () => {
   });
 });
 
+describe("installmentsTotal + installmentRateEmX10k on TransferLeg (#687)", () => {
+  it("persists installment fields on the TC debit leg when provided", async () => {
+    const result = await insertTransferGroup({
+      userId: TEST_USER_ID,
+      legs: [
+        leg({
+          accountId: SAVINGS_COP_ID,
+          amountCents: BigInt(5_000_000),
+          externalId: "test-tg:installment:savings",
+        }),
+        leg({
+          accountId: VISA_COP_ID,
+          amountCents: BigInt(-5_000_000),
+          externalId: "test-tg:installment:tc",
+          installmentsTotal: 60,
+          installmentRateEmX10k: 13900,
+        }),
+      ],
+    });
+    expect(result.status).toBe("inserted");
+    if (result.status !== "inserted") return;
+
+    const rows = await db.execute<{
+      account_id: number;
+      amount_cents: string;
+      installments_total: number;
+      installment_rate_bps: number | null;
+    }>(sql`
+      SELECT account_id, amount_cents::text, installments_total, installment_rate_bps
+      FROM transactions
+      WHERE transfer_group_id = ${result.transferGroupId}::uuid
+      ORDER BY amount_cents ASC
+    `);
+
+    // TC debit leg (negative amount)
+    const tcLeg = rows.find((r) => BigInt(r.amount_cents) < BigInt(0));
+    expect(tcLeg).toBeDefined();
+    if (!tcLeg) return;
+    expect(tcLeg.installments_total).toBe(60);
+    expect(tcLeg.installment_rate_bps).toBe(13900);
+
+    // Savings leg (positive amount) keeps the default installmentsTotal=1
+    const savingsLeg = rows.find((r) => BigInt(r.amount_cents) > BigInt(0));
+    expect(savingsLeg).toBeDefined();
+    if (!savingsLeg) return;
+    expect(savingsLeg.installments_total).toBe(1);
+    expect(savingsLeg.installment_rate_bps).toBeNull();
+  });
+
+  it("validateTransferGroupLegs rejects a leg with rate but no installment plan", () => {
+    const result = validateTransferGroupLegs([
+      leg({ accountId: SAVINGS_COP_ID, amountCents: BigInt(1000) }),
+      leg({
+        accountId: VISA_COP_ID,
+        amountCents: BigInt(-1000),
+        installmentRateEmX10k: 13900,
+        // installmentsTotal omitted → defaults to undefined → treated as <= 1
+      }),
+    ]);
+    expect(result).toEqual({ ok: false, reason: "rate-without-plan" });
+  });
+
+  it("validateTransferGroupLegs rejects installmentsTotal=1 with a rate", () => {
+    const result = validateTransferGroupLegs([
+      leg({ accountId: SAVINGS_COP_ID, amountCents: BigInt(1000) }),
+      leg({
+        accountId: VISA_COP_ID,
+        amountCents: BigInt(-1000),
+        installmentsTotal: 1,
+        installmentRateEmX10k: 13900,
+      }),
+    ]);
+    expect(result).toEqual({ ok: false, reason: "rate-without-plan" });
+  });
+
+  it("validateTransferGroupLegs accepts installmentsTotal > 1 with a rate", () => {
+    const result = validateTransferGroupLegs([
+      leg({ accountId: SAVINGS_COP_ID, amountCents: BigInt(1000) }),
+      leg({
+        accountId: VISA_COP_ID,
+        amountCents: BigInt(-1000),
+        installmentsTotal: 60,
+        installmentRateEmX10k: 13900,
+      }),
+    ]);
+    expect(result).toEqual({ ok: true });
+  });
+});
+
 describe("no double-counting of debts after the refactor", () => {
   it("a TC statement payment via transfer group does NOT add to `deudas`-sum", async () => {
     // Compute the baseline spend in "deudas" children (real debt servicing).
