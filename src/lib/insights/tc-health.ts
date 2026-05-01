@@ -28,6 +28,12 @@ export type TcCardSnapshot = {
   /** Ready-formatted card name for display and notification titles */
   label: string;
   cutoffDay: number | null;
+  /**
+   * Currency of creditLimitCents and usedCents.
+   * Multi-currency physical cards aggregate all debt into COP.
+   * Single-currency accounts carry their native currency (COP or USD).
+   */
+  currency: "COP" | "USD";
   creditLimitCents: bigint;
   usedCents: bigint;
   /** Pre-computed — roundUtilizationPct(usedCents, creditLimitCents) */

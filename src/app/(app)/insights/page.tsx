@@ -10,8 +10,7 @@ import { getFinancialPeriod } from "@/lib/dashboard/period";
 import { getUiPreferences } from "@/lib/preferences/repo";
 import { formatMoney } from "@/lib/money";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { nowInBogota } from "@/lib/widgets/handlers/_shared";
-import { fetchUserTcSnapshots } from "@/lib/queue/workers/tc-health-check";
+import { fetchUserTcSnapshots, nowInBogota } from "@/lib/insights/tc-health-queries";
 import {
   computeTcAlerts,
   type TcCardSnapshot,

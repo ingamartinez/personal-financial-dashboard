@@ -11,6 +11,7 @@ function makeSnapshot(overrides: Partial<TcCardSnapshot> = {}): TcCardSnapshot {
     kind: "physical",
     label: "Visa *1234",
     cutoffDay: null,
+    currency: "COP",
     creditLimitCents: BigInt(10_000_000), // $100 000 COP
     usedCents: BigInt(0),
     utilizationPct: 0,

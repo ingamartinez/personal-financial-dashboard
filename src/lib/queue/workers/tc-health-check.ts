@@ -14,24 +14,27 @@
  *
  * The pure alert logic lives in `src/lib/insights/tc-health.ts` and is
  * shared with the `/insights` page real-time card.
+ *
+ * DB helpers and snapshot builders live in
+ * `src/lib/insights/tc-health-queries.ts` so the /insights page can import
+ * them without pulling BullMQ / ioredis into the RSC route module graph.
  */
 
 import type { Job } from "bullmq";
-import { and, eq, isNull, sql } from "drizzle-orm";
 
-import { db } from "@/lib/db";
-import { accounts, physicalCards, type AccountMetadata } from "@/lib/db/schema";
-import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
-import { notDeleted } from "@/lib/db/helpers";
-import { toCop } from "@/lib/money";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { createLogger } from "@/lib/logger";
-import { formatAccountLabel } from "@/lib/accounts/format";
+import { formatMoney } from "@/lib/money";
 import { emitNotification } from "@/lib/notifications/emit";
 import { createWorker } from "@/lib/queue";
-import { nowInBogota, roundUtilizationPct, type BogotaYmd } from "@/lib/widgets/handlers/_shared";
-import { computeNextCutoff } from "@/lib/widgets/handlers/tc-focus";
+import { nowInBogota } from "@/lib/widgets/handlers/_shared";
 import { computeTcAlerts, type TcCardSnapshot } from "@/lib/insights/tc-health";
+import {
+  fetchMultiCurrencyCards,
+  fetchSingleCurrencyCards,
+  buildMultiSnapshot,
+  buildSingleSnapshot,
+} from "@/lib/insights/tc-health-queries";
 
 const log = createLogger({ module: "worker/tc-health-check" });
 
@@ -55,244 +58,6 @@ export function getCurrentYearMonth(): string {
   })
     .format(new Date())
     .slice(0, 7); // "YYYY-MM"
-}
-
-// ---------------------------------------------------------------------------
-// Internal row types
-// ---------------------------------------------------------------------------
-
-type MultiCurrencyRow = {
-  id: string;
-  name: string | null;
-  institution: string;
-  network: string | null;
-  last4: string | null;
-  creditLimitCents: bigint;
-  statementCutoffDay: number | null;
-  userId: number;
-  /** SUM of COP sub-account balances (negative when in debt) */
-  copDebtCents: bigint;
-  /** SUM of USD sub-account balances (negative when in debt), in USD cents */
-  usdDebtCents: bigint;
-};
-
-type SingleCurrencyRow = {
-  id: number;
-  name: string;
-  institution: string;
-  currency: "COP" | "USD";
-  metadata: AccountMetadata;
-  userId: number;
-  balanceCents: bigint;
-};
-
-// ---------------------------------------------------------------------------
-// Queries — two round-trips for the whole tenant roster, not N+1.
-// Mirrors fetchMultiCurrencyCards / fetchSingleCurrencyCards from mis-tcs.ts.
-// ---------------------------------------------------------------------------
-
-async function fetchMultiCurrencyCards(userId?: number): Promise<MultiCurrencyRow[]> {
-  const rows = await db
-    .select({
-      id: physicalCards.id,
-      name: physicalCards.name,
-      institution: physicalCards.institution,
-      network: physicalCards.network,
-      last4: physicalCards.last4,
-      creditLimitCents: physicalCards.creditLimitCents,
-      statementCutoffDay: physicalCards.statementCutoffDay,
-      userId: physicalCards.userId,
-      copDebtCents: sql<string>`
-        COALESCE(SUM(CASE WHEN ${accounts.currency} = 'COP' THEN ${derivedBalanceCentsSql} ELSE 0 END), 0)
-      `,
-      usdDebtCents: sql<string>`
-        COALESCE(SUM(CASE WHEN ${accounts.currency} = 'USD' THEN ${derivedBalanceCentsSql} ELSE 0 END), 0)
-      `,
-    })
-    .from(physicalCards)
-    .leftJoin(
-      accounts,
-      and(
-        eq(accounts.physicalCardId, physicalCards.id),
-        // Tenancy guard: pair user_id in the JOIN ON clause (memory per-user-table-join-tenant-safety)
-        eq(accounts.userId, physicalCards.userId),
-        notDeleted(accounts.deletedAt),
-      ),
-    )
-    .where(userId !== undefined ? eq(physicalCards.userId, userId) : undefined)
-    .groupBy(
-      physicalCards.id,
-      physicalCards.name,
-      physicalCards.institution,
-      physicalCards.network,
-      physicalCards.last4,
-      physicalCards.creditLimitCents,
-      physicalCards.statementCutoffDay,
-      physicalCards.userId,
-    );
-
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    institution: r.institution,
-    network: r.network,
-    last4: r.last4,
-    creditLimitCents: r.creditLimitCents,
-    statementCutoffDay: r.statementCutoffDay ?? null,
-    userId: r.userId,
-    copDebtCents: BigInt(r.copDebtCents),
-    usdDebtCents: BigInt(r.usdDebtCents),
-  }));
-}
-
-async function fetchSingleCurrencyCards(userId?: number): Promise<SingleCurrencyRow[]> {
-  const rows = await db
-    .select({
-      id: accounts.id,
-      name: accounts.name,
-      institution: accounts.institution,
-      currency: accounts.currency,
-      metadata: accounts.metadata,
-      userId: accounts.userId,
-      balanceCents: derivedBalanceCentsSql,
-    })
-    .from(accounts)
-    .where(
-      and(
-        userId !== undefined ? eq(accounts.userId, userId) : undefined,
-        eq(accounts.type, "credit_card"),
-        // Absence of physicalCardId distinguishes "plain" TCs from multi-currency sub-accounts
-        isNull(accounts.physicalCardId),
-        notDeleted(accounts.deletedAt),
-      ),
-    );
-
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    institution: r.institution,
-    currency: r.currency as "COP" | "USD",
-    metadata: (r.metadata ?? {}) as AccountMetadata,
-    userId: r.userId,
-    balanceCents: BigInt(r.balanceCents),
-  }));
-}
-
-// ---------------------------------------------------------------------------
-// Snapshot builders — bigint math, no float coercions
-// ---------------------------------------------------------------------------
-
-function buildMultiSnapshot(
-  row: MultiCurrencyRow,
-  copPerUsd: number,
-  today: BogotaYmd,
-): TcCardSnapshot {
-  // Mirrors projectMultiCurrency in mis-tcs.ts
-  const usdDebtInCop = toCop(row.usdDebtCents, "USD", copPerUsd);
-  const availableCents = row.creditLimitCents + row.copDebtCents + usdDebtInCop;
-  const usedCents = row.creditLimitCents - availableCents;
-  const usedClamped = usedCents < BI_ZERO ? BI_ZERO : usedCents;
-
-  const utilizationPct = roundUtilizationPct(usedClamped, row.creditLimitCents);
-
-  const label =
-    row.name?.trim() ||
-    [row.institution, row.last4 ? `*${row.last4}` : null].filter(Boolean).join(" ") ||
-    "Tarjeta de crédito";
-
-  const daysToCutoff =
-    row.statementCutoffDay !== null
-      ? computeNextCutoff(row.statementCutoffDay, today).daysTo
-      : null;
-
-  return {
-    cardId: `pc-${row.id}`,
-    kind: "physical",
-    label,
-    cutoffDay: row.statementCutoffDay,
-    creditLimitCents: row.creditLimitCents,
-    usedCents: usedClamped,
-    utilizationPct,
-    daysToCutoff,
-  };
-}
-
-function buildSingleSnapshot(
-  row: SingleCurrencyRow,
-  copPerUsd: number,
-  today: BogotaYmd,
-): TcCardSnapshot {
-  // Mirrors projectSingleCurrency in mis-tcs.ts
-  const limitNativeCents = BigInt(row.metadata.creditLimitCents ?? 0);
-  const usedNativeCents = row.balanceCents < BI_ZERO ? -row.balanceCents : BI_ZERO;
-
-  // Utilization on native cents (ratio is invariant under positive-rate scaling)
-  const utilizationPct = roundUtilizationPct(usedNativeCents, limitNativeCents);
-
-  const cutoffDay = row.metadata.cutoffDay ?? null;
-  const daysToCutoff = cutoffDay !== null ? computeNextCutoff(cutoffDay, today).daysTo : null;
-
-  const label = formatAccountLabel(
-    {
-      name: row.name,
-      currency: row.currency,
-      institution: row.institution,
-      metadata: { last4s: row.metadata.last4s ?? null },
-    },
-    { withInstitution: true },
-  );
-
-  return {
-    cardId: `acc-${row.id}`,
-    kind: "account",
-    label,
-    cutoffDay,
-    creditLimitCents: limitNativeCents,
-    usedCents: usedNativeCents,
-    utilizationPct,
-    daysToCutoff,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Per-user snapshot fetch — used by the /insights page card.
-// Mirrors the cron logic but scoped to a single userId and driven by the
-// caller-supplied fxRate (the page already has it in scope).
-// ---------------------------------------------------------------------------
-
-/**
- * Fetch and build TcCardSnapshot[] for a single user. Used by the /insights
- * page real-time card. Cards with no cupo AND no cutoff are excluded.
- *
- * @param userId   The authenticated user's id.
- * @param fxRate   Current COP/USD FX rate (from `getCurrentFxRate().rate`).
- * @param today    Bogota date (from `nowInBogota(new Date())`).
- */
-export async function fetchUserTcSnapshots(
-  userId: number,
-  fxRate: number,
-  today: BogotaYmd,
-): Promise<TcCardSnapshot[]> {
-  const [multiRows, singleRows] = await Promise.all([
-    fetchMultiCurrencyCards(userId),
-    fetchSingleCurrencyCards(userId),
-  ]);
-
-  const snapshots: TcCardSnapshot[] = [];
-
-  for (const row of multiRows) {
-    if (row.statementCutoffDay === null && row.creditLimitCents === BI_ZERO) continue;
-    snapshots.push(buildMultiSnapshot(row, fxRate, today));
-  }
-
-  for (const row of singleRows) {
-    const limitCents = BigInt(row.metadata.creditLimitCents ?? 0);
-    const cutoffDay = row.metadata.cutoffDay ?? null;
-    if (cutoffDay === null && limitCents === BI_ZERO) continue;
-    snapshots.push(buildSingleSnapshot(row, fxRate, today));
-  }
-
-  return snapshots;
 }
 
 // ---------------------------------------------------------------------------
@@ -461,9 +226,18 @@ function buildNotificationText(
 
   const pct = snap.utilizationPct;
   const tier = trigger === "util-95" ? "95%" : trigger === "util-90" ? "90%" : "80%";
+  let body = `Tenés el ${pct}% del cupo usado — llegaste al umbral del ${tier}.`;
+
+  // Payment suggestion: how much to pay to get back to 70% utilization
+  const targetCents = (snap.creditLimitCents * BigInt(70)) / BigInt(100);
+  const paymentNeeded = snap.usedCents - targetCents;
+  if (paymentNeeded > BI_ZERO) {
+    body += ` Pagá ${formatMoney(paymentNeeded, snap.currency)} para bajar al 70%.`;
+  }
+
   return {
     title: `${snap.label}: cupo al ${pct}%`,
-    body: `Tenés el ${pct}% del cupo usado — llegaste al umbral del ${tier}.`,
+    body,
   };
 }
 
