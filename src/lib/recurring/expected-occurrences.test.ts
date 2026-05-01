@@ -357,7 +357,9 @@ describe("getExpectedOccurrencesForMonth — integration", () => {
     expect(mine).toBeUndefined();
   });
 
-  it("returns 'esperado' for current month with no gap and no tx (not past threshold)", async () => {
+  it("does NOT return a forecast row for a future day in the current month (no gap)", async () => {
+    // After #695: dayOfMonth=28 with today=April 25 means April 28 > today → skipped.
+    // Previously this test asserted status="esperado", which was the bug.
     const accountId = await seedAccount();
     const recurringId = await seedRecurring(accountId, {
       label: `${TEST_LABEL_PREFIX}current`,
@@ -365,13 +367,86 @@ describe("getExpectedOccurrencesForMonth — integration", () => {
       dayOfMonth: 28,
     });
 
-    // today = April 25, expected April 28 — not yet past threshold
+    // today = April 25, expected April 28 — future day, must not emit
     const today = new Date("2026-04-25T12:00:00Z");
     const result = await getExpectedOccurrencesForMonth(TEST_USER_ID, "2026-04", today);
+    const mine = result.find((o) => o.recurringId === recurringId);
+    expect(mine).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // #695 — future-day forecast suppression in the current month (no-gap branch)
+  // -------------------------------------------------------------------------
+
+  it("#695: future-day current month is skipped — today May 1, dayOfMonth 15", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: `${TEST_LABEL_PREFIX}695_future`,
+      amountCents: BigInt(-100000),
+      dayOfMonth: 15,
+    });
+
+    // today = May 1; expectedDate = May 15, which is in the future → must be skipped
+    const today = new Date("2026-05-01T12:00:00Z");
+    const result = await getExpectedOccurrencesForMonth(TEST_USER_ID, "2026-05", today);
+    const mine = result.find((o) => o.recurringId === recurringId);
+    expect(mine).toBeUndefined();
+  });
+
+  it("#695: today's day shows as 'esperado' — today May 15, dayOfMonth 15", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: `${TEST_LABEL_PREFIX}695_today`,
+      amountCents: BigInt(-100000),
+      dayOfMonth: 15,
+    });
+
+    // today = May 15; expectedDate = May 15 → not in the future → must emit as 'esperado'
+    // (15 days since expected, but the threshold check is expectedDate < today - 5d;
+    //  when expectedDate === today the gap is 0 ms, so it's 'esperado')
+    const today = new Date("2026-05-15T12:00:00Z");
+    const result = await getExpectedOccurrencesForMonth(TEST_USER_ID, "2026-05", today);
     const mine = result.find((o) => o.recurringId === recurringId);
     expect(mine).toBeDefined();
     expect(mine!.status).toBe("esperado");
     expect(mine!.gapId).toBeUndefined();
+  });
+
+  it("#695: past day in current month still shows as 'atrasado' — today May 20, dayOfMonth 5", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: `${TEST_LABEL_PREFIX}695_past`,
+      amountCents: BigInt(-100000),
+      dayOfMonth: 5,
+    });
+
+    // today = May 20; expectedDate = May 5; gap = 15 days > 5-day threshold → 'atrasado'
+    const today = new Date("2026-05-20T12:00:00Z");
+    const result = await getExpectedOccurrencesForMonth(TEST_USER_ID, "2026-05", today);
+    const mine = result.find((o) => o.recurringId === recurringId);
+    expect(mine).toBeDefined();
+    expect(mine!.status).toBe("atrasado");
+    expect(mine!.gapId).toBeUndefined();
+  });
+
+  it("#695: clampDay edge case — dayOfMonth=31 in Feb 28 (non-leap) emits (regression guard)", async () => {
+    // today = Feb 28 (non-leap 2026); dayOfMonth=31 clamps to Feb 28.
+    // expectedDate === todayUtc → NOT in the future → must emit (not be silently skipped).
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: `${TEST_LABEL_PREFIX}695_clamp`,
+      amountCents: BigInt(-100000),
+      dayOfMonth: 31,
+    });
+
+    const today = new Date("2026-02-28T12:00:00Z");
+    const result = await getExpectedOccurrencesForMonth(TEST_USER_ID, "2026-02", today);
+    const mine = result.find((o) => o.recurringId === recurringId);
+    expect(mine).toBeDefined();
+    // expectedDate = Feb 28 === today → 'esperado' (0 ms gap, within 5-day threshold)
+    expect(mine!.status).toBe("esperado");
+    expect(mine!.expectedDate.getUTCDate()).toBe(28);
+    expect(mine!.expectedDate.getUTCMonth()).toBe(1); // February (0-indexed)
   });
 
   it("does not include occurrence when month is in skippedMonths and no gap", async () => {

@@ -250,6 +250,13 @@ export async function getExpectedOccurrencesForMonth(
     // Check skipped_months on the recurring.
     if ((r.skippedMonths ?? []).includes(yearMonth)) continue;
 
+    // Skip occurrences whose day hasn't arrived yet — only past/today days are "expected".
+    // Future-day rows flood the transaction list on day 1 of the month (#695).
+    // Note: this guard applies ONLY to the no-gap branch. If a linked tx or an existing
+    // gap row already covers a future day (early bank posting, cron artefact), it passes
+    // through the earlier branches above and is intentionally kept.
+    if (expectedDate.getTime() > todayUtc.getTime()) continue;
+
     const status: OccurrenceStatus =
       expectedDate.getTime() < todayUtc.getTime() - atrasadoMs ? "atrasado" : "esperado";
 
