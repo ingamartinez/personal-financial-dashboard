@@ -143,3 +143,174 @@ describe("getBudgetsOverview", () => {
     expect(result.categories.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #527 — frozen-TRM aggregation. Independent fixture so we can mix USD txs
+// with their own rawData.fx blocks and verify per-row conversion.
+// ---------------------------------------------------------------------------
+
+const FROZEN_TAG = "BUDGET_FROZEN_TRM_TEST";
+const FROZEN_TRM = 3676.92; // historical
+const LIVE_TRM = 4500; // intentionally different — proves frozen, not live, was used
+
+async function createUserFrozen(email: string): Promise<number> {
+  const [row] = await db.insert(users).values({ email, name: email }).returning({ id: users.id });
+  await copyCategorySeedsToUser(row.id);
+  return row.id;
+}
+
+async function createCopAccount(userId: number, label: string): Promise<number> {
+  const [row] = await db
+    .insert(accounts)
+    .values({
+      userId,
+      name: `${FROZEN_TAG} ${label}`,
+      institution: FROZEN_TAG,
+      type: "savings",
+      currency: "COP",
+    })
+    .returning({ id: accounts.id });
+  return row.id;
+}
+
+async function insertUsdTxWithFrozenTrm(
+  userId: number,
+  accountId: number,
+  amountCents: bigint,
+  trm: number | null,
+  occurredAt: Date,
+  seq: number,
+): Promise<void> {
+  const fxBlock =
+    trm === null
+      ? {} // simulate a legacy USD tx that never got an fx block
+      : {
+          fx: {
+            originalCurrency: "USD",
+            originalAmountCents: amountCents.toString().replace(/^-/, ""),
+            trmToAccountCurrency: trm,
+            trmSource: "statement_frozen",
+          },
+        };
+  await db.insert(transactions).values({
+    userId,
+    accountId,
+    occurredAt,
+    amountCents,
+    currency: "USD",
+    descriptionRaw: `${FROZEN_TAG} tx-${seq}`,
+    categorySlug: "otros",
+    classificationMethod: "manual",
+    source: "manual",
+    externalId: `${FROZEN_TAG}-tx-${seq}`,
+    channel: "bank",
+    rawData: fxBlock,
+  });
+}
+
+describe("getBudgetsOverview — #527 frozen TRM aggregation", () => {
+  let frozenUserId: number;
+  let frozenAccountId: number;
+  const ym = "2098-06"; // distinct from the suite above
+  const periodStartIso = `${ym}-01`;
+  const start = new Date(Date.UTC(2098, 5, 1));
+  const end = new Date(Date.UTC(2098, 6, 1));
+
+  beforeAll(async () => {
+    frozenUserId = await createUserFrozen(`${FROZEN_TAG}-user@example.com`);
+    frozenAccountId = await createCopAccount(frozenUserId, "main");
+
+    // COP budget: $400,000 limit for category "otros".
+    await db.insert(budgets).values({
+      userId: frozenUserId,
+      categorySlug: "otros",
+      amountCents: BigInt(400_000_00),
+      currency: "COP",
+      periodStart: periodStartIso,
+      periodEnd: `${ym}-30`,
+      active: true,
+    });
+
+    // USD tx 1: $100 USD with frozen TRM 3676.92 → 367,692 COP equivalent
+    await insertUsdTxWithFrozenTrm(
+      frozenUserId,
+      frozenAccountId,
+      BigInt(-10000),
+      FROZEN_TRM,
+      start,
+      1,
+    );
+
+    // USD tx 2: $50 USD WITHOUT a frozen TRM (legacy row)
+    await insertUsdTxWithFrozenTrm(frozenUserId, frozenAccountId, BigInt(-5000), null, start, 2);
+  });
+
+  afterAll(async () => {
+    await db.delete(users).where(sql`email LIKE ${"%" + FROZEN_TAG + "%"}`);
+  });
+
+  it("native mode: USD txs do NOT contribute to a COP budget (no cross-currency mixing)", async () => {
+    const result = await getBudgetsOverview(
+      frozenUserId,
+      ym,
+      { start, end },
+      { displayCurrencyMode: "native", copPerUsd: LIVE_TRM },
+    );
+    const item = result.items.find((i) => i.categorySlug === "otros")!;
+    expect(item.currency).toBe("COP");
+    expect(BigInt(item.spentCents)).toBe(BigInt(0));
+    expect(BigInt(item.amountCents)).toBe(BigInt(400_000_00));
+    expect(item.hadFrozenTrmConversion).toBe(false);
+  });
+
+  it("all-cop mode: USD txs converted via FROZEN TRM (not live)", async () => {
+    const result = await getBudgetsOverview(
+      frozenUserId,
+      ym,
+      { start, end },
+      { displayCurrencyMode: "all-cop", copPerUsd: LIVE_TRM },
+    );
+    const item = result.items.find((i) => i.categorySlug === "otros")!;
+    expect(item.currency).toBe("COP");
+
+    // tx1 (10000 cents USD * 3676.92) = 36,769,200 cents COP. tx2 (5000) lacks
+    // TRM → falls back to USD, ends up in a separate bucket → does NOT enter
+    // the COP total. Expected spent in COP = 36,769,200.
+    expect(BigInt(item.spentCents)).toBe(BigInt(36_769_200));
+
+    // Sanity: live TRM would have produced (10000 + 5000) * 4500 = 67,500,000.
+    // Confirm the result is NOT that.
+    expect(BigInt(item.spentCents)).not.toBe(BigInt(15000) * BigInt(LIVE_TRM));
+
+    expect(item.hadFrozenTrmConversion).toBe(true);
+    expect(item.missingTrmCount).toBe(1); // tx2 had no TRM
+  });
+
+  it("all-cop mode: budget amount converts via LIVE TRM (plans have no frozen rate)", async () => {
+    // Budget is in COP, mode is all-cop → no conversion needed. Use a USD-budget
+    // user to actually exercise the LIVE TRM conversion path.
+    const usdUserId = await createUserFrozen(`${FROZEN_TAG}-usdbudget@example.com`);
+    await createCopAccount(usdUserId, "usd-budget-acct");
+    await db.insert(budgets).values({
+      userId: usdUserId,
+      categorySlug: "otros",
+      amountCents: BigInt(500_00), // $500.00 USD
+      currency: "USD",
+      periodStart: periodStartIso,
+      periodEnd: `${ym}-30`,
+      active: true,
+    });
+
+    const result = await getBudgetsOverview(
+      usdUserId,
+      ym,
+      { start, end },
+      { displayCurrencyMode: "all-cop", copPerUsd: LIVE_TRM },
+    );
+    const item = result.items.find((i) => i.categorySlug === "otros")!;
+    expect(item.currency).toBe("COP");
+
+    // 500_00 USD cents * 4500 = 2,250,000 COP cents.
+    expect(BigInt(item.amountCents)).toBe(BigInt(500_00) * BigInt(LIVE_TRM));
+  });
+});
