@@ -94,6 +94,12 @@ export const categorySeedRows: CategorySeed[] = [
   // installment purchases. Interest accrued IS an expense, so this category is
   // a real child of `deudas` (not a transfer like `pago-tc`).
   { slug: "intereses-tc", name: "Intereses TC", parentSlug: "deudas" },
+  // #687: "Compra de cartera" — Bancolombia disburses cash to savings and the
+  // same amount becomes a TC debit with a fixed-rate installment plan. Modeled
+  // as a transfer pair (channel=transfer, category_slug=null on both legs) so
+  // it does NOT inflate income or expenses. This seed exists for UI label /
+  // reporting purposes and for the rawData.kind="cartera_tc" discriminator.
+  { slug: "cartera-tc", name: "Compra de Cartera TC", parentSlug: "deudas" },
   { slug: "pago-prestamo", name: "Pago Préstamo", parentSlug: "deudas" },
   { slug: "ropa", name: "Ropa", icon: "shirt", color: "#8b5cf6", sortOrder: 110 },
   { slug: "tecnologia", name: "Tecnología", icon: "laptop", color: "#06b6d4", sortOrder: 120 },
