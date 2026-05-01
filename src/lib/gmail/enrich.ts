@@ -53,6 +53,8 @@ export async function applyEnrichment(
 
     // Update the transaction with enriched merchant data.
     // NEVER modify descriptionRaw — it is the immutable audit field.
+    // TODO(#709 follow-up): canonicalize enriched_merchant when rule engine
+    // starts reading it (currently txHaystack reads merchant only).
     await trx
       .update(transactions)
       .set({

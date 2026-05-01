@@ -576,6 +576,14 @@ export const transactions = pgTable(
     transferGroupId: uuid("transfer_group_id"),
     rawData: jsonb("raw_data").notNull().default({}),
     notes: text("notes"),
+    // #709: heuristic gateway-prefix collapse (e.g. `DLO*Didi` → `Didi`).
+    // Set at INSERT time by `withCanonical()` and backfilled for existing rows.
+    // Null when the raw merchant is null or matches an internal-transfer skip
+    // pattern. Classification and aggregation should prefer this over `merchant`
+    // once the backfill completes.
+    // TODO(#709 follow-up): canonicalize enriched_merchant when rule engine
+    // starts reading it (currently txHaystack reads merchant only).
+    canonicalMerchant: varchar("canonical_merchant", { length: 200 }),
     // #454 (Epic G): merchant extracted from a gateway email receipt
     // (MP/PayU/Wompi/Apple/PayPal). `description_raw` is preserved unchanged
     // for audit/rollback. Classification reads enriched_merchant first when
@@ -628,6 +636,11 @@ export const transactions = pgTable(
       .where(sql`${t.deletedAt} IS NULL`),
     index("transactions_user_occurred_live_idx")
       .on(t.userId, t.occurredAt)
+      .where(sql`${t.deletedAt} IS NULL`),
+    // #709: partial index for merchant canonicalization aggregation queries.
+    // Covers (user_id, canonical_merchant) on non-deleted rows only.
+    index("transactions_user_canonical_idx")
+      .on(t.userId, t.canonicalMerchant)
       .where(sql`${t.deletedAt} IS NULL`),
     uniqueIndex("transactions_external_unique")
       .on(t.accountId, t.externalId)

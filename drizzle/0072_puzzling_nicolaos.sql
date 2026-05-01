@@ -1,0 +1,2 @@
+ALTER TABLE "transactions" ADD COLUMN "canonical_merchant" varchar(200);--> statement-breakpoint
+CREATE INDEX "transactions_user_canonical_idx" ON "transactions" USING btree ("user_id","canonical_merchant") WHERE "transactions"."deleted_at" IS NULL;
