@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, categories, parserEvents, transactions, users } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  counterparties,
+  counterpartyAliases,
+  parserEvents,
+  recurringTransactions,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { ingestParsed } from "./sms-pipeline";
 import type { ParseResult } from "./sms-bancolombia";
 import { parseSmsBancolombia } from "./sms-bancolombia";
@@ -736,5 +745,134 @@ describe("ingestParsed — transfer_received_to_savings wire path (#689)", () =>
 
     const txs = await db.select().from(transactions).where(eq(transactions.userId, u.id));
     expect(txs).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// transfer_received_to_savings — counterparty resolution + auto-link (#689)
+// ---------------------------------------------------------------------------
+
+const TAG_TR_CP = "+tr-savings-cp-test@findash.local";
+
+async function setupSavingsUserWithCounterpartyAndRecurring(): Promise<{
+  userId: number;
+  savingsId: number;
+  counterpartyId: number;
+  recurringId: number;
+}> {
+  const [u] = await db
+    .insert(users)
+    .values({
+      email: `${crypto.randomUUID()}${TAG_TR_CP}`,
+      name: "TR Savings CP test",
+      role: "user",
+      active: true,
+      googleSub: `sub-tr-cp-${crypto.randomUUID()}`,
+      featureFlags: {},
+    })
+    .returning({ id: users.id });
+
+  // Seed income category required by transfer_received_to_savings
+  await db.insert(categories).values([
+    { userId: u.id, slug: "ingresos", name: "Ingresos", sortOrder: 150 },
+    {
+      userId: u.id,
+      slug: "otros-ingresos",
+      name: "Otros ingresos",
+      parentSlug: "ingresos",
+      sortOrder: 151,
+    },
+  ]);
+
+  const [savings] = await db
+    .insert(accounts)
+    .values({
+      userId: u.id,
+      institution: "Bancolombia",
+      name: "Ahorros *6126",
+      type: "savings",
+      currency: "COP",
+      active: true,
+      metadata: { last4s: ["6126"] },
+    })
+    .returning({ id: accounts.id });
+
+  // Seed a counterparty with the normalized name matching "DIR TESORO NACI"
+  const [cp] = await db
+    .insert(counterparties)
+    .values({
+      userId: u.id,
+      displayName: "DIR TESORO NACI",
+      type: "unknown",
+      hitCount: 0,
+    })
+    .returning({ id: counterparties.id });
+
+  await db.insert(counterpartyAliases).values({
+    userId: u.id,
+    counterpartyId: cp.id,
+    kind: "name",
+    value: "DIR TESORO NACI", // normalizeName("DIR TESORO NACI") → same (already upper)
+  });
+
+  // Seed a recurring transaction matching the SMS amount + savings account.
+  // dayOfMonth=30, amount=1_174_000_000n matches SMS_TRANSFER_SAVINGS_147 (April 30).
+  const [rec] = await db
+    .insert(recurringTransactions)
+    .values({
+      userId: u.id,
+      accountId: savings.id,
+      label: "Reembolso DIAN mensual",
+      amountCents: BigInt(1_174_000_000),
+      currency: "COP",
+      categorySlug: "otros-ingresos",
+      dayOfMonth: 30,
+      active: true,
+    })
+    .returning({ id: recurringTransactions.id });
+
+  return { userId: u.id, savingsId: savings.id, counterpartyId: cp.id, recurringId: rec.id };
+}
+
+async function cleanupTrCp() {
+  const rows = await db.select({ id: users.id, email: users.email }).from(users);
+  const ids = rows.filter((r) => r.email.endsWith(TAG_TR_CP)).map((r) => r.id);
+  if (ids.length === 0) return;
+  await db.delete(transactions).where(inArray(transactions.userId, ids));
+  await db.delete(recurringTransactions).where(inArray(recurringTransactions.userId, ids));
+  await db.delete(counterpartyAliases).where(inArray(counterpartyAliases.userId, ids));
+  await db.delete(counterparties).where(inArray(counterparties.userId, ids));
+  await db.delete(accounts).where(inArray(accounts.userId, ids));
+  await db.delete(categories).where(inArray(categories.userId, ids));
+  await db.delete(users).where(inArray(users.id, ids));
+}
+
+describe("transfer_received_to_savings resolves counterparty and auto-links recurring (#689)", () => {
+  beforeEach(cleanupTrCp);
+  afterEach(cleanupTrCp);
+
+  it("resolves counterparty from originDescriptor and auto-links matching recurring tx", async () => {
+    const { userId, savingsId, counterpartyId, recurringId } =
+      await setupSavingsUserWithCounterpartyAndRecurring();
+
+    const parsed = parseSmsBancolombia(SMS_TRANSFER_SAVINGS_147);
+    expect(parsed.kind).toBe("transfer_received_to_savings");
+
+    const outcome = await ingestParsed(userId, parsed);
+    expect(outcome.status).toBe("inserted");
+    if (outcome.status !== "inserted") throw new Error("type guard");
+
+    const [tx] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.userId, userId))
+      .limit(1);
+
+    expect(tx.accountId).toBe(savingsId);
+    // counterpartyId must be resolved (not null) — merchant grouping and
+    // inheritedCategory rules depend on this.
+    expect(tx.counterpartyId).toBe(counterpartyId);
+    // recurringId must be set — auto-link matched the savings account + amount.
+    expect(tx.recurringId).toBe(recurringId);
   });
 });

@@ -5,6 +5,7 @@ import { notDeleted } from "@/lib/db/helpers";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
+import { createLogger } from "@/lib/logger";
 import { insertTransferGroup } from "@/lib/transactions/transfer-groups";
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 import {
@@ -28,6 +29,8 @@ import type { ClassificationMethod, TransactionSource } from "@/lib/types";
 
 // Colombia uses UTC-5 year-round (no DST). Time in SMS is local.
 const COP_TIMEZONE_OFFSET = "-05:00";
+
+const log = createLogger({ module: "ingestion/sms-pipeline" });
 
 export type IngestOutcome =
   | { status: "inserted"; txId: number; via?: "regex" | "ai_fallback" }
@@ -735,7 +738,10 @@ async function ingestTransferReceivedToSavings(
   const occurredAt = new Date(
     `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
   );
-  const descriptionRaw = `Pago recibido de ${parsed.originDescriptor}`;
+  // Use the full SMS body for audit trail integrity — matches the backfill SQL.
+  const descriptionRaw = parsed.raw;
+
+  const cp = await resolveCounterparty(userId, parsed, db);
 
   try {
     const result = await db
@@ -749,8 +755,13 @@ async function ingestTransferReceivedToSavings(
         descriptionRaw,
         descriptionClean: null,
         merchant: parsed.originDescriptor,
-        categorySlug: "otros-ingresos",
-        counterpartyId: null,
+        // Category default: issue #689 spec proposed "transferencia" but no such slug exists
+        // in seed-reference-data.ts. Using "otros-ingresos" (child of "ingresos") as the
+        // closest income category. The DIAN-specific backfill in
+        // scripts/backfill-transfer-received-689-logs147-149.sql uses "reembolso" because
+        // we know that case is a tax refund, but the parser can't infer that from the SMS.
+        categorySlug: cp.inheritedCategory ?? "otros-ingresos",
+        counterpartyId: cp.counterpartyId,
         classificationMethod: "manual",
         classificationConfidence: null,
         source: cfg.source,
@@ -771,6 +782,16 @@ async function ingestTransferReceivedToSavings(
 
     if (result.length === 0) return { status: "duplicated" };
     const txId = result[0].id;
+
+    try {
+      await autoLinkTransaction(userId, txId);
+    } catch (linkErr) {
+      log.warn(
+        { err: linkErr, event: "auto_link_failed", txId, userId },
+        "autoLinkTransaction failed for transfer_received_to_savings — non-critical",
+      );
+    }
+
     emit({
       type: "transaction:created",
       userId,
