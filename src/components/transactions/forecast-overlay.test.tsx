@@ -103,6 +103,7 @@ function makeTxRow(overrides: Partial<TxRow> = {}): TxRow {
     // #642: transfer pairing defaults
     channel: "bank",
     transferGroupId: null,
+    rawData: null,
     ...overrides,
   };
 }

@@ -13,7 +13,7 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Money } from "@/components/display/money";
+import { Money, MoneyFrozen } from "@/components/display/money";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   Table,
@@ -505,7 +505,7 @@ export function TransactionTable({
                       )}
                       suppressHydrationWarning
                     >
-                      <Money cents={tx.amountCents} currency={tx.currency} />
+                      <MoneyFrozen tx={tx} />
                     </TableCell>
                     <TableCell className="px-2">
                       <TransactionRowActions
@@ -665,7 +665,7 @@ export function TransactionTable({
                       )}
                       suppressHydrationWarning
                     >
-                      <Money cents={tx.amountCents} currency={tx.currency} />
+                      <MoneyFrozen tx={tx} />
                     </span>
                     <TransactionRowActions
                       txId={tx.id}

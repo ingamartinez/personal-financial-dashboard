@@ -92,4 +92,10 @@ export type TxRow = {
   // move (pago TC, intra-account). transferGroupId links the two legs.
   channel: TxChannel;
   transferGroupId: string | null;
+  // #528: PROJECTED subset of transactions.raw_data — only `fx` and
+  // `merged_statement.fx` are populated. MoneyFrozen reads via
+  // extractFxMetadataWithFallback. Do NOT trust other keys to be present;
+  // the SELECT in listTransactions strips them on purpose so server-side
+  // metadata never crosses the RSC boundary.
+  rawData: Record<string, unknown> | null;
 };
