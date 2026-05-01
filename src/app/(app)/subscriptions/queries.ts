@@ -1,10 +1,11 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, recurringTransactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { convertToDisplayCurrency, type MoneyAmount } from "@/lib/fx/convert";
 import { sumByDisplayCurrency, type AggregationBucket } from "@/lib/fx/aggregate";
+import { detectPriceHike, type PriceHike } from "@/lib/recurring/price-hike-detector";
 import type { DisplayCurrencyMode } from "@/lib/db/schema";
 
 // ---------------------------------------------------------------------------
@@ -36,7 +37,14 @@ export interface SubscriptionRow {
   displayAmount: MoneyAmount;
   /** Absolute display-currency amount for sort ranking (desc). */
   displayAmountAbsCents: bigint;
+  /**
+   * Populated when a qualifying price hike is detected for this subscription.
+   * Always null for variable-type rows.
+   */
+  priceHike: PriceHike | null;
 }
+
+export type { PriceHike };
 
 export interface SubscriptionsSummary {
   rows: SubscriptionRow[];
@@ -228,8 +236,75 @@ export async function getSubscriptions(
       annualCents,
       displayAmount,
       displayAmountAbsCents,
+      // Enriched below in a second pass.
+      priceHike: null,
     };
   });
+
+  // ── Price-hike enrichment pass (#701) ──────────────────────────────────────
+  // For each non-variable row, fetch the last 4 observations and run the
+  // detector. Scoped to userId on both the observation row and the recurring FK.
+  // We batch all observation queries into a single window-function query to
+  // avoid N+1 per row.
+  if (raw.length > 0) {
+    // Fetch last 4 observations per recurring for all ids in this result set.
+    // ROW_NUMBER() OVER (PARTITION BY recurring_id ORDER BY observed_at DESC) ≤ 4.
+    const recurringIds = raw.filter((r) => r.amountType !== "variable").map((r) => r.id);
+
+    if (recurringIds.length > 0) {
+      const obsRows = await db.execute<{
+        recurring_id: number;
+        real_amount_cents: string; // pg returns bigint as string
+        real_currency: string;
+        observed_at: string;
+        rn: string;
+      }>(sql`
+        SELECT recurring_id, real_amount_cents, real_currency, observed_at, rn
+        FROM (
+          SELECT
+            recurring_id,
+            real_amount_cents,
+            real_currency,
+            observed_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY recurring_id
+              ORDER BY observed_at DESC
+            ) AS rn
+          FROM recurring_link_observations
+          WHERE user_id = ${userId}
+            AND recurring_id = ANY(${sql.raw(`ARRAY[${recurringIds.join(",")}]::int[]`)})
+        ) ranked
+        WHERE rn <= 4
+        ORDER BY recurring_id, rn
+      `);
+
+      // Group by recurringId, most-recent-first (rn=1 is first).
+      const obsByRecurring = new Map<
+        number,
+        {
+          realAmountCents: bigint;
+          observedAt: Date;
+          realCurrency: import("@/lib/types").Currency;
+        }[]
+      >();
+      for (const row of obsRows) {
+        const rid = Number(row.recurring_id);
+        if (!obsByRecurring.has(rid)) obsByRecurring.set(rid, []);
+        obsByRecurring.get(rid)!.push({
+          realAmountCents: BigInt(row.real_amount_cents),
+          observedAt: new Date(row.observed_at),
+          realCurrency: row.real_currency as import("@/lib/types").Currency,
+        });
+      }
+
+      // Run detector for each non-variable row and attach the result.
+      for (const row of rows) {
+        if (row.amountType === "variable") continue;
+        const obs = obsByRecurring.get(row.id) ?? [];
+        row.priceHike = detectPriceHike(row.id, obs);
+      }
+    }
+  }
 
   // Sort by display-currency absolute amount descending (most expensive first).
   // Stable tiebreaker: ascending id so repeated renders are deterministic.

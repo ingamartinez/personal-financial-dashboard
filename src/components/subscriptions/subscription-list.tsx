@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
 import type { AggregationBucket } from "@/lib/fx/aggregate";
-import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
+import type { PriceHike, SubscriptionRow } from "@/app/(app)/subscriptions/queries";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,6 +59,27 @@ function TotalsHeader({
   );
 }
 
+function PriceHikeBadge({ hike }: { hike: PriceHike }) {
+  const absOld = hike.oldAmountCents < BigInt(0) ? -hike.oldAmountCents : hike.oldAmountCents;
+  const absNew = hike.newAmountCents < BigInt(0) ? -hike.newAmountCents : hike.newAmountCents;
+  const pctStr = Math.round(hike.deltaPct).toString();
+  const sinceStr = hike.sinceDate.toLocaleDateString("es-CO", {
+    month: "short",
+    day: "numeric",
+  });
+  const tooltipText = `era ${formatMoney(absOld, hike.currency)} → ahora ${formatMoney(absNew, hike.currency)}, desde ${sinceStr}`;
+
+  return (
+    <Badge
+      variant="outline"
+      className="text-destructive border-destructive/40 text-xs tabular-nums"
+      title={tooltipText}
+    >
+      ↑ +{pctStr}%
+    </Badge>
+  );
+}
+
 function SubscriptionCard({ row }: { row: SubscriptionRow }) {
   const absDisplayCents =
     row.displayAmount.cents < BigInt(0) ? -row.displayAmount.cents : row.displayAmount.cents;
@@ -94,6 +115,7 @@ function SubscriptionCard({ row }: { row: SubscriptionRow }) {
               {row.amountType === "variable" ? "~" : ""}
               {formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD")}
             </p>
+            {row.priceHike && <PriceHikeBadge hike={row.priceHike} />}
             {showNative && (
               <p className="text-muted-foreground text-xs tabular-nums">
                 ({formatMoney(absNativeCents, row.currency as "COP" | "USD")})
