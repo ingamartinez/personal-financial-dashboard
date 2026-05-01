@@ -1,7 +1,7 @@
 import { aliasedTable, and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { budgets, categories, transactions } from "@/lib/db/schema";
-import { notAdjustment, notDeleted } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted, notTransfer } from "@/lib/db/helpers";
 import type { Currency } from "@/lib/types";
 
 export type BudgetCategory = {
@@ -98,6 +98,7 @@ export async function getBudgetsOverview(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, start),
             lt(transactions.occurredAt, end),
+            notTransfer(transactions.channel),
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),
