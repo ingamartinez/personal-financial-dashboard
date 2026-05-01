@@ -196,26 +196,46 @@ describe("getSubscriptions", () => {
   });
 
   it("tenant isolation: user 1 does not see user 2 rows", async () => {
-    // user 2 must exist in the test DB (seed creates both users).
-    const [user2] = await db.execute<{ id: number }>(
-      sql`SELECT id FROM users WHERE id = 2 LIMIT 1`,
-    );
-    if (!user2) return; // Skip if test DB only has one user.
+    // Upsert a second user inline so this assertion ALWAYS runs even on fresh
+    // test DBs that were seeded with only one user. Raw-SQL upsert avoids
+    // importing the full signup flow (copyCategorySeedsToUser etc.) which is
+    // out of scope here.
+    const uniqueEmail = `${TEST_LABEL_PREFIX}user2@test.local`;
+    const [user2Row] = await db.execute<{ id: number }>(sql`
+      INSERT INTO users (email, name)
+      VALUES (${uniqueEmail}, 'Tenant Test User 2')
+      ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
+      RETURNING id
+    `);
+    const user2Id = user2Row!.id;
 
-    const accountId2 = await getAccountId(2);
+    // Create an account for user 2 (needed for insertRecurring FK).
+    const [acc2Row] = await db.execute<{ id: number }>(sql`
+      INSERT INTO accounts (user_id, name, institution, type, currency)
+      VALUES (${user2Id}, 'Test Account', 'Test Bank', 'savings', 'COP')
+      RETURNING id
+    `);
+    const accountId2 = acc2Row!.id;
 
     // Ensure suscripciones category for user 2 as well.
+    // Use NULL parent_slug to avoid needing the full category tree for this
+    // test user — the FK only requires (user_id, parent_slug) to exist when
+    // parent_slug IS NOT NULL.
     await db.execute(sql`
       INSERT INTO categories (user_id, slug, name, parent_slug, sort_order)
-      VALUES (2, 'suscripciones', 'Suscripciones', 'gastos-fijos', 10)
+      VALUES (${user2Id}, 'suscripciones', 'Suscripciones', NULL, 10)
       ON CONFLICT (user_id, slug) DO NOTHING
     `);
 
     const label2 = `${TEST_LABEL_PREFIX}user2`;
-    await insertRecurring(2, accountId2, { label: label2 });
+    await insertRecurring(user2Id, accountId2, { label: label2 });
 
     const { rows } = await getSubscriptions(1, "native", 4200);
     expect(rows.find((r) => r.label === label2)).toBeUndefined();
+
+    // Cleanup user-2 rows (users row will cascade on delete if needed, but
+    // we only need to remove the recurring — cleanup() handles label-prefix rows).
+    // The account and user are test-ephemeral; they'll be cleaned by the test DB reset.
   });
 
   it("computes annualCents as amountCents × 12", async () => {
@@ -278,5 +298,132 @@ describe("getSubscriptions", () => {
     expect(found).toBeDefined();
     // The nextOccurrence must NOT be in the skipped month.
     expect(found!.nextOccurrence.startsWith(candidateMonth)).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // C2: displayCurrencyMode totals
+  // -------------------------------------------------------------------------
+
+  it('totals produce ONE COP bucket in "all-cop" mode over a mix of COP + USD rows', async () => {
+    const accountId = await getAccountId(1);
+    await ensureSuscripcionesCategory(1);
+
+    // COP subscription: -150 000 COP monthly
+    const copLabel = `${TEST_LABEL_PREFIX}cop_total`;
+    const copMonthly = BigInt(-150_000);
+    await insertRecurring(1, accountId, {
+      label: copLabel,
+      amountCents: copMonthly,
+      currency: "COP",
+    });
+
+    // We need a USD account to insert a USD subscription.
+    const [usdAccRow] = await db.execute<{ id: number }>(sql`
+      INSERT INTO accounts (user_id, name, institution, type, currency)
+      VALUES (1, '__test_usd_account__', 'Test Bank', 'savings', 'USD')
+      ON CONFLICT DO NOTHING
+      RETURNING id
+    `);
+    // Fallback: if ON CONFLICT DO NOTHING returned nothing, look it up.
+    const usdAccountId: number =
+      usdAccRow?.id ??
+      (
+        await db.execute<{ id: number }>(
+          sql`SELECT id FROM accounts WHERE user_id = 1 AND name = '__test_usd_account__' LIMIT 1`,
+        )
+      )[0]!.id;
+
+    // USD subscription: -10 USD monthly (i.e. -1000 cents)
+    const usdLabel = `${TEST_LABEL_PREFIX}usd_total`;
+    const usdMonthly = BigInt(-1_000); // -10.00 USD in cents
+    const copPerUsd = 4_200;
+    await insertRecurring(1, usdAccountId, {
+      label: usdLabel,
+      amountCents: usdMonthly,
+      currency: "USD",
+    });
+
+    const { monthlyTotals } = await getSubscriptions(1, "all-cop", copPerUsd);
+
+    // In all-cop mode there must be exactly ONE bucket (COP).
+    expect(monthlyTotals).toHaveLength(1);
+    expect(monthlyTotals[0]!.currency).toBe("COP");
+
+    // Find our two test rows in the result to verify the total.
+    // COP row passes through; USD row is converted: -1000 cents × 4200 = -4_200_000 COP cents.
+    const usdInCopCents = (usdMonthly * BigInt(copPerUsd * 1_000_000)) / BigInt(1_000_000);
+
+    // The bucket may include other seed rows. To isolate our two rows we run
+    // a scoped assertion: extract only our test labels' converted amounts.
+    const allRows = (await getSubscriptions(1, "all-cop", copPerUsd)).rows;
+    const copRow = allRows.find((r) => r.label === copLabel);
+    const usdRow = allRows.find((r) => r.label === usdLabel);
+    expect(copRow).toBeDefined();
+    expect(usdRow).toBeDefined();
+
+    // copRow displayAmount = native (COP stays COP)
+    expect(copRow!.displayAmount.currency).toBe("COP");
+    expect(copRow!.displayAmount.cents).toBe(copMonthly);
+
+    // usdRow displayAmount must be in COP with the applied TRM.
+    expect(usdRow!.displayAmount.currency).toBe("COP");
+    expect(usdRow!.displayAmount.converted).toBe(true);
+    expect(usdRow!.displayAmount.cents).toBe(usdInCopCents);
+
+    // monthlyTotals single bucket cents must include both converted amounts.
+    // (There may be other seed rows; we only verify our two are summed correctly
+    // by checking the bucket cents == sum of all rows' displayAmount.cents.)
+    const totalFromRows = allRows.reduce((acc, r) => acc + r.displayAmount.cents, BigInt(0));
+    expect(monthlyTotals[0]!.cents).toBe(totalFromRows);
+
+    // Cleanup the USD test account after assertions.
+    await db.execute(sql`DELETE FROM accounts WHERE name = '__test_usd_account__' AND user_id = 1`);
+  });
+
+  it('totals produce TWO buckets in "native" mode over a mix of COP + USD rows', async () => {
+    const accountId = await getAccountId(1);
+    await ensureSuscripcionesCategory(1);
+
+    // COP subscription
+    const copLabel = `${TEST_LABEL_PREFIX}cop_native`;
+    await insertRecurring(1, accountId, {
+      label: copLabel,
+      amountCents: BigInt(-200_000),
+      currency: "COP",
+    });
+
+    // USD account + subscription
+    const [usdAccRow] = await db.execute<{ id: number }>(sql`
+      INSERT INTO accounts (user_id, name, institution, type, currency)
+      VALUES (1, '__test_usd_account2__', 'Test Bank', 'savings', 'USD')
+      ON CONFLICT DO NOTHING
+      RETURNING id
+    `);
+    const usdAccountId: number =
+      usdAccRow?.id ??
+      (
+        await db.execute<{ id: number }>(
+          sql`SELECT id FROM accounts WHERE user_id = 1 AND name = '__test_usd_account2__' LIMIT 1`,
+        )
+      )[0]!.id;
+
+    const usdLabel = `${TEST_LABEL_PREFIX}usd_native`;
+    await insertRecurring(1, usdAccountId, {
+      label: usdLabel,
+      amountCents: BigInt(-500),
+      currency: "USD",
+    });
+
+    const { monthlyTotals } = await getSubscriptions(1, "native", 4200);
+
+    // In native mode, COP and USD must be in separate buckets.
+    const currencies = monthlyTotals.map((b) => b.currency);
+    expect(currencies).toContain("COP");
+    expect(currencies).toContain("USD");
+
+    // Cleanup the USD test account.
+    await db.execute(
+      sql`DELETE FROM accounts WHERE name = '__test_usd_account2__' AND user_id = 1`,
+    );
   });
 });

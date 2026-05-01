@@ -150,6 +150,8 @@ export async function getSubscriptions(
         eq(accounts.id, recurringTransactions.accountId),
         // tenant safety: accounts also belong to the user
         eq(accounts.userId, userId),
+        // exclude soft-archived accounts — their subscriptions must not appear
+        notDeleted(accounts.deletedAt),
       ),
     )
     .leftJoin(
@@ -230,39 +232,49 @@ export async function getSubscriptions(
   });
 
   // Sort by display-currency absolute amount descending (most expensive first).
+  // Stable tiebreaker: ascending id so repeated renders are deterministic.
   rows.sort((a, b) => {
     if (b.displayAmountAbsCents > a.displayAmountAbsCents) return 1;
     if (b.displayAmountAbsCents < a.displayAmountAbsCents) return -1;
-    return 0;
+    return a.id - b.id;
   });
 
-  // Compute monthly and annual display-currency totals.
-  // Monthly: use displayAmount.cents per row (already converted).
-  // Annual: ×12 of the monthly display amounts. We re-use sumByDisplayCurrency
-  // on virtual "12× rows" by adjusting amountCents before passing — simpler than
-  // a manual reduce. We pass rawData={} because conversion is already done;
-  // the synthetic rows have matching currency so no re-conversion happens.
-  const monthlyRows = rows.map((r) => ({
-    amountCents: displayAmount_abs_to_signed(r),
-    currency: r.displayAmount.currency,
-    rawData: {} as Record<string, unknown>,
+  // Compute monthly and annual display-currency totals using the ORIGINAL
+  // native currency + synthetic fx block per row. Passing displayCurrencyMode
+  // (not hardcoded "native") ensures that in all-cop / all-usd mode,
+  // sumByDisplayCurrency coerces all rows into one bucket instead of producing
+  // one bucket per distinct native currency.
+  //
+  // We must NOT pass already-converted displayAmount here — let
+  // sumByDisplayCurrency be the single authoritative conversion pass so the
+  // math stays consistent with the per-row displayAmount values.
+  const monthlyRows = raw.map((r) => {
+    const syntheticRawData: Record<string, unknown> =
+      r.currency !== "COP"
+        ? {
+            fx: {
+              originalCurrency: r.currency,
+              originalAmountCents:
+                r.amountCents < BigInt(0) ? (-r.amountCents).toString() : r.amountCents.toString(),
+              trmToAccountCurrency: copPerUsd,
+              trmSource: "user_input",
+            },
+          }
+        : {};
+    return {
+      amountCents: r.amountCents,
+      currency: r.currency,
+      rawData: syntheticRawData,
+    };
+  });
+
+  const annualRows = monthlyRows.map((r) => ({
+    ...r,
+    amountCents: r.amountCents * BigInt(12),
   }));
 
-  const annualRows = rows.map((r) => ({
-    amountCents: displayAmount_abs_to_signed(r) * BigInt(12),
-    currency: r.displayAmount.currency,
-    rawData: {} as Record<string, unknown>,
-  }));
-
-  const monthlyTotals = sumByDisplayCurrency(monthlyRows, "native");
-  const annualTotals = sumByDisplayCurrency(annualRows, "native");
+  const monthlyTotals = sumByDisplayCurrency(monthlyRows, displayCurrencyMode);
+  const annualTotals = sumByDisplayCurrency(annualRows, displayCurrencyMode);
 
   return { rows, monthlyTotals, annualTotals };
-}
-
-/** Restore the sign from the original amountCents to the converted display amount. */
-function displayAmount_abs_to_signed(r: SubscriptionRow): bigint {
-  // amountCents is negative for expenses; displayAmountAbsCents is always positive.
-  // Re-apply sign from the original.
-  return r.amountCents < BigInt(0) ? -r.displayAmountAbsCents : r.displayAmountAbsCents;
 }
