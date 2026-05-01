@@ -255,14 +255,16 @@ export async function getSubscriptions(
       const obsRows = await db.execute<{
         recurring_id: number;
         real_amount_cents: string; // pg returns bigint as string
+        real_currency: string;
         observed_at: string;
         rn: string;
       }>(sql`
-        SELECT recurring_id, real_amount_cents, observed_at, rn
+        SELECT recurring_id, real_amount_cents, real_currency, observed_at, rn
         FROM (
           SELECT
             recurring_id,
             real_amount_cents,
+            real_currency,
             observed_at,
             ROW_NUMBER() OVER (
               PARTITION BY recurring_id
@@ -277,13 +279,21 @@ export async function getSubscriptions(
       `);
 
       // Group by recurringId, most-recent-first (rn=1 is first).
-      const obsByRecurring = new Map<number, { realAmountCents: bigint; observedAt: Date }[]>();
+      const obsByRecurring = new Map<
+        number,
+        {
+          realAmountCents: bigint;
+          observedAt: Date;
+          realCurrency: import("@/lib/types").Currency;
+        }[]
+      >();
       for (const row of obsRows) {
         const rid = Number(row.recurring_id);
         if (!obsByRecurring.has(rid)) obsByRecurring.set(rid, []);
         obsByRecurring.get(rid)!.push({
           realAmountCents: BigInt(row.real_amount_cents),
           observedAt: new Date(row.observed_at),
+          realCurrency: row.real_currency as import("@/lib/types").Currency,
         });
       }
 

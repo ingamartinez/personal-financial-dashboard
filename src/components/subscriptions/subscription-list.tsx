@@ -67,7 +67,7 @@ function PriceHikeBadge({ hike }: { hike: PriceHike }) {
     month: "short",
     day: "numeric",
   });
-  const tooltipText = `era ${formatMoney(absOld, "COP")} → ahora ${formatMoney(absNew, "COP")}, desde ${sinceStr}`;
+  const tooltipText = `era ${formatMoney(absOld, hike.currency)} → ahora ${formatMoney(absNew, hike.currency)}, desde ${sinceStr}`;
 
   return (
     <Badge

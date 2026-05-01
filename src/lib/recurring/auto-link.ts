@@ -40,7 +40,10 @@ async function maybeEmitPriceHikeNotification(
 ): Promise<void> {
   // Skip if the recurring is variable — variable recurrings fluctuate by design.
   const [rec] = await database
-    .select({ amountType: recurringTransactions.amountType })
+    .select({
+      amountType: recurringTransactions.amountType,
+      label: recurringTransactions.label,
+    })
     .from(recurringTransactions)
     .where(
       and(
@@ -58,6 +61,7 @@ async function maybeEmitPriceHikeNotification(
     .select({
       realAmountCents: recurringLinkObservations.realAmountCents,
       observedAt: recurringLinkObservations.observedAt,
+      realCurrency: recurringLinkObservations.realCurrency,
     })
     .from(recurringLinkObservations)
     .where(
@@ -74,8 +78,9 @@ async function maybeEmitPriceHikeNotification(
 
   const absOld = hike.oldAmountCents < BigInt(0) ? -hike.oldAmountCents : hike.oldAmountCents;
   const absNew = hike.newAmountCents < BigInt(0) ? -hike.newAmountCents : hike.newAmountCents;
-  const oldFormatted = formatMoney(absOld, "COP");
-  const newFormatted = formatMoney(absNew, "COP");
+  const currency = hike.currency;
+  const oldFormatted = formatMoney(absOld, currency);
+  const newFormatted = formatMoney(absNew, currency);
   const pctStr = Math.round(hike.deltaPct).toString();
   const sinceStr = hike.sinceDate.toLocaleDateString("es-CO", {
     month: "short",
@@ -84,8 +89,8 @@ async function maybeEmitPriceHikeNotification(
 
   await emitNotification(userId, {
     type: "subscription_price_hike",
-    entityId: `price-hike-${recurringId}-${hike.newAmountCents.toString()}`,
-    title: `Suscripción subió de ${oldFormatted} a ${newFormatted}`,
+    entityId: `price-hike-${recurringId}-${absNew.toString()}`,
+    title: `${rec.label} subió de ${oldFormatted} a ${newFormatted}`,
     body: `+${pctStr}% desde ${sinceStr}. Revisar /subscriptions`,
     actionUrl: "/subscriptions",
     priority: "medium",

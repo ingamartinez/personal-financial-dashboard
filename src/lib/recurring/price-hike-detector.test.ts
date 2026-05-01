@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import { detectPriceHike } from "./price-hike-detector";
 
 // Helper: build a minimal observation array (most recent first).
-function obs(amounts: bigint[]): { realAmountCents: bigint; observedAt: Date }[] {
+function obs(
+  amounts: bigint[],
+  currency: "COP" | "USD" = "COP",
+): { realAmountCents: bigint; observedAt: Date; realCurrency: "COP" | "USD" }[] {
   // Give each a distinct date, most recent = index 0 = latest date.
   const base = new Date("2026-03-01T00:00:00Z").getTime();
   return amounts.map((realAmountCents, i) => ({
     realAmountCents,
     observedAt: new Date(base - i * 24 * 60 * 60 * 1000),
+    realCurrency: currency,
   }));
 }
 
@@ -40,22 +44,36 @@ describe("detectPriceHike", () => {
     expect(result!.newAmountCents).toBe(BigInt(-2_800_000));
     expect(result!.deltaPct).toBeCloseTo(27.27, 1);
     expect(result!.sinceDate).toEqual(observations[0]!.observedAt);
+    expect(result!.currency).toBe("COP");
+  });
+
+  it("detects a qualifying hike for a USD subscription and carries currency through", () => {
+    // USD enterprise subscription: prior 3 at $10,000 (1_000_000 cents),
+    // latest at $12,000 (1_200_000 cents). Delta = 200,000 cents ≥ 100,000 threshold.
+    // deltaPct = 20% ≥ 15% threshold. Both guards pass.
+    const observations = obs(
+      [BigInt(-1_200_000), BigInt(-1_000_000), BigInt(-1_000_000), BigInt(-1_000_000)],
+      "USD",
+    );
+    const result = detectPriceHike(1, observations);
+    expect(result).not.toBeNull();
+    expect(result!.currency).toBe("USD");
+    expect(result!.oldAmountCents).toBe(BigInt(-1_000_000));
+    expect(result!.newAmountCents).toBe(BigInt(-1_200_000));
+    expect(result!.deltaPct).toBeCloseTo(20, 1);
   });
 
   it("returns null for a decrease (new < old in expense sign means smaller charge)", () => {
     // Prior median: -2_800_000. Latest: -2_200_000 (less charge = "cheaper").
-    // newAmountCents (-2_200_000) > oldAmountCents (-2_800_000) in signed comparison:
-    // -2_200_000 > -2_800_000 is TRUE, so the signed-value increase path would trigger.
-    // But in terms of expense magnitude: abs(-2_200_000)=2_200_000 < abs(-2_800_000)=2_800_000
-    // → absDelta would be negative → absDelta < 100_000n → returns null.
+    // The detector works on absolute magnitudes:
+    //   absOld = 2_800_000, absNew = 2_200_000
+    //   absNew (2_200_000) <= absOld (2_800_000) → returns null at the magnitude guard.
     const observations = obs([
       BigInt(-2_200_000),
       BigInt(-2_800_000),
       BigInt(-2_800_000),
       BigInt(-2_800_000),
     ]);
-    // Here newAmountCents(-2_200_000) > oldAmountCents(-2_800_000) signed → passes first guard.
-    // But absNew(2_200_000) - absOld(2_800_000) = -600_000 < 100_000n → null.
     const result = detectPriceHike(1, observations);
     expect(result).toBeNull();
   });

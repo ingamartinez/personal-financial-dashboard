@@ -11,6 +11,8 @@
 //
 // All arithmetic uses BigInt — never coerce to Number for money comparisons.
 
+import type { Currency } from "@/lib/types";
+
 export interface PriceHike {
   recurringId: number;
   oldAmountCents: bigint;
@@ -19,6 +21,8 @@ export interface PriceHike {
   deltaPct: number;
   /** The observedAt date of the first observation at the new amount. */
   sinceDate: Date;
+  /** Native currency of the subscription (COP or USD). */
+  currency: Currency;
 }
 
 /**
@@ -26,13 +30,13 @@ export interface PriceHike {
  *
  * @param recurringId  The recurring_transaction id — included in the return value.
  * @param observations List of observations ordered MOST RECENT FIRST.
- *                     Each entry must have `realAmountCents` (bigint) and `observedAt` (Date).
- *                     Caller must pre-filter variable-type recurrings.
+ *                     Each entry must have `realAmountCents` (bigint), `observedAt` (Date),
+ *                     and `realCurrency` (Currency). Caller must pre-filter variable-type recurrings.
  * @returns PriceHike when a qualifying increase is detected, null otherwise.
  */
 export function detectPriceHike(
   recurringId: number,
-  observations: { realAmountCents: bigint; observedAt: Date }[],
+  observations: { realAmountCents: bigint; observedAt: Date; realCurrency: Currency }[],
 ): PriceHike | null {
   // Need at least 4 observations: 1 current + 3 prior.
   if (observations.length < 4) return null;
@@ -81,5 +85,6 @@ export function detectPriceHike(
     newAmountCents,
     deltaPct,
     sinceDate: latest.observedAt,
+    currency: latest.realCurrency,
   };
 }
