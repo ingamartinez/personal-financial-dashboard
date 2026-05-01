@@ -29,7 +29,8 @@ export type NotificationType =
   | "invite_code_exhausted"
   | "classification_auto_uncategorized"
   | "recurring_proposal_ready"
-  | "subscription_price_hike";
+  | "subscription_price_hike"
+  | "tc_health_alert";
 
 export type NotificationAudience = "user" | "admin";
 export type NotificationPriority = "high" | "medium" | "low";
