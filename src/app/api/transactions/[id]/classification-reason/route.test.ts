@@ -16,9 +16,12 @@ const EXTERNAL_PREFIX = "TEST-REASON-TXN-";
 const RULE_PATTERN_PREFIX = "TEST-REASON-RULE-";
 
 async function cleanup() {
+  // Wipe all transactions seeded by this file regardless of user_id — the 404
+  // cross-tenant test inserts a row owned by a different user and must be
+  // cleaned here or it produces a duplicate key on the next run.
   await db.execute(sql`
     DELETE FROM transactions
-    WHERE user_id = ${TEST_USER_ID} AND external_id LIKE ${EXTERNAL_PREFIX + "%"}
+    WHERE external_id LIKE ${EXTERNAL_PREFIX + "%"}
   `);
   await db.execute(sql`
     DELETE FROM classification_rules

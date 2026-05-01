@@ -652,6 +652,13 @@ describe("createManualEntry", () => {
       DELETE FROM transactions
       WHERE source = 'manual' AND description_raw LIKE 'test-manual-entry%'
     `);
+    // createManualEntry also writes an ingestion_log with source='manual'; clean
+    // it up so sloClassificationRate / user-health counts stay at seed baseline.
+    await db.execute(sql`
+      DELETE FROM ingestion_logs
+      WHERE user_id = ${TEST_USER_ID} AND source = 'manual'
+        AND (payload->>'kind') = 'manual-create'
+    `);
   }
 
   afterEach(cleanupManualEntries);

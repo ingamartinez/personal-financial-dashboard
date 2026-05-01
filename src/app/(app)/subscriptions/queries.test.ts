@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { recurringTransactions } from "@/lib/db/schema";
@@ -72,6 +72,29 @@ async function cleanup() {
   await db.execute(
     sql`DELETE FROM recurring_transactions WHERE label LIKE ${TEST_LABEL_PREFIX + "%"}`,
   );
+  // Remove test users created inline for tenant-isolation tests (and their
+  // dependent rows). ON CONFLICT upserts by email, so the rows survive across
+  // runs and contaminate sloOnboardingTime + sloClassificationRate (which have
+  // no user_id filter) on subsequent runs.
+  //
+  // Order matters: delete FK children before parents.
+  //   transactions → accounts → (categories, users)
+  await db.execute(sql`
+    DELETE FROM transactions WHERE user_id IN (
+      SELECT id FROM users WHERE email LIKE ${TEST_LABEL_PREFIX + "%"}
+    )
+  `);
+  await db.execute(sql`
+    DELETE FROM accounts WHERE user_id IN (
+      SELECT id FROM users WHERE email LIKE ${TEST_LABEL_PREFIX + "%"}
+    )
+  `);
+  await db.execute(sql`
+    DELETE FROM categories WHERE user_id IN (
+      SELECT id FROM users WHERE email LIKE ${TEST_LABEL_PREFIX + "%"}
+    )
+  `);
+  await db.execute(sql`DELETE FROM users WHERE email LIKE ${TEST_LABEL_PREFIX + "%"}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +153,7 @@ describe("computeNextOccurrence", () => {
 // ---------------------------------------------------------------------------
 
 describe("getSubscriptions", () => {
+  beforeEach(cleanup);
   afterEach(cleanup);
 
   it("returns only suscripciones-category rows for the requesting user", async () => {
