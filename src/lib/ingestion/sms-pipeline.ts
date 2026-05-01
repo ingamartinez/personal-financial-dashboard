@@ -199,6 +199,15 @@ async function ingestParsedBancolombia(
   if (parsed.kind === "cartera_tc") {
     return ingestCarteraTc(userId, parsed, allAccounts, cfg);
   }
+  // Transfer received to savings (#689): third-party institution (DIAN, Tesoro
+  // Nacional, external employer, etc.) paying directly into the user's savings
+  // account. There is no account last4 in this SMS shape, so we resolve the
+  // savings account by institution/type — same strategy as provider_payment.
+  // Routed here (not through resolveAccountForParsed) because the account
+  // resolution needs 0/2+ guard logic that should return a clear needs_review.
+  if (parsed.kind === "transfer_received_to_savings") {
+    return ingestTransferReceivedToSavings(userId, parsed, allAccounts, cfg);
+  }
 
   let account: RoutableAccount | null;
   if (forceAccountId !== undefined) {
@@ -395,7 +404,10 @@ export async function resolveCounterparty(
 }
 
 function resolveAccountForParsed(
-  parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" | "cartera_tc" }>,
+  parsed: Exclude<
+    ParsedSms,
+    { kind: "tc_payment" | "tc_credit_received" | "cartera_tc" | "transfer_received_to_savings" }
+  >,
   allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
 ): RoutableAccount | null {
   switch (parsed.kind) {
@@ -688,8 +700,100 @@ async function ingestCarteraTc(
   return { status: "inserted", txId: result.txIds.savings };
 }
 
+// #689: Transfer received to savings — a third-party institution (DIAN, Tesoro
+// Nacional, external employer, etc.) wires money directly to the user's savings
+// account. Channel = "bank" (real external income, not an intra-user transfer).
+// Category = "otros-ingresos" (parser default — the backfill for the specific
+// DIAN refund uses "reembolso" directly, which is intentional asymmetry: the
+// parser cannot know the SMS is a tax refund vs other income).
+//
+// Account resolution: exactly one active Bancolombia COP savings account.
+// If 0 or 2+, return needs_review so the SMS lands in the ingestion inbox.
+async function ingestTransferReceivedToSavings(
+  userId: number,
+  parsed: ParsedSms & { kind: "transfer_received_to_savings" },
+  allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
+  cfg: IngestSourceConfig,
+): Promise<IngestOutcome> {
+  const savingsAccounts = allAccounts.filter(
+    (a) => a.institution === "Bancolombia" && a.type === "savings" && a.currency === "COP",
+  );
+  if (savingsAccounts.length === 0) {
+    return {
+      status: "error",
+      reason: "no active Bancolombia COP savings account found for transfer_received_to_savings",
+    };
+  }
+  if (savingsAccounts.length >= 2) {
+    return {
+      status: "error",
+      reason: `ambiguous savings account: ${savingsAccounts.length} Bancolombia COP savings accounts found (needs_review)`,
+    };
+  }
+  const savingsAcc = savingsAccounts[0];
+
+  const occurredAt = new Date(
+    `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
+  );
+  const descriptionRaw = `Pago recibido de ${parsed.originDescriptor}`;
+
+  try {
+    const result = await db
+      .insert(transactions)
+      .values({
+        userId,
+        accountId: savingsAcc.id,
+        occurredAt,
+        amountCents: parsed.amountCents,
+        currency: parsed.currency,
+        descriptionRaw,
+        descriptionClean: null,
+        merchant: parsed.originDescriptor,
+        categorySlug: "otros-ingresos",
+        counterpartyId: null,
+        classificationMethod: "manual",
+        classificationConfidence: null,
+        source: cfg.source,
+        channel: "bank",
+        externalId: parsed.externalId,
+        rawData: {
+          kind: parsed.kind,
+          originDescriptor: parsed.originDescriptor,
+          occurredTime: parsed.occurredTime,
+          ...cfg.rawDataExtras,
+        },
+      })
+      .onConflictDoNothing({
+        target: [transactions.accountId, transactions.externalId],
+        where: sql`${transactions.externalId} IS NOT NULL`,
+      })
+      .returning({ id: transactions.id });
+
+    if (result.length === 0) return { status: "duplicated" };
+    const txId = result[0].id;
+    emit({
+      type: "transaction:created",
+      userId,
+      id: txId,
+      source: cfg.source,
+      timestamp: Date.now(),
+    });
+    return { status: "inserted", txId };
+  } catch (err) {
+    return {
+      status: "error",
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 function buildTxFields(
-  parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" | "cartera_tc" }>,
+  parsed: Exclude<
+    ParsedSms,
+    {
+      kind: "tc_payment" | "tc_credit_received" | "cartera_tc" | "transfer_received_to_savings";
+    }
+  >,
 ): {
   amountCents: bigint;
   descriptionRaw: string;

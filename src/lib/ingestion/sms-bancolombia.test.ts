@@ -810,3 +810,154 @@ describe("parseSmsBancolombia — idempotency", () => {
     expect(a.externalId).not.toBe(b.externalId);
   });
 });
+
+// ---------------------------------------------------------------------------
+// transfer_received_to_savings (#689)
+// ---------------------------------------------------------------------------
+
+describe("parseSmsBancolombia — transfer_received_to_savings (#689)", () => {
+  // Exact body from prod ingestion_log 147
+  const SMS_147 =
+    "Bancolombia: Recibiste un pago por $11,740,000.00 de DIR TESORO NACI a tu cuenta AHORROS, el 18:04 a las 30/04/2026. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+  // Exact body from prod ingestion_log 149 (same event, different timestamp)
+  const SMS_149 =
+    "Bancolombia: Recibiste un pago por $11,740,000.00 de DIR TESORO NACI a tu cuenta AHORROS, el 18:08 a las 30/04/2026. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+
+  it("parses log 147 (18:04) correctly", () => {
+    const r = parseSmsBancolombia(SMS_147);
+    expect(r.kind).toBe("transfer_received_to_savings");
+    if (r.kind !== "transfer_received_to_savings") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(1_174_000_000));
+    expect(r.currency).toBe("COP");
+    expect(r.originDescriptor).toBe("DIR TESORO NACI");
+    expect(r.occurredOn).toBe("2026-04-30");
+    expect(r.occurredTime).toBe("18:04");
+    expect(r.externalId).toMatch(/^bcol-sms:[a-f0-9]{24}$/);
+  });
+
+  it("parses log 149 (18:08) correctly", () => {
+    const r = parseSmsBancolombia(SMS_149);
+    expect(r.kind).toBe("transfer_received_to_savings");
+    if (r.kind !== "transfer_received_to_savings") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(1_174_000_000));
+    expect(r.currency).toBe("COP");
+    expect(r.originDescriptor).toBe("DIR TESORO NACI");
+    expect(r.occurredOn).toBe("2026-04-30");
+    expect(r.occurredTime).toBe("18:08");
+  });
+
+  // CORE DEDUP ASSERTION: both SMS produce the SAME externalId even though
+  // they differ by 4 minutes in occurredTime. This is the fix for #689 —
+  // hashing semantic fields (not raw body) prevents a duplicate tx.
+  it("produces the SAME externalId for log 147 and log 149 (Bancolombia duplicate SMS)", () => {
+    const a = parseSmsBancolombia(SMS_147);
+    const b = parseSmsBancolombia(SMS_149);
+    if (a.kind !== "transfer_received_to_savings" || b.kind !== "transfer_received_to_savings") {
+      throw new Error(`expected transfer_received_to_savings, got ${a.kind} / ${b.kind}`);
+    }
+    // This is the fundamental dedup contract: same payment = same externalId,
+    // regardless of when Bancolombia sent the notification.
+    expect(a.externalId).toBe(b.externalId);
+    // Sanity: the externalId matches the pre-computed value used in the backfill SQL.
+    expect(a.externalId).toBe("bcol-sms:5b75ed23c73e5fb408f7f06e");
+  });
+
+  it("produces different externalId for a different origin descriptor", () => {
+    const bodyOther =
+      "Bancolombia: Recibiste un pago por $11,740,000.00 de EMPRESA XYZ SAS a tu cuenta AHORROS, el 18:04 a las 30/04/2026. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+    const a = parseSmsBancolombia(SMS_147);
+    const b = parseSmsBancolombia(bodyOther);
+    if (a.kind !== "transfer_received_to_savings" || b.kind !== "transfer_received_to_savings") {
+      throw new Error("type guard");
+    }
+    expect(a.externalId).not.toBe(b.externalId);
+  });
+
+  it("produces different externalId for a different amount", () => {
+    const bodyOther =
+      "Bancolombia: Recibiste un pago por $5,000,000.00 de DIR TESORO NACI a tu cuenta AHORROS, el 18:04 a las 30/04/2026. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+    const a = parseSmsBancolombia(SMS_147);
+    const b = parseSmsBancolombia(bodyOther);
+    if (a.kind !== "transfer_received_to_savings" || b.kind !== "transfer_received_to_savings") {
+      throw new Error("type guard");
+    }
+    expect(a.externalId).not.toBe(b.externalId);
+  });
+
+  it("produces different externalId for a different occurredOn", () => {
+    const bodyOther =
+      "Bancolombia: Recibiste un pago por $11,740,000.00 de DIR TESORO NACI a tu cuenta AHORROS, el 18:04 a las 29/04/2026. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+    const a = parseSmsBancolombia(SMS_147);
+    const b = parseSmsBancolombia(bodyOther);
+    if (a.kind !== "transfer_received_to_savings" || b.kind !== "transfer_received_to_savings") {
+      throw new Error("type guard");
+    }
+    expect(a.externalId).not.toBe(b.externalId);
+  });
+
+  it("does NOT match the existing PROVEEDOR shape", () => {
+    // provider_payment requires the literal word "PROVEEDOR"
+    const body =
+      "Bancolombia: Recibiste un pago PROVEEDOR de PEXTO COLOMBIA por $6,000,000.00 en tu cuenta de Ahorros el 14/04/2026 a las 21:43. Si tienes dudas, llamanos al 018000931987. A tu lado siempre.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("provider_payment");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: existing variants must keep their body-based dedup (#689)
+// Bancolombia re-sends the same transaction SMS occasionally with different
+// timestamps. For purchase and qr_payment the timestamp IS part of the hash —
+// two SMS differing only by HH:MM WILL produce different externalIds. That is
+// intentional: for debit events a timestamp difference means a real event
+// difference (you can buy the same coffee twice same day). Only
+// transfer_received_to_savings switched to semantic-only hashing.
+// ---------------------------------------------------------------------------
+
+describe("parseSmsBancolombia — externalId regression: purchase still uses time", () => {
+  it("two purchase SMS with different times produce DIFFERENT externalIds", () => {
+    const bodyA =
+      "Bancolombia: Compraste COP35.450,00 en DLO*DiDi Food CO Pay con tu T.Cred *2575, el 15/04/2026 a las 20:34. Si tienes dudas, encuentranos aqui: 6045109095 o 018000931987. Estamos cerca.";
+    const bodyB =
+      "Bancolombia: Compraste COP35.450,00 en DLO*DiDi Food CO Pay con tu T.Cred *2575, el 15/04/2026 a las 20:38. Si tienes dudas, encuentranos aqui: 6045109095 o 018000931987. Estamos cerca.";
+    const a = parseSmsBancolombia(bodyA);
+    const b = parseSmsBancolombia(bodyB);
+    expect(a.kind).toBe("purchase");
+    expect(b.kind).toBe("purchase");
+    if (a.kind !== "purchase" || b.kind !== "purchase") throw new Error("type guard");
+    // occurredTime IS in the purchase externalId — two SMS with different times
+    // produce different hashes (the purchase happened twice, or Bancolombia had
+    // a real second notification at a different minute).
+    expect(a.externalId).not.toBe(b.externalId);
+  });
+});
+
+describe("parseSmsBancolombia — externalId regression: qr_payment still uses time", () => {
+  it("two qr_payment SMS with different times produce DIFFERENT externalIds", () => {
+    const bodyA =
+      "Bancolombia: ALEJANDRO RAFAEL MARTINEZ MALDONADO pagaste $92,000.00 por codigo QR desde tu cuenta *6126 a la llave 0091498581 el 15/04/2026 a las 00:20. Con codigo QR es facil y de una. Dudas al 018000912345";
+    const bodyB =
+      "Bancolombia: ALEJANDRO RAFAEL MARTINEZ MALDONADO pagaste $92,000.00 por codigo QR desde tu cuenta *6126 a la llave 0091498581 el 15/04/2026 a las 00:24. Con codigo QR es facil y de una. Dudas al 018000912345";
+    const a = parseSmsBancolombia(bodyA);
+    const b = parseSmsBancolombia(bodyB);
+    expect(a.kind).toBe("qr_payment");
+    expect(b.kind).toBe("qr_payment");
+    if (a.kind !== "qr_payment" || b.kind !== "qr_payment") throw new Error("type guard");
+    expect(a.externalId).not.toBe(b.externalId);
+  });
+});
+
+describe("parseSmsBancolombia — externalId regression: tc_payment still uses time", () => {
+  it("two tc_payment SMS with different times produce DIFFERENT externalIds", () => {
+    const bodyA =
+      "Bancolombia: Pagaste $1,320,564 en la tarjeta de credito *7291 desde la cuenta *6126, el 14/04/2026 21:48. ¿Dudas? Llamanos al 018000912345. Estamos cerca.";
+    const bodyB =
+      "Bancolombia: Pagaste $1,320,564 en la tarjeta de credito *7291 desde la cuenta *6126, el 14/04/2026 21:52. ¿Dudas? Llamanos al 018000912345. Estamos cerca.";
+    const a = parseSmsBancolombia(bodyA);
+    const b = parseSmsBancolombia(bodyB);
+    expect(a.kind).toBe("tc_payment");
+    expect(b.kind).toBe("tc_payment");
+    if (a.kind !== "tc_payment" || b.kind !== "tc_payment") throw new Error("type guard");
+    expect(a.externalId).not.toBe(b.externalId);
+  });
+});

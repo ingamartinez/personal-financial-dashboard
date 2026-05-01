@@ -189,6 +189,17 @@ function resolveAccountForParsed(
             a.currency === parsed.currency,
         ) ?? null
       );
+    case "transfer_received_to_savings":
+      // Routes to the user's Bancolombia savings account (same strategy as
+      // provider_payment — no last4 in this SMS shape).
+      return (
+        allAccounts.find(
+          (a) =>
+            a.institution === "Bancolombia" &&
+            a.type === "savings" &&
+            a.currency === parsed.currency,
+        ) ?? null
+      );
     case "cartera_tc":
       // Cartera TC is handled by the SMS wire path directly; the email pipeline
       // does not encounter this kind. Return null so the email path skips it.
@@ -330,6 +341,8 @@ function merchantFromParsed(parsed: ParsedBancolombiaTx): string | null {
       return parsed.senderName;
     case "bre_b_transfer":
       return parsed.recipientName;
+    case "transfer_received_to_savings":
+      return parsed.originDescriptor;
     case "transfer_sent":
     case "qr_payment":
     case "tc_payment":

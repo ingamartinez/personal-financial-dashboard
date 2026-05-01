@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, parserEvents, transactions, users } from "@/lib/db/schema";
+import { accounts, categories, parserEvents, transactions, users } from "@/lib/db/schema";
 import { ingestParsed } from "./sms-pipeline";
 import type { ParseResult } from "./sms-bancolombia";
 import { parseSmsBancolombia } from "./sms-bancolombia";
@@ -527,6 +527,208 @@ describe("ingestParsed — cartera_tc wire path (#688)", () => {
     ]);
 
     const parsed = parseSmsBancolombia(CARTERA_TC_SMS);
+    const outcome = await ingestParsed(u.id, parsed);
+    expect(outcome.status).toBe("error");
+    if (outcome.status !== "error") throw new Error("type guard");
+    expect(outcome.reason).toContain("ambiguous");
+
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, u.id));
+    expect(txs).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// transfer_received_to_savings wire path (#689)
+// ---------------------------------------------------------------------------
+
+// Exact SMS bodies from prod ingestion_logs 147 and 149.
+const SMS_TRANSFER_SAVINGS_147 =
+  "Bancolombia: Recibiste un pago por $11,740,000.00 de DIR TESORO NACI a tu cuenta AHORROS, el 18:04 a las 30/04/2026. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+const SMS_TRANSFER_SAVINGS_149 =
+  "Bancolombia: Recibiste un pago por $11,740,000.00 de DIR TESORO NACI a tu cuenta AHORROS, el 18:08 a las 30/04/2026. Si tienes dudas, llamanos al 018000931987. Estamos cerca.";
+
+const TAG_TR_SAVINGS = "+tr-savings-test@findash.local";
+
+async function setupSavingsUser(): Promise<{
+  userId: number;
+  savingsId: number;
+}> {
+  const [u] = await db
+    .insert(users)
+    .values({
+      email: `${crypto.randomUUID()}${TAG_TR_SAVINGS}`,
+      name: "TR Savings test",
+      role: "user",
+      active: true,
+      googleSub: `sub-trs-${crypto.randomUUID()}`,
+      featureFlags: {},
+    })
+    .returning({ id: users.id });
+  // Seed the income categories required by transfer_received_to_savings.
+  // (categories are user-scoped and the FK on transactions.category_slug
+  // references (user_id, category_slug) → categories(user_id, slug))
+  await db.insert(categories).values([
+    { userId: u.id, slug: "ingresos", name: "Ingresos", sortOrder: 150 },
+    {
+      userId: u.id,
+      slug: "otros-ingresos",
+      name: "Otros ingresos",
+      parentSlug: "ingresos",
+      sortOrder: 151,
+    },
+  ]);
+  const [savings] = await db
+    .insert(accounts)
+    .values({
+      userId: u.id,
+      institution: "Bancolombia",
+      name: "Ahorros *6126",
+      type: "savings",
+      currency: "COP",
+      active: true,
+      metadata: { last4s: ["6126"] },
+    })
+    .returning({ id: accounts.id });
+  return { userId: u.id, savingsId: savings.id };
+}
+
+async function cleanupTrSavings() {
+  const rows = await db.select({ id: users.id, email: users.email }).from(users);
+  const ids = rows.filter((r) => r.email.endsWith(TAG_TR_SAVINGS)).map((r) => r.id);
+  if (ids.length === 0) return;
+  await db.delete(transactions).where(inArray(transactions.userId, ids));
+  await db.delete(parserEvents).where(inArray(parserEvents.userId, ids));
+  await db.delete(accounts).where(inArray(accounts.userId, ids));
+  await db.delete(categories).where(inArray(categories.userId, ids));
+  await db.delete(users).where(inArray(users.id, ids));
+}
+
+describe("ingestParsed — transfer_received_to_savings wire path (#689)", () => {
+  beforeEach(cleanupTrSavings);
+  afterEach(cleanupTrSavings);
+
+  it("SMS 147 → parse → 1 tx inserted with correct fields", async () => {
+    const { userId, savingsId } = await setupSavingsUser();
+
+    const parsed = parseSmsBancolombia(SMS_TRANSFER_SAVINGS_147);
+    expect(parsed.kind).toBe("transfer_received_to_savings");
+
+    const outcome = await ingestParsed(userId, parsed);
+    expect(outcome.status).toBe("inserted");
+    if (outcome.status !== "inserted") throw new Error("type guard");
+
+    const [tx] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.userId, userId))
+      .limit(1);
+
+    expect(tx.accountId).toBe(savingsId);
+    expect(tx.amountCents).toBe(BigInt(1_174_000_000)); // positive (incoming)
+    expect(tx.currency).toBe("COP");
+    expect(tx.merchant).toBe("DIR TESORO NACI");
+    expect(tx.channel).toBe("bank");
+    expect(tx.categorySlug).toBe("otros-ingresos");
+    expect(tx.source).toBe("sms");
+    expect(tx.externalId).toBe("bcol-sms:5b75ed23c73e5fb408f7f06e");
+    const raw = tx.rawData as Record<string, unknown>;
+    expect(raw.kind).toBe("transfer_received_to_savings");
+    expect(raw.originDescriptor).toBe("DIR TESORO NACI");
+    expect(raw.occurredTime).toBe("18:04");
+  });
+
+  it("re-ingesting SMS 147 returns duplicated (idempotent)", async () => {
+    const { userId } = await setupSavingsUser();
+
+    const parsed = parseSmsBancolombia(SMS_TRANSFER_SAVINGS_147);
+    const first = await ingestParsed(userId, parsed);
+    expect(first.status).toBe("inserted");
+
+    const second = await ingestParsed(userId, parsed);
+    expect(second.status).toBe("duplicated");
+
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(txs).toHaveLength(1);
+  });
+
+  it("SMS 149 (different timestamp, same event) deduplicates against SMS 147", async () => {
+    const { userId } = await setupSavingsUser();
+
+    // First ingest SMS 147
+    const parsed147 = parseSmsBancolombia(SMS_TRANSFER_SAVINGS_147);
+    const first = await ingestParsed(userId, parsed147);
+    expect(first.status).toBe("inserted");
+
+    // Then ingest SMS 149 (Bancolombia accidental duplicate, 4 minutes later)
+    const parsed149 = parseSmsBancolombia(SMS_TRANSFER_SAVINGS_149);
+    const second = await ingestParsed(userId, parsed149);
+
+    // Must deduplicate — same externalId despite different body
+    expect(second.status).toBe("duplicated");
+
+    // Still only 1 tx in DB
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(txs).toHaveLength(1);
+  });
+
+  it("returns error when user has 0 active Bancolombia COP savings accounts", async () => {
+    // User with no savings at all
+    const [u] = await db
+      .insert(users)
+      .values({
+        email: `${crypto.randomUUID()}${TAG_TR_SAVINGS}`,
+        name: "No savings user",
+        role: "user",
+        active: true,
+        googleSub: `sub-nosavings2-${crypto.randomUUID()}`,
+        featureFlags: {},
+      })
+      .returning({ id: users.id });
+
+    const parsed = parseSmsBancolombia(SMS_TRANSFER_SAVINGS_147);
+    const outcome = await ingestParsed(u.id, parsed);
+    expect(outcome.status).toBe("error");
+    if (outcome.status !== "error") throw new Error("type guard");
+    expect(outcome.reason).toContain("savings");
+
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, u.id));
+    expect(txs).toHaveLength(0);
+  });
+
+  it("returns error when user has 2+ active Bancolombia COP savings accounts (ambiguous)", async () => {
+    const [u] = await db
+      .insert(users)
+      .values({
+        email: `${crypto.randomUUID()}${TAG_TR_SAVINGS}`,
+        name: "Ambiguous savings user 2",
+        role: "user",
+        active: true,
+        googleSub: `sub-ambig2-${crypto.randomUUID()}`,
+        featureFlags: {},
+      })
+      .returning({ id: users.id });
+    await db.insert(accounts).values([
+      {
+        userId: u.id,
+        institution: "Bancolombia",
+        name: "Ahorros *6126",
+        type: "savings",
+        currency: "COP",
+        active: true,
+        metadata: { last4s: ["6126"] },
+      },
+      {
+        userId: u.id,
+        institution: "Bancolombia",
+        name: "Ahorros *9999",
+        type: "savings",
+        currency: "COP",
+        active: true,
+        metadata: { last4s: ["9999"] },
+      },
+    ]);
+
+    const parsed = parseSmsBancolombia(SMS_TRANSFER_SAVINGS_147);
     const outcome = await ingestParsed(u.id, parsed);
     expect(outcome.status).toBe("error");
     if (outcome.status !== "error") throw new Error("type guard");
