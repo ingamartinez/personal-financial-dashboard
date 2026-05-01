@@ -46,6 +46,11 @@ function resolveAccountId(parsed: ParsedSms, accounts: AccountDetail[]): number 
     case "tc_credit_received":
       last4 = parsed.toCardLast4;
       break;
+    case "cartera_tc":
+      // Cartera TC is handled by the wire path directly; the Telegram draft
+      // flow is not used for this kind. Return undefined — the draft won't
+      // be created through this path.
+      return undefined;
     case "provider_payment": {
       // SMS says "en tu cuenta de Ahorros" with no last4 — pick the single
       // Bancolombia savings account in the matching currency.
@@ -131,6 +136,12 @@ function describe(parsed: ParsedSms): {
         description: `Transferencia Bre-b a ${parsed.recipientName}`,
         direction: "expense",
       };
+    case "cartera_tc":
+      // Cartera TC goes through the wire path directly (not Telegram draft).
+      return {
+        description: `Compra de Cartera TC (${parsed.months}×) *${parsed.tcCardLast4}`,
+        direction: "expense",
+      };
   }
 }
 
@@ -153,13 +164,17 @@ export function buildDraftFromParsedSms(
     transfer = {};
   }
 
+  // cartera_tc has no occurredOn in the SMS (no date). Fall back to today.
+  const occurredOn =
+    "occurredOn" in parsed ? parsed.occurredOn : new Date().toISOString().slice(0, 10);
+
   const draft: TelegramDraft = {
     amountCents: parsed.amountCents.toString(),
     currency: parsed.currency,
     direction,
     merchant,
     description,
-    occurredOn: parsed.occurredOn,
+    occurredOn,
     accountId,
     categorySlug,
     transfer,
@@ -168,7 +183,7 @@ export function buildDraftFromParsedSms(
   return {
     draft,
     externalId: parsed.externalId,
-    occurredOn: parsed.occurredOn,
+    occurredOn,
     raw: parsed.raw,
     kind: parsed.kind,
   };

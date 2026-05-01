@@ -67,7 +67,24 @@ export type ParsedBancolombiaTx =
       fromLast4: string;
       toKey: string;
       recipientName: string;
-    });
+    })
+  | {
+      // Note: cartera_tc has NO occurredOn/occurredTime — the SMS does not
+      // include a date. The caller uses Date.now() / a known reference date.
+      kind: "cartera_tc";
+      amountCents: bigint;
+      currency: "COP" | "USD";
+      tcCardLast4: string;
+      /** Raw uppercase network label from SMS: "AMEX" | "VISA" | "MASTERCARD" | etc. */
+      tcNetwork: string;
+      /** Rate in percent × 10000. 1.39% EM → 13900. */
+      ratePercentX10k: number;
+      /** Number of monthly installments in the plan (e.g. 60). */
+      months: number;
+      /** Dedup key: hash(sender + amountCents + last4 + months + ratePercentX10k). */
+      externalId: string;
+      raw: string;
+    };
 
 // Intentional skip: source recognized the message as a known non-ingest
 // pattern (failed tx, non-transactional notification, statement notice).
@@ -314,6 +331,13 @@ const BRE_B_TRANSFER = new RegExp(
   "i",
 );
 
+// Cartera TC: "Bancolombia confirma compra de cartera por $29,000,000.00 en su TC AMEX *5367. La tasa es de 1.39% y el plazo de 60 meses."
+// No date/time in this SMS — the caller provides occurredAt from context.
+const CARTERA_TC = new RegExp(
+  `Bancolombia\\s+confirma\\s+compra\\s+de\\s+cartera\\s+por\\s+${AMOUNT_GROUP}\\s+en\\s+su\\s+TC\\s+(\\w+)\\s+\\*(\\d{4})\\.?\\s+La\\s+tasa\\s+es\\s+de\\s+(\\d+(?:[.,]\\d+)?)%\\s+y\\s+el\\s+plazo\\s+de\\s+(\\d+)\\s+meses`,
+  "i",
+);
+
 // -----------------------------------------------------------------------------
 // Variant matcher — returns null if nothing matches. Each caller (SMS, email,
 // future iOS native) wraps this with source-specific skip detection and
@@ -329,6 +353,36 @@ export function matchBancolombiaVariant(
   body: string,
   opts: { externalIdPrefix: string },
 ): ParsedBancolombiaTx | null {
+  // cartera_tc: MUST be checked before any broad patterns. The phrase
+  // "Bancolombia confirma compra de cartera" is unambiguous, so it goes first.
+  {
+    const m = body.trim().match(CARTERA_TC);
+    if (m) {
+      const { cents, currency } = parseBancolombiaAmount(m[1]);
+      const tcNetwork = m[2].toUpperCase();
+      const tcCardLast4 = m[3];
+      const rateStr = m[4].replace(",", ".");
+      const ratePercentX10k = Math.round(parseFloat(rateStr) * 10000);
+      const months = parseInt(m[5], 10);
+      return {
+        kind: "cartera_tc",
+        amountCents: cents,
+        currency: currency as "COP" | "USD",
+        tcCardLast4,
+        tcNetwork,
+        ratePercentX10k,
+        months,
+        externalId: hashId(opts.externalIdPrefix, [
+          "cartera-tc",
+          tcCardLast4,
+          String(cents),
+          months,
+          ratePercentX10k,
+        ]),
+        raw: body.trim(),
+      };
+    }
+  }
   const raw = body.trim();
   const prefix = opts.externalIdPrefix;
 

@@ -189,6 +189,10 @@ function resolveAccountForParsed(
             a.currency === parsed.currency,
         ) ?? null
       );
+    case "cartera_tc":
+      // Cartera TC is handled by the SMS wire path directly; the email pipeline
+      // does not encounter this kind. Return null so the email path skips it.
+      return null;
   }
 }
 
@@ -266,6 +270,9 @@ async function findMatchingTransaction(
 }
 
 function parsedOccurredAt(parsed: ParsedBancolombiaTx): Date {
+  // cartera_tc has no date in the SMS; callers in the email path don't encounter
+  // it but we need to be exhaustive for TypeScript.
+  if (!("occurredOn" in parsed)) return new Date();
   return new Date(`${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`);
 }
 
@@ -327,6 +334,7 @@ function merchantFromParsed(parsed: ParsedBancolombiaTx): string | null {
     case "qr_payment":
     case "tc_payment":
     case "atm_withdrawal":
+    case "cartera_tc":
       return null;
   }
 }

@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { accounts, parserEvents, transactions, users } from "@/lib/db/schema";
 import { ingestParsed } from "./sms-pipeline";
 import type { ParseResult } from "./sms-bancolombia";
+import { parseSmsBancolombia } from "./sms-bancolombia";
 
 // Covers parser telemetry to parser_events:
 //   - #257 AI-fallback branch: parse_needs_review (disabled), ai_fallback_success,
@@ -292,5 +293,245 @@ describe("ingestParsed — parse outcome telemetry (#329 PR1)", () => {
     const events = await db.select().from(parserEvents).where(eq(parserEvents.userId, userId));
     expect(events).toHaveLength(1);
     expect(events[0].eventKind).toBe("parse_outcome_success");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cartera TC wire path (#688)
+// ---------------------------------------------------------------------------
+
+const CARTERA_TC_SMS =
+  "Bancolombia confirma compra de cartera por $29,000,000.00 en su TC AMEX *5367. La tasa es de 1.39% y el plazo de 60 meses.";
+
+const TAG_CARTERA = "+cartera-tc-test@findash.local";
+
+async function setupCarteraUsers(): Promise<{
+  userId: number;
+  savingsId: number;
+  tcId: number;
+}> {
+  const [u] = await db
+    .insert(users)
+    .values({
+      email: `${crypto.randomUUID()}${TAG_CARTERA}`,
+      name: "Cartera TC test",
+      role: "user",
+      active: true,
+      googleSub: `sub-cartera-${crypto.randomUUID()}`,
+      featureFlags: {},
+    })
+    .returning({ id: users.id });
+  const [savings] = await db
+    .insert(accounts)
+    .values({
+      userId: u.id,
+      institution: "Bancolombia",
+      name: "Ahorros *6126",
+      type: "savings",
+      currency: "COP",
+      active: true,
+      metadata: { last4s: ["6126"] },
+    })
+    .returning({ id: accounts.id });
+  const [tc] = await db
+    .insert(accounts)
+    .values({
+      userId: u.id,
+      institution: "Bancolombia",
+      name: "Amex *5367",
+      type: "credit_card",
+      currency: "COP",
+      active: true,
+      metadata: { last4s: ["5367"] },
+    })
+    .returning({ id: accounts.id });
+  return { userId: u.id, savingsId: savings.id, tcId: tc.id };
+}
+
+async function cleanupCartera() {
+  const rows = await db.select({ id: users.id, email: users.email }).from(users);
+  const ids = rows.filter((r) => r.email.endsWith(TAG_CARTERA)).map((r) => r.id);
+  if (ids.length === 0) return;
+  await db.delete(transactions).where(inArray(transactions.userId, ids));
+  await db.delete(accounts).where(inArray(accounts.userId, ids));
+  await db.delete(users).where(inArray(users.id, ids));
+}
+
+describe("ingestParsed — cartera_tc wire path (#688)", () => {
+  beforeEach(cleanupCartera);
+  afterEach(cleanupCartera);
+
+  it("SMS → parse → 2 txs in DB with correct fields", async () => {
+    const { userId, savingsId, tcId } = await setupCarteraUsers();
+
+    const parsed = parseSmsBancolombia(CARTERA_TC_SMS);
+    expect(parsed.kind).toBe("cartera_tc");
+
+    const outcome = await ingestParsed(userId, parsed);
+    expect(outcome.status).toBe("inserted");
+
+    // Both legs should be present
+    const txs = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.userId, userId))
+      .orderBy(transactions.accountId);
+
+    expect(txs).toHaveLength(2);
+
+    const savingsTx = txs.find((t) => t.accountId === savingsId);
+    const tcTx = txs.find((t) => t.accountId === tcId);
+
+    expect(savingsTx).toBeDefined();
+    expect(tcTx).toBeDefined();
+
+    if (!savingsTx || !tcTx) throw new Error("type guard");
+
+    // Savings leg: positive (credit into savings)
+    expect(savingsTx.amountCents).toBe(BigInt(2_900_000_000));
+    expect(savingsTx.currency).toBe("COP");
+    expect(savingsTx.channel).toBe("transfer");
+    expect(savingsTx.categorySlug).toBeNull();
+    const savingsRaw = savingsTx.rawData as Record<string, unknown>;
+    expect(savingsRaw.kind).toBe("cartera_tc");
+    expect(savingsRaw.role).toBe("savings_disbursement");
+
+    // TC leg: negative (deferred debit on TC), with installment plan
+    expect(tcTx.amountCents).toBe(BigInt(-2_900_000_000));
+    expect(tcTx.currency).toBe("COP");
+    expect(tcTx.channel).toBe("transfer");
+    expect(tcTx.categorySlug).toBeNull();
+    expect(tcTx.installmentsTotal).toBe(60);
+    expect(tcTx.installmentRateEmX10k).toBe(13900);
+    const tcRaw = tcTx.rawData as Record<string, unknown>;
+    expect(tcRaw.kind).toBe("cartera_tc");
+    expect(tcRaw.role).toBe("tc_debit");
+
+    // Both legs share the same transferGroupId
+    expect(savingsTx.transferGroupId).not.toBeNull();
+    expect(savingsTx.transferGroupId).toBe(tcTx.transferGroupId);
+
+    // External IDs are the leg-namespaced variants
+    expect(savingsTx.externalId).toMatch(/:savings$/);
+    expect(tcTx.externalId).toMatch(/:tc$/);
+  });
+
+  it("re-ingesting the same SMS returns duplicated (idempotent)", async () => {
+    const { userId } = await setupCarteraUsers();
+
+    const parsed = parseSmsBancolombia(CARTERA_TC_SMS);
+    const first = await ingestParsed(userId, parsed);
+    expect(first.status).toBe("inserted");
+
+    const second = await ingestParsed(userId, parsed);
+    expect(second.status).toBe("duplicated");
+
+    // Still only 2 txs in DB
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(txs).toHaveLength(2);
+  });
+
+  it("returns error when TC card last4 is unknown", async () => {
+    const { userId } = await setupCarteraUsers();
+
+    // SMS with a different last4 that no account claims
+    const unknown4Sms =
+      "Bancolombia confirma compra de cartera por $5,000,000.00 en su TC AMEX *9999. La tasa es de 1.39% y el plazo de 60 meses.";
+    const parsed = parseSmsBancolombia(unknown4Sms);
+    expect(parsed.kind).toBe("cartera_tc");
+
+    const outcome = await ingestParsed(userId, parsed);
+    expect(outcome.status).toBe("error");
+    if (outcome.status !== "error") throw new Error("type guard");
+    expect(outcome.reason).toContain("9999");
+
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(txs).toHaveLength(0);
+  });
+
+  it("returns error when user has 0 Bancolombia COP savings accounts", async () => {
+    // Create user with ONLY a TC account, no savings
+    const [u] = await db
+      .insert(users)
+      .values({
+        email: `${crypto.randomUUID()}${TAG_CARTERA}`,
+        name: "No savings user",
+        role: "user",
+        active: true,
+        googleSub: `sub-nosavings-${crypto.randomUUID()}`,
+        featureFlags: {},
+      })
+      .returning({ id: users.id });
+    await db.insert(accounts).values({
+      userId: u.id,
+      institution: "Bancolombia",
+      name: "Amex *5367",
+      type: "credit_card",
+      currency: "COP",
+      active: true,
+      metadata: { last4s: ["5367"] },
+    });
+
+    const parsed = parseSmsBancolombia(CARTERA_TC_SMS);
+    const outcome = await ingestParsed(u.id, parsed);
+    expect(outcome.status).toBe("error");
+    if (outcome.status !== "error") throw new Error("type guard");
+    expect(outcome.reason).toContain("savings");
+
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, u.id));
+    expect(txs).toHaveLength(0);
+  });
+
+  it("returns error when user has 2+ Bancolombia COP savings accounts (ambiguous)", async () => {
+    const [u] = await db
+      .insert(users)
+      .values({
+        email: `${crypto.randomUUID()}${TAG_CARTERA}`,
+        name: "Ambiguous savings user",
+        role: "user",
+        active: true,
+        googleSub: `sub-ambig-${crypto.randomUUID()}`,
+        featureFlags: {},
+      })
+      .returning({ id: users.id });
+    // Two savings accounts
+    await db.insert(accounts).values([
+      {
+        userId: u.id,
+        institution: "Bancolombia",
+        name: "Ahorros *6126",
+        type: "savings",
+        currency: "COP",
+        active: true,
+        metadata: { last4s: ["6126"] },
+      },
+      {
+        userId: u.id,
+        institution: "Bancolombia",
+        name: "Ahorros *9999",
+        type: "savings",
+        currency: "COP",
+        active: true,
+        metadata: { last4s: ["9999"] },
+      },
+      {
+        userId: u.id,
+        institution: "Bancolombia",
+        name: "Amex *5367",
+        type: "credit_card",
+        currency: "COP",
+        active: true,
+        metadata: { last4s: ["5367"] },
+      },
+    ]);
+
+    const parsed = parseSmsBancolombia(CARTERA_TC_SMS);
+    const outcome = await ingestParsed(u.id, parsed);
+    expect(outcome.status).toBe("error");
+    if (outcome.status !== "error") throw new Error("type guard");
+    expect(outcome.reason).toContain("ambiguous");
+
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, u.id));
+    expect(txs).toHaveLength(0);
   });
 });

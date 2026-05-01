@@ -13,6 +13,7 @@ import {
   type ParsedSms,
   type RoutableAccount,
 } from "@/lib/ingestion/sms-bancolombia";
+import { insertNewCarteraTcPair } from "@/lib/reconciliation/cartera-tc-router";
 import {
   aiFallbackParseSms,
   isAiFallbackEnabled,
@@ -191,6 +192,12 @@ async function ingestParsedBancolombia(
   // manually from /transactions if the other side is also a findash account.
   if (parsed.kind === "tc_credit_received") {
     return ingestTcCreditReceived(userId, parsed, allAccounts, cfg, forceAccountId);
+  }
+  // Cartera TC (#688): Bancolombia disburses cash to savings and opens a
+  // deferred TC debit. Both legs are created via insertNewCarteraTcPair so the
+  // installment plan + rate metadata lands on the TC leg correctly.
+  if (parsed.kind === "cartera_tc") {
+    return ingestCarteraTc(userId, parsed, allAccounts, cfg);
   }
 
   let account: RoutableAccount | null;
@@ -388,7 +395,7 @@ export async function resolveCounterparty(
 }
 
 function resolveAccountForParsed(
-  parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" }>,
+  parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" | "cartera_tc" }>,
   allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
 ): RoutableAccount | null {
   switch (parsed.kind) {
@@ -590,7 +597,93 @@ async function ingestTcCreditReceived(
   }
 }
 
-function buildTxFields(parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" }>): {
+// #688: Cartera TC SMS — resolves savings + TC accounts, then calls the
+// shared helper that inserts both legs as a transfer group with installment plan.
+//
+// Account resolution strategy:
+//   - TC leg: look up by (tcCardLast4, currency) in metadata.last4s
+//   - Savings leg: find the single active Bancolombia COP savings account.
+//     If 0 or 2+, return needs_review so the SMS lands in the inbox.
+async function ingestCarteraTc(
+  userId: number,
+  parsed: ParsedSms & { kind: "cartera_tc" },
+  allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
+  cfg: IngestSourceConfig,
+): Promise<IngestOutcome> {
+  // 1. Resolve TC account by last4 + currency
+  const tcAcc = resolveAccountFromLast4(parsed.tcCardLast4, parsed.currency, allAccounts);
+  if (!tcAcc) {
+    return {
+      status: "error",
+      reason: `no TC account matches last4=${parsed.tcCardLast4} currency=${parsed.currency} (network=${parsed.tcNetwork}) — add the card in /settings/accounts before ingesting`,
+    };
+  }
+
+  // 2. Resolve savings account: must be exactly one active Bancolombia COP savings.
+  const savingsAccounts = allAccounts.filter(
+    (a) => a.institution === "Bancolombia" && a.type === "savings" && a.currency === "COP",
+  );
+  if (savingsAccounts.length === 0) {
+    return {
+      status: "error",
+      reason: "no active Bancolombia COP savings account found for cartera TC",
+    };
+  }
+  if (savingsAccounts.length >= 2) {
+    // Ambiguous — surface to inbox for manual resolution.
+    return {
+      status: "error",
+      reason: `ambiguous savings account: ${savingsAccounts.length} Bancolombia COP savings accounts found (needs_review)`,
+    };
+  }
+  const savingsAcc = savingsAccounts[0];
+
+  // 3. occurredAt: the cartera TC SMS has no date. Use "now" as the
+  // notification date — callers with a known event date can use forceAccountId +
+  // a separate update. This is the same pattern used for manual inserts.
+  const occurredAt = new Date();
+
+  const externalIdSavings = `${parsed.externalId}:savings`;
+  const externalIdTc = `${parsed.externalId}:tc`;
+
+  const result = await insertNewCarteraTcPair({
+    userId,
+    savingsAccountId: savingsAcc.id,
+    tcAccountId: tcAcc.id,
+    amountCents: parsed.amountCents,
+    currency: parsed.currency,
+    occurredAt,
+    installmentsTotal: parsed.months,
+    installmentRateEmX10k: parsed.ratePercentX10k,
+    source: cfg.source,
+    externalIdSavings,
+    externalIdTc,
+    originalSmsBody: parsed.raw,
+  });
+
+  if (result.status === "duplicated") return { status: "duplicated" };
+  if (result.status === "error") {
+    return { status: "error", reason: result.errorReason };
+  }
+
+  // Emit transaction:created for both legs. We don't have individual txIds
+  // from insertNewCarteraTcPair, so emit a generic event for the pair.
+  emit({
+    type: "transaction:created",
+    userId,
+    id: 0, // placeholder — cartera_tc is a pair; callers should query by transferGroupId
+    source: cfg.source,
+    timestamp: Date.now(),
+  });
+
+  // Return status "inserted" — we don't have a single primary txId; use 0 as
+  // a sentinel. Callers that need the actual IDs query by transferGroupId.
+  return { status: "inserted", txId: 0 };
+}
+
+function buildTxFields(
+  parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" | "cartera_tc" }>,
+): {
   amountCents: bigint;
   descriptionRaw: string;
   merchant: string | null;
