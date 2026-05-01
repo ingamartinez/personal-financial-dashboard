@@ -51,9 +51,10 @@ function resolveAccountId(parsed: ParsedSms, accounts: AccountDetail[]): number 
       // flow is not used for this kind. Return undefined — the draft won't
       // be created through this path.
       return undefined;
-    case "provider_payment": {
-      // SMS says "en tu cuenta de Ahorros" with no last4 — pick the single
-      // Bancolombia savings account in the matching currency.
+    case "provider_payment":
+    case "transfer_received_to_savings": {
+      // SMS says "en tu cuenta de Ahorros" / "a tu cuenta AHORROS" — no last4.
+      // Pick the single Bancolombia savings account in the matching currency.
       const match = routable.find(
         (a) => a.institution === "Bancolombia" && a.currency === parsed.currency,
       );
@@ -135,6 +136,13 @@ function describe(parsed: ParsedSms): {
         merchant: parsed.recipientName,
         description: `Transferencia Bre-b a ${parsed.recipientName}`,
         direction: "expense",
+      };
+    case "transfer_received_to_savings":
+      return {
+        merchant: parsed.originDescriptor,
+        description: `Pago recibido de ${parsed.originDescriptor}`,
+        direction: "income",
+        categorySlug: "otros-ingresos",
       };
     case "cartera_tc":
       // Cartera TC goes through the wire path directly (not Telegram draft).

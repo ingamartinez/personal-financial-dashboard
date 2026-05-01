@@ -68,6 +68,17 @@ export type ParsedBancolombiaTx =
       toKey: string;
       recipientName: string;
     })
+  | (ParsedBancolombiaTxBase & {
+      kind: "transfer_received_to_savings";
+      originDescriptor: string;
+      // Note: occurredTime is stored here for display purposes only. It is NOT
+      // part of the externalId computation for this variant. This is intentional:
+      // Bancolombia has been observed sending the same payment notification twice
+      // with different timestamps (4 minutes apart, prod logs 147+149). Using
+      // semantic fields (sender + amount + date + origin) instead of the raw body
+      // ensures both duplicates hash to the same externalId (#689).
+      occurredTime: string;
+    })
   | {
       // Note: cartera_tc has NO occurredOn/occurredTime — the SMS does not
       // include a date. The caller uses Date.now() / a known reference date.
@@ -328,6 +339,17 @@ const TC_CREDIT_RECEIVED = new RegExp(
 // Bre-b transfer: "<USER>, transferiste AMOUNT a la llave NNNN desde tu cuenta *NNNN a <RECIPIENT_NAME> el DATE a las TIME..."
 const BRE_B_TRANSFER = new RegExp(
   `transferiste\\s+${AMOUNT_GROUP}\\s+a\\s+la\\s+llave\\s+(\\d+)\\s+desde\\s+tu\\s+cuenta\\s+\\*?(\\d{4,})\\s+a\\s+(.+?)\\s+el\\s+${DATE_TIME}`,
+  "i",
+);
+
+// Transfer received to savings (third-party pago landing in cta Ahorros):
+// "Bancolombia: Recibiste un pago por $AMOUNT de ORIGIN a tu cuenta AHORROS, el HH:MM a las DD/MM/YYYY..."
+// Distinct from TRANSFER_RECV_A/B (those involve inter-Bancolombia transfers with a *last4)
+// and from PROVIDER_PAYMENT (that requires the literal "PROVEEDOR" keyword).
+// This shape appears when DIAN, Tesoro Nacional, or any external institution wires
+// money directly to the user's savings account. No account last4 is present.
+const TRANSFER_RECV_TO_SAVINGS = new RegExp(
+  `Recibiste\\s+un\\s+pago\\s+por\\s+${AMOUNT_GROUP}\\s+de\\s+(.+?)\\s+a\\s+tu\\s+cuenta\\s+AHORROS[,.]?\\s+el\\s+${TIME_GROUP}\\s+a\\s+las\\s+${DATE_GROUP}`,
   "i",
 );
 
@@ -780,6 +802,46 @@ export function matchBancolombiaVariant(
           occurredOn,
           occurredTime,
           cents,
+        ]),
+        raw,
+      };
+    }
+  }
+
+  // Transfer received to savings (third-party institution paying directly into
+  // savings account — DIAN, Tesoro Nacional, external employer, etc.)
+  //
+  // ExternalId strategy: uses semantic fields (sender + amount + date + origin)
+  // rather than raw body. Bancolombia has been observed sending the same payment
+  // notification twice with timestamps 4 minutes apart (prod logs 147+149, #689).
+  // Hashing the body would produce different IDs → duplicate tx. Hashing semantic
+  // fields ensures both copies of the notification map to the same externalId.
+  // occurredTime is preserved on the struct for display only, NOT in the hash.
+  // This is variant-specific — other variants keep their body-based hash.
+  {
+    const m = raw.match(TRANSFER_RECV_TO_SAVINGS);
+    if (m) {
+      const { cents, currency } = parseBancolombiaAmount(m[1]);
+      const originDescriptor = m[2].trim();
+      const occurredTime = m[3];
+      const occurredOn = parseBancolombiaDate(m[4]);
+      return {
+        kind: "transfer_received_to_savings",
+        amountCents: cents,
+        currency,
+        originDescriptor,
+        occurredOn,
+        occurredTime,
+        externalId: hashId(prefix, [
+          "transfer-received-to-savings",
+          // sender is the external ID prefix (e.g. "bcol-sms" with its underlying
+          // SMS sender number). We fold the prefix itself (which encodes the sender
+          // channel) together with semantic fields so cross-source dedup stays clean.
+          prefix,
+          String(cents),
+          currency,
+          occurredOn,
+          originDescriptor,
         ]),
         raw,
       };

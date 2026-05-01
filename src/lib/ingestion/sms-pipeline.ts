@@ -5,6 +5,7 @@ import { notDeleted } from "@/lib/db/helpers";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
+import { createLogger } from "@/lib/logger";
 import { insertTransferGroup } from "@/lib/transactions/transfer-groups";
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 import {
@@ -28,6 +29,8 @@ import type { ClassificationMethod, TransactionSource } from "@/lib/types";
 
 // Colombia uses UTC-5 year-round (no DST). Time in SMS is local.
 const COP_TIMEZONE_OFFSET = "-05:00";
+
+const log = createLogger({ module: "ingestion/sms-pipeline" });
 
 export type IngestOutcome =
   | { status: "inserted"; txId: number; via?: "regex" | "ai_fallback" }
@@ -198,6 +201,15 @@ async function ingestParsedBancolombia(
   // installment plan + rate metadata lands on the TC leg correctly.
   if (parsed.kind === "cartera_tc") {
     return ingestCarteraTc(userId, parsed, allAccounts, cfg);
+  }
+  // Transfer received to savings (#689): third-party institution (DIAN, Tesoro
+  // Nacional, external employer, etc.) paying directly into the user's savings
+  // account. There is no account last4 in this SMS shape, so we resolve the
+  // savings account by institution/type — same strategy as provider_payment.
+  // Routed here (not through resolveAccountForParsed) because the account
+  // resolution needs 0/2+ guard logic that should return a clear needs_review.
+  if (parsed.kind === "transfer_received_to_savings") {
+    return ingestTransferReceivedToSavings(userId, parsed, allAccounts, cfg);
   }
 
   let account: RoutableAccount | null;
@@ -395,7 +407,10 @@ export async function resolveCounterparty(
 }
 
 function resolveAccountForParsed(
-  parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" | "cartera_tc" }>,
+  parsed: Exclude<
+    ParsedSms,
+    { kind: "tc_payment" | "tc_credit_received" | "cartera_tc" | "transfer_received_to_savings" }
+  >,
   allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
 ): RoutableAccount | null {
   switch (parsed.kind) {
@@ -688,8 +703,118 @@ async function ingestCarteraTc(
   return { status: "inserted", txId: result.txIds.savings };
 }
 
+// #689: Transfer received to savings — a third-party institution (DIAN, Tesoro
+// Nacional, external employer, etc.) wires money directly to the user's savings
+// account. Channel = "bank" (real external income, not an intra-user transfer).
+// Category = "otros-ingresos" (parser default — the backfill for the specific
+// DIAN refund uses "reembolso" directly, which is intentional asymmetry: the
+// parser cannot know the SMS is a tax refund vs other income).
+//
+// Account resolution: exactly one active Bancolombia COP savings account.
+// If 0 or 2+, return needs_review so the SMS lands in the ingestion inbox.
+async function ingestTransferReceivedToSavings(
+  userId: number,
+  parsed: ParsedSms & { kind: "transfer_received_to_savings" },
+  allAccounts: Array<RoutableAccount & { institution: string; type: string }>,
+  cfg: IngestSourceConfig,
+): Promise<IngestOutcome> {
+  const savingsAccounts = allAccounts.filter(
+    (a) => a.institution === "Bancolombia" && a.type === "savings" && a.currency === "COP",
+  );
+  if (savingsAccounts.length === 0) {
+    return {
+      status: "error",
+      reason: "no active Bancolombia COP savings account found for transfer_received_to_savings",
+    };
+  }
+  if (savingsAccounts.length >= 2) {
+    return {
+      status: "error",
+      reason: `ambiguous savings account: ${savingsAccounts.length} Bancolombia COP savings accounts found (needs_review)`,
+    };
+  }
+  const savingsAcc = savingsAccounts[0];
+
+  const occurredAt = new Date(
+    `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
+  );
+  // Use the full SMS body for audit trail integrity — matches the backfill SQL.
+  const descriptionRaw = parsed.raw;
+
+  const cp = await resolveCounterparty(userId, parsed, db);
+
+  try {
+    const result = await db
+      .insert(transactions)
+      .values({
+        userId,
+        accountId: savingsAcc.id,
+        occurredAt,
+        amountCents: parsed.amountCents,
+        currency: parsed.currency,
+        descriptionRaw,
+        descriptionClean: null,
+        merchant: parsed.originDescriptor,
+        // Category default: issue #689 spec proposed "transferencia" but no such slug exists
+        // in seed-reference-data.ts. Using "otros-ingresos" (child of "ingresos") as the
+        // closest income category. The DIAN-specific backfill in
+        // scripts/backfill-transfer-received-689-logs147-149.sql uses "reembolso" because
+        // we know that case is a tax refund, but the parser can't infer that from the SMS.
+        categorySlug: cp.inheritedCategory ?? "otros-ingresos",
+        counterpartyId: cp.counterpartyId,
+        classificationMethod: "manual",
+        classificationConfidence: null,
+        source: cfg.source,
+        channel: "bank",
+        externalId: parsed.externalId,
+        rawData: {
+          kind: parsed.kind,
+          originDescriptor: parsed.originDescriptor,
+          occurredTime: parsed.occurredTime,
+          ...cfg.rawDataExtras,
+        },
+      })
+      .onConflictDoNothing({
+        target: [transactions.accountId, transactions.externalId],
+        where: sql`${transactions.externalId} IS NOT NULL`,
+      })
+      .returning({ id: transactions.id });
+
+    if (result.length === 0) return { status: "duplicated" };
+    const txId = result[0].id;
+
+    try {
+      await autoLinkTransaction(userId, txId);
+    } catch (linkErr) {
+      log.warn(
+        { err: linkErr, event: "auto_link_failed", txId, userId },
+        "autoLinkTransaction failed for transfer_received_to_savings — non-critical",
+      );
+    }
+
+    emit({
+      type: "transaction:created",
+      userId,
+      id: txId,
+      source: cfg.source,
+      timestamp: Date.now(),
+    });
+    return { status: "inserted", txId };
+  } catch (err) {
+    return {
+      status: "error",
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 function buildTxFields(
-  parsed: Exclude<ParsedSms, { kind: "tc_payment" | "tc_credit_received" | "cartera_tc" }>,
+  parsed: Exclude<
+    ParsedSms,
+    {
+      kind: "tc_payment" | "tc_credit_received" | "cartera_tc" | "transfer_received_to_savings";
+    }
+  >,
 ): {
   amountCents: bigint;
   descriptionRaw: string;

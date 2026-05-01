@@ -46,6 +46,12 @@ export function keyForParsed(parsed: ParsedSms): KeyForKind | null {
         value: normalizeName(parsed.senderName),
         initialDisplayName: parsed.senderName,
       };
+    case "transfer_received_to_savings":
+      return {
+        kind: "name",
+        value: normalizeName(parsed.originDescriptor),
+        initialDisplayName: parsed.originDescriptor,
+      };
     default:
       return null;
   }
