@@ -222,3 +222,105 @@ describe("listTransactions transferGroupId", () => {
     expect(legB!.channel).toBe("transfer");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #528: rawData projection — only fx + merged_statement.fx cross the boundary.
+// Verifies the SQL CASE/jsonb_build_object projection works AND that
+// server-side metadata (parser hints, email subjects) does NOT leak.
+// ---------------------------------------------------------------------------
+describe("listTransactions rawData projection (#528)", () => {
+  afterEach(async () => {
+    await db.execute(
+      sql`DELETE FROM transactions WHERE description_raw LIKE ${"__test_tx_rawdata%"}`,
+    );
+  });
+
+  it("projects only fx and merged_statement.fx — strips other rawData keys", async () => {
+    const fullRawData = {
+      // The two keys that MoneyFrozen needs:
+      fx: {
+        originalCurrency: "USD",
+        originalAmountCents: "10000",
+        trmToAccountCurrency: 3676.92,
+        trmSource: "statement_frozen",
+      },
+      merged_statement: {
+        fx: {
+          originalCurrency: "USD",
+          originalAmountCents: "10000",
+          trmToAccountCurrency: 3700.0,
+          trmSource: "statement_frozen",
+        },
+        // Server-only keys that MUST be stripped:
+        statementId: "secret-internal-id",
+        rawText: "BANCOLOMBIA — internal extract row",
+      },
+      // Top-level server-only keys that MUST be stripped:
+      emailSubject: "Tu compra ha sido procesada — confidencial",
+      parserHints: { confidence: 0.92, source: "sms-bancolombia" },
+      dedupHash: "abc123def456",
+    };
+
+    await db.insert(transactions).values({
+      userId: USER_ID,
+      accountId: ACCOUNT_ID,
+      occurredAt: new Date("2026-04-20T12:00:00Z"),
+      amountCents: BigInt(-10000),
+      currency: "USD",
+      descriptionRaw: "__test_tx_rawdata-projected",
+      categorySlug: "food",
+      classificationMethod: "manual",
+      source: "manual",
+      rawData: fullRawData,
+    });
+
+    const { rows } = await listTransactions(USER_ID, {});
+    const row = rows.find((r) => r.descriptionRaw === "__test_tx_rawdata-projected");
+    expect(row).toBeDefined();
+    expect(row!.rawData).not.toBeNull();
+
+    const projected = row!.rawData as Record<string, unknown>;
+
+    // Allowed keys are present.
+    expect(projected.fx).toMatchObject({
+      originalCurrency: "USD",
+      trmToAccountCurrency: 3676.92,
+    });
+    expect((projected.merged_statement as Record<string, unknown>).fx).toMatchObject({
+      trmToAccountCurrency: 3700.0,
+    });
+
+    // Server-side metadata must NOT cross the boundary.
+    expect(projected.emailSubject).toBeUndefined();
+    expect(projected.parserHints).toBeUndefined();
+    expect(projected.dedupHash).toBeUndefined();
+    expect((projected.merged_statement as Record<string, unknown>).statementId).toBeUndefined();
+    expect((projected.merged_statement as Record<string, unknown>).rawText).toBeUndefined();
+  });
+
+  it("yields fx=null + merged_statement.fx=null for legacy rows (raw_data={})", async () => {
+    // Schema enforces raw_data NOT NULL DEFAULT '{}', so legacy txs have an
+    // empty object, not SQL NULL. The projection returns a shaped object with
+    // both `fx` slots set to null — extractFxMetadataWithFallback handles that.
+    await db.insert(transactions).values({
+      userId: USER_ID,
+      accountId: ACCOUNT_ID,
+      occurredAt: new Date("2026-04-21T12:00:00Z"),
+      amountCents: BigInt(-2000),
+      currency: "COP",
+      descriptionRaw: "__test_tx_rawdata-empty",
+      categorySlug: "food",
+      classificationMethod: "manual",
+      source: "manual",
+      // rawData omitted → DB default '{}'
+    });
+
+    const { rows } = await listTransactions(USER_ID, {});
+    const row = rows.find((r) => r.descriptionRaw === "__test_tx_rawdata-empty");
+    expect(row).toBeDefined();
+    expect(row!.rawData).not.toBeNull();
+    const projected = row!.rawData as Record<string, unknown>;
+    expect(projected.fx).toBeNull();
+    expect((projected.merged_statement as Record<string, unknown>).fx).toBeNull();
+  });
+});

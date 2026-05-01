@@ -44,6 +44,7 @@ vi.mock("@/components/transactions/needs-review-badge", () => ({
 
 // Import AFTER mocks are registered.
 import { TransactionTable } from "./transaction-table";
+import { MoneyModeProvider } from "@/components/display/money-mode-provider";
 import type { TxRow } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -98,6 +99,7 @@ function makeTxRow(overrides: Partial<TxRow> = {}): TxRow {
     recurringLabel: null,
     channel: "bank",
     transferGroupId: null,
+    rawData: null,
     ...overrides,
   };
 }
@@ -211,5 +213,93 @@ describe("TransactionTable — paired transfer suppresses 'Sin clasificar'", () 
     // ¿Por qué? must still be suppressed.
     const porqueBtns = screen.queryAllByLabelText("¿Por qué esta categoría?");
     expect(porqueBtns).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — #528: real tx amounts use frozen TRM (MoneyFrozen wire-up)
+// ---------------------------------------------------------------------------
+
+const FROZEN_TRM = 3676.92;
+const LIVE_TRM = 4200; // intentionally different so tests can prove which one wins
+
+function fxBlock(trm: number, original: { currency: "USD" | "USDc"; amountCents: bigint }) {
+  return {
+    fx: {
+      originalCurrency: original.currency,
+      originalAmountCents: original.amountCents.toString(),
+      trmToAccountCurrency: trm,
+      trmSource: "statement_frozen",
+    },
+  };
+}
+
+function renderWithMode(
+  rows: TxRow[],
+  opts: { mode: "native" | "all-cop" | "all-usd"; liveRate: number | null },
+) {
+  return render(
+    <MoneyModeProvider
+      mode={opts.mode}
+      fxRate={opts.liveRate === null ? null : { rate: opts.liveRate, source: "live" }}
+    >
+      <TransactionTable rows={rows} {...TABLE_PROPS} />
+    </MoneyModeProvider>,
+  );
+}
+
+describe("TransactionTable — #528 frozen TRM via MoneyFrozen", () => {
+  it("converts a USD tx with frozen TRM (NOT live TRM) when mode=all-cop", () => {
+    // tx: USD 100.00 (10000 cents) with frozen TRM = 3676.92 → COP ~367,692
+    // If MoneyFrozen incorrectly used the live TRM (4200), result would be ~420,000.
+    const tx = makeTxRow({
+      id: 5280,
+      amountCents: BigInt(-10000),
+      currency: "USD" as TxRow["currency"],
+      rawData: fxBlock(FROZEN_TRM, { currency: "USD", amountCents: BigInt(10000) }),
+    });
+
+    renderWithMode([tx], { mode: "all-cop", liveRate: LIVE_TRM });
+
+    // Frozen-TRM tooltip is set on the wrapping <span title="..."> in MoneyFrozen.
+    // It contains the formatted historical TRM (3.676,92 in es-CO locale).
+    const tooltipNodes = document.querySelectorAll('[title*="TRM histórica"]');
+    expect(tooltipNodes.length).toBeGreaterThan(0);
+    // Confirm the historical rate (3.676,92 in es-CO) is the one shown — NOT 4.200.
+    for (const node of tooltipNodes) {
+      const title = node.getAttribute("title") ?? "";
+      expect(title).toMatch(/3\.676,92/);
+      expect(title).not.toMatch(/4\.200/);
+    }
+  });
+
+  it("does not convert in mode=native (regression check for COP-only users)", () => {
+    const tx = makeTxRow({
+      id: 5281,
+      amountCents: BigInt(-10000),
+      currency: "USD" as TxRow["currency"],
+      rawData: fxBlock(FROZEN_TRM, { currency: "USD", amountCents: BigInt(10000) }),
+    });
+
+    renderWithMode([tx], { mode: "native", liveRate: LIVE_TRM });
+
+    // No frozen-TRM tooltip should be rendered when conversion didn't happen.
+    const tooltipNodes = document.querySelectorAll('[title*="TRM histórica"]');
+    expect(tooltipNodes.length).toBe(0);
+  });
+
+  it("falls back to original currency when rawData is null (legacy txs)", () => {
+    const tx = makeTxRow({
+      id: 5282,
+      amountCents: BigInt(-10000),
+      currency: "USD" as TxRow["currency"],
+      rawData: null,
+    });
+
+    renderWithMode([tx], { mode: "all-cop", liveRate: LIVE_TRM });
+
+    // No conversion performed → no tooltip; raw amount renders as-is.
+    const tooltipNodes = document.querySelectorAll('[title*="TRM histórica"]');
+    expect(tooltipNodes.length).toBe(0);
   });
 });

@@ -133,6 +133,20 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
       // #642: transfer pairing
       channel: transactions.channel,
       transferGroupId: transactions.transferGroupId,
+      // #528: PROJECTED rawData — only `fx` and `merged_statement.fx` are shipped
+      // to the client so MoneyFrozen can resolve the historical TRM. Do NOT add
+      // other rawData keys here without thinking about leaking server-side
+      // metadata (email subjects, parser hints, dedup hashes) to the browser.
+      // Shape stays compatible with TxForConversion / extractFxMetadataWithFallback.
+      rawData: sql<Record<string, unknown> | null>`CASE
+        WHEN ${transactions.rawData} IS NULL THEN NULL
+        ELSE jsonb_build_object(
+          'fx', ${transactions.rawData} -> 'fx',
+          'merged_statement', jsonb_build_object(
+            'fx', ${transactions.rawData} -> 'merged_statement' -> 'fx'
+          )
+        )
+      END`.as("raw_data"),
     })
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
@@ -153,10 +167,6 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
   const last = page.at(-1);
   const nextCursor = hasMore && last ? encodeCursor(last.occurredAt, last.id) : null;
 
-  // TODO(#528): SELECT transactions.raw_data and add it to TxRow so the
-  // MoneyFrozen component (#519) can display amounts with the historical
-  // TRM tooltip when display_currency_mode != native. The component is
-  // already in src/components/display/money.tsx waiting for this hookup.
   const shaped: TxRow[] = page.map((r) => ({
     id: r.id,
     occurredAt: r.occurredAt,
@@ -192,6 +202,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
     recurringLabel: r.recurringLabel ?? null,
     channel: r.channel,
     transferGroupId: r.transferGroupId ?? null,
+    rawData: r.rawData,
   }));
 
   return { rows: shaped, nextCursor };
