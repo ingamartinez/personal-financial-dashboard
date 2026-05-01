@@ -1,4 +1,4 @@
-import { eq, isNull } from "drizzle-orm";
+import { eq, isNull, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 /**
@@ -25,4 +25,30 @@ export function notDeleted(deletedAt: AnyPgColumn) {
  */
 export function notAdjustment(isAdjustment: AnyPgColumn) {
   return eq(isAdjustment, false);
+}
+
+/**
+ * Transfer filter for expense/income aggregation queries. Use in `.where(...)`
+ * on any query that computes real spend or income (dashboard flow, category
+ * breakdown, budgets, insights). Transfers have `channel = 'transfer'` and
+ * represent internal money movements — including TC payments (pago-tc) and
+ * TC credit received — that are NOT real expenses or income.
+ *
+ * Including transfers in expense aggregations causes double-counting: a TC
+ * payment appears as an expense here AND as a purchase on the card.
+ * See memory `pago-tc-modeled-as-expense` and issue #685.
+ *
+ * Exception — do NOT apply this filter when querying debt payments
+ * (e.g. `getMonthlyProgress.debtRows` in dashboard/queries.ts) because TC
+ * payments on credit_card accounts represent real debt reduction and must
+ * be counted. That query is intentionally scoped to credit_card accounts,
+ * making the transfer filter redundant and incorrect there.
+ *
+ * Convention: every query aggregating expense MUST include all three:
+ *   notDeleted(transactions.deletedAt)
+ *   notAdjustment(transactions.isAdjustment)
+ *   notTransfer(transactions.channel)
+ */
+export function notTransfer(channel: AnyPgColumn) {
+  return sql`${channel} <> 'transfer'`;
 }

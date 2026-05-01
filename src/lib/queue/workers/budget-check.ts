@@ -3,7 +3,7 @@ import { aliasedTable, and, eq, gte, lt, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { budgets, categories, transactions } from "@/lib/db/schema";
-import { notAdjustment, notDeleted } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted, notTransfer } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import { formatCop } from "@/lib/money";
 import { emitNotification } from "@/lib/notifications/emit";
@@ -88,7 +88,9 @@ export async function fetchExceededBudgets(yearMonth: string): Promise<BudgetRow
   // Step 2: Compute MTD spend per (userId, categorySlug) over the month window.
   //
   // Spend = SUM of negative amountCents (expenses are stored as negative).
-  // Matches the same formula used in getBudgetsOverview (queries.ts).
+  // Matches the same formula used in getBudgetsOverview (queries.ts), including
+  // the notTransfer filter that excludes TC payments and other internal transfers
+  // to prevent double-counting (#685).
   //
   // The GROUP BY uses the root category slug (COALESCE parent_slug, slug) so
   // sub-categories roll up into their parent — consistent with getBudgetsOverview.
@@ -112,6 +114,7 @@ export async function fetchExceededBudgets(yearMonth: string): Promise<BudgetRow
       and(
         gte(transactions.occurredAt, windowStart),
         lt(transactions.occurredAt, windowEnd),
+        notTransfer(transactions.channel),
         notAdjustment(transactions.isAdjustment),
         notDeleted(transactions.deletedAt),
       ),

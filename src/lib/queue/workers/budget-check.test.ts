@@ -97,12 +97,14 @@ vi.mock("@/lib/db/schema", () => ({
     occurredAt: "occurred_at",
     isAdjustment: "is_adjustment",
     deletedAt: "deleted_at",
+    channel: "channel",
   },
 }));
 
 vi.mock("@/lib/db/helpers", () => ({
   notDeleted: vi.fn(() => "notDeleted()"),
   notAdjustment: vi.fn(() => "notAdjustment()"),
+  notTransfer: vi.fn(() => "notTransfer()"),
 }));
 
 vi.mock("@/lib/money", () => ({
@@ -313,6 +315,35 @@ describe("fetchExceededBudgets", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]!.mtdCents).toBe(BigInt(10_000_000));
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6: notTransfer filter applied — transfers excluded from MTD spend
+  //
+  // The spent query must invoke notTransfer so that TC payments and other
+  // internal transfers (channel='transfer') are not counted as expense.
+  // See issue #685 and memory `pago-tc-modeled-as-expense`.
+  // -------------------------------------------------------------------------
+  it("invokes notTransfer helper when building the MTD spend query", async () => {
+    const { notTransfer } = await import("@/lib/db/helpers");
+
+    mocks.dbSelectFromInnerJoinWhere.mockResolvedValueOnce([
+      {
+        userId: 1,
+        categorySlug: "comida",
+        categoryName: "Comida",
+        amountCents: BigInt(50_000_000),
+      },
+    ]);
+    mocks.dbSelectFromLeftJoinWhereGroupBy.mockResolvedValueOnce([
+      { userId: 1, rootSlug: "comida", mtdCents: "60000000" },
+    ]);
+
+    await fetchExceededBudgets("2026-04");
+
+    // notTransfer must have been called with the channel column so the
+    // spent query correctly excludes transfers from the budget calculation.
+    expect(notTransfer).toHaveBeenCalled();
   });
 });
 
