@@ -22,6 +22,9 @@ function toRoutable(accounts: AccountDetail[]): Array<RoutableAccount & { instit
       currency: a.currency,
       metadata: a.metadata,
       institution: a.institution,
+      // Fall back to the parent physical_card's last4 when metadata.last4s is
+      // empty — handles the multi-currency drift class (#693).
+      physicalCardLast4: a.physicalCard?.last4 ?? null,
     }));
 }
 

@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db, type DB } from "@/lib/db";
-import { accounts, transactions } from "@/lib/db/schema";
+import { accounts, physicalCards, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
@@ -177,8 +177,18 @@ async function ingestParsedBancolombia(
       metadata: accounts.metadata,
       institution: accounts.institution,
       type: accounts.type,
+      physicalCardLast4: physicalCards.last4,
     })
     .from(accounts)
+    .leftJoin(
+      physicalCards,
+      and(
+        eq(physicalCards.id, accounts.physicalCardId),
+        // Tenancy guard: never join across users even if a FK were ever
+        // corrupted (see engram `per-user-table-join-tenant-safety`).
+        eq(physicalCards.userId, accounts.userId),
+      ),
+    )
     .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)))) as Array<
     RoutableAccount & { institution: string; type: string }
   >;

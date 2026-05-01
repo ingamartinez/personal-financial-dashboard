@@ -1,6 +1,12 @@
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, emailReceipts, transactions, type SourceMismatchDetails } from "@/lib/db/schema";
+import {
+  accounts,
+  emailReceipts,
+  physicalCards,
+  transactions,
+  type SourceMismatchDetails,
+} from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import { ingestBancolombiaTransaction, type IngestOutcome } from "@/lib/ingestion/sms-pipeline";
@@ -86,8 +92,18 @@ export async function ingestParsedEmail(
       metadata: accounts.metadata,
       institution: accounts.institution,
       type: accounts.type,
+      physicalCardLast4: physicalCards.last4,
     })
     .from(accounts)
+    .leftJoin(
+      physicalCards,
+      and(
+        eq(physicalCards.id, accounts.physicalCardId),
+        // Tenancy guard: never join across users even if a FK were ever
+        // corrupted (see engram `per-user-table-join-tenant-safety`).
+        eq(physicalCards.userId, accounts.userId),
+      ),
+    )
     .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)))) as Array<
     RoutableAccount & { institution: string; type: string }
   >;

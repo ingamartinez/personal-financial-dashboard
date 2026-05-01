@@ -859,12 +859,25 @@ export type RoutableAccount = {
   id: number;
   currency: Currency;
   metadata: AccountMetadata | null;
+  /**
+   * The parent physical_card's last4, when this account is linked to one.
+   * Null for standalone accounts (savings, single-currency debit, etc.).
+   * Used as a fallback by resolveAccountFromLast4 when metadata.last4s is
+   * empty — handles the multi-currency drift class (#693).
+   */
+  physicalCardLast4: string | null;
 };
 
 /**
- * Resolves an account by (last4, currency) against a list of accounts whose
- * `metadata.last4s` declares the identifiers that route to them. Both must
- * match for dual-currency cards (e.g. Mastercard *7291 COP vs USD) to work.
+ * Resolves an account by (last4, currency) against a list of accounts.
+ *
+ * Two-source resolution to handle the multi-currency drift class (#693):
+ *   - metadata.last4s is the per-account list (form-managed, can be empty)
+ *   - physicalCardLast4 is the parent card's last4 (always present when linked)
+ *
+ * Match if EITHER source includes last4 AND currency matches. Prefer
+ * metadata.last4s first (existing behavior, no change for correct data).
+ * Falls back to physicalCardLast4 only when metadata.last4s has no match.
  *
  * Returns null when no account claims that last4+currency pair.
  */
@@ -874,10 +887,10 @@ export function resolveAccountFromLast4(
   accounts: RoutableAccount[],
 ): RoutableAccount | null {
   for (const acc of accounts) {
+    if (acc.currency !== currency) continue;
     const last4s = acc.metadata?.last4s ?? [];
-    if (last4s.includes(last4) && acc.currency === currency) {
-      return acc;
-    }
+    if (last4s.includes(last4)) return acc;
+    if (acc.physicalCardLast4 === last4) return acc;
   }
   return null;
 }
