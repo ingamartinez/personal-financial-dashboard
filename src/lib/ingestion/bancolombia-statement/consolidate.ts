@@ -666,7 +666,7 @@ async function insertSaldoRealPlug(
       amountCents: plugCents,
       currency: args.currency,
       descriptionRaw: `Ajuste post-consolidación ${args.cycle} · saldo ingresado por user`,
-      merchant: "Balance adjustment",
+      ...withCanonical("Balance adjustment"),
       categorySlug: ADJUSTMENTS_CATEGORY_SLUG,
       classificationMethod: "manual",
       source: "balance_adjustment",

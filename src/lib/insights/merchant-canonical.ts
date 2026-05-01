@@ -8,8 +8,8 @@
  * Rules (applied in order):
  *  1. null/undefined/blank → null
  *  2. Collapse internal whitespace
- *  3. Skip patterns (internal transfers, adjustments, etc.) → null
- *  4. Strip leading gateway prefix (DLO*, MERCADO PAGO*, PayPal*, …)
+ *  3. Strip leading gateway prefix (DLO*, MERCADO PAGO*, PayPal*, …)
+ *  4. Skip patterns tested against the (possibly-stripped) result → null
  *  5. Return trimmed result; if stripping left an empty string, return original
  *
  * Deterministic pure function — no DB lookups, no title-casing, no locale.
@@ -43,8 +43,8 @@ const GATEWAY_PREFIX_PATTERNS: RegExp[] = [
   /^DLO\*/i,
   /^MERCADO PAGO\*/i,
   /^Mercado Pago\*/i,
-  /^PAYU\*?/i,
-  /^WOMPI\*?/i,
+  /^PAYU[* ]/i,
+  /^WOMPI[* ]/i,
   /^PayPal\*?/i,
 ];
 
@@ -63,23 +63,25 @@ export function canonicalizeMerchant(raw: string | null | undefined): string | n
   // Step 2: collapse internal whitespace
   const trimmed = raw.trim().replace(/\s+/g, " ");
 
-  // Step 3: skip patterns
-  for (const pattern of SKIP_PATTERNS) {
-    if (pattern.test(trimmed)) return null;
-  }
-
-  // Step 4: strip leading gateway prefix
+  // Step 3: strip leading gateway prefix (try each in order, first match wins)
+  let candidate = trimmed;
   for (const pattern of GATEWAY_PREFIX_PATTERNS) {
     const match = trimmed.match(pattern);
     if (match) {
       const stripped = trimmed.slice(match[0].length).trim();
-      // Step 5: if stripping left an empty string, return original (don't lose data)
-      return stripped.length > 0 ? stripped : trimmed;
+      // If stripping left an empty string, fall back to original (don't lose data)
+      candidate = stripped.length > 0 ? stripped : trimmed;
+      break;
     }
   }
 
-  // No prefix matched — return as-is
-  return trimmed;
+  // Step 4: skip patterns tested against the (possibly-stripped) candidate
+  for (const pattern of SKIP_PATTERNS) {
+    if (pattern.test(candidate)) return null;
+  }
+
+  // Step 5: return the result
+  return candidate;
 }
 
 /**

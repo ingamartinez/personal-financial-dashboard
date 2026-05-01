@@ -129,6 +129,51 @@ describe("canonicalizeMerchant", () => {
   it("returns null for TRANSFERENCIA CTA SUC VIRTUAL", () => {
     expect(canonicalizeMerchant("TRANSFERENCIA CTA SUC VIRTUAL")).toBeNull();
   });
+
+  // -------------------------------------------------------------------------
+  // W1 regression — skip pattern applied AFTER gateway strip
+  // -------------------------------------------------------------------------
+  it("returns null for DLO*AJUSTE INTERES AHORROS DB (skip after prefix strip)", () => {
+    expect(canonicalizeMerchant("DLO*AJUSTE INTERES AHORROS DB")).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // W2 — PAYU/WOMPI over-strip prevention (require explicit delimiter)
+  // -------------------------------------------------------------------------
+  it("does NOT strip PAYULATAM — no delimiter after PAYU", () => {
+    expect(canonicalizeMerchant("PAYULATAM")).toBe("PAYULATAM");
+  });
+
+  it("does NOT strip WOMPILATAM — no delimiter after WOMPI", () => {
+    expect(canonicalizeMerchant("WOMPILATAM")).toBe("WOMPILATAM");
+  });
+
+  it("still strips PAYU* with asterisk delimiter", () => {
+    expect(canonicalizeMerchant("PAYU*SOMOS INTERNET")).toBe("SOMOS INTERNET");
+  });
+
+  it("still strips PAYU with space delimiter", () => {
+    expect(canonicalizeMerchant("PAYU SOMETHING")).toBe("SOMETHING");
+  });
+});
+
+describe("canonicalizeMerchant — idempotency", () => {
+  // -------------------------------------------------------------------------
+  // S1 — idempotency tests
+  // -------------------------------------------------------------------------
+  it("is idempotent — re-canonicalizing returns the same value", () => {
+    const once = canonicalizeMerchant("DLO*Didi");
+    const twice = canonicalizeMerchant(once);
+    expect(once).toBe("Didi");
+    expect(twice).toBe("Didi");
+    expect(once).toBe(twice);
+  });
+
+  it("skip pattern then re-canonicalize null is null", () => {
+    const result = canonicalizeMerchant("Pago TC *7291");
+    expect(result).toBeNull();
+    expect(canonicalizeMerchant(result)).toBeNull();
+  });
 });
 
 describe("withCanonical", () => {
