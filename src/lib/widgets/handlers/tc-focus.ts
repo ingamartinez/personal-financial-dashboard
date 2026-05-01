@@ -35,7 +35,13 @@ import { getCurrentFxRate } from "@/lib/fx/repo";
 import { createLogger } from "@/lib/logger";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import type { WidgetHandler, WidgetHandlerResult } from "@/app/api/widget/v1/[id]/registry";
-import { bogotaIsoNow, centsToCop, roundUtilizationPct } from "./_shared";
+import {
+  bogotaIsoNow,
+  centsToCop,
+  nowInBogota,
+  roundUtilizationPct,
+  type BogotaYmd,
+} from "./_shared";
 
 const log = createLogger({ module: "widget-tc-focus" });
 
@@ -85,25 +91,6 @@ const querySchema = z.object({
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// ---------------------------------------------------------------------------
-// Bogota-aware date helpers — Colombia has no DST, so a fixed UTC-5 offset is
-// exact. We keep the math in milliseconds to avoid Date#getXxx() surprises at
-// month boundaries.
-// ---------------------------------------------------------------------------
-
-const BOGOTA_OFFSET_MS = 5 * 60 * 60 * 1000;
-
-type BogotaYmd = { year: number; month: number; day: number };
-
-function nowInBogota(now: Date): BogotaYmd {
-  const shifted = new Date(now.getTime() - BOGOTA_OFFSET_MS);
-  return {
-    year: shifted.getUTCFullYear(),
-    month: shifted.getUTCMonth() + 1, // 1..12
-    day: shifted.getUTCDate(),
-  };
-}
 
 function daysInMonth(year: number, month: number): number {
   // month is 1..12; Date(year, month, 0) gives the last day of `month`.

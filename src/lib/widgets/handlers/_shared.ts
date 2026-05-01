@@ -12,9 +12,33 @@
  *
  * Other handlers (tc-focus, mis-tcs, …) import from here to stay byte-for-byte
  * consistent on these small primitives.
+ *
+ * `nowInBogota` and `BogotaYmd` are also exported here so the TC health-check
+ * worker and insights page card can import the canonical Bogota-clock logic
+ * without pulling in the widget layer.
  */
 
 const BOGOTA_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+/**
+ * A calendar date decomposed into year, month (1..12), and day-of-month in
+ * the America/Bogota timezone (UTC-5, no DST).
+ */
+export type BogotaYmd = { year: number; month: number; day: number };
+
+/**
+ * Decompose `now` into a Bogota-local calendar date. Colombia observes a fixed
+ * UTC-5 offset year-round (no DST), so we shift by 5 h and read the UTC
+ * components of the shifted date.
+ */
+export function nowInBogota(now: Date): BogotaYmd {
+  const shifted = new Date(now.getTime() - BOGOTA_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1, // 1..12
+    day: shifted.getUTCDate(),
+  };
+}
 
 /**
  * Formats `now` as an ISO-8601 string in Bogota local time with the `-05:00`

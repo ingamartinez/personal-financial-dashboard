@@ -10,9 +10,27 @@ import { getFinancialPeriod } from "@/lib/dashboard/period";
 import { getUiPreferences } from "@/lib/preferences/repo";
 import { formatMoney } from "@/lib/money";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { nowInBogota } from "@/lib/widgets/handlers/_shared";
+import { fetchUserTcSnapshots } from "@/lib/queue/workers/tc-health-check";
+import {
+  computeTcAlerts,
+  type TcCardSnapshot,
+  type TcAlertTrigger,
+} from "@/lib/insights/tc-health";
 import { InsightsViewer } from "./insights-viewer";
 
 export const dynamic = "force-dynamic";
+
+function triggerLabel(trigger: TcAlertTrigger, snap: TcCardSnapshot): string {
+  if (trigger === "statement") {
+    const d = snap.daysToCutoff!;
+    if (d === 0) return "corte hoy";
+    if (d === 1) return "corte mañana";
+    return `corte en ${d} días`;
+  }
+  const pct = snap.utilizationPct;
+  return `cupo al ${pct}%`;
+}
 
 function currentYearMonth(): string {
   const now = new Date();
@@ -77,6 +95,13 @@ export default async function InsightsPage({
   const uncategorizedCount = uncategorized?.count ?? 0;
   const uncategorizedCents = BigInt(uncategorized?.totalCents ?? "0");
 
+  // TC Health card — real-time snapshot of all the user's TCs (#705)
+  const today = nowInBogota(new Date());
+  const tcSnapshots = await fetchUserTcSnapshots(session.id, fx.rate, today);
+  const tcAlerts: Array<{ snap: TcCardSnapshot; triggers: TcAlertTrigger[] }> = tcSnapshots
+    .map((snap) => ({ snap, triggers: computeTcAlerts(snap) }))
+    .filter((a) => a.triggers.length > 0);
+
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-4 sm:p-6">
       <header>
@@ -111,6 +136,32 @@ export default async function InsightsPage({
                 Revisar →
               </Link>
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* TC Health card (#705) */}
+      <Card className="border-rose-200 bg-rose-50/40 dark:border-rose-900 dark:bg-rose-950/15">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-rose-900 dark:text-rose-200">
+            Salud de tarjetas
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {tcAlerts.length === 0 ? (
+            <p className="text-muted-foreground text-sm">Todas las tarjetas están en orden.</p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {tcAlerts.map(({ snap, triggers }) => (
+                <li key={snap.cardId} className="flex items-start justify-between gap-2 text-sm">
+                  <span>
+                    <span className="font-medium">{snap.label}</span>
+                    {" · "}
+                    {triggers.map((t) => triggerLabel(t, snap)).join(" · ")}
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
         </CardContent>
       </Card>
