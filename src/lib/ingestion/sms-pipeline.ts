@@ -6,6 +6,7 @@ import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { createLogger } from "@/lib/logger";
+import { withCanonical } from "@/lib/insights/merchant-canonical";
 import { insertTransferGroup } from "@/lib/transactions/transfer-groups";
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 import {
@@ -283,7 +284,7 @@ async function ingestParsedBancolombia(
         currency: parsed.currency,
         descriptionRaw,
         descriptionClean: null,
-        merchant,
+        ...withCanonical(merchant),
         categorySlug: finalCategory,
         counterpartyId: cp.counterpartyId,
         classificationMethod: finalMethod,
@@ -589,7 +590,7 @@ async function ingestTcCreditReceived(
         currency: parsed.currency,
         descriptionRaw,
         descriptionClean: null,
-        merchant: parsed.senderName,
+        ...withCanonical(parsed.senderName),
         categorySlug: null,
         counterpartyId: null,
         classificationMethod: "manual",
@@ -764,7 +765,7 @@ async function ingestTransferReceivedToSavings(
         currency: parsed.currency,
         descriptionRaw,
         descriptionClean: null,
-        merchant: parsed.originDescriptor,
+        ...withCanonical(parsed.originDescriptor),
         // Category default: issue #689 spec proposed "transferencia" but no such slug exists
         // in seed-reference-data.ts. Using "otros-ingresos" (child of "ingresos") as the
         // closest income category. The DIAN-specific backfill in

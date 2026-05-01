@@ -35,6 +35,7 @@ import { createLogger } from "@/lib/logger";
 import { levenshteinRatio } from "@/lib/text/levenshtein";
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
 import type { FxMetadata } from "@/lib/types/fx-metadata";
+import { withCanonical } from "@/lib/insights/merchant-canonical";
 
 import type {
   FeeTx,
@@ -550,7 +551,7 @@ async function insertStatementTx(
         amountCents: tx.amountUsdc,
         currency: "USD",
         descriptionRaw,
-        merchant: counterparty ?? undefined,
+        ...withCanonical(counterparty ?? undefined),
         source: "arq_statement",
         channel,
         externalId: tx.externalId,

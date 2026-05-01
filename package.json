@@ -17,6 +17,7 @@
     "db:migrate:test": "PGDATABASE=findash_test drizzle-kit migrate",
     "db:seed:test": "PGDATABASE=findash_test bun run src/lib/db/seed.ts",
     "db:backfill:users": "bun run scripts/backfill-users-reference.ts",
+    "db:backfill:canonical-merchant": "bun run scripts/backfill-canonical-merchant.ts",
     "db:migrate:pago-tc": "bun run scripts/migrate-pago-tc-to-transfer.ts",
     "intereses:run": "bun run scripts/run-intereses-causados.ts",
     "backfill:arq-snapshots": "bun run scripts/backfill-arq-snapshots.ts",

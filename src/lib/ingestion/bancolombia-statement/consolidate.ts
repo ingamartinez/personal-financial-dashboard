@@ -16,6 +16,7 @@ import { applyInteresesCausadosForCycle } from "@/lib/finance/intereses-causados
 import { createLogger } from "@/lib/logger";
 import { convertCents } from "@/lib/money";
 import { getCurrentFxRate } from "@/lib/fx/repo";
+import { withCanonical } from "@/lib/insights/merchant-canonical";
 
 // #433 — the balance_adjustment plug goes into the user's Ajustes de saldo
 // category (same one the reconcile flow + opening-balance tx use). We always
@@ -665,7 +666,7 @@ async function insertSaldoRealPlug(
       amountCents: plugCents,
       currency: args.currency,
       descriptionRaw: `Ajuste post-consolidación ${args.cycle} · saldo ingresado por user`,
-      merchant: "Balance adjustment",
+      ...withCanonical("Balance adjustment"),
       categorySlug: ADJUSTMENTS_CATEGORY_SLUG,
       classificationMethod: "manual",
       source: "balance_adjustment",
@@ -1297,7 +1298,7 @@ async function insertMissingRowInTx(
       amountCents: statementAmountToLedger(row.amountCents),
       currency: account.currency,
       descriptionRaw: row.merchant,
-      merchant: row.merchant,
+      ...withCanonical(row.merchant),
       installmentsTotal: row.installments?.total ?? 1,
       installmentRateEmX10k: row.rateEmX10k,
       source: "csv_reconcile",
@@ -1340,7 +1341,7 @@ async function insertMissingBeforePeriodRowInTx(
       amountCents: statementAmountToLedger(row.amountCents),
       currency: account.currency,
       descriptionRaw: row.merchant,
-      merchant: row.merchant,
+      ...withCanonical(row.merchant),
       installmentsTotal: row.installments!.total,
       installmentRateEmX10k: row.rateEmX10k,
       source: "csv_reconcile",

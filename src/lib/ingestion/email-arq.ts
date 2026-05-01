@@ -11,6 +11,7 @@ import { resolveCounterpartyByKey } from "@/lib/ingestion/sms-pipeline";
 import { normalizeName } from "@/lib/counterparties/alias-key";
 import { enqueueClassification } from "@/lib/classification/enqueue";
 import type { FxMetadata } from "@/lib/types/fx-metadata";
+import { withCanonical } from "@/lib/insights/merchant-canonical";
 
 const log = createLogger({ module: "ingestion/email-arq" });
 
@@ -295,7 +296,7 @@ export async function ingestArqEmail(
         amountCents: signedAmountCents,
         currency: "USD",
         descriptionRaw,
-        merchant: parsed.counterpartyName,
+        ...withCanonical(parsed.counterpartyName),
         source: ARQ_SOURCE,
         channel: "transfer",
         externalId,
