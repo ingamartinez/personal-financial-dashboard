@@ -29,11 +29,13 @@ export function projectFromRegex(parsed: ParseResult): CanaryProjection {
   if (parsed.kind === "skip" || parsed.kind === "needs_review") {
     return { amountCents: null, currency: null, merchant: null, occurredOn: null };
   }
+  // cartera_tc has no date in the SMS — project as null for the canary diff.
+  const occurredOn = "occurredOn" in parsed ? parsed.occurredOn : null;
   return {
     amountCents: parsed.amountCents.toString(),
     currency: parsed.currency,
     merchant: merchantFromParsed(parsed),
-    occurredOn: parsed.occurredOn,
+    occurredOn,
   };
 }
 

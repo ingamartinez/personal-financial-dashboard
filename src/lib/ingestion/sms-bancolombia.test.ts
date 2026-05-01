@@ -705,6 +705,86 @@ describe("resolveAccountFromLast4", () => {
   });
 });
 
+describe("parseSmsBancolombia — cartera_tc (#688)", () => {
+  it("parses the real prod SMS (ingestion_log id=134)", () => {
+    const body =
+      "Bancolombia confirma compra de cartera por $29,000,000.00 en su TC AMEX *5367. La tasa es de 1.39% y el plazo de 60 meses.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("cartera_tc");
+    if (r.kind !== "cartera_tc") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(2_900_000_000));
+    expect(r.currency).toBe("COP");
+    expect(r.tcNetwork).toBe("AMEX");
+    expect(r.tcCardLast4).toBe("5367");
+    expect(r.ratePercentX10k).toBe(13900); // 1.39% × 10000
+    expect(r.months).toBe(60);
+    expect(r.externalId).toMatch(/^bcol-sms:[a-f0-9]{24}$/);
+  });
+
+  it("parses with a VISA card and comma-decimal rate", () => {
+    const body =
+      "Bancolombia confirma compra de cartera por $10,000,000.00 en su TC VISA *1234. La tasa es de 1,50% y el plazo de 36 meses.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("cartera_tc");
+    if (r.kind !== "cartera_tc") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(1_000_000_000));
+    expect(r.tcNetwork).toBe("VISA");
+    expect(r.tcCardLast4).toBe("1234");
+    expect(r.ratePercentX10k).toBe(15000); // 1.50% × 10000
+    expect(r.months).toBe(36);
+  });
+
+  it("parses with MASTERCARD network", () => {
+    const body =
+      "Bancolombia confirma compra de cartera por $5,000,000.00 en su TC MASTERCARD *7291. La tasa es de 2.00% y el plazo de 12 meses.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("cartera_tc");
+    if (r.kind !== "cartera_tc") throw new Error("type guard");
+    expect(r.tcNetwork).toBe("MASTERCARD");
+    expect(r.tcCardLast4).toBe("7291");
+    expect(r.ratePercentX10k).toBe(20000); // 2.00% × 10000
+    expect(r.months).toBe(12);
+  });
+
+  it("produces a stable externalId for the same SMS (idempotency)", () => {
+    const body =
+      "Bancolombia confirma compra de cartera por $29,000,000.00 en su TC AMEX *5367. La tasa es de 1.39% y el plazo de 60 meses.";
+    const a = parseSmsBancolombia(body);
+    const b = parseSmsBancolombia(body);
+    if (a.kind !== "cartera_tc" || b.kind !== "cartera_tc") {
+      throw new Error(`expected cartera_tc, got ${a.kind} / ${b.kind}`);
+    }
+    expect(a.externalId).toBe(b.externalId);
+  });
+
+  it("produces different externalIds for different amounts", () => {
+    const bodyA =
+      "Bancolombia confirma compra de cartera por $29,000,000.00 en su TC AMEX *5367. La tasa es de 1.39% y el plazo de 60 meses.";
+    const bodyB =
+      "Bancolombia confirma compra de cartera por $15,000,000.00 en su TC AMEX *5367. La tasa es de 1.39% y el plazo de 60 meses.";
+    const a = parseSmsBancolombia(bodyA);
+    const b = parseSmsBancolombia(bodyB);
+    if (a.kind !== "cartera_tc" || b.kind !== "cartera_tc") {
+      throw new Error(`expected cartera_tc`);
+    }
+    expect(a.externalId).not.toBe(b.externalId);
+  });
+
+  it("does NOT match a regular purchase SMS", () => {
+    const body =
+      "Bancolombia: Compraste COP35.450,00 en DLO*DiDi Food CO Pay con tu T.Cred *2575, el 15/04/2026 a las 20:34. Si tienes dudas, encuentranos aqui: 6045109095 o 018000931987. Estamos cerca.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("purchase");
+  });
+
+  it("returns needs_review for a malformed cartera SMS missing the rate", () => {
+    const body =
+      "Bancolombia confirma compra de cartera por $29,000,000.00 en su TC AMEX *5367. El plazo de 60 meses.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("needs_review");
+  });
+});
+
 describe("parseSmsBancolombia — idempotency", () => {
   it("produces stable externalId for same SMS", () => {
     const body =

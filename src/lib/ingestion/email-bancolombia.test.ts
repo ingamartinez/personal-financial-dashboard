@@ -152,6 +152,7 @@ function buildPurchaseParsed(overrides?: Partial<ParsedBancolombiaTx>): Bancolom
 }
 
 function parsedOccurredAt(p: ParsedBancolombiaTx): Date {
+  if (!("occurredOn" in p)) throw new Error("parsedOccurredAt: kind has no occurredOn");
   return new Date(`${p.occurredOn}T${p.occurredTime}:00${COP_TZ_OFFSET}`);
 }
 

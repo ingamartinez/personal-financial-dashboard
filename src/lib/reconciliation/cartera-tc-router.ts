@@ -44,7 +44,7 @@ export interface InsertCarteraTcPairOpts {
 }
 
 export type InsertCarteraTcPairResult =
-  | { status: "inserted"; transferGroupId: string }
+  | { status: "inserted"; transferGroupId: string; txIds: { savings: number; tc: number } }
   | { status: "duplicated" }
   | { status: "error"; errorReason: string };
 
@@ -202,7 +202,12 @@ export async function insertNewCarteraTcPair(
       },
       "inserted cartera TC transfer pair",
     );
-    return { status: "inserted", transferGroupId: insertResult.transferGroupId };
+    return {
+      status: "inserted",
+      transferGroupId: insertResult.transferGroupId,
+      // legs order: [0] savings disbursement, [1] TC debit — matches the legs array above.
+      txIds: { savings: insertResult.txIds[0], tc: insertResult.txIds[1] },
+    };
   }
 
   if (insertResult.status === "duplicated") {
