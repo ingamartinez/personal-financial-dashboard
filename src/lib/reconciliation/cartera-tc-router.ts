@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { and, eq, inArray } from "drizzle-orm";
 import { insertTransferGroup } from "@/lib/transactions/transfer-groups";
 import type { DB } from "@/lib/db";
 import { db as defaultDb } from "@/lib/db";
+import { accounts } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
 import type { Currency, TransactionSource } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
 
@@ -96,10 +99,50 @@ export async function insertNewCarteraTcPair(
     };
   }
 
+  // Fix #3 (suggestion): cartera TC always has multiple installments — a
+  // single-installment plan is a regular purchase, not a cartera plan.
+  if (installmentsTotal <= 1) {
+    return {
+      status: "error",
+      errorReason: "installmentsTotal must be > 1 for a cartera TC plan",
+    };
+  }
+
+  // Fix #1 (CRITICAL): verify both accounts belong to userId and are not
+  // archived before passing them to insertTransferGroup. Mirrors the
+  // ownership check in pago-tc-router.ts → insertNewPagoTcPair.
+  const owned = await database
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(
+      and(
+        inArray(accounts.id, [savingsAccountId, tcAccountId]),
+        eq(accounts.userId, userId),
+        notDeleted(accounts.deletedAt),
+      ),
+    );
+
+  if (owned.length !== 2) {
+    log.warn(
+      {
+        userId,
+        savingsAccountId,
+        tcAccountId,
+        foundCount: owned.length,
+        event: "cartera_tc_account_ownership_failed",
+      },
+      "cartera TC pair: one or both accounts do not belong to user or are archived",
+    );
+    return {
+      status: "error",
+      errorReason: "account not found or does not belong to user",
+    };
+  }
+
   const transferGroupId = existingGroupId ?? randomUUID();
-  const descriptionRaw = originalSmsBody
-    ? `Compra de Cartera TC (${installmentsTotal}×)`
-    : `Compra de Cartera TC (${installmentsTotal}×)`;
+  // Fix #2 (warning): both ternary branches were identical — collapse to the
+  // single string. originalSmsBody is preserved in rawData for audit.
+  const descriptionRaw = `Compra de Cartera TC (${installmentsTotal}×)`;
 
   const insertResult = await insertTransferGroup({
     userId,

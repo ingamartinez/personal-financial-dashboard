@@ -265,4 +265,117 @@ describe("insertNewCarteraTcPair — integration against findash_test", () => {
     // Non-transfer sum must be unchanged.
     expect(afterTotal).toBe(beforeTotal);
   });
+
+  // ---------------------------------------------------------------------------
+  // Fix #1 — cross-tenant ownership guard
+  // ---------------------------------------------------------------------------
+
+  it("rejects when savingsAccountId belongs to a different user", async () => {
+    // User B owns the savings account passed as savingsAccountId.
+    const userBId = await createUser(`${TAG}_B`);
+    const userBSavingsId = await createAccount(userBId, { type: "savings", currency: "COP" });
+
+    try {
+      const result = await insertNewCarteraTcPair({
+        userId, // user A's userId
+        savingsAccountId: userBSavingsId, // belongs to user B — ownership fails
+        tcAccountId, // belongs to user A
+        amountCents: BigInt(500_000_00),
+        currency: "COP",
+        occurredAt: OCCURRED_AT,
+        installmentsTotal: INSTALLMENTS,
+        installmentRateEmX10k: RATE,
+        source: "csv_reconcile",
+        externalIdSavings: `${TAG}-xuser-savings`,
+        externalIdTc: `${TAG}-xuser-tc`,
+      });
+
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.errorReason).toMatch(/does not belong to user/);
+      }
+
+      // Zero transactions must have been inserted for this external_id pair.
+      const rows = await db.execute<{ n: string }>(sql`
+        SELECT count(*)::text AS n
+        FROM transactions
+        WHERE external_id IN (${`${TAG}-xuser-savings`}, ${`${TAG}-xuser-tc`})
+      `);
+      expect(rows[0].n).toBe("0");
+    } finally {
+      await cleanupUser(userBId);
+    }
+  });
+
+  it("rejects when tcAccountId is archived (soft-deleted)", async () => {
+    // Archive the TC account via deleted_at.
+    const archivedTcId = await createAccount(userId, { type: "credit_card", currency: "COP" });
+    await db.execute(sql`
+      UPDATE accounts SET deleted_at = NOW() WHERE id = ${archivedTcId}
+    `);
+
+    const result = await insertNewCarteraTcPair({
+      userId,
+      savingsAccountId,
+      tcAccountId: archivedTcId, // archived — notDeleted filter excludes it
+      amountCents: BigInt(500_000_00),
+      currency: "COP",
+      occurredAt: OCCURRED_AT,
+      installmentsTotal: INSTALLMENTS,
+      installmentRateEmX10k: RATE,
+      source: "csv_reconcile",
+      externalIdSavings: `${TAG}-archived-savings`,
+      externalIdTc: `${TAG}-archived-tc`,
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.errorReason).toMatch(/does not belong to user/);
+    }
+
+    // Zero transactions inserted.
+    const rows = await db.execute<{ n: string }>(sql`
+      SELECT count(*)::text AS n
+      FROM transactions
+      WHERE external_id IN (${`${TAG}-archived-savings`}, ${`${TAG}-archived-tc`})
+    `);
+    expect(rows[0].n).toBe("0");
+
+    // Cleanup the archived account (hard delete since cleanupUser won't reach it
+    // via deleted_at filter — delete directly).
+    await db.execute(sql`DELETE FROM accounts WHERE id = ${archivedTcId}`);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fix #3 — installmentsTotal boundary guard
+  // ---------------------------------------------------------------------------
+
+  it("rejects installmentsTotal = 1 with cartera-specific error message", async () => {
+    const result = await insertNewCarteraTcPair({
+      userId,
+      savingsAccountId,
+      tcAccountId,
+      amountCents: AMOUNT,
+      currency: "COP",
+      occurredAt: OCCURRED_AT,
+      installmentsTotal: 1, // boundary: must be > 1 for a cartera plan
+      installmentRateEmX10k: RATE,
+      source: "csv_reconcile",
+      externalIdSavings: `${TAG}-inst1-savings`,
+      externalIdTc: `${TAG}-inst1-tc`,
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.errorReason).toMatch(/installmentsTotal must be > 1/);
+    }
+
+    // No DB rows inserted.
+    const rows = await db.execute<{ n: string }>(sql`
+      SELECT count(*)::text AS n
+      FROM transactions
+      WHERE external_id IN (${`${TAG}-inst1-savings`}, ${`${TAG}-inst1-tc`})
+    `);
+    expect(rows[0].n).toBe("0");
+  });
 });
