@@ -7,6 +7,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { buildInsightsSummary, hashSummary, isStale } from "@/lib/ai/insights";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { getFinancialPeriod } from "@/lib/dashboard/period";
+import { getUiPreferences } from "@/lib/preferences/repo";
 import { formatMoney } from "@/lib/money";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InsightsViewer } from "./insights-viewer";
@@ -32,14 +33,22 @@ export default async function InsightsPage({
   // comparison stays apples-to-apples (both salary-anchored if pay_period
   // mode is on, both calendar otherwise).
   const [y, m] = ym.split("-").map(Number);
-  const [currentPeriod, previousPeriod] = await Promise.all([
+  const [currentPeriod, previousPeriod, prefs] = await Promise.all([
     getFinancialPeriod(session.id, new Date(Date.UTC(y, m - 1, 15))),
     getFinancialPeriod(session.id, new Date(Date.UTC(y, m - 2, 15))),
+    getUiPreferences(session.id),
   ]);
-  const summary = await buildInsightsSummary(session.id, ym, fx.rate, undefined, {
-    currentRange: { start: currentPeriod.start, end: currentPeriod.end },
-    previousRange: { start: previousPeriod.start, end: previousPeriod.end },
-  });
+  const summary = await buildInsightsSummary(
+    session.id,
+    ym,
+    fx.rate,
+    undefined,
+    {
+      currentRange: { start: currentPeriod.start, end: currentPeriod.end },
+      previousRange: { start: previousPeriod.start, end: previousPeriod.end },
+    },
+    { displayCurrencyMode: prefs.displayCurrencyMode },
+  );
   const currentHash = hashSummary(summary);
 
   const [existing] = await db

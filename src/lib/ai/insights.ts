@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { aliasedTable, and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { aliasedTable, and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import {
   accounts,
@@ -7,11 +7,21 @@ import {
   categories,
   recurringTransactions,
   transactions,
+  type DisplayCurrencyMode,
 } from "@/lib/db/schema";
 import { notAdjustment, notDeleted, notTransfer } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import type { Currency } from "@/lib/types";
 import { callClaudeText } from "@/lib/ai/anthropic-client";
+import { createLogger } from "@/lib/logger";
+import {
+  sumByDisplayCurrency,
+  sumByGroupAndDisplayCurrency,
+  type AggregationBucket,
+} from "@/lib/fx/aggregate";
+import { convertCents } from "@/lib/money";
+
+const log = createLogger({ module: "insights-aggregator" });
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 export const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -67,9 +77,70 @@ function calendarBounds(ym: string) {
   };
 }
 
-function toCopNumber(cents: bigint, currency: Currency, copPerUsd: number): number {
-  const pesos = Number(cents) / 100;
-  return currency === "USD" ? pesos * copPerUsd : pesos;
+/**
+ * Convert a balance/plan amount (which has no frozen TRM — it's a current
+ * value or a forward-looking target) into the user's display currency using
+ * LIVE TRM. Used for accounts, budget plans, and recurring plan amounts.
+ */
+function toDisplayNumber(
+  cents: bigint,
+  currency: Currency,
+  target: Currency,
+  liveCopPerUsd: number,
+): number {
+  if (currency === target) return Number(cents) / 100;
+  try {
+    return Number(convertCents(cents, currency, target, liveCopPerUsd)) / 100;
+  } catch {
+    log.warn(
+      { fromCurrency: currency, toCurrency: target, event: "insights_balance_conversion_failed" },
+      "could not convert balance/plan to display currency — using raw value",
+    );
+    return Number(cents) / 100;
+  }
+}
+
+/**
+ * Coalesce per-currency aggregation buckets into a single number in `target`
+ * currency (pesos or dollars, depending on display mode). Buckets whose
+ * currency matches `target` are summed directly. Cross-currency residuals
+ * (e.g. rows that lost their frozen TRM in all-X mode) fall back to LIVE TRM.
+ */
+function coalesceToDisplayNumber(
+  buckets: ReadonlyArray<AggregationBucket>,
+  target: Currency,
+  liveCopPerUsd: number,
+): number {
+  let totalCents = BigInt(0);
+  for (const b of buckets) {
+    if (b.currency === target) {
+      totalCents += b.cents;
+      continue;
+    }
+    try {
+      totalCents += convertCents(b.cents, b.currency as Currency, target, liveCopPerUsd);
+    } catch (err) {
+      log.warn(
+        {
+          fromCurrency: b.currency,
+          toCurrency: target,
+          err: err as Error,
+          event: "insights_coalesce_fallback_failed",
+        },
+        "could not coalesce cross-currency residual bucket — dropping from total",
+      );
+    }
+  }
+  return Number(totalCents) / 100;
+}
+
+/**
+ * Resolve the display currency that the summary fields (incomeCop, etc.) are
+ * denominated in. Field names retain the `Cop` suffix for API stability across
+ * the AI prompt and the InsightsViewer; the actual unit follows this function.
+ */
+function resolveDisplayCurrency(mode: DisplayCurrencyMode): Currency {
+  return mode === "all-usd" ? "USD" : "COP";
 }
 
 /**
@@ -78,6 +149,14 @@ function toCopNumber(cents: bigint, currency: Currency, copPerUsd: number): numb
  * resolved `getFinancialPeriod` ranges from the call site so insights match
  * the dashboard's "Flujo del mes". Budget plans stay calendar-anchored
  * (`budgets.periodStart` is calendar) regardless of cycle mode.
+ *
+ * #526: tx aggregations are now per-row using each tx's frozen TRM
+ * (`rawData.fx.trmToAccountCurrency`). Account balances and budget/recurring
+ * plans keep using LIVE TRM (`copPerUsd`) since they have no historical rate.
+ *
+ * Field names keep their `Cop` suffix for API stability across the AI prompt
+ * and the InsightsViewer; the actual unit follows the user's
+ * `displayCurrencyMode` (COP for `native`/`all-cop`, USD for `all-usd`).
  */
 export async function buildInsightsSummary(
   userId: number,
@@ -88,6 +167,7 @@ export async function buildInsightsSummary(
     currentRange?: { start: Date; end: Date };
     previousRange?: { start: Date; end: Date };
   },
+  fxOpts?: { displayCurrencyMode: DisplayCurrencyMode },
 ): Promise<InsightsSummary> {
   const prevYm = shiftMonth(ym, -1);
   const calCur = calendarBounds(ym);
@@ -98,7 +178,24 @@ export async function buildInsightsSummary(
   };
   const prev = ranges?.previousRange ?? calPrev;
 
-  const [accs, curTxTotals, prevTxTotals, curCats, prevCats, topMer, budgetRows, recRows] =
+  const mode: DisplayCurrencyMode = fxOpts?.displayCurrencyMode ?? "native";
+  const target = resolveDisplayCurrency(mode);
+  const toDisplay = (cents: bigint, currency: Currency) =>
+    toDisplayNumber(cents, currency, target, copPerUsd);
+
+  // SQL projection of `raw_data` matches listTransactions (#528) — only
+  // `fx` and `merged_statement.fx` cross the boundary.
+  const rawDataProjection = sql<Record<string, unknown> | null>`CASE
+    WHEN ${transactions.rawData} IS NULL THEN NULL
+    ELSE jsonb_build_object(
+      'fx', ${transactions.rawData} -> 'fx',
+      'merged_statement', jsonb_build_object(
+        'fx', ${transactions.rawData} -> 'merged_statement' -> 'fx'
+      )
+    )
+  END`.as("raw_data");
+
+  const [accs, curTxRows, prevTxRows, curCatRows, prevCatRows, merchantRows, budgetRows, recRows] =
     await Promise.all([
       db
         .select({
@@ -117,11 +214,12 @@ export async function buildInsightsSummary(
           ),
         )
         .orderBy(asc(accounts.name)),
+      // Per-row income/expense for current period — aggregate in JS using helper.
       db
         .select({
+          amountCents: transactions.amountCents,
           currency: transactions.currency,
-          income: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} > 0 THEN ${transactions.amountCents} ELSE 0 END), 0)`,
-          expense: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
+          rawData: rawDataProjection,
         })
         .from(transactions)
         .where(
@@ -133,13 +231,13 @@ export async function buildInsightsSummary(
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),
-        )
-        .groupBy(transactions.currency),
+        ),
+      // Per-row income/expense for previous period.
       db
         .select({
+          amountCents: transactions.amountCents,
           currency: transactions.currency,
-          income: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} > 0 THEN ${transactions.amountCents} ELSE 0 END), 0)`,
-          expense: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
+          rawData: rawDataProjection,
         })
         .from(transactions)
         .where(
@@ -151,19 +249,18 @@ export async function buildInsightsSummary(
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),
-        )
-        .groupBy(transactions.currency),
+        ),
       (() => {
         const leaf = aliasedTable(categories, "cur_leaf");
         const root = aliasedTable(categories, "cur_root");
         const rootSlug = sql<string | null>`COALESCE(${leaf.parentSlug}, ${leaf.slug})`;
         return db
           .select({
-            slug: rootSlug,
-            name: root.name,
+            rootSlug,
+            rootName: root.name,
+            amountCents: transactions.amountCents,
             currency: transactions.currency,
-            spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
-            txCount: sql<number>`COUNT(*)::int`,
+            rawData: rawDataProjection,
           })
           .from(transactions)
           .leftJoin(
@@ -176,21 +273,22 @@ export async function buildInsightsSummary(
               eq(transactions.userId, userId),
               gte(transactions.occurredAt, cur.start),
               lt(transactions.occurredAt, cur.end),
+              sql`${transactions.amountCents} < 0`,
               notTransfer(transactions.channel),
               notAdjustment(transactions.isAdjustment),
               notDeleted(transactions.deletedAt),
             ),
-          )
-          .groupBy(rootSlug, root.name, transactions.currency);
+          );
       })(),
       (() => {
         const leaf = aliasedTable(categories, "prev_leaf");
         const rootSlug = sql<string | null>`COALESCE(${leaf.parentSlug}, ${leaf.slug})`;
         return db
           .select({
-            slug: rootSlug,
+            rootSlug,
+            amountCents: transactions.amountCents,
             currency: transactions.currency,
-            spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
+            rawData: rawDataProjection,
           })
           .from(transactions)
           .leftJoin(
@@ -202,19 +300,21 @@ export async function buildInsightsSummary(
               eq(transactions.userId, userId),
               gte(transactions.occurredAt, prev.start),
               lt(transactions.occurredAt, prev.end),
+              sql`${transactions.amountCents} < 0`,
               notTransfer(transactions.channel),
               notAdjustment(transactions.isAdjustment),
               notDeleted(transactions.deletedAt),
             ),
-          )
-          .groupBy(rootSlug, transactions.currency);
+          );
       })(),
+      // Per-row merchant data — sort + LIMIT 10 happens in JS after conversion
+      // (the largest in display currency may differ from largest in native cents).
       db
         .select({
           merchant: transactions.merchant,
+          amountCents: transactions.amountCents,
           currency: transactions.currency,
-          spent: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END), 0)`,
-          txCount: sql<number>`COUNT(*)::int`,
+          rawData: rawDataProjection,
         })
         .from(transactions)
         .where(
@@ -228,14 +328,7 @@ export async function buildInsightsSummary(
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),
-        )
-        .groupBy(transactions.merchant, transactions.currency)
-        .orderBy(
-          desc(
-            sql`SUM(CASE WHEN ${transactions.amountCents} < 0 THEN -${transactions.amountCents} ELSE 0 END)`,
-          ),
-        )
-        .limit(10),
+        ),
       db
         .select({
           categorySlug: budgets.categorySlug,
@@ -269,64 +362,134 @@ export async function buildInsightsSummary(
         .orderBy(asc(recurringTransactions.dayOfMonth)),
     ]);
 
-  const totals = { incomeCop: 0, expenseCop: 0, previousIncomeCop: 0, previousExpenseCop: 0 };
-  for (const r of curTxTotals) {
-    totals.incomeCop += toCopNumber(BigInt(r.income), r.currency, copPerUsd);
-    totals.expenseCop += toCopNumber(BigInt(r.expense), r.currency, copPerUsd);
-  }
-  for (const r of prevTxTotals) {
-    totals.previousIncomeCop += toCopNumber(BigInt(r.income), r.currency, copPerUsd);
-    totals.previousExpenseCop += toCopNumber(BigInt(r.expense), r.currency, copPerUsd);
-  }
+  // ---------------------------------------------------------------------
+  // Totals (income + expense, current + previous)
+  // ---------------------------------------------------------------------
+  const splitByCharge = (rows: typeof curTxRows) => ({
+    income: rows
+      .filter((r) => r.amountCents > BigInt(0))
+      .map((r) => ({ amountCents: r.amountCents, currency: r.currency, rawData: r.rawData })),
+    expense: rows
+      .filter((r) => r.amountCents < BigInt(0))
+      .map((r) => ({
+        amountCents: -r.amountCents,
+        currency: r.currency,
+        rawData: r.rawData,
+      })),
+  });
 
-  const catMap = new Map<
-    string,
-    { slug: string; name: string; spentCop: number; txCount: number }
-  >();
-  for (const r of curCats) {
-    if (!r.slug) continue;
-    const key = r.slug;
-    const cop = toCopNumber(BigInt(r.spent), r.currency, copPerUsd);
-    const existing = catMap.get(key);
-    if (existing) {
-      existing.spentCop += cop;
-      existing.txCount += r.txCount;
-    } else {
-      catMap.set(key, { slug: r.slug, name: r.name ?? r.slug, spentCop: cop, txCount: r.txCount });
-    }
-  }
-  const categoriesCurrent = [...catMap.values()].sort((a, b) => b.spentCop - a.spentCop);
+  const curSplit = splitByCharge(curTxRows);
+  const prevSplit = splitByCharge(prevTxRows);
 
-  const prevCatMap = new Map<string, number>();
-  for (const r of prevCats) {
-    if (!r.slug) continue;
-    prevCatMap.set(
-      r.slug,
-      (prevCatMap.get(r.slug) ?? 0) + toCopNumber(BigInt(r.spent), r.currency, copPerUsd),
-    );
-  }
-  const categoriesPrevious = [...prevCatMap.entries()].map(([slug, spentCop]) => ({
-    slug,
-    spentCop,
+  const incomeCop = coalesceToDisplayNumber(
+    sumByDisplayCurrency(curSplit.income, mode),
+    target,
+    copPerUsd,
+  );
+  const expenseCop = coalesceToDisplayNumber(
+    sumByDisplayCurrency(curSplit.expense, mode),
+    target,
+    copPerUsd,
+  );
+  const previousIncomeCop = coalesceToDisplayNumber(
+    sumByDisplayCurrency(prevSplit.income, mode),
+    target,
+    copPerUsd,
+  );
+  const previousExpenseCop = coalesceToDisplayNumber(
+    sumByDisplayCurrency(prevSplit.expense, mode),
+    target,
+    copPerUsd,
+  );
+
+  // ---------------------------------------------------------------------
+  // Categories — current + previous
+  // ---------------------------------------------------------------------
+  const positiveCurCatRows = curCatRows.map((r) => ({
+    rootSlug: r.rootSlug,
+    rootName: r.rootName,
+    amountCents: -r.amountCents, // expense → positive
+    currency: r.currency,
+    rawData: r.rawData,
   }));
+  const groupedCurCats = sumByGroupAndDisplayCurrency(positiveCurCatRows, mode, (r) => r.rootSlug);
 
-  const merMap = new Map<string, { merchant: string; spentCop: number; txCount: number }>();
-  for (const r of topMer) {
-    if (!r.merchant) continue;
-    const cop = toCopNumber(BigInt(r.spent), r.currency, copPerUsd);
-    const existing = merMap.get(r.merchant);
-    if (existing) {
-      existing.spentCop += cop;
-      existing.txCount += r.txCount;
-    } else {
-      merMap.set(r.merchant, { merchant: r.merchant, spentCop: cop, txCount: r.txCount });
-    }
+  // Track root names so the AI prompt has friendly labels.
+  const rootNameBySlug = new Map<string, string>();
+  for (const r of positiveCurCatRows) {
+    if (r.rootSlug && r.rootName) rootNameBySlug.set(r.rootSlug, r.rootName);
   }
-  const topMerchants = [...merMap.values()].sort((a, b) => b.spentCop - a.spentCop).slice(0, 10);
 
+  const categoriesCurrent: Array<{
+    slug: string;
+    name: string;
+    spentCop: number;
+    txCount: number;
+  }> = [];
+  for (const [slug, buckets] of groupedCurCats) {
+    const spentCop = coalesceToDisplayNumber(buckets, target, copPerUsd);
+    const txCount = buckets.reduce((acc, b) => acc + b.txCount, 0);
+    categoriesCurrent.push({
+      slug,
+      name: rootNameBySlug.get(slug) ?? slug,
+      spentCop,
+      txCount,
+    });
+  }
+  categoriesCurrent.sort((a, b) => b.spentCop - a.spentCop);
+
+  const positivePrevCatRows = prevCatRows.map((r) => ({
+    rootSlug: r.rootSlug,
+    amountCents: -r.amountCents,
+    currency: r.currency,
+    rawData: r.rawData,
+  }));
+  const groupedPrevCats = sumByGroupAndDisplayCurrency(
+    positivePrevCatRows,
+    mode,
+    (r) => r.rootSlug,
+  );
+  const categoriesPrevious: Array<{ slug: string; spentCop: number }> = [];
+  for (const [slug, buckets] of groupedPrevCats) {
+    categoriesPrevious.push({
+      slug,
+      spentCop: coalesceToDisplayNumber(buckets, target, copPerUsd),
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Top merchants — convert per-row, then sort and slice 10.
+  // ---------------------------------------------------------------------
+  const positiveMerchantRows = merchantRows
+    .filter((r): r is typeof r & { merchant: string } => r.merchant !== null)
+    .map((r) => ({
+      merchant: r.merchant,
+      amountCents: -r.amountCents,
+      currency: r.currency,
+      rawData: r.rawData,
+    }));
+  const groupedMerchants = sumByGroupAndDisplayCurrency(
+    positiveMerchantRows,
+    mode,
+    (r) => r.merchant,
+  );
+  const topMerchants: Array<{ merchant: string; spentCop: number; txCount: number }> = [];
+  for (const [merchant, buckets] of groupedMerchants) {
+    const spentCop = coalesceToDisplayNumber(buckets, target, copPerUsd);
+    const txCount = buckets.reduce((acc, b) => acc + b.txCount, 0);
+    topMerchants.push({ merchant, spentCop, txCount });
+  }
+  topMerchants.sort((a, b) => b.spentCop - a.spentCop);
+  topMerchants.splice(10);
+
+  // ---------------------------------------------------------------------
+  // Budget plans — amount via LIVE TRM (no historical rate exists), spent
+  // pulled from the per-category aggregation above.
+  // ---------------------------------------------------------------------
+  const categorySpentMap = new Map(categoriesCurrent.map((c) => [c.slug, c.spentCop]));
   const budgetsOut = budgetRows.map((b) => {
-    const amountCop = toCopNumber(b.amountCents, b.currency, copPerUsd);
-    const spentCop = catMap.get(b.categorySlug)?.spentCop ?? 0;
+    const amountCop = toDisplay(b.amountCents, b.currency);
+    const spentCop = categorySpentMap.get(b.categorySlug) ?? 0;
     return {
       category: b.categorySlug,
       amountCop,
@@ -338,7 +501,7 @@ export async function buildInsightsSummary(
   const recurringOut = recRows.map((r) => ({
     label: r.label,
     dayOfMonth: r.dayOfMonth,
-    amountCop: toCopNumber(r.amountCents, r.currency, copPerUsd),
+    amountCop: toDisplay(r.amountCents, r.currency),
     categorySlug: r.categorySlug,
   }));
 
@@ -347,8 +510,12 @@ export async function buildInsightsSummary(
     institution: a.institution,
     type: a.type,
     currency: a.currency,
-    balanceCop: toCopNumber(BigInt(a.balanceCents), a.currency, copPerUsd),
+    balanceCop: toDisplay(BigInt(a.balanceCents), a.currency),
   }));
+
+  // Reduce to scalar totals to keep the existing public shape unchanged
+  // (the legacy contract expected `incomeCop` and friends as plain numbers).
+  const totals = { incomeCop, expenseCop, previousIncomeCop, previousExpenseCop };
 
   return {
     yearMonth: ym,

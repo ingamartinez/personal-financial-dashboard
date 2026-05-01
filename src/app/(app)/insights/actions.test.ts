@@ -25,6 +25,14 @@ vi.mock("@/lib/dashboard/period", () => ({
   }),
 }));
 
+vi.mock("@/lib/preferences/repo", () => ({
+  getUiPreferences: vi.fn().mockResolvedValue({
+    displayCurrencyMode: "native",
+    financialCycleMode: "calendar",
+    payPeriodNudgeDismissed: false,
+  }),
+}));
+
 vi.mock("@/lib/ai/insights", () => ({
   buildInsightsSummary: vi.fn().mockResolvedValue({ summary: "mock" }),
   generateInsightsReport: vi.fn().mockResolvedValue({
