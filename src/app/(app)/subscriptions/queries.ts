@@ -179,7 +179,7 @@ export async function getSubscriptions(
         notDeleted(recurringTransactions.deletedAt),
       ),
     )
-    .orderBy(asc(recurringTransactions.label));
+    .orderBy(asc(recurringTransactions.dayOfMonth), asc(recurringTransactions.label));
 
   // Recurring rows have no rawData.fx — use live TRM for display conversion.
   // We pass rawData: {} so convertToDisplayCurrency falls back gracefully:
@@ -306,9 +306,10 @@ export async function getSubscriptions(
     }
   }
 
-  // Sort by display-currency absolute amount descending (most expensive first).
-  // Stable tiebreaker: ascending id so repeated renders are deterministic.
+  // Sort by dayOfMonth ascending so the list reads in calendar order (1→31).
+  // Stable tiebreakers: most expensive first, then ascending id for determinism.
   rows.sort((a, b) => {
+    if (a.dayOfMonth !== b.dayOfMonth) return a.dayOfMonth - b.dayOfMonth;
     if (b.displayAmountAbsCents > a.displayAmountAbsCents) return 1;
     if (b.displayAmountAbsCents < a.displayAmountAbsCents) return -1;
     return a.id - b.id;
