@@ -26,6 +26,7 @@ export function Filters({ accounts, categories }: FiltersProps) {
   const currentTo = searchParams.get("to") ?? "";
   const currentAccountId = searchParams.get("accountId") ?? "";
   const currentCategorySlug = searchParams.get("categorySlug") ?? "";
+  const currentMethod = searchParams.get("method") ?? "";
   const showAdjustmentsActive = Boolean(searchParams.get("showAdjustments"));
   const showArchivedActive = Boolean(searchParams.get("showArchived"));
   const needsRateActive = Boolean(searchParams.get("needsRate"));
@@ -75,6 +76,7 @@ export function Filters({ accounts, categories }: FiltersProps) {
     currentAccountId,
     currentCategorySlug,
     currentQ,
+    currentMethod,
   ].filter((v) => v.length > 0).length;
   const activeCount =
     stringActive +
@@ -167,6 +169,25 @@ export function Filters({ accounts, categories }: FiltersProps) {
                 {c.parentSlug ? `↳ ${c.name}` : c.name}
               </option>
             ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="method">Método</Label>
+          <select
+            id="method"
+            value={currentMethod}
+            onChange={(e) => applyChange("method", e.target.value)}
+            className="bg-background chevron-select h-9 rounded-md border text-sm"
+          >
+            <option value="">Todos los métodos</option>
+            <option value="rule">Regla automática</option>
+            <option value="rule_retroactive">Regla retroactiva</option>
+            <option value="ai">IA</option>
+            <option value="manual">Manual</option>
+            <option value="manual_confirmed">Confirmada manualmente</option>
+            <option value="unclassified">Sin clasificar</option>
+            <option value="user_uncategorized">Marcadas como otros</option>
           </select>
         </div>
 
