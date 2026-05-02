@@ -21,10 +21,9 @@ export default async function SubscriptionsPage() {
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header>
-        <h1 className="text-h1">Subscriptions</h1>
+        <h1 className="text-h1">Suscripciones</h1>
         <p className="text-body text-muted-foreground">
-          Active recurring subscriptions — all items categorised as <em>suscripciones</em>. Monthly
-          and annual cost at current display currency. Manage them in{" "}
+          Items recurrentes activos categorizados como <em>suscripciones</em>. Gestionálas en{" "}
           <a href="/settings/recurring" className="underline underline-offset-4">
             Settings → Recurring
           </a>
