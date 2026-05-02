@@ -17,6 +17,7 @@ import {
   type TcAlertTrigger,
 } from "@/lib/insights/tc-health";
 import { fetchRecentAnomalies } from "@/lib/insights/merchant-anomaly-queries";
+import { fetchCashFlowSummary } from "@/lib/insights/cash-flow-queries";
 import { InsightsViewer } from "./insights-viewer";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +36,72 @@ function triggerLabel(trigger: TcAlertTrigger, snap: TcCardSnapshot): string {
 function currentYearMonth(): string {
   const now = new Date();
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Cash flow forecast card — D.4 (#715)
+// ---------------------------------------------------------------------------
+
+type CashFlowCardProps = {
+  summary: Awaited<ReturnType<typeof fetchCashFlowSummary>>;
+};
+
+function CashFlowCard({ summary }: CashFlowCardProps) {
+  const { colorBand, shortfallDate, daysUntilShortfall, forecast } = summary;
+
+  const borderClass =
+    colorBand === "rose"
+      ? "border-rose-200 bg-rose-50/40 dark:border-rose-900 dark:bg-rose-950/15"
+      : colorBand === "amber"
+        ? "border-amber-200 bg-amber-50/40 dark:border-amber-900 dark:bg-amber-950/15"
+        : "border-emerald-200 bg-emerald-50/40 dark:border-emerald-900 dark:bg-emerald-950/15";
+
+  const titleClass =
+    colorBand === "rose"
+      ? "text-rose-900 dark:text-rose-200"
+      : colorBand === "amber"
+        ? "text-amber-900 dark:text-amber-200"
+        : "text-emerald-900 dark:text-emerald-200";
+
+  return (
+    <Card className={borderClass}>
+      <CardHeader className="pb-2">
+        <CardTitle className={`text-sm font-medium ${titleClass}`}>Próximos 30 días</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {colorBand === "emerald" ? (
+          <p className="text-muted-foreground text-sm">
+            Saldo proyectado positivo durante los próximos 30 días.{" "}
+            <span className="font-medium">Mínimo: {formatMoney(forecast.minBalance, "COP")}</span> (
+            {forecast.minBalanceDate}).
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <p className="text-sm">
+              <span className="font-medium">Saldo mínimo proyectado:</span>{" "}
+              {formatMoney(forecast.minBalance, "COP")} el {forecast.minBalanceDate}.
+            </p>
+            {shortfallDate !== undefined && daysUntilShortfall !== undefined && (
+              <p className="text-sm">
+                <span className="font-medium">Saldo negativo</span> proyectado el{" "}
+                <span className="font-medium">{shortfallDate}</span>
+                {daysUntilShortfall <= 7 ? (
+                  <span className="ml-1 font-semibold text-rose-700 dark:text-rose-300">
+                    (en {daysUntilShortfall} día{daysUntilShortfall === 1 ? "" : "s"})
+                  </span>
+                ) : (
+                  <span className="ml-1 text-amber-700 dark:text-amber-300">
+                    (en {daysUntilShortfall} días)
+                  </span>
+                )}
+                . Revisá tus próximos gastos e ingresos.
+              </p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export default async function InsightsPage({
@@ -96,10 +163,12 @@ export default async function InsightsPage({
   const uncategorizedCents = BigInt(uncategorized?.totalCents ?? "0");
 
   // TC Health card — real-time snapshot of all the user's TCs (#705)
-  const today = nowInBogota(new Date());
-  const [tcSnapshots, recentAnomalies] = await Promise.all([
+  const nowDate = new Date();
+  const today = nowInBogota(nowDate);
+  const [tcSnapshots, recentAnomalies, cashFlowSummary] = await Promise.all([
     fetchUserTcSnapshots(session.id, fx.rate, today),
     fetchRecentAnomalies(session.id),
+    fetchCashFlowSummary(session.id, nowDate),
   ]);
   const tcAlerts: Array<{ snap: TcCardSnapshot; triggers: TcAlertTrigger[] }> = tcSnapshots
     .map((snap) => ({ snap, triggers: computeTcAlerts(snap) }))
@@ -210,6 +279,9 @@ export default async function InsightsPage({
           )}
         </CardContent>
       </Card>
+
+      {/* Próximos 30 días — D.4 cash flow forecast card (#715) */}
+      <CashFlowCard summary={cashFlowSummary} />
 
       <InsightsViewer
         ym={ym}

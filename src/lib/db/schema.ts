@@ -1744,3 +1744,15 @@ export const notifications = pgTable(
     index("notifications_user_created_idx").on(t.userId, t.createdAt.desc()),
   ],
 );
+
+// #715 (Epic I D.3+D.4): one row per user, persists the last known shortfall
+// date from the 30-day cash flow forecast so the daily worker can detect when
+// a NEW shortfall appears and emit a notification only on change.
+// computedAt tracks when the forecast was last run (useful for debugging stale rows).
+export const cashFlowForecastState = pgTable("cash_flow_forecast_state", {
+  userId: integer("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  lastShortfallDate: text("last_shortfall_date"), // null = no shortfall known; "none" = explicitly no shortfall
+  computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+});
