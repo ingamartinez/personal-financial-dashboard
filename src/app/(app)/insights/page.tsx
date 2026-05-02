@@ -19,6 +19,7 @@ import {
 import { fetchRecentAnomalies } from "@/lib/insights/merchant-anomaly-queries";
 import { fetchCashFlowSummary } from "@/lib/insights/cash-flow-queries";
 import { fetchTemporalSummary } from "@/lib/insights/temporal-queries";
+import { fetchRecentDuplicatePayments } from "@/lib/insights/duplicate-payment-queries";
 import { dowNameEs, monthNameEs } from "@/lib/insights/temporal";
 import { SpendingHeatmap } from "@/components/insights/spending-heatmap";
 import { InsightsViewer } from "./insights-viewer";
@@ -168,12 +169,14 @@ export default async function InsightsPage({
   // TC Health card — real-time snapshot of all the user's TCs (#705)
   const nowDate = new Date();
   const today = nowInBogota(nowDate);
-  const [tcSnapshots, recentAnomalies, cashFlowSummary, temporalSummary] = await Promise.all([
-    fetchUserTcSnapshots(session.id, fx.rate, today),
-    fetchRecentAnomalies(session.id),
-    fetchCashFlowSummary(session.id, nowDate),
-    fetchTemporalSummary(session.id, nowDate),
-  ]);
+  const [tcSnapshots, recentAnomalies, cashFlowSummary, temporalSummary, recentDuplicatePayments] =
+    await Promise.all([
+      fetchUserTcSnapshots(session.id, fx.rate, today),
+      fetchRecentAnomalies(session.id),
+      fetchCashFlowSummary(session.id, nowDate),
+      fetchTemporalSummary(session.id, nowDate),
+      fetchRecentDuplicatePayments(session.id),
+    ]);
   const tcAlerts: Array<{ snap: TcCardSnapshot; triggers: TcAlertTrigger[] }> = tcSnapshots
     .map((snap) => ({ snap, triggers: computeTcAlerts(snap) }))
     .filter((a) => a.triggers.length > 0);
@@ -340,6 +343,49 @@ export default async function InsightsPage({
                 Sin patrones destacados por el momento.
               </p>
             )}
+        </CardContent>
+      </Card>
+
+      {/* Pagos duplicados detectados card — C.4 (#719) */}
+      <Card className="border-violet-200 bg-violet-50/40 dark:border-violet-900 dark:bg-violet-950/15">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-violet-900 dark:text-violet-200">
+            Pagos duplicados detectados
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {recentDuplicatePayments.length === 0 ? (
+            <p className="text-muted-foreground text-sm">
+              No hemos detectado pagos duplicados en los últimos 30 días.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {recentDuplicatePayments.map((row) => (
+                <li
+                  key={`${row.newTxId}`}
+                  className="flex items-start justify-between gap-2 text-sm"
+                >
+                  <span>
+                    <span className="font-medium">{row.canonicalMerchant}</span>
+                    {" · "}
+                    <span className="text-violet-800 dark:text-violet-300">
+                      {row.newAccountLabel}
+                    </span>
+                    {" y "}
+                    <span className="text-violet-800 dark:text-violet-300">
+                      {row.otherAccountLabel}
+                    </span>
+                  </span>
+                  <Link
+                    href={`/transactions?highlight=${row.newTxId}`}
+                    className="shrink-0 text-xs text-violet-700 underline underline-offset-4 hover:text-violet-900 dark:text-violet-300 dark:hover:text-violet-100"
+                  >
+                    Ver →
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </CardContent>
       </Card>
 

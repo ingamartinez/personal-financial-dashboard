@@ -484,34 +484,102 @@ export function TransactionTable({
                           channel={tx.channel}
                         />
                         <div className="flex flex-wrap items-center gap-1">
-                          {/* #713 B.2: combined badge when first-encounter + low-confidence fire together */}
-                          {tx.anomalyFlags?.firstEncounter &&
-                          confidenceBand(tx.classificationMethod, tx.classificationConfidence) ===
-                            "low" ? (
-                            <Badge
-                              variant="outline"
-                              className="gap-1 border-orange-300 bg-orange-50 font-normal text-orange-900 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-200"
-                              title="Nuevo comercio detectado con baja confianza en la clasificación. Confirmá la categoría."
-                            >
-                              Nuevo merchant — confirmá categoría
-                            </Badge>
-                          ) : (
-                            <>
-                              {tx.anomalyFlags?.firstEncounter ? (
+                          {/* #719/#713: badge priority chain — first match wins, others suppressed */}
+                          {(() => {
+                            const band = confidenceBand(
+                              tx.classificationMethod,
+                              tx.classificationConfidence,
+                            );
+                            const hasCatAnom = !!tx.anomalyFlags?.categoryAnomaly;
+                            const hasFirstEnc = !!tx.anomalyFlags?.firstEncounter;
+
+                            // Priority 1: categoryAnomaly + low confidence → combined rose badge
+                            if (hasCatAnom && band === "low") {
+                              const expected =
+                                tx.anomalyFlags?.categoryAnomaly?.expectedCategory ?? "";
+                              return (
+                                <Badge
+                                  variant="outline"
+                                  className="gap-1 border-rose-300 bg-rose-50 font-normal text-rose-900 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200"
+                                  title="Categoría inusual con baja confianza. Confirmá la categoría correcta."
+                                >
+                                  {`Categoría inusual — confirmá (${expected})`}
+                                </Badge>
+                              );
+                            }
+
+                            // Priority 2: categoryAnomaly + firstEncounter → combined orange badge
+                            if (hasCatAnom && hasFirstEnc) {
+                              return (
                                 <Badge
                                   variant="outline"
                                   className="gap-1 border-orange-300 bg-orange-50 font-normal text-orange-900 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-200"
-                                  title="Primera vez que aparece este comercio en tus transacciones."
+                                  title="Categoría inusual en un comercio nuevo."
                                 >
-                                  Nuevo merchant
+                                  Categoría inusual + nuevo merchant
                                 </Badge>
-                              ) : null}
+                              );
+                            }
+
+                            // Priority 3: categoryAnomaly alone → standalone purple badge + ConfidenceBadge
+                            if (hasCatAnom) {
+                              return (
+                                <>
+                                  <Badge
+                                    variant="outline"
+                                    className="gap-1 border-purple-300 bg-purple-50 font-normal text-purple-900 dark:border-purple-900 dark:bg-purple-950/40 dark:text-purple-200"
+                                    title="La categoría asignada difiere del patrón habitual para este comercio."
+                                  >
+                                    Categoría inusual
+                                  </Badge>
+                                  <ConfidenceBadge
+                                    method={tx.classificationMethod}
+                                    confidence={tx.classificationConfidence}
+                                  />
+                                </>
+                              );
+                            }
+
+                            // Priority 4: firstEncounter + low confidence → combined orange badge (existing #713)
+                            if (hasFirstEnc && band === "low") {
+                              return (
+                                <Badge
+                                  variant="outline"
+                                  className="gap-1 border-orange-300 bg-orange-50 font-normal text-orange-900 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-200"
+                                  title="Nuevo comercio detectado con baja confianza en la clasificación. Confirmá la categoría."
+                                >
+                                  Nuevo merchant — confirmá categoría
+                                </Badge>
+                              );
+                            }
+
+                            // Priority 5: firstEncounter alone → standalone orange badge + ConfidenceBadge
+                            if (hasFirstEnc) {
+                              return (
+                                <>
+                                  <Badge
+                                    variant="outline"
+                                    className="gap-1 border-orange-300 bg-orange-50 font-normal text-orange-900 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-200"
+                                    title="Primera vez que aparece este comercio en tus transacciones."
+                                  >
+                                    Nuevo merchant
+                                  </Badge>
+                                  <ConfidenceBadge
+                                    method={tx.classificationMethod}
+                                    confidence={tx.classificationConfidence}
+                                  />
+                                </>
+                              );
+                            }
+
+                            // Default: ConfidenceBadge only
+                            return (
                               <ConfidenceBadge
                                 method={tx.classificationMethod}
                                 confidence={tx.classificationConfidence}
                               />
-                            </>
-                          )}
+                            );
+                          })()}
                           {!isPairedTransfer ? (
                             <ClassificationReasonDialog
                               txId={tx.id}

@@ -41,8 +41,48 @@ export type AnomalyFlags = {
     baselineAvgCents: string; // BigInt serialized as string
   };
   firstEncounter?: boolean;
+  // #719 (Epic I B.3): velocity cluster — ≥4 distinct-merchant expenses on the
+  // same card within a 30-min window.
+  velocity?: {
+    clusterSize: number;
+    windowMinutes: number;
+    firstTxId: number;
+    lastTxId: number;
+  };
+  // #719 (Epic I B.4): category anomaly — tx category diverges from the modal
+  // category for (user, canonical_merchant) based on prior history.
+  categoryAnomaly?: {
+    expectedCategory: string; // modal category slug
+    actualCategory: string; // current tx category slug
+    modalShare: number; // ratio 0..1
+  };
+  // #719 (Epic I C.4): duplicate payment — same merchant on different accounts
+  // within 35 days with similar amounts. Written on the NEW tx only.
+  duplicatePayment?: {
+    pairedTxId: number;
+    otherAccountId: number;
+  };
   detectedAt: string; // ISO timestamp
 };
+
+// ---------------------------------------------------------------------------
+// Merge helper — combines two AnomalyFlags objects without overwriting keys
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge `next` into `prev` without overwriting any keys already present in
+ * `prev`. Both `detectedAt` fields are preserved — `prev.detectedAt` wins.
+ *
+ * Usage: always merge when updating anomaly_flags on an existing row so that,
+ * e.g., a `firstEncounter:true` flag set by B.2 is not lost when B.4 adds
+ * `categoryAnomaly` to the same tx.
+ */
+export function mergeAnomalyFlags(prev: AnomalyFlags, next: Partial<AnomalyFlags>): AnomalyFlags {
+  return {
+    ...next,
+    ...prev, // prev wins on every common key
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Pure detection thresholds (exported for unit test access)

@@ -36,7 +36,11 @@ export type NotificationType =
   | "merchant_first_encounter"
   // #715 (Epic I D.3+D.4): salary-gap and cash flow forecast signals.
   | "salary_gap"
-  | "cash_flow_forecast";
+  | "cash_flow_forecast"
+  // #719 (Epic I B.3+B.4+C.4): velocity cluster, category anomaly, duplicate payment.
+  | "velocity_cluster"
+  | "category_anomaly"
+  | "duplicate_payment";
 
 export type NotificationAudience = "user" | "admin";
 export type NotificationPriority = "high" | "medium" | "low";
