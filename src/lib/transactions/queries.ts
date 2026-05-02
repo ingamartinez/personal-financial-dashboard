@@ -4,12 +4,18 @@ import { db } from "@/lib/db";
 import {
   accounts,
   categories,
+  classificationMethod as classificationMethodEnum,
   counterparties,
   counterpartyAliases,
   recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
-import type { CounterpartyAlias, CounterpartyBrief, TxRow } from "@/lib/types";
+import type {
+  ClassificationMethod,
+  CounterpartyAlias,
+  CounterpartyBrief,
+  TxRow,
+} from "@/lib/types";
 
 export type { CounterpartyAlias, CounterpartyBrief, TxRow };
 
@@ -29,7 +35,24 @@ export type TxFilters = {
   // user can supply the EM from the extract. Translates to
   // `installments_total > 1 AND installment_rate_bps IS NULL`.
   needsRate?: boolean;
+  // #723: filter by a single classification_method enum value.
+  // When present, restricts the list to rows with the given method.
+  method?: ClassificationMethod;
 };
+
+/**
+ * Parse a raw string into a valid ClassificationMethod enum value.
+ * Returns undefined for invalid or missing input — callers can safely pass
+ * URL searchParam values here.
+ */
+export function parseClassificationMethod(
+  raw: string | undefined,
+): ClassificationMethod | undefined {
+  if (!raw) return undefined;
+  return classificationMethodEnum.enumValues.includes(raw as ClassificationMethod)
+    ? (raw as ClassificationMethod)
+    : undefined;
+}
 
 export type TxListResult = {
   rows: TxRow[];
@@ -80,6 +103,8 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
     conditions.push(gt(transactions.installmentsTotal, 1));
     conditions.push(isNull(transactions.installmentRateEmX10k));
   }
+  // #723: optional classification_method filter
+  if (filters.method) conditions.push(eq(transactions.classificationMethod, filters.method));
   if (filters.cursor) {
     const c = decodeCursor(filters.cursor);
     if (c) {
@@ -307,6 +332,8 @@ export async function countTotal(
     conditions.push(gt(transactions.installmentsTotal, 1));
     conditions.push(isNull(transactions.installmentRateEmX10k));
   }
+  // #723: optional classification_method filter
+  if (filters.method) conditions.push(eq(transactions.classificationMethod, filters.method));
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(transactions)

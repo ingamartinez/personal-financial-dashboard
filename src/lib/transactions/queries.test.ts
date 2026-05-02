@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, transactions, users } from "@/lib/db/schema";
-import { countTotal, listTransactions } from "./queries";
+import { countTotal, listTransactions, parseClassificationMethod } from "./queries";
 
 const MARKER = "__test_tx_queries";
 let USER_ID = 0;
@@ -322,5 +322,147 @@ describe("listTransactions rawData projection (#528)", () => {
     const projected = row!.rawData as Record<string, unknown>;
     expect(projected.fx).toBeNull();
     expect((projected.merged_statement as Record<string, unknown>).fx).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #723: method filter — listTransactions + countTotal + parseClassificationMethod
+// ---------------------------------------------------------------------------
+describe("parseClassificationMethod", () => {
+  it("returns undefined for undefined input", () => {
+    expect(parseClassificationMethod(undefined)).toBeUndefined();
+  });
+
+  it("returns undefined for an empty string", () => {
+    expect(parseClassificationMethod("")).toBeUndefined();
+  });
+
+  it("returns undefined for an invalid value", () => {
+    expect(parseClassificationMethod("not_a_method")).toBeUndefined();
+    expect(parseClassificationMethod("RULE")).toBeUndefined();
+  });
+
+  it("returns the valid value for each enum member", () => {
+    const valid = [
+      "rule",
+      "rule_retroactive",
+      "ai",
+      "manual",
+      "manual_confirmed",
+      "unclassified",
+      "user_uncategorized",
+    ] as const;
+    for (const v of valid) {
+      expect(parseClassificationMethod(v)).toBe(v);
+    }
+  });
+});
+
+describe("listTransactions method filter (#723)", () => {
+  const MARKER = "__test_tx_method";
+
+  afterEach(async () => {
+    await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE ${MARKER + "%"}`);
+  });
+
+  it("returns only rows matching method=user_uncategorized", async () => {
+    await db.insert(transactions).values([
+      {
+        userId: USER_ID,
+        accountId: ACCOUNT_ID,
+        occurredAt: new Date("2026-05-01T10:00:00Z"),
+        amountCents: BigInt(-3000),
+        currency: "COP",
+        descriptionRaw: `${MARKER}-otros-1`,
+        categorySlug: "food",
+        classificationMethod: "user_uncategorized",
+        source: "manual",
+      },
+      {
+        userId: USER_ID,
+        accountId: ACCOUNT_ID,
+        occurredAt: new Date("2026-05-01T11:00:00Z"),
+        amountCents: BigInt(-5000),
+        currency: "COP",
+        descriptionRaw: `${MARKER}-manual-1`,
+        categorySlug: "food",
+        classificationMethod: "manual",
+        source: "manual",
+      },
+    ]);
+
+    const { rows } = await listTransactions(USER_ID, { method: "user_uncategorized" });
+    const mine = rows.filter((r) => r.descriptionRaw.startsWith(MARKER));
+    expect(mine).toHaveLength(1);
+    expect(mine[0].classificationMethod).toBe("user_uncategorized");
+  });
+
+  it("returns all rows when method is omitted", async () => {
+    await db.insert(transactions).values([
+      {
+        userId: USER_ID,
+        accountId: ACCOUNT_ID,
+        occurredAt: new Date("2026-05-02T10:00:00Z"),
+        amountCents: BigInt(-3000),
+        currency: "COP",
+        descriptionRaw: `${MARKER}-a`,
+        categorySlug: "food",
+        classificationMethod: "user_uncategorized",
+        source: "manual",
+      },
+      {
+        userId: USER_ID,
+        accountId: ACCOUNT_ID,
+        occurredAt: new Date("2026-05-02T11:00:00Z"),
+        amountCents: BigInt(-5000),
+        currency: "COP",
+        descriptionRaw: `${MARKER}-b`,
+        categorySlug: "food",
+        classificationMethod: "manual",
+        source: "manual",
+      },
+    ]);
+
+    const { rows } = await listTransactions(USER_ID, {});
+    const mine = rows.filter((r) => r.descriptionRaw.startsWith(MARKER));
+    expect(mine).toHaveLength(2);
+  });
+
+  it("countTotal respects the method filter", async () => {
+    await db.insert(transactions).values([
+      {
+        userId: USER_ID,
+        accountId: ACCOUNT_ID,
+        occurredAt: new Date("2026-05-03T10:00:00Z"),
+        amountCents: BigInt(-3000),
+        currency: "COP",
+        descriptionRaw: `${MARKER}-count-otros`,
+        categorySlug: "food",
+        classificationMethod: "user_uncategorized",
+        source: "manual",
+      },
+      {
+        userId: USER_ID,
+        accountId: ACCOUNT_ID,
+        occurredAt: new Date("2026-05-03T11:00:00Z"),
+        amountCents: BigInt(-5000),
+        currency: "COP",
+        descriptionRaw: `${MARKER}-count-manual`,
+        categorySlug: "food",
+        classificationMethod: "manual",
+        source: "manual",
+      },
+    ]);
+
+    const total = await countTotal(USER_ID, { method: "user_uncategorized" });
+    // We inserted exactly 1 user_uncategorized for this user in this test
+    // (seeded above). There may be others from other tests or seeds — we only
+    // assert the total is at least 1 and that the 2 manual rows don't inflate it.
+    const totalManual = await countTotal(USER_ID, { method: "manual" });
+    expect(total).toBeGreaterThanOrEqual(1);
+    // user_uncategorized total must be strictly less than manual+uncategorized combined
+    const totalAll = await countTotal(USER_ID, {});
+    expect(total).toBeLessThan(totalAll);
+    expect(totalManual).toBeLessThan(totalAll);
   });
 });
