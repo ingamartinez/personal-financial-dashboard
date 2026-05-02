@@ -40,7 +40,10 @@ export type NotificationType =
   // #719 (Epic I B.3+B.4+C.4): velocity cluster, category anomaly, duplicate payment.
   | "velocity_cluster"
   | "category_anomaly"
-  | "duplicate_payment";
+  | "duplicate_payment"
+  // #721 (Epic I C.1+C.2): CDT and FIC savings suggestions (quarterly, premium-gated).
+  | "cdt_suggestion"
+  | "fic_suggestion";
 
 export type NotificationAudience = "user" | "admin";
 export type NotificationPriority = "high" | "medium" | "low";
