@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getSessionUser } from "@/lib/auth/session";
 import { getUiPreferences } from "@/lib/preferences/repo";
 import { getCurrentFxRate } from "@/lib/fx/repo";
@@ -29,6 +30,12 @@ export default async function SubscriptionsPage() {
           </a>
           .
         </p>
+        <Link
+          href="/settings/recurring?category=suscripciones"
+          className="text-muted-foreground hover:text-foreground mt-1 inline-block text-xs underline underline-offset-4"
+        >
+          Gestionar todas las recurrentes →
+        </Link>
       </header>
 
       <SubscriptionsCalculator

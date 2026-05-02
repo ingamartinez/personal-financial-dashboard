@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -48,16 +49,28 @@ export function RecurringManager({
   accounts,
   categories,
   items,
+  activeCategory,
 }: {
   accounts: AccountOption[];
   categories: CategoryOption[];
   items: RecurringRow[];
+  activeCategory: string | null;
 }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [editor, setEditor] = useState<EditorState>({
     open: false,
     editing: null,
   });
   const [pending, startTransition] = useTransition();
+
+  function onCategoryChange(slug: string) {
+    const next = new URLSearchParams(searchParams.toString());
+    if (slug) next.set("category", slug);
+    else next.delete("category");
+    const qs = next.toString();
+    router.push(qs ? `/settings/recurring?${qs}` : "/settings/recurring");
+  }
 
   function openCreate() {
     setEditor({ open: true, editing: null });
@@ -94,7 +107,20 @@ export function RecurringManager({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between gap-3">
+        <select
+          value={activeCategory ?? ""}
+          onChange={(e) => onCategoryChange(e.target.value)}
+          className="bg-background chevron-select h-9 rounded-md border text-sm"
+          aria-label="Filtrar por categoría"
+        >
+          <option value="">Todas las categorías</option>
+          {categories.map((c) => (
+            <option key={c.slug} value={c.slug}>
+              {c.parentSlug ? `↳ ${c.name}` : c.name}
+            </option>
+          ))}
+        </select>
         <Button onClick={openCreate}>
           <PlusIcon className="size-4" />
           New recurring

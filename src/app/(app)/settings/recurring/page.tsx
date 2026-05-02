@@ -7,9 +7,15 @@ import { RecurringManager } from "./recurring-manager";
 
 export const dynamic = "force-dynamic";
 
-export default async function RecurringPage() {
+export default async function RecurringPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ category?: string }>;
+}) {
   const session = await getSessionUser();
-  const [accs, cats, items] = await Promise.all([
+  const { category: rawCategory } = await searchParams;
+
+  const [accs, cats] = await Promise.all([
     db
       .select({
         id: accounts.id,
@@ -34,29 +40,35 @@ export default async function RecurringPage() {
       .from(categories)
       .where(and(eq(categories.userId, session.id), notDeleted(categories.deletedAt)))
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
-    db
-      .select({
-        id: recurringTransactions.id,
-        accountId: recurringTransactions.accountId,
-        accountName: accounts.name,
-        label: recurringTransactions.label,
-        amountCents: recurringTransactions.amountCents,
-        currency: recurringTransactions.currency,
-        categorySlug: recurringTransactions.categorySlug,
-        dayOfMonth: recurringTransactions.dayOfMonth,
-        active: recurringTransactions.active,
-        notes: recurringTransactions.notes,
-      })
-      .from(recurringTransactions)
-      .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
-      .where(
-        and(
-          eq(recurringTransactions.userId, session.id),
-          notDeleted(recurringTransactions.deletedAt),
-        ),
-      )
-      .orderBy(asc(recurringTransactions.dayOfMonth)),
   ]);
+
+  // Validate the category param against the user's own categories (tenant safety).
+  const validSlugs = new Set(cats.map((c) => c.slug));
+  const activeCategory = rawCategory && validSlugs.has(rawCategory) ? rawCategory : null;
+
+  const recurringWhere = and(
+    eq(recurringTransactions.userId, session.id),
+    notDeleted(recurringTransactions.deletedAt),
+    activeCategory ? eq(recurringTransactions.categorySlug, activeCategory) : undefined,
+  );
+
+  const items = await db
+    .select({
+      id: recurringTransactions.id,
+      accountId: recurringTransactions.accountId,
+      accountName: accounts.name,
+      label: recurringTransactions.label,
+      amountCents: recurringTransactions.amountCents,
+      currency: recurringTransactions.currency,
+      categorySlug: recurringTransactions.categorySlug,
+      dayOfMonth: recurringTransactions.dayOfMonth,
+      active: recurringTransactions.active,
+      notes: recurringTransactions.notes,
+    })
+    .from(recurringTransactions)
+    .innerJoin(accounts, eq(accounts.id, recurringTransactions.accountId))
+    .where(recurringWhere)
+    .orderBy(asc(recurringTransactions.dayOfMonth));
 
   const rows = items.map((r) => ({
     ...r,
@@ -73,7 +85,12 @@ export default async function RecurringPage() {
           the real tx lands.
         </p>
       </header>
-      <RecurringManager accounts={accs} categories={cats} items={rows} />
+      <RecurringManager
+        accounts={accs}
+        categories={cats}
+        items={rows}
+        activeCategory={activeCategory}
+      />
     </main>
   );
 }
