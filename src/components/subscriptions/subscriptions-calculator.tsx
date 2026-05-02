@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Calculator, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { formatMoney } from "@/lib/money";
+import { classifyTiers } from "@/lib/subscriptions/tiers";
+import { SubscriptionTierSection } from "./subscription-tier-section";
+import { SubscriptionCalendar } from "./subscription-calendar";
 import type { AggregationBucket } from "@/lib/fx/aggregate";
-import type { PriceHike, SubscriptionRow } from "@/app/(app)/subscriptions/queries";
+import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,9 +27,6 @@ interface SubscriptionsCalculatorProps {
 
 /**
  * Sum `displayAmount.cents` from the given rows, grouped by display currency.
- * Mirrors what `sumByDisplayCurrency` does on the server but using the
- * already-computed per-row displayAmount so we don't pull pino into the
- * client bundle.
  */
 function sumDisplayAmounts(rows: SubscriptionRow[]): Map<string, bigint> {
   const buckets = new Map<string, bigint>();
@@ -37,6 +35,10 @@ function sumDisplayAmounts(rows: SubscriptionRow[]): Map<string, bigint> {
     buckets.set(cur, (buckets.get(cur) ?? BigInt(0)) + row.displayAmount.cents);
   }
   return buckets;
+}
+
+function absCents(cents: bigint): bigint {
+  return cents < BigInt(0) ? -cents : cents;
 }
 
 /**
@@ -57,15 +59,12 @@ function computeCalculatorTotals(
 } {
   const excludedRows = rows.filter((r) => excludedIds.has(r.id));
 
-  // Monthly savings = sum of displayAmount for excluded rows (grouped by currency).
   const excludedMonthlyMap = sumDisplayAmounts(excludedRows);
-  // Annual savings = excluded monthly × 12.
   const excludedAnnualMap = new Map<string, bigint>();
   for (const [cur, cents] of excludedMonthlyMap) {
     excludedAnnualMap.set(cur, cents * BigInt(12));
   }
 
-  // Build remaining monthly buckets by subtracting from base totals.
   const remainingMonthly: AggregationBucket[] = monthlyTotals.map((bucket) => ({
     ...bucket,
     cents: bucket.cents - (excludedMonthlyMap.get(bucket.currency) ?? BigInt(0)),
@@ -76,7 +75,6 @@ function computeCalculatorTotals(
     cents: bucket.cents - (excludedAnnualMap.get(bucket.currency) ?? BigInt(0)),
   }));
 
-  // Savings buckets: only currencies that appear in the exclusion.
   const savingsMonthly: AggregationBucket[] = [];
   for (const [cur, cents] of excludedMonthlyMap) {
     const base = monthlyTotals.find((b) => b.currency === cur);
@@ -104,12 +102,8 @@ function computeCalculatorTotals(
 }
 
 // ---------------------------------------------------------------------------
-// Helper: format absolute bucket cents
+// BucketLabel helper
 // ---------------------------------------------------------------------------
-
-function absCents(cents: bigint): bigint {
-  return cents < BigInt(0) ? -cents : cents;
-}
 
 function BucketLabel({
   monthly,
@@ -139,41 +133,85 @@ function BucketLabel({
 }
 
 // ---------------------------------------------------------------------------
-// Sub-components
+// Totals header — shows total + próximo cobro
 // ---------------------------------------------------------------------------
 
-function TotalsHeader({
+function TotalsCard({
   monthlyTotals,
   annualTotals,
+  rows,
+  excludedIds,
+  isCalculatorOpen,
+  onOpenCalculator,
 }: {
   monthlyTotals: AggregationBucket[];
   annualTotals: AggregationBucket[];
+  rows: SubscriptionRow[];
+  excludedIds: Set<number>;
+  isCalculatorOpen: boolean;
+  onOpenCalculator: () => void;
 }) {
-  if (monthlyTotals.length === 0) return null;
+  // Compute earliest nextOccurrence among non-excluded rows.
+  const activeRows = rows.filter((r) => !excludedIds.has(r.id));
+  const earliest = activeRows.reduce<SubscriptionRow | null>((acc, r) => {
+    if (!acc || r.nextOccurrence < acc.nextOccurrence) return r;
+    return acc;
+  }, null);
+
+  const proximoCobro = earliest
+    ? (() => {
+        const today = new Date();
+        const nextDate = new Date(earliest.nextOccurrence + "T00:00:00");
+        const diffDays = Math.round((nextDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        const daysLabel =
+          diffDays === 0 ? "hoy" : diffDays === 1 ? "mañana" : `en ${diffDays} días`;
+        return `${earliest.label} — ${daysLabel}`;
+      })()
+    : null;
+
+  const primaryBucket = monthlyTotals[0];
+  const primaryAnnual = annualTotals[0];
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-      {monthlyTotals.map((bucket) => {
-        const annual = annualTotals.find((b) => b.currency === bucket.currency);
-        return (
-          <Card key={bucket.currency} size="sm">
-            <CardContent className="flex flex-col gap-0.5 py-3">
-              <p className="text-muted-foreground text-xs">Mensual</p>
-              <p className="font-heading text-base font-medium tabular-nums">
-                {formatMoney(absCents(bucket.cents), bucket.currency as "COP" | "USD")}
-              </p>
-              {annual && (
-                <p className="text-muted-foreground text-xs tabular-nums">
-                  {formatMoney(absCents(annual.cents), annual.currency as "COP" | "USD")} / año
-                </p>
+    <Card>
+      <CardContent className="flex items-start justify-between gap-4 py-4">
+        <div className="flex flex-col gap-1">
+          {primaryBucket && (
+            <p className="font-heading text-xl font-semibold tabular-nums">
+              {formatMoney(absCents(primaryBucket.cents), primaryBucket.currency as "COP" | "USD")}{" "}
+              / mes
+              {primaryAnnual && (
+                <span className="text-muted-foreground ml-2 text-sm font-normal">
+                  ·{" "}
+                  {formatMoney(
+                    absCents(primaryAnnual.cents),
+                    primaryAnnual.currency as "COP" | "USD",
+                  )}{" "}
+                  / año
+                </span>
               )}
-            </CardContent>
-          </Card>
-        );
-      })}
-    </div>
+            </p>
+          )}
+          {proximoCobro && (
+            <p className="text-muted-foreground text-sm">
+              Próximo cobro: <span className="text-foreground">{proximoCobro}</span>
+            </p>
+          )}
+        </div>
+        {!isCalculatorOpen && (
+          <Button variant="outline" size="sm" onClick={onOpenCalculator} className="shrink-0">
+            <Calculator className="mr-1.5 size-4" />
+            Calculadora
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Calculator savings header (shown when calculator is open)
+// ---------------------------------------------------------------------------
 
 function CalculatorHeader({
   monthlyTotals,
@@ -218,128 +256,8 @@ function CalculatorHeader({
   );
 }
 
-function PriceHikeBadge({ hike }: { hike: PriceHike }) {
-  const absOld = hike.oldAmountCents < BigInt(0) ? -hike.oldAmountCents : hike.oldAmountCents;
-  const absNew = hike.newAmountCents < BigInt(0) ? -hike.newAmountCents : hike.newAmountCents;
-  const pctStr = Math.round(hike.deltaPct).toString();
-  const sinceStr = hike.sinceDate.toLocaleDateString("es-CO", {
-    month: "short",
-    day: "numeric",
-  });
-  const tooltipText = `era ${formatMoney(absOld, hike.currency)} → ahora ${formatMoney(absNew, hike.currency)}, desde ${sinceStr}`;
-
-  return (
-    <Badge
-      variant="outline"
-      className="text-destructive border-destructive/40 text-xs tabular-nums"
-      title={tooltipText}
-    >
-      ↑ +{pctStr}%
-    </Badge>
-  );
-}
-
-function SubscriptionCardCalculator({
-  row,
-  showCheckbox,
-  checked,
-  onToggle,
-}: {
-  row: SubscriptionRow;
-  showCheckbox: boolean;
-  checked: boolean;
-  onToggle: (id: number) => void;
-}) {
-  const absDisplayCents =
-    row.displayAmount.cents < BigInt(0) ? -row.displayAmount.cents : row.displayAmount.cents;
-  const absNativeCents = row.amountCents < BigInt(0) ? -row.amountCents : row.amountCents;
-  const showNative = row.displayAmount.converted && row.displayAmount.currency !== row.currency;
-  const muted = showCheckbox && !checked;
-
-  return (
-    <div className={muted ? "opacity-50" : undefined}>
-      <Card size="sm">
-        <CardContent className="flex flex-col gap-1.5 py-3">
-          {/* Row: checkbox (optional) + label + badges + amount */}
-          <div className="flex items-start gap-2">
-            {showCheckbox && (
-              <Checkbox
-                checked={checked}
-                onCheckedChange={() => onToggle(row.id)}
-                className="mt-0.5 shrink-0"
-                aria-label={`Incluir ${row.label}`}
-              />
-            )}
-
-            <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
-              <div className="flex min-w-0 flex-col gap-1">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="leading-snug font-medium">{row.label}</span>
-                  {row.amountType === "variable" && (
-                    <Badge variant="outline" className="text-xs">
-                      variable
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-muted-foreground truncate text-xs">{row.accountLabel}</p>
-                {row.categoryName && (
-                  <p className="text-muted-foreground text-xs">{row.categoryName}</p>
-                )}
-              </div>
-
-              {/* Amount block */}
-              <div className="flex shrink-0 flex-col items-end gap-0.5">
-                <p className={`font-heading tabular-nums${muted ? "line-through" : ""}`}>
-                  {row.amountType === "variable" ? "~" : ""}
-                  {formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD")}
-                </p>
-                {row.priceHike && <PriceHikeBadge hike={row.priceHike} />}
-                {showNative && (
-                  <p className="text-muted-foreground text-xs tabular-nums">
-                    ({formatMoney(absNativeCents, row.currency as "COP" | "USD")})
-                  </p>
-                )}
-                <p className="text-muted-foreground text-xs tabular-nums">
-                  {formatMoney(
-                    row.annualCents < BigInt(0) ? -row.annualCents : row.annualCents,
-                    row.currency as "COP" | "USD",
-                  )}{" "}
-                  / año
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Row: next occurrence + day */}
-          <div
-            className={`text-muted-foreground flex items-center gap-2 text-xs${showCheckbox ? "pl-6" : ""}`}
-          >
-            <span>Próxima: {row.nextOccurrence}</span>
-            <span>·</span>
-            <span>Día {row.dayOfMonth}</span>
-            {row.skippedMonths.length > 0 && (
-              <>
-                <span>·</span>
-                <Badge variant="secondary" className="text-xs">
-                  {row.skippedMonths.length} omisión{row.skippedMonths.length > 1 ? "es" : ""}
-                </Badge>
-              </>
-            )}
-          </div>
-
-          {row.notes && (
-            <p className={`text-muted-foreground text-xs italic${showCheckbox ? "pl-6" : ""}`}>
-              {row.notes}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Main component
+// Main orchestrator component
 // ---------------------------------------------------------------------------
 
 export function SubscriptionsCalculator({
@@ -379,8 +297,14 @@ export function SubscriptionsCalculator({
   const excludedCount = excludedIds.size;
   const hasExcluded = excludedCount > 0;
 
+  // Calculator totals (only used when calculator is open).
   const { remainingMonthly, remainingAnnual, savingsMonthly, savingsAnnual } =
     computeCalculatorTotals(monthlyTotals, annualTotals, rows, excludedIds);
+
+  // Tier classification — recomputes when exclusions change.
+  const activeRows = useMemo(() => rows.filter((r) => !excludedIds.has(r.id)), [rows, excludedIds]);
+
+  const tiers = useMemo(() => classifyTiers(activeRows), [activeRows]);
 
   if (rows.length === 0) {
     return (
@@ -398,27 +322,49 @@ export function SubscriptionsCalculator({
     );
   }
 
+  // Compute display totals from active rows for the totals card.
+  const activeMonthlyTotals: AggregationBucket[] = monthlyTotals.map((bucket) => ({
+    ...bucket,
+    cents:
+      bucket.cents -
+      rows
+        .filter((r) => excludedIds.has(r.id) && r.displayAmount.currency === bucket.currency)
+        .reduce((acc, r) => acc + r.displayAmount.cents, BigInt(0)),
+  }));
+  const activeAnnualTotals: AggregationBucket[] = annualTotals.map((bucket) => ({
+    ...bucket,
+    cents:
+      bucket.cents -
+      rows
+        .filter((r) => excludedIds.has(r.id) && r.displayAmount.currency === bucket.currency)
+        .reduce((acc, r) => acc + r.displayAmount.cents * BigInt(12), BigInt(0)),
+  }));
+
   return (
     <div className="flex flex-col gap-4">
-      {/* Header bar: totals (when closed) or calculator header (when open) */}
-      {isOpen ? (
-        <CalculatorHeader
-          monthlyTotals={monthlyTotals}
-          annualTotals={annualTotals}
-          remainingMonthly={remainingMonthly}
-          remainingAnnual={remainingAnnual}
-          savingsMonthly={savingsMonthly}
-          savingsAnnual={savingsAnnual}
-          excludedCount={excludedCount}
-        />
-      ) : (
-        <TotalsHeader monthlyTotals={monthlyTotals} annualTotals={annualTotals} />
-      )}
+      {/* Totals header (always visible) */}
+      <TotalsCard
+        monthlyTotals={isOpen ? activeMonthlyTotals : monthlyTotals}
+        annualTotals={isOpen ? activeAnnualTotals : annualTotals}
+        rows={rows}
+        excludedIds={excludedIds}
+        isCalculatorOpen={isOpen}
+        onOpenCalculator={handleOpen}
+      />
 
-      {/* Action bar: calculator toggle + mark-all */}
-      <div className="flex items-center gap-2">
-        {isOpen ? (
-          <>
+      {/* Calculator header + action bar (when open) */}
+      {isOpen && (
+        <>
+          <CalculatorHeader
+            monthlyTotals={monthlyTotals}
+            annualTotals={annualTotals}
+            remainingMonthly={remainingMonthly}
+            remainingAnnual={remainingAnnual}
+            savingsMonthly={savingsMonthly}
+            savingsAnnual={savingsAnnual}
+            excludedCount={excludedCount}
+          />
+          <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={handleClose}>
               <X className="mr-1.5 size-4" />
               Cerrar calculadora
@@ -428,27 +374,41 @@ export function SubscriptionsCalculator({
                 Marcar todas
               </Button>
             )}
-          </>
-        ) : (
-          <Button variant="outline" size="sm" onClick={handleOpen}>
-            <Calculator className="mr-1.5 size-4" />
-            Calculadora
-          </Button>
-        )}
-      </div>
+          </div>
+        </>
+      )}
 
-      {/* Subscription rows */}
-      <div className="flex flex-col gap-2">
-        {rows.map((row) => (
-          <SubscriptionCardCalculator
-            key={row.id}
-            row={row}
-            showCheckbox={isOpen}
-            checked={!excludedIds.has(row.id)}
-            onToggle={handleToggle}
-          />
-        ))}
-      </div>
+      {/* Tier sections — recompute with active rows */}
+      <SubscriptionTierSection
+        tier="top"
+        rows={tiers.top}
+        subtotal={tiers.topSubtotal}
+        pct={tiers.topPct}
+        calculatorEnabled={isOpen}
+        excludedIds={excludedIds}
+        onToggleExcluded={handleToggle}
+      />
+      <SubscriptionTierSection
+        tier="medianas"
+        rows={tiers.medianas}
+        subtotal={tiers.medianasSubtotal}
+        pct={tiers.medianasPct}
+        calculatorEnabled={isOpen}
+        excludedIds={excludedIds}
+        onToggleExcluded={handleToggle}
+      />
+      <SubscriptionTierSection
+        tier="pequeñas"
+        rows={tiers.pequeñas}
+        subtotal={tiers.pequeñasSubtotal}
+        pct={tiers.pequeñasPct}
+        calculatorEnabled={isOpen}
+        excludedIds={excludedIds}
+        onToggleExcluded={handleToggle}
+      />
+
+      {/* Calendar */}
+      <SubscriptionCalendar rows={rows} excludedIds={excludedIds} />
     </div>
   );
 }
