@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
-import { SubscriptionCalendar, UpcomingCharges } from "./subscription-calendar";
+import { UpcomingCharges } from "./upcoming-charges";
 import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
 
 // ---------------------------------------------------------------------------
@@ -22,7 +22,6 @@ if (!Element.prototype.scrollIntoView) {
 
 afterEach(() => {
   cleanup();
-  vi.useRealTimers();
 });
 
 // ---------------------------------------------------------------------------
@@ -60,7 +59,7 @@ function makeRow(overrides: Partial<SubscriptionRow> = {}): SubscriptionRow {
 }
 
 // ---------------------------------------------------------------------------
-// UpcomingCharges tests
+// Tests
 // ---------------------------------------------------------------------------
 
 describe("UpcomingCharges", () => {
@@ -118,71 +117,14 @@ describe("UpcomingCharges", () => {
     );
     expect(container.firstChild).toBeNull();
   });
-});
 
-// ---------------------------------------------------------------------------
-// SubscriptionCalendar tests
-// ---------------------------------------------------------------------------
+  it("shows 'mañana' when charge is tomorrow", () => {
+    const today = new Date("2026-05-14T12:00:00");
+    nextId = 40;
+    const rows = [makeRow({ id: 40, label: "Disney+", nextOccurrence: "2026-05-15" })];
+    render(<UpcomingCharges rows={rows} excludedIds={new Set()} today={today} />);
 
-describe("SubscriptionCalendar", () => {
-  it("renders the current month calendar with section title", () => {
-    nextId = 100;
-    const rows = [makeRow({ nextOccurrence: "2026-05-15" })];
-    render(<SubscriptionCalendar rows={rows} excludedIds={new Set()} />);
-
-    // Calendar title should appear.
-    expect(screen.getByText("Calendario del mes")).toBeInTheDocument();
-  });
-
-  it("days with charges get rdp-day-charge class via modifiersClassNames", () => {
-    nextId = 200;
-    // Set up a row that charges on day 10 of the current month (May 2026).
-    const rows = [makeRow({ id: 200, nextOccurrence: "2026-05-10" })];
-    render(<SubscriptionCalendar rows={rows} excludedIds={new Set()} />);
-
-    // React-day-picker applies modifiersClassNames to the day cell.
-    // The charge modifier class is rdp-day-charge (part of rdp-day-charge-top/medianas/pequeñas).
-    const chargeDays = document.querySelectorAll(".rdp-day-charge");
-    expect(chargeDays.length).toBeGreaterThan(0);
-  });
-
-  it("excluded subs do not produce charge-day markers", () => {
-    nextId = 400;
-    const rows = [
-      makeRow({ id: 400, label: "Netflix", nextOccurrence: "2026-05-20" }),
-      makeRow({ id: 401, label: "Spotify", nextOccurrence: "2026-05-20" }),
-    ];
-    // Exclude both — no charge class applied.
-    render(<SubscriptionCalendar rows={rows} excludedIds={new Set([400, 401])} />);
-
-    const chargeDays = document.querySelectorAll(".rdp-day-charge");
-    expect(chargeDays.length).toBe(0);
-  });
-
-  it("only active (non-excluded) subs appear in charge day markers", () => {
-    nextId = 500;
-    const rows = [
-      makeRow({ id: 500, label: "Netflix", nextOccurrence: "2026-05-20" }),
-      makeRow({ id: 501, label: "Spotify", nextOccurrence: "2026-05-15" }),
-    ];
-    // Exclude Netflix — only Spotify's day should have a charge marker.
-    render(<SubscriptionCalendar rows={rows} excludedIds={new Set([500])} />);
-
-    // Exactly 1 charge day visible (day 15 for Spotify).
-    const chargeDays = document.querySelectorAll(".rdp-day-charge");
-    expect(chargeDays.length).toBe(1);
-  });
-
-  it("multi-charge days: both subs on same day produce 1 charge marker", () => {
-    nextId = 600;
-    const rows = [
-      makeRow({ id: 600, label: "Netflix", nextOccurrence: "2026-05-20" }),
-      makeRow({ id: 601, label: "Spotify", nextOccurrence: "2026-05-20" }),
-    ];
-    render(<SubscriptionCalendar rows={rows} excludedIds={new Set()} />);
-
-    // 2 subs on the same day → still 1 day cell gets the charge class.
-    const chargeDays = document.querySelectorAll(".rdp-day-charge");
-    expect(chargeDays.length).toBe(1);
+    expect(screen.getByText("Disney+")).toBeInTheDocument();
+    expect(screen.getByText(/mañana/)).toBeInTheDocument();
   });
 });

@@ -1,13 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Calculator, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
-import { classifyTiers } from "@/lib/subscriptions/tiers";
-import { SubscriptionTierSection } from "./subscription-tier-section";
-import { SubscriptionCalendar } from "./subscription-calendar";
+import { SubscriptionCalendarGrid } from "./subscription-calendar-grid";
+import { UpcomingCharges } from "./upcoming-charges";
 import type { AggregationBucket } from "@/lib/fx/aggregate";
 import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
 
@@ -302,11 +301,6 @@ export function SubscriptionsCalculator({
   const { remainingMonthly, remainingAnnual, savingsMonthly, savingsAnnual } =
     computeCalculatorTotals(monthlyTotals, annualTotals, rows, excludedIds);
 
-  // Tier classification — recomputes when exclusions change.
-  const activeRows = useMemo(() => rows.filter((r) => !excludedIds.has(r.id)), [rows, excludedIds]);
-
-  const tiers = useMemo(() => classifyTiers(activeRows), [activeRows]);
-
   if (rows.length === 0) {
     return (
       <Card>
@@ -379,37 +373,16 @@ export function SubscriptionsCalculator({
         </>
       )}
 
-      {/* Tier sections — recompute with active rows */}
-      <SubscriptionTierSection
-        tier="top"
-        rows={tiers.top}
-        subtotal={tiers.topSubtotal}
-        pct={tiers.topPct}
-        calculatorEnabled={isOpen}
+      {/* Calendar grid — the main listing */}
+      <SubscriptionCalendarGrid
+        rows={rows}
         excludedIds={excludedIds}
-        onToggleExcluded={handleToggle}
-      />
-      <SubscriptionTierSection
-        tier="medianas"
-        rows={tiers.medianas}
-        subtotal={tiers.medianasSubtotal}
-        pct={tiers.medianasPct}
-        calculatorEnabled={isOpen}
-        excludedIds={excludedIds}
-        onToggleExcluded={handleToggle}
-      />
-      <SubscriptionTierSection
-        tier="pequeñas"
-        rows={tiers.pequeñas}
-        subtotal={tiers.pequeñasSubtotal}
-        pct={tiers.pequeñasPct}
-        calculatorEnabled={isOpen}
-        excludedIds={excludedIds}
+        isCalculatorOpen={isOpen}
         onToggleExcluded={handleToggle}
       />
 
-      {/* Calendar */}
-      <SubscriptionCalendar rows={rows} excludedIds={excludedIds} />
+      {/* Próximos 7 días callout */}
+      <UpcomingCharges rows={rows} excludedIds={excludedIds} />
     </div>
   );
 }

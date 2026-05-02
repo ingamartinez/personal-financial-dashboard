@@ -81,46 +81,6 @@ const ANNUAL_TOTALS: AggregationBucket[] = [
   { currency: "COP", cents: BigInt(-90000), txCount: 2, missingTrmCount: 0, convertedCount: 0 },
 ];
 
-// Scenario for tier reclassification: 3 rows where excluding the dominant one shifts tiers.
-// Row A: 800 COP (80%) — initially in Top
-// Row B: 100 COP (10%) — initially in Medianas (cumulative = 90%)
-// Row C: 100 COP (10%) — initially in Pequeñas
-// When Row A is excluded: Row B (50%) + Row C (50%) → both in Top (can't reach 70% with just B)
-const ROW_A = makeRow({
-  id: 10,
-  label: "Premium",
-  amountCents: BigInt(-800),
-  annualCents: BigInt(-9600),
-  displayAmount: { cents: BigInt(-800), currency: "COP", converted: false, appliedTrm: null },
-  displayAmountAbsCents: BigInt(800),
-  nextOccurrence: "2026-05-10",
-});
-const ROW_B = makeRow({
-  id: 11,
-  label: "Básico",
-  amountCents: BigInt(-100),
-  annualCents: BigInt(-1200),
-  displayAmount: { cents: BigInt(-100), currency: "COP", converted: false, appliedTrm: null },
-  displayAmountAbsCents: BigInt(100),
-  nextOccurrence: "2026-05-20",
-});
-const ROW_C = makeRow({
-  id: 12,
-  label: "Mini",
-  amountCents: BigInt(-100),
-  annualCents: BigInt(-1200),
-  displayAmount: { cents: BigInt(-100), currency: "COP", converted: false, appliedTrm: null },
-  displayAmountAbsCents: BigInt(100),
-  nextOccurrence: "2026-05-25",
-});
-
-const TIER_MONTHLY: AggregationBucket[] = [
-  { currency: "COP", cents: BigInt(-1000), txCount: 3, missingTrmCount: 0, convertedCount: 0 },
-];
-const TIER_ANNUAL: AggregationBucket[] = [
-  { currency: "COP", cents: BigInt(-12000), txCount: 3, missingTrmCount: 0, convertedCount: 0 },
-];
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -138,15 +98,39 @@ describe("SubscriptionsCalculator", () => {
     // Calculator button is visible.
     expect(screen.getByRole("button", { name: /calculadora/i })).toBeInTheDocument();
 
-    // No checkboxes rendered.
-    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
-
     // No savings lines.
     expect(screen.queryByText(/si cancelás/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/ahorrarías/i)).not.toBeInTheDocument();
   });
 
-  it("click Calculadora — checkboxes appear, all checked", async () => {
+  it("renders the calendar grid", () => {
+    render(
+      <SubscriptionsCalculator
+        rows={[ROW_NETFLIX, ROW_SPOTIFY]}
+        monthlyTotals={MONTHLY_TOTALS}
+        annualTotals={ANNUAL_TOTALS}
+      />,
+    );
+
+    // Calendar grid must be present.
+    expect(screen.getByTestId("subscription-calendar-grid")).toBeInTheDocument();
+  });
+
+  it("grid shows subscription pills for rows", () => {
+    render(
+      <SubscriptionsCalculator
+        rows={[ROW_NETFLIX, ROW_SPOTIFY]}
+        monthlyTotals={MONTHLY_TOTALS}
+        annualTotals={ANNUAL_TOTALS}
+      />,
+    );
+
+    // Both subs are on day 15 — they should appear as pills in the grid.
+    const pills = screen.getAllByTestId("sub-pill");
+    expect(pills.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("click Calculadora — calculator opens, grid is in calculator mode", async () => {
     const user = userEvent.setup();
     render(
       <SubscriptionsCalculator
@@ -158,18 +142,18 @@ describe("SubscriptionsCalculator", () => {
 
     await user.click(screen.getByRole("button", { name: /calculadora/i }));
 
-    const checkboxes = screen.getAllByRole("checkbox");
-    expect(checkboxes).toHaveLength(2);
-    for (const cb of checkboxes) {
-      expect(cb).toBeChecked();
-    }
+    // Calculator is open when "Cerrar calculadora" button is visible.
+    expect(screen.getByRole("button", { name: /cerrar calculadora/i })).toBeInTheDocument();
+
+    // Grid is still rendered.
+    expect(screen.getByTestId("subscription-calendar-grid")).toBeInTheDocument();
 
     // Savings lines not shown when none excluded.
     expect(screen.queryByText(/si cancelás/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/ahorrarías/i)).not.toBeInTheDocument();
   });
 
-  it("uncheck one row — savings lines appear with correct count", async () => {
+  it("in calculator mode: clicking a pill toggles exclusion and shows savings", async () => {
     const user = userEvent.setup();
     render(
       <SubscriptionsCalculator
@@ -181,15 +165,16 @@ describe("SubscriptionsCalculator", () => {
 
     await user.click(screen.getByRole("button", { name: /calculadora/i }));
 
-    // Uncheck Netflix (first checkbox).
-    const [netflixCb] = screen.getAllByRole("checkbox");
-    await user.click(netflixCb);
+    // Click the first pill to exclude it.
+    const pills = screen.getAllByTestId("sub-pill");
+    await user.click(pills[0]);
 
+    // Savings lines appear.
     expect(screen.getByText(/si cancelás 1 desmarcada/i)).toBeInTheDocument();
     expect(screen.getByText(/ahorrarías/i)).toBeInTheDocument();
   });
 
-  it("Marcar todas — all checked, savings lines disappear", async () => {
+  it("in calculator mode: excluded pill gets muted visual state", async () => {
     const user = userEvent.setup();
     render(
       <SubscriptionsCalculator
@@ -201,25 +186,40 @@ describe("SubscriptionsCalculator", () => {
 
     await user.click(screen.getByRole("button", { name: /calculadora/i }));
 
-    // Uncheck Netflix.
-    const [netflixCb] = screen.getAllByRole("checkbox");
-    await user.click(netflixCb);
+    const pills = screen.getAllByTestId("sub-pill");
+    await user.click(pills[0]);
+
+    // The clicked pill should now have opacity-50 applied.
+    expect(pills[0].className).toMatch(/opacity-50/);
+  });
+
+  it("Marcar todas — re-includes all, savings lines disappear", async () => {
+    const user = userEvent.setup();
+    render(
+      <SubscriptionsCalculator
+        rows={[ROW_NETFLIX, ROW_SPOTIFY]}
+        monthlyTotals={MONTHLY_TOTALS}
+        annualTotals={ANNUAL_TOTALS}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /calculadora/i }));
+
+    // Exclude one pill.
+    const pills = screen.getAllByTestId("sub-pill");
+    await user.click(pills[0]);
+    expect(screen.getByText(/si cancelás/i)).toBeInTheDocument();
 
     // "Marcar todas" button should appear.
     const markAllBtn = screen.getByRole("button", { name: /marcar todas/i });
     await user.click(markAllBtn);
-
-    // All checkboxes checked again.
-    for (const cb of screen.getAllByRole("checkbox")) {
-      expect(cb).toBeChecked();
-    }
 
     // Savings lines gone.
     expect(screen.queryByText(/si cancelás/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/ahorrarías/i)).not.toBeInTheDocument();
   });
 
-  it("Cerrar calculadora — checkboxes disappear, reopening shows all checked", async () => {
+  it("Cerrar calculadora — returns to normal mode", async () => {
     const user = userEvent.setup();
     render(
       <SubscriptionsCalculator
@@ -231,66 +231,18 @@ describe("SubscriptionsCalculator", () => {
 
     // Open calculator.
     await user.click(screen.getByRole("button", { name: /calculadora/i }));
-
-    // Uncheck Netflix so state is dirty.
-    const [netflixCb] = screen.getAllByRole("checkbox");
-    await user.click(netflixCb);
-    expect(screen.getByText(/si cancelás/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /cerrar calculadora/i })).toBeInTheDocument();
 
     // Close calculator.
     await user.click(screen.getByRole("button", { name: /cerrar calculadora/i }));
 
-    // Checkboxes gone.
-    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    // Calculadora button is back, close button is gone.
+    expect(screen.getByRole("button", { name: /calculadora/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /cerrar calculadora/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/si cancelás/i)).not.toBeInTheDocument();
-
-    // Reopen — all should be checked (state reset on close).
-    await user.click(screen.getByRole("button", { name: /calculadora/i }));
-    for (const cb of screen.getAllByRole("checkbox")) {
-      expect(cb).toBeChecked();
-    }
   });
 
-  it("tier section headers are visible for Top spend", () => {
-    render(
-      <SubscriptionsCalculator
-        rows={[ROW_A, ROW_B, ROW_C]}
-        monthlyTotals={TIER_MONTHLY}
-        annualTotals={TIER_ANNUAL}
-      />,
-    );
-
-    // "Top spend" header should appear.
-    expect(screen.getByText("Top spend")).toBeInTheDocument();
-  });
-
-  it("excluding a sub in calculator shows savings, all checkboxes still rendered", async () => {
-    const user = userEvent.setup();
-    render(
-      <SubscriptionsCalculator
-        rows={[ROW_A, ROW_B, ROW_C]}
-        monthlyTotals={TIER_MONTHLY}
-        annualTotals={TIER_ANNUAL}
-      />,
-    );
-
-    // Open calculator.
-    await user.click(screen.getByRole("button", { name: /calculadora/i }));
-
-    // 3 checkboxes total (one per row across all tiers).
-    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
-
-    // Uncheck "Premium" (ROW_A).
-    const premiumCb = screen.getByRole("checkbox", { name: /incluir premium/i });
-    await user.click(premiumCb);
-
-    // Savings line appears.
-    expect(screen.getByText(/si cancelás 1 desmarcada/i)).toBeInTheDocument();
-    expect(screen.getByText(/ahorrarías/i)).toBeInTheDocument();
-  });
-
-  it("totals header shows 'Suscripciones' H1 is on the page (page copy)", () => {
-    // This verifies the orchestrator renders properly.
+  it("totals card shows próximo cobro", () => {
     render(
       <SubscriptionsCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
@@ -299,7 +251,12 @@ describe("SubscriptionsCalculator", () => {
       />,
     );
 
-    // "Próximo cobro" label should appear in totals card.
     expect(screen.getByText(/Próximo cobro/i)).toBeInTheDocument();
+  });
+
+  it("renders empty state when rows is empty", () => {
+    render(<SubscriptionsCalculator rows={[]} monthlyTotals={[]} annualTotals={[]} />);
+
+    expect(screen.getByText(/no hay suscripciones activas/i)).toBeInTheDocument();
   });
 });
