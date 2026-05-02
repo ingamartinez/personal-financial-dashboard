@@ -30,7 +30,6 @@ import { db as defaultDb } from "@/lib/db";
 import { accounts, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { emitNotification } from "@/lib/notifications/emit";
-import { mergeAnomalyFlags } from "@/lib/insights/merchant-anomaly";
 import type { AnomalyFlags } from "@/lib/insights/merchant-anomaly";
 import { createLogger } from "@/lib/logger";
 
@@ -310,23 +309,17 @@ export async function detectVelocityForUser(
         lastTxId: cluster.lastTxId,
       };
 
-      // Fetch current anomaly_flags for all txs in cluster to merge
-      const clusterRows = await database
-        .select({ id: transactions.id, anomalyFlags: transactions.anomalyFlags })
-        .from(transactions)
+      // Single bulk UPDATE — Postgres `||` merges the velocity blob into
+      // existing anomaly_flags atomically (right-side wins on key conflicts,
+      // so existing flags under OTHER keys survive).
+      const velocityBlob = JSON.stringify({ velocity: velocityFlag, detectedAt: now });
+      await database
+        .update(transactions)
+        .set({
+          anomalyFlags: sql`COALESCE(anomaly_flags, '{}'::jsonb) || ${velocityBlob}::jsonb`,
+          updatedAt: new Date(),
+        })
         .where(and(eq(transactions.userId, userId), inArray(transactions.id, cluster.txIds)));
-
-      // Build per-tx merged flags and update each one
-      for (const row of clusterRows) {
-        const existing = row.anomalyFlags as AnomalyFlags | null;
-        const next: AnomalyFlags = { velocity: velocityFlag, detectedAt: now };
-        const merged = existing ? mergeAnomalyFlags(existing, next) : next;
-
-        await database
-          .update(transactions)
-          .set({ anomalyFlags: merged, updatedAt: new Date() })
-          .where(and(eq(transactions.id, row.id), eq(transactions.userId, userId)));
-      }
 
       // Determine card label for notification body
       const firstEligible = surroundingRows.find((r) => r.id === cluster.firstTxId);

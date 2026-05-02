@@ -42,6 +42,7 @@ const SENTINEL = "__duppay_test";
 
 async function cleanup() {
   await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__duppay_test%'`);
+  await db.execute(sql`DELETE FROM recurring_transactions WHERE label LIKE '__duppay_test%'`);
 }
 
 async function getAccountIds(): Promise<{ accountA: number; accountB: number }> {
@@ -93,6 +94,29 @@ async function setRecurringId(txId: number, recurringId: number) {
   await db.execute(sql`
     UPDATE transactions SET recurring_id = ${recurringId} WHERE id = ${txId}
   `);
+}
+
+/**
+ * Seeds a minimal synthetic recurring_transactions row.
+ * Returns its id so tests can link transactions to it.
+ */
+async function seedRecurring(accountId: number): Promise<number> {
+  const [row] = await db.execute<{ id: number }>(sql`
+    INSERT INTO recurring_transactions (
+      user_id, account_id, label, amount_cents, currency, day_of_month, active, amount_type
+    ) VALUES (
+      ${TEST_USER_ID},
+      ${accountId},
+      ${"__duppay_test_recurring"},
+      ${-50000},
+      'COP',
+      1,
+      true,
+      'fixed'
+    )
+    RETURNING id
+  `);
+  return row.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +211,7 @@ describe("detectDuplicatePaymentForUser — skip rules", () => {
 describe("detectDuplicatePaymentForUser — detection fires", () => {
   let accountA: number;
   let accountB: number;
+  let recurringId: number;
 
   beforeEach(async () => {
     await cleanup();
@@ -194,6 +219,9 @@ describe("detectDuplicatePaymentForUser — detection fires", () => {
     const ids = await getAccountIds();
     accountA = ids.accountA;
     accountB = ids.accountB;
+    // Seed a synthetic recurring row — guarantees recurring_id IS NOT NULL
+    // prerequisite without depending on findash_test seed state.
+    recurringId = await seedRecurring(accountA);
   });
 
   afterEach(cleanup);
@@ -201,8 +229,6 @@ describe("detectDuplicatePaymentForUser — detection fires", () => {
   it("fires when new tx matches existing tx on different account with recurring on existing", async () => {
     const merchant = `${SENTINEL}_fire_existing_rec_${Date.now()}`;
 
-    // Existing tx on accountA with recurring_id (we'll fake it with a real recurring_id if available,
-    // or just seed with known values and update)
     const existingId = await seedTx({
       accountId: accountA,
       amountCents: BigInt(-50_000),
@@ -211,18 +237,7 @@ describe("detectDuplicatePaymentForUser — detection fires", () => {
       description: `${SENTINEL}_existing_rec`,
     });
 
-    // Simulate recurring_id by finding any existing recurring transaction
-    const [anyRecurring] = await db.execute<{ id: number }>(sql`
-      SELECT id FROM recurring_transactions WHERE user_id = ${TEST_USER_ID} LIMIT 1
-    `);
-
-    if (anyRecurring) {
-      await setRecurringId(existingId, anyRecurring.id);
-    } else {
-      // If no recurring exists, skip test gracefully
-      // (findash_test may not have seeded recurring txs)
-      return;
-    }
+    await setRecurringId(existingId, recurringId);
 
     const newId = await seedTx({
       accountId: accountB,
@@ -273,13 +288,7 @@ describe("detectDuplicatePaymentForUser — detection fires", () => {
       description: `${SENTINEL}_new_with_rec`,
     });
 
-    const [anyRecurring] = await db.execute<{ id: number }>(sql`
-      SELECT id FROM recurring_transactions WHERE user_id = ${TEST_USER_ID} LIMIT 1
-    `);
-
-    if (!anyRecurring) return; // skip if no recurring seeded
-
-    await setRecurringId(newId, anyRecurring.id);
+    await setRecurringId(newId, recurringId);
 
     await detectDuplicatePaymentForUser(TEST_USER_ID, [newId], db);
 
@@ -302,19 +311,14 @@ describe("detectDuplicatePaymentForUser — detection fires", () => {
       description: `${SENTINEL}_existing_diff`,
     });
 
+    await setRecurringId(existingId, recurringId);
+
     const newId = await seedTx({
       accountId: accountB,
       amountCents: BigInt(-90_000), // 10% different → outside 5% tolerance
       canonicalMerchant: merchant,
       description: `${SENTINEL}_new_diff`,
     });
-
-    const [anyRecurring] = await db.execute<{ id: number }>(sql`
-      SELECT id FROM recurring_transactions WHERE user_id = ${TEST_USER_ID} LIMIT 1
-    `);
-    if (!anyRecurring) return;
-
-    await setRecurringId(existingId, anyRecurring.id);
 
     await detectDuplicatePaymentForUser(TEST_USER_ID, [newId], db);
     expect(mocks.emitNotification).not.toHaveBeenCalled();
@@ -333,19 +337,14 @@ describe("detectDuplicatePaymentForUser — detection fires", () => {
       description: `${SENTINEL}_existing_same`,
     });
 
+    await setRecurringId(existingId, recurringId);
+
     const newId = await seedTx({
       accountId: accountA, // same account
       amountCents: BigInt(-50_000),
       canonicalMerchant: merchant,
       description: `${SENTINEL}_new_same`,
     });
-
-    const [anyRecurring] = await db.execute<{ id: number }>(sql`
-      SELECT id FROM recurring_transactions WHERE user_id = ${TEST_USER_ID} LIMIT 1
-    `);
-    if (!anyRecurring) return;
-
-    await setRecurringId(existingId, anyRecurring.id);
 
     await detectDuplicatePaymentForUser(TEST_USER_ID, [newId], db);
     expect(mocks.emitNotification).not.toHaveBeenCalled();
@@ -360,9 +359,11 @@ describe("detectDuplicatePaymentForUser — detection fires", () => {
       accountId: accountA,
       amountCents: BigInt(-50_000),
       canonicalMerchant: merchant,
-      daysAgo: 36, // beyond 35-day window
+      daysAgo: 40, // well beyond 35-day window (new tx is daysAgo:1, so cutoff ≈ now-36d)
       description: `${SENTINEL}_existing_old`,
     });
+
+    await setRecurringId(existingId, recurringId);
 
     const newId = await seedTx({
       accountId: accountB,
@@ -370,13 +371,6 @@ describe("detectDuplicatePaymentForUser — detection fires", () => {
       canonicalMerchant: merchant,
       description: `${SENTINEL}_new_after_window`,
     });
-
-    const [anyRecurring] = await db.execute<{ id: number }>(sql`
-      SELECT id FROM recurring_transactions WHERE user_id = ${TEST_USER_ID} LIMIT 1
-    `);
-    if (!anyRecurring) return;
-
-    await setRecurringId(existingId, anyRecurring.id);
 
     await detectDuplicatePaymentForUser(TEST_USER_ID, [newId], db);
     expect(mocks.emitNotification).not.toHaveBeenCalled();

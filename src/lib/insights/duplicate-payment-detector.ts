@@ -235,7 +235,13 @@ export async function detectDuplicatePaymentForUser(
             metadata: accounts.metadata,
           })
           .from(accounts)
-          .where(and(eq(accounts.id, matched.accountId), eq(accounts.userId, userId)))
+          .where(
+            and(
+              eq(accounts.id, matched.accountId),
+              eq(accounts.userId, userId),
+              notDeleted(accounts.deletedAt),
+            ),
+          )
           .limit(1);
         if (fetchedAccount) {
           matchedAccount = fetchedAccount;
