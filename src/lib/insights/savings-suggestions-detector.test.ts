@@ -114,17 +114,29 @@ describe("runSavingsSuggestionForUser — no idle accounts", () => {
 
   afterEach(cleanup);
 
-  it("emits nothing when user has no savings accounts", async () => {
-    // Test user may have savings accounts in seed — override by checking
-    // if they have large enough balances. If existing accounts are below
-    // threshold, this test still passes.
-    // We rely on the fact that test seed accounts don't have 5M COP balance.
+  it("emits nothing when user has a savings account below the 5M COP threshold", async () => {
+    // Seed a savings account with a balance of 2M COP — well below the 5M idle
+    // threshold. detectIdleSavings will skip it, so no CDT/FIC notification
+    // should be emitted.
+    const accountId = await seedSavingsAccount();
+    // 2M COP inflow — below the 5M COP IDLE_BALANCE_THRESHOLD_CENTS
+    await seedTx({
+      accountId,
+      amountCents: BigInt(2_000_000 * 100),
+      daysAgo: 30,
+    });
+
     await runSavingsSuggestionForUser(TEST_USER_ID, db);
 
-    // Might or might not emit depending on seed state. If seed has no large
-    // savings balances, emitNotification won't be called for CDT/FIC.
-    // Since we can't guarantee seed state, this test just verifies no crash.
-    expect(true).toBe(true);
+    const cdtCalls = mocks.emitNotification.mock.calls.filter(
+      ([, input]) => input.type === "cdt_suggestion",
+    );
+    const ficCalls = mocks.emitNotification.mock.calls.filter(
+      ([, input]) => input.type === "fic_suggestion",
+    );
+
+    expect(cdtCalls).toHaveLength(0);
+    expect(ficCalls).toHaveLength(0);
   });
 });
 

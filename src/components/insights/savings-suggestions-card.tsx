@@ -114,7 +114,7 @@ function AccountSuggestionBlock({ row }: { row: SavingsSuggestionRow }) {
                   CDT {term.months}M
                 </td>
                 <td className="py-1 pr-3 text-right text-emerald-800 tabular-nums dark:text-emerald-300">
-                  {(term.ratePct * 100).toFixed(1)}%
+                  {term.ratePct.toFixed(1)}%
                 </td>
                 <td className="py-1 pr-3 text-left text-emerald-600 dark:text-emerald-400">
                   Bloqueado {term.months} meses

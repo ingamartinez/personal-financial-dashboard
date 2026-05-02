@@ -111,17 +111,29 @@ export async function fetchSavingsSuggestion(userId: number): Promise<SavingsSug
 
   const accountMap = new Map(accountRows.map((a) => [a.id, a]));
 
-  return idleAccounts.map((idleAccount) => {
+  const rows: SavingsSuggestionRow[] = [];
+
+  for (const idleAccount of idleAccounts) {
+    const cdt = computeCdtSuggestion(idleAccount, CDT_RATES);
+    const fic = computeFicSuggestion(idleAccount, FIC_YIELD);
+
+    // Spec decision #4 + #8: if both suggestions compute to null (e.g. monthly
+    // burn so high that suggestedAmount < 1M COP), skip the row entirely.
+    // The card already guards on rows.length === 0 and renders nothing.
+    if (cdt === null && fic === null) continue;
+
     const accountRow = accountMap.get(idleAccount.accountId)!;
     const accountLabel = formatAccountLabel(accountRow);
 
-    return {
+    rows.push({
       accountId: idleAccount.accountId,
       accountLabel,
       avgBalanceCents: idleAccount.avgBalanceCents,
       currency: idleAccount.currency,
-      cdt: computeCdtSuggestion(idleAccount, CDT_RATES),
-      fic: computeFicSuggestion(idleAccount, FIC_YIELD),
-    };
-  });
+      cdt,
+      fic,
+    });
+  }
+
+  return rows;
 }

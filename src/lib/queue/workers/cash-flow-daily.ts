@@ -59,7 +59,8 @@ export async function cashFlowDailyProcessor(job: Job<CashFlowDailyJobData>): Pr
       forecastsRun++;
 
       // C.1+C.2 — savings suggestions (fire-and-forget, quarterly dedup in emitNotification)
-      runSavingsSuggestionForUser(userId, db).catch((err: unknown) => {
+      // Pass the already-fetched FX rate so each user iteration avoids a redundant DB query.
+      runSavingsSuggestionForUser(userId, db, fx.rate).catch((err: unknown) => {
         log.error({ err, userId, event: "savings_suggestion_failed" }, "savings suggestion failed");
       });
 

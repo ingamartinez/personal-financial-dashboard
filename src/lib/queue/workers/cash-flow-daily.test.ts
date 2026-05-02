@@ -164,8 +164,8 @@ describe("cashFlowDailyProcessor", () => {
     await Promise.resolve();
 
     expect(mocks.runSavingsSuggestionForUser).toHaveBeenCalledTimes(2);
-    expect(mocks.runSavingsSuggestionForUser).toHaveBeenCalledWith(1, expect.anything());
-    expect(mocks.runSavingsSuggestionForUser).toHaveBeenCalledWith(2, expect.anything());
+    expect(mocks.runSavingsSuggestionForUser).toHaveBeenCalledWith(1, expect.anything(), 4000);
+    expect(mocks.runSavingsSuggestionForUser).toHaveBeenCalledWith(2, expect.anything(), 4000);
   });
 
   it("does not throw when runSavingsSuggestionForUser rejects (fire-and-forget)", async () => {

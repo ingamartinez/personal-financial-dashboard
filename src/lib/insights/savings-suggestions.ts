@@ -23,6 +23,7 @@ import { formatCop } from "@/lib/money";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { emitNotification } from "@/lib/notifications/emit";
 import { canAccessFeature } from "@/lib/auth/can-access-feature";
+import { getCurrentFxRate } from "@/lib/fx/repo";
 import { CDT_RATES, FIC_YIELD } from "./cdt-fic-rates";
 import { createLogger } from "@/lib/logger";
 import type { Currency } from "@/lib/types";
@@ -206,10 +207,12 @@ export function computeCdtSuggestion(
   ];
 
   const terms: CdtTerm[] = termEntries.map(([months, ratePct]) => {
+    // Yield computation uses the raw fraction from CDT_RATES directly.
     const rateScaled = BigInt(Math.round(ratePct * 1000));
     const estimatedYieldCents =
       (suggestedAmountCents * rateScaled * BigInt(months)) / BigInt(12_000);
-    return { months, ratePct, estimatedYieldCents };
+    // ratePct stored in 0..100 form to match FicSuggestion.ratePct domain.
+    return { months, ratePct: ratePct * 100, estimatedYieldCents };
   });
 
   return {
@@ -270,14 +273,16 @@ export function computeFicSuggestion(
 export async function runSavingsSuggestionForUser(
   userId: number,
   database: DB = defaultDb,
+  /** Pre-fetched FX rate from the calling worker. When omitted, fetched here. */
+  cachedFxRate?: number,
 ): Promise<void> {
   const ninetyDaysAgo = new Date(Date.now() - SAVINGS_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const now = new Date();
 
-  // Fetch FX rate
-  const { getCurrentFxRate } = await import("@/lib/fx/repo");
-  const fx = await getCurrentFxRate(database);
-  const fxRate = fx.rate;
+  // Use caller-provided FX rate when available to avoid a redundant DB query
+  // per-user (the cash-flow-daily worker already fetches it once for all users).
+  const fxRate =
+    cachedFxRate !== undefined ? cachedFxRate : (await getCurrentFxRate(database)).rate;
 
   // Fetch savings accounts with snapshot-anchored derived balance
   const accountRows = await database
