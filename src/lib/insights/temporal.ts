@@ -359,7 +359,7 @@ export function detectSeasonality(
     monthAvgs.set(monthIdx, sum / BigInt(qualifying.length));
   }
 
-  if (monthAvgs.size < 12) return [];
+  if (monthAvgs.size === 0) return [];
 
   // Annual mean = mean of the 12 monthly averages
   let sumAvgs = BigInt(0);

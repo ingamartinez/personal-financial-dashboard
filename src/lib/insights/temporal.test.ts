@@ -283,4 +283,26 @@ describe("detectSeasonality", () => {
     // (It had low spend anyway so this verifies the guard doesn't accidentally include it)
     expect(july).toBeUndefined();
   });
+
+  it("24 months of data with zero February spend → returns triggers for other months, not empty", () => {
+    // Build 730 days; February has zero expenses (user never spends in Feb).
+    // The old `monthAvgs.size < 12` guard would return [] because Feb gets no entry.
+    // The relaxed `monthAvgs.size === 0` guard must NOT suppress the other 11 months.
+    const data: PerDayTotal[] = [];
+    const start = new Date("2022-06-15T00:00:00Z").getTime();
+    for (let i = 0; i < 730; i++) {
+      const day = new Date(start + i * 86400000);
+      const month = day.getUTCMonth() + 1;
+      // February: no entries at all
+      if (month === 2) continue;
+      // December: 3× baseline so it triggers
+      const cop = month === 12 ? BigInt(3_000_000) : BigInt(200_000);
+      data.push({ day, cop });
+    }
+    const results = detectSeasonality(data, TODAY);
+    // December should still be detected — function must NOT return [] just because Feb is absent
+    expect(results.length).toBeGreaterThan(0);
+    const dec = results.find((r) => r.monthIndex === 12);
+    expect(dec).toBeDefined();
+  });
 });

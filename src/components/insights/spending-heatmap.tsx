@@ -12,6 +12,7 @@
 
 import { useState } from "react";
 import type { DayBucketSerialized, SpendBin } from "@/lib/insights/temporal";
+import { formatCop } from "@/lib/money";
 
 type Props = {
   dayBuckets: DayBucketSerialized[];
@@ -35,14 +36,7 @@ const WEEKDAY_NAMES_ES = [
 ] as const;
 
 function formatTooltip(dateStr: string, copCentsStr: string): string {
-  const cents = BigInt(copCentsStr);
-  // Format as COP with no decimals
-  const pesos = Number(cents) / 100;
-  const formatted = new Intl.NumberFormat("es-CO", {
-    style: "currency",
-    currency: "COP",
-    maximumFractionDigits: 0,
-  }).format(pesos);
+  const formatted = formatCop(BigInt(copCentsStr));
 
   const d = new Date(dateStr + "T00:00:00Z");
   const weekdayName = WEEKDAY_NAMES_ES[d.getUTCDay()] ?? "";

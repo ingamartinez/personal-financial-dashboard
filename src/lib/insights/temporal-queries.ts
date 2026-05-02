@@ -14,6 +14,9 @@ import { transactions } from "@/lib/db/schema";
 import { notDeleted, notTransfer } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import { getCurrentFxRate } from "@/lib/fx/repo";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger({ module: "insights/temporal-queries" });
 import {
   computeDailyHeatmap,
   detectExpensiveDays,
@@ -65,27 +68,33 @@ export async function fetchTemporalSummary(
   // Aggregate per-day expense totals by (date, currency).
   // We aggregate natively then convert to COP in JS to avoid SQL float drift.
   // Using Drizzle builder for all columns; no raw Date/BigInt in template params.
-  const rows = await db
-    .select({
-      dayStr: sql<string>`TO_CHAR(${transactions.occurredAt} AT TIME ZONE 'America/Bogota', 'YYYY-MM-DD')`,
-      currency: transactions.currency,
-      totalCents: sql<string>`SUM(ABS(${transactions.amountCents}))::text`,
-    })
-    .from(transactions)
-    .where(
-      and(
-        eq(transactions.userId, userId),
-        notDeleted(transactions.deletedAt),
-        notTransfer(transactions.channel),
-        // Only expenses (negative amounts)
-        sql`${transactions.amountCents} < 0`,
-        gte(transactions.occurredAt, windowStart),
-      ),
-    )
-    .groupBy(
-      sql`TO_CHAR(${transactions.occurredAt} AT TIME ZONE 'America/Bogota', 'YYYY-MM-DD')`,
-      transactions.currency,
-    );
+  let rows: { dayStr: string; currency: string; totalCents: string }[];
+  try {
+    rows = await db
+      .select({
+        dayStr: sql<string>`TO_CHAR(${transactions.occurredAt} AT TIME ZONE 'America/Bogota', 'YYYY-MM-DD')`,
+        currency: transactions.currency,
+        totalCents: sql<string>`SUM(ABS(${transactions.amountCents}))::text`,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          notDeleted(transactions.deletedAt),
+          notTransfer(transactions.channel),
+          // Only expenses (negative amounts)
+          sql`${transactions.amountCents} < 0`,
+          gte(transactions.occurredAt, windowStart),
+        ),
+      )
+      .groupBy(
+        sql`TO_CHAR(${transactions.occurredAt} AT TIME ZONE 'America/Bogota', 'YYYY-MM-DD')`,
+        transactions.currency,
+      );
+  } catch (err) {
+    log.error({ err, userId, event: "temporal_query_failed" }, "temporal query failed");
+    throw err;
+  }
 
   if (rows.length === 0) {
     // No expenses at all — return empty heatmap with hasNoData flag
