@@ -20,8 +20,11 @@ import { fetchRecentAnomalies } from "@/lib/insights/merchant-anomaly-queries";
 import { fetchCashFlowSummary } from "@/lib/insights/cash-flow-queries";
 import { fetchTemporalSummary } from "@/lib/insights/temporal-queries";
 import { fetchRecentDuplicatePayments } from "@/lib/insights/duplicate-payment-queries";
+import { fetchSavingsSuggestion } from "@/lib/insights/savings-suggestions-queries";
 import { dowNameEs, monthNameEs } from "@/lib/insights/temporal";
 import { SpendingHeatmap } from "@/components/insights/spending-heatmap";
+import { SavingsSuggestionsCard } from "@/components/insights/savings-suggestions-card";
+import { canAccessFeature } from "@/lib/auth/can-access-feature";
 import { InsightsViewer } from "./insights-viewer";
 
 export const dynamic = "force-dynamic";
@@ -169,14 +172,23 @@ export default async function InsightsPage({
   // TC Health card — real-time snapshot of all the user's TCs (#705)
   const nowDate = new Date();
   const today = nowInBogota(nowDate);
-  const [tcSnapshots, recentAnomalies, cashFlowSummary, temporalSummary, recentDuplicatePayments] =
-    await Promise.all([
-      fetchUserTcSnapshots(session.id, fx.rate, today),
-      fetchRecentAnomalies(session.id),
-      fetchCashFlowSummary(session.id, nowDate),
-      fetchTemporalSummary(session.id, nowDate),
-      fetchRecentDuplicatePayments(session.id),
-    ]);
+  const [
+    tcSnapshots,
+    recentAnomalies,
+    cashFlowSummary,
+    temporalSummary,
+    recentDuplicatePayments,
+    savingsSuggestions,
+    canSeeSavings,
+  ] = await Promise.all([
+    fetchUserTcSnapshots(session.id, fx.rate, today),
+    fetchRecentAnomalies(session.id),
+    fetchCashFlowSummary(session.id, nowDate),
+    fetchTemporalSummary(session.id, nowDate),
+    fetchRecentDuplicatePayments(session.id),
+    fetchSavingsSuggestion(session.id),
+    canAccessFeature(session.id, "cdt-suggestion"),
+  ]);
   const tcAlerts: Array<{ snap: TcCardSnapshot; triggers: TcAlertTrigger[] }> = tcSnapshots
     .map((snap) => ({ snap, triggers: computeTcAlerts(snap) }))
     .filter((a) => a.triggers.length > 0);
@@ -388,6 +400,11 @@ export default async function InsightsPage({
           )}
         </CardContent>
       </Card>
+
+      {/* Optimizá tus ahorros — C.1 CDT + C.2 FIC savings suggestions (#721) */}
+      {canSeeSavings && savingsSuggestions.length > 0 && (
+        <SavingsSuggestionsCard rows={savingsSuggestions} />
+      )}
 
       <InsightsViewer
         ym={ym}

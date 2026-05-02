@@ -11,6 +11,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   runSalaryGapForUser: vi.fn(),
   runCashFlowForecastForUser: vi.fn(),
+  runSavingsSuggestionForUser: vi.fn(),
   getCurrentFxRate: vi.fn(),
   dbExecute: vi.fn(),
 }));
@@ -18,6 +19,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/insights/cash-flow", () => ({
   runSalaryGapForUser: mocks.runSalaryGapForUser,
   runCashFlowForecastForUser: mocks.runCashFlowForecastForUser,
+}));
+
+vi.mock("@/lib/insights/savings-suggestions", () => ({
+  runSavingsSuggestionForUser: mocks.runSavingsSuggestionForUser,
 }));
 
 vi.mock("@/lib/fx/repo", () => ({
@@ -64,6 +69,7 @@ describe("cashFlowDailyProcessor", () => {
       },
       shortfallChanged: false,
     });
+    mocks.runSavingsSuggestionForUser.mockResolvedValue(undefined);
     // Default: two users
     mocks.dbExecute.mockResolvedValue([{ id: 1 }, { id: 2 }]);
   });
@@ -147,5 +153,27 @@ describe("cashFlowDailyProcessor", () => {
     expect(job.updateProgress).toHaveBeenCalledWith(
       expect.objectContaining({ gapsTotal: 3, done: true }),
     );
+  });
+
+  it("fires runSavingsSuggestionForUser for each user (fire-and-forget hook)", async () => {
+    mocks.dbExecute.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+
+    await cashFlowDailyProcessor(makeJob());
+
+    // Hook is fire-and-forget so we wait a tick for the promise to resolve
+    await Promise.resolve();
+
+    expect(mocks.runSavingsSuggestionForUser).toHaveBeenCalledTimes(2);
+    expect(mocks.runSavingsSuggestionForUser).toHaveBeenCalledWith(1, expect.anything());
+    expect(mocks.runSavingsSuggestionForUser).toHaveBeenCalledWith(2, expect.anything());
+  });
+
+  it("does not throw when runSavingsSuggestionForUser rejects (fire-and-forget)", async () => {
+    mocks.dbExecute.mockResolvedValue([{ id: 1 }]);
+    mocks.runSavingsSuggestionForUser.mockRejectedValueOnce(new Error("savings check failed"));
+
+    const job = makeJob();
+    // The rejection is caught internally — processor must NOT throw
+    await expect(cashFlowDailyProcessor(job)).resolves.toBeUndefined();
   });
 });

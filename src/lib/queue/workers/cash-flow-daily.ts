@@ -11,6 +11,7 @@ import type { Job } from "bullmq";
 import { createLogger } from "@/lib/logger";
 import { createWorker } from "@/lib/queue";
 import { runCashFlowForecastForUser, runSalaryGapForUser } from "@/lib/insights/cash-flow";
+import { runSavingsSuggestionForUser } from "@/lib/insights/savings-suggestions";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { db } from "@/lib/db";
 import { sql } from "drizzle-orm";
@@ -56,6 +57,11 @@ export async function cashFlowDailyProcessor(job: Job<CashFlowDailyJobData>): Pr
       // D.4 — 30d forecast
       await runCashFlowForecastForUser(userId, fx.rate, db, today);
       forecastsRun++;
+
+      // C.1+C.2 — savings suggestions (fire-and-forget, quarterly dedup in emitNotification)
+      runSavingsSuggestionForUser(userId, db).catch((err: unknown) => {
+        log.error({ err, userId, event: "savings_suggestion_failed" }, "savings suggestion failed");
+      });
 
       log.debug(
         { userId, gapsEmitted, event: "cash_flow_daily_user_ok" },
