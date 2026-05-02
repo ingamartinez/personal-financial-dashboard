@@ -160,7 +160,8 @@ function TotalsCard({
 
   const proximoCobro = earliest
     ? (() => {
-        const today = new Date();
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const nextDate = new Date(earliest.nextOccurrence + "T00:00:00");
         const diffDays = Math.round((nextDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
         const daysLabel =
