@@ -86,6 +86,7 @@ describe("classifyUnclassifiedBatch — opts.txIds", () => {
   it("returns picked=0 immediately when txIds is empty array", async () => {
     const result = await classifyUnclassifiedBatch(TEST_USER_A, { txIds: [] });
     expect(result.picked).toBe(0);
+    expect(result.classifiedIds).toEqual([]);
     expect(mockClassifyBatch).not.toHaveBeenCalled();
   });
 
@@ -208,6 +209,7 @@ describe("classifyUnclassifiedBatch — default (no opts)", () => {
     // Ensure no test-txs exist for this user with classification_method=unclassified
     const result = await classifyUnclassifiedBatch(TEST_USER_A);
     expect(result.picked).toBe(0);
+    expect(result.classifiedIds).toEqual([]);
     expect(mockClassifyBatch).not.toHaveBeenCalled();
   });
 

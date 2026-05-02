@@ -147,6 +147,8 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
           )
         )
       END`.as("raw_data"),
+      // #713 (Epic I B.1+B.2): anomaly flags for badge rendering
+      anomalyFlags: transactions.anomalyFlags,
     })
     .from(transactions)
     .innerJoin(accounts, eq(accounts.id, transactions.accountId))
@@ -203,6 +205,7 @@ export async function listTransactions(userId: number, filters: TxFilters): Prom
     channel: r.channel,
     transferGroupId: r.transferGroupId ?? null,
     rawData: r.rawData,
+    anomalyFlags: r.anomalyFlags ?? null,
   }));
 
   return { rows: shaped, nextCursor };

@@ -30,7 +30,10 @@ export type NotificationType =
   | "classification_auto_uncategorized"
   | "recurring_proposal_ready"
   | "subscription_price_hike"
-  | "tc_health_alert";
+  | "tc_health_alert"
+  // #713 (Epic I B.1+B.2): merchant anomaly and first-encounter signals.
+  | "merchant_anomaly"
+  | "merchant_first_encounter";
 
 export type NotificationAudience = "user" | "admin";
 export type NotificationPriority = "high" | "medium" | "low";

@@ -35,8 +35,8 @@ vi.mock("@/components/transactions/counterparty-dialog", () => ({
   CounterpartyDialog: () => null,
 }));
 vi.mock("@/components/transactions/confidence-badge", () => ({
-  ConfidenceBadge: () => null,
-  confidenceBand: () => null,
+  ConfidenceBadge: vi.fn(() => null),
+  confidenceBand: vi.fn(() => null),
 }));
 vi.mock("@/components/transactions/needs-review-badge", () => ({
   NeedsReviewBadge: () => null,
@@ -46,6 +46,10 @@ vi.mock("@/components/transactions/needs-review-badge", () => ({
 import { TransactionTable } from "./transaction-table";
 import { MoneyModeProvider } from "@/components/display/money-mode-provider";
 import type { TxRow } from "@/lib/types";
+import {
+  ConfidenceBadge as MockedConfidenceBadge,
+  confidenceBand as mockedConfidenceBand,
+} from "@/components/transactions/confidence-badge";
 
 // ---------------------------------------------------------------------------
 // Radix shims — pointer capture + scrollIntoView not in jsdom.
@@ -100,6 +104,7 @@ function makeTxRow(overrides: Partial<TxRow> = {}): TxRow {
     channel: "bank",
     transferGroupId: null,
     rawData: null,
+    anomalyFlags: null,
     ...overrides,
   };
 }
@@ -301,5 +306,132 @@ describe("TransactionTable — #528 frozen TRM via MoneyFrozen", () => {
     // No conversion performed → no tooltip; raw amount renders as-is.
     const tooltipNodes = document.querySelectorAll('[title*="TRM histórica"]');
     expect(tooltipNodes.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — #713 B.2: combined first-encounter + low-confidence badge
+//
+// The desktop row (lines 487–514 of transaction-table.tsx) implements a
+// combined-badge decision:
+//   • firstEncounter=true AND band="low"  → ONE combined badge, ConfidenceBadge suppressed
+//   • firstEncounter=true AND band≠"low"  → standalone "Nuevo merchant" badge, ConfidenceBadge
+//                                            natural (null for high/rule; renders for medium)
+//   • firstEncounter=false / null          → no first-encounter badge, ConfidenceBadge natural
+//
+// The mocks for confidenceBand and ConfidenceBadge are vi.fn() so they can be
+// overridden per describe block without affecting the rest of the suite.
+// ---------------------------------------------------------------------------
+
+// Real confidenceBand logic (inlined so we never import through the mock).
+function realBand(
+  method: TxRow["classificationMethod"],
+  confidence: number | null,
+): "high" | "medium" | "low" | null {
+  if (method !== "rule" && method !== "ai") return null;
+  if (confidence === null) return null;
+  if (confidence >= 90) return "high";
+  if (confidence >= 60) return "medium";
+  return "low";
+}
+
+describe("TransactionTable — #713 combined first-encounter + low-confidence badge", () => {
+  beforeEach(() => {
+    // Wire real band logic into the mock so the component's conditional fires.
+    vi.mocked(mockedConfidenceBand).mockImplementation(realBand);
+    // Keep ConfidenceBadge invisible by default; tests that need it visible will
+    // override in their own beforeEach or arrange step.
+    vi.mocked(MockedConfidenceBadge).mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    // Reset to the baseline mock after each test.
+    vi.mocked(mockedConfidenceBand).mockReturnValue(null);
+    vi.mocked(MockedConfidenceBadge).mockReturnValue(null);
+  });
+
+  it("firstEncounter=true + low-confidence: renders combined badge, suppresses ConfidenceBadge", () => {
+    // confidence=30 (scale 0–100, threshold LOW=60) → band="low" with method="ai"
+    const tx = makeTxRow({
+      id: 7130,
+      classificationMethod: "ai",
+      classificationConfidence: 30,
+      anomalyFlags: { firstEncounter: true, detectedAt: "2026-05-02T00:00:00Z" },
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    // Desktop renders the combined badge text.
+    expect(screen.getByText("Nuevo merchant — confirmá categoría")).toBeInTheDocument();
+
+    // Standalone "Nuevo merchant" must NOT appear (replaced by combined).
+    expect(screen.queryByText("Nuevo merchant")).not.toBeInTheDocument();
+
+    // ConfidenceBadge mock was called (component tried to render it in mobile)
+    // but the desktop path suppresses it — the mock returns null so nothing
+    // with "revisar" text should be in the DOM at all.
+    expect(screen.queryByText("revisar")).not.toBeInTheDocument();
+  });
+
+  it("firstEncounter=true + high-confidence (rule): standalone 'Nuevo merchant' badge, no ConfidenceBadge", () => {
+    // method="rule" + confidence=95 → band="high". ConfidenceBadge returns null for
+    // "high" naturally. band≠"low" → else branch fires → standalone badge + no combined.
+    const tx = makeTxRow({
+      id: 7131,
+      classificationMethod: "rule",
+      classificationConfidence: 95,
+      anomalyFlags: { firstEncounter: true, detectedAt: "2026-05-02T00:00:00Z" },
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    // Standalone badge must appear (band is "high", not "low" → else branch fires).
+    expect(screen.getByText("Nuevo merchant")).toBeInTheDocument();
+
+    // Combined badge must NOT appear.
+    expect(screen.queryByText("Nuevo merchant — confirmá categoría")).not.toBeInTheDocument();
+
+    // ConfidenceBadge mock returns null → no "revisar" text.
+    expect(screen.queryByText("revisar")).not.toBeInTheDocument();
+  });
+
+  it("firstEncounter=true + medium-confidence: standalone 'Nuevo merchant' AND ConfidenceBadge coexist", () => {
+    // confidence=75 → band="medium". Only "low" triggers merge; medium lets both coexist.
+    vi.mocked(MockedConfidenceBadge).mockReturnValue(
+      <span data-testid="confidence-badge-medium">75%</span>,
+    );
+
+    const tx = makeTxRow({
+      id: 7132,
+      classificationMethod: "ai",
+      classificationConfidence: 75,
+      anomalyFlags: { firstEncounter: true, detectedAt: "2026-05-02T00:00:00Z" },
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    // Standalone "Nuevo merchant" badge IS rendered (else branch, firstEncounter=true).
+    expect(screen.getByText("Nuevo merchant")).toBeInTheDocument();
+
+    // Combined badge must NOT appear (band is medium, not low).
+    expect(screen.queryByText("Nuevo merchant — confirmá categoría")).not.toBeInTheDocument();
+
+    // ConfidenceBadge renders its medium output (desktop path does NOT suppress it).
+    expect(screen.getAllByTestId("confidence-badge-medium").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("firstEncounter=false (anomalyFlags=null): no first-encounter badge, ConfidenceBadge natural", () => {
+    // No anomalyFlags → neither badge branch fires for first-encounter.
+    const tx = makeTxRow({
+      id: 7133,
+      classificationMethod: "ai",
+      classificationConfidence: 30,
+      anomalyFlags: null,
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    expect(screen.queryByText("Nuevo merchant")).not.toBeInTheDocument();
+    expect(screen.queryByText("Nuevo merchant — confirmá categoría")).not.toBeInTheDocument();
   });
 });

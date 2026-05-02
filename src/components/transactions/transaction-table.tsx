@@ -484,10 +484,34 @@ export function TransactionTable({
                           channel={tx.channel}
                         />
                         <div className="flex flex-wrap items-center gap-1">
-                          <ConfidenceBadge
-                            method={tx.classificationMethod}
-                            confidence={tx.classificationConfidence}
-                          />
+                          {/* #713 B.2: combined badge when first-encounter + low-confidence fire together */}
+                          {tx.anomalyFlags?.firstEncounter &&
+                          confidenceBand(tx.classificationMethod, tx.classificationConfidence) ===
+                            "low" ? (
+                            <Badge
+                              variant="outline"
+                              className="gap-1 border-orange-300 bg-orange-50 font-normal text-orange-900 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-200"
+                              title="Nuevo comercio detectado con baja confianza en la clasificación. Confirmá la categoría."
+                            >
+                              Nuevo merchant — confirmá categoría
+                            </Badge>
+                          ) : (
+                            <>
+                              {tx.anomalyFlags?.firstEncounter ? (
+                                <Badge
+                                  variant="outline"
+                                  className="gap-1 border-orange-300 bg-orange-50 font-normal text-orange-900 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-200"
+                                  title="Primera vez que aparece este comercio en tus transacciones."
+                                >
+                                  Nuevo merchant
+                                </Badge>
+                              ) : null}
+                              <ConfidenceBadge
+                                method={tx.classificationMethod}
+                                confidence={tx.classificationConfidence}
+                              />
+                            </>
+                          )}
                           {!isPairedTransfer ? (
                             <ClassificationReasonDialog
                               txId={tx.id}

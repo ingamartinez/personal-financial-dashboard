@@ -14,6 +14,8 @@ export type PipelineResult = {
   skipped: number;
   model: string | null;
   usage: { inputTokens: number; outputTokens: number };
+  /** IDs of transactions that were successfully classified in this batch. */
+  classifiedIds: number[];
 };
 
 export type ClassifyBatchOpts = {
@@ -79,6 +81,7 @@ export async function classifyUnclassifiedBatch(
       skipped: 0,
       model: null,
       usage: { inputTokens: 0, outputTokens: 0 },
+      classifiedIds: [],
     };
   }
 
@@ -101,6 +104,7 @@ export async function classifyUnclassifiedBatch(
   const userHints: AiUserHint[] = userRow[0]?.context?.merchant_hints ?? [];
 
   let ruleClassified = 0;
+  const classifiedIds: number[] = [];
   const stillPending: typeof pending = [];
   for (const tx of pending) {
     const ruleHit = await classifyByRule(
@@ -123,6 +127,7 @@ export async function classifyUnclassifiedBatch(
         })
         .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
       ruleClassified++;
+      classifiedIds.push(tx.id);
     } else {
       stillPending.push(tx);
     }
@@ -136,6 +141,7 @@ export async function classifyUnclassifiedBatch(
       skipped: 0,
       model: null,
       usage: { inputTokens: 0, outputTokens: 0 },
+      classifiedIds,
     };
   }
 
@@ -178,6 +184,7 @@ export async function classifyUnclassifiedBatch(
         ),
       );
     aiClassified++;
+    classifiedIds.push(tx.id);
   }
 
   await db.insert(ingestionLogs).values({
@@ -208,5 +215,6 @@ export async function classifyUnclassifiedBatch(
     skipped,
     model: aiResult.model,
     usage: aiResult.usage,
+    classifiedIds,
   };
 }

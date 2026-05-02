@@ -104,6 +104,7 @@ function makeTxRow(overrides: Partial<TxRow> = {}): TxRow {
     channel: "bank",
     transferGroupId: null,
     rawData: null,
+    anomalyFlags: null,
     ...overrides,
   };
 }
