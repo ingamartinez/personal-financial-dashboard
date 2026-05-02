@@ -142,10 +142,12 @@ export function detectSalaryGap(
 
   if (!recurring.active) return noGap("inactive");
 
-  // Income check: slug in whitelist OR amountCents > 0 with a non-null slug
+  // Income check: slug in whitelist OR (non-null slug AND amountCents > 0).
+  // The fallback MUST require a non-null slug so uncategorized recurrings never
+  // trigger spurious salary-gap notifications. Decision: #715 dispatch.
   const isIncomeByCategorySlug =
     recurring.categorySlug !== null && INCOME_CATEGORY_SLUGS.has(recurring.categorySlug);
-  const isIncomeByAmount = recurring.amountCents > BigInt(0);
+  const isIncomeByAmount = recurring.categorySlug !== null && recurring.amountCents > BigInt(0);
   if (!isIncomeByCategorySlug && !isIncomeByAmount) {
     return noGap("not-income");
   }
@@ -549,7 +551,11 @@ export async function runCashFlowForecastForUser(
   const prevShortfallDate = prevState?.lastShortfallDate ?? null;
   const newShortfallDate = forecast.shortfallDate ?? "none";
 
-  const shortfallChanged = prevShortfallDate !== newShortfallDate;
+  // Normalise: DB row absent on first run → prevShortfallDate is null; treat
+  // that the same as "none" so a first run with no shortfall does NOT count as
+  // a change and doesn't cause a spurious upsert-notification cycle.
+  const prevSentinel = prevShortfallDate ?? "none";
+  const shortfallChanged = prevSentinel !== newShortfallDate;
 
   // Upsert the forecast state
   await database

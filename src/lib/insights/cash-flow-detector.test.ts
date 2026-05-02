@@ -306,6 +306,44 @@ describe("runCashFlowForecastForUser — D.4 forecast shortfall", () => {
     expect(stateRow!.userId).toBe(TEST_USER_ID);
   });
 
+  it("two runs with no shortfall produce only ONE upsert (null vs 'none' sentinel fix)", async () => {
+    // Before any run: no state row exists → prevShortfallDate is null.
+    // Without the sentinel fix, null !== "none" → shortfallChanged=true on run 1,
+    // causing an unnecessary upsert even when there is no shortfall.
+    // After the fix: prevSentinel = null ?? "none" = "none"; newShortfallDate = "none"
+    // → shortfallChanged=false on run 1 (no shortfall) → no emit, no spurious upsert.
+    const today = new Date(Date.UTC(2026, 4, 2));
+
+    // Ensure no prior state
+    await cleanup();
+
+    const { shortfallChanged: firstChanged } = await runCashFlowForecastForUser(
+      TEST_USER_ID,
+      COP_PER_USD,
+      db,
+      today,
+    );
+
+    // No shortfall → first run must NOT report a change
+    expect(firstChanged).toBe(false);
+
+    const { shortfallChanged: secondChanged } = await runCashFlowForecastForUser(
+      TEST_USER_ID,
+      COP_PER_USD,
+      db,
+      today,
+    );
+
+    // Second run with same no-shortfall result → also no change
+    expect(secondChanged).toBe(false);
+
+    // No forecast notification should have been emitted
+    const forecastEmits = mocks.emitNotification.mock.calls.filter(
+      (c) => (c[1] as { type: string }).type === "cash_flow_forecast",
+    );
+    expect(forecastEmits).toHaveLength(0);
+  });
+
   it("re-run on same day with same shortfall does NOT emit a second notification", async () => {
     const today = new Date(Date.UTC(2026, 4, 2));
 

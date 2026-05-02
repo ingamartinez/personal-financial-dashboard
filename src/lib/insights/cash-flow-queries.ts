@@ -9,7 +9,7 @@
  * change-detection; the page always derives a fresh result.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -106,7 +106,8 @@ export async function fetchCashFlowSummary(
       amountType: r.amountType,
     }));
 
-  // Fetch recent observations (last 90 days) for variable-amount estimation
+  // Fetch recent observations (last 90 days) for variable-amount estimation.
+  // The date filter is applied in SQL to avoid pulling unbounded history into JS.
   const obs90dAgo = new Date(today.getTime() - 90 * 86400000);
   const observationRows = await db
     .select({
@@ -116,11 +117,15 @@ export async function fetchCashFlowSummary(
       observedAt: recurringLinkObservations.observedAt,
     })
     .from(recurringLinkObservations)
-    .where(and(eq(recurringLinkObservations.userId, userId)));
+    .where(
+      and(
+        eq(recurringLinkObservations.userId, userId),
+        gte(recurringLinkObservations.observedAt, obs90dAgo),
+      ),
+    );
 
   const forecastObservations: ForecastObservation[] = observationRows
     .filter((r) => r.realCurrency === "COP" || r.realCurrency === "USD")
-    .filter((r) => r.observedAt >= obs90dAgo)
     .map((r) => ({
       recurringId: r.recurringId,
       realAmountCents: r.realAmountCents,

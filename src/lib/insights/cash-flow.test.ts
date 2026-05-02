@@ -183,9 +183,23 @@ describe("detectSalaryGap", () => {
     if (!result.hasGap) expect(result.reason).toBe("not-income");
   });
 
-  it("detects gap for income-by-amount (positive amountCents, null slug)", () => {
+  it("no gap for positive amountCents with null slug (fallback requires non-null slug)", () => {
+    // Uncategorized recurrings must NOT trigger salary-gap notifications.
+    // Decision locked in #715: fallback = amountCents > 0 AND categorySlug IS NOT NULL.
     const recurring = makeRecurring({
       categorySlug: null,
+      amountCents: BigInt(3_000_000),
+    });
+    const result = detectSalaryGap(today, recurring, []);
+    expect(result.hasGap).toBe(false);
+    if (!result.hasGap) expect(result.reason).toBe("not-income");
+  });
+
+  it("detects gap for user-defined income slug not in whitelist (non-null slug + positive amount)", () => {
+    // Custom income categories (e.g. "consulting-rev") still work via the
+    // amountCents > 0 AND categorySlug IS NOT NULL fallback.
+    const recurring = makeRecurring({
+      categorySlug: "consulting-rev",
       amountCents: BigInt(3_000_000),
     });
     const result = detectSalaryGap(today, recurring, []);
