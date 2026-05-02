@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { formatMoney } from "@/lib/money";
+import { cn } from "@/lib/utils";
 import type { PriceHike, SubscriptionRow } from "@/app/(app)/subscriptions/queries";
 import type { TierName } from "@/lib/subscriptions/tiers";
 
@@ -128,7 +129,7 @@ function TopCard({
 
             {/* Amount */}
             <div className="flex shrink-0 flex-col items-end gap-0.5">
-              <p className={`text-2xl font-bold tabular-nums${muted ? "line-through" : ""}`}>
+              <p className={cn("text-2xl font-bold tabular-nums", muted && "line-through")}>
                 {row.amountType === "variable" ? "~" : ""}
                 {formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD")}
               </p>
@@ -203,7 +204,7 @@ function MedianasCard({
               </div>
 
               <div className="flex shrink-0 flex-col items-end gap-0.5">
-                <p className={`font-heading tabular-nums${muted ? "line-through" : ""}`}>
+                <p className={cn("font-heading tabular-nums", muted && "line-through")}>
                   {row.amountType === "variable" ? "~" : ""}
                   {formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD")}
                 </p>
@@ -225,7 +226,10 @@ function MedianasCard({
           </div>
 
           <div
-            className={`text-muted-foreground flex items-center gap-2 text-xs${calculatorEnabled ? "pl-6" : ""}`}
+            className={cn(
+              "text-muted-foreground flex items-center gap-2 text-xs",
+              calculatorEnabled && "pl-6",
+            )}
           >
             <span>Próxima: {row.nextOccurrence}</span>
             <span>·</span>
@@ -241,7 +245,7 @@ function MedianasCard({
           </div>
 
           {row.notes && (
-            <p className={`text-muted-foreground text-xs italic${calculatorEnabled ? "pl-6" : ""}`}>
+            <p className={cn("text-muted-foreground text-xs italic", calculatorEnabled && "pl-6")}>
               {row.notes}
             </p>
           )}
@@ -293,7 +297,7 @@ function PequeñasChip({
             onClick={(e) => e.stopPropagation()}
           />
         )}
-        <span className={`font-medium${muted ? "line-through" : ""}`}>{row.label}</span>
+        <span className={cn("font-medium", muted && "line-through")}>{row.label}</span>
         <span className="text-muted-foreground tabular-nums">
           {row.amountType === "variable" ? "~" : ""}
           {formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD")}
@@ -337,7 +341,7 @@ function PequeñasChip({
                 )}
               </div>
               <div className="flex shrink-0 flex-col items-end gap-0.5">
-                <p className={`font-heading tabular-nums${muted ? "line-through" : ""}`}>
+                <p className={cn("font-heading tabular-nums", muted && "line-through")}>
                   {row.amountType === "variable" ? "~" : ""}
                   {formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD")}
                 </p>
