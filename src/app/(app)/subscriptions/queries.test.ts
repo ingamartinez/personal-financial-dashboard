@@ -276,20 +276,41 @@ describe("getSubscriptions", () => {
     expect(found!.annualCents).toBe(amount * BigInt(12));
   });
 
-  it("rows are sorted by absolute display amount descending", async () => {
+  it("rows are sorted by dayOfMonth ascending; amount desc as tiebreaker", async () => {
     const accountId = await getAccountId(1);
     await ensureSuscripcionesCategory(1);
 
-    const cheap = `${TEST_LABEL_PREFIX}cheap`;
-    const expensive = `${TEST_LABEL_PREFIX}expensive`;
-    await insertRecurring(1, accountId, { label: cheap, amountCents: BigInt(-10_000) });
-    await insertRecurring(1, accountId, { label: expensive, amountCents: BigInt(-500_000) });
+    const day5 = `${TEST_LABEL_PREFIX}day5`;
+    const day10cheap = `${TEST_LABEL_PREFIX}day10cheap`;
+    const day10expensive = `${TEST_LABEL_PREFIX}day10expensive`;
+    const day20 = `${TEST_LABEL_PREFIX}day20`;
+    await insertRecurring(1, accountId, {
+      label: day20,
+      amountCents: BigInt(-100_000),
+      dayOfMonth: 20,
+    });
+    await insertRecurring(1, accountId, {
+      label: day5,
+      amountCents: BigInt(-50_000),
+      dayOfMonth: 5,
+    });
+    await insertRecurring(1, accountId, {
+      label: day10cheap,
+      amountCents: BigInt(-10_000),
+      dayOfMonth: 10,
+    });
+    await insertRecurring(1, accountId, {
+      label: day10expensive,
+      amountCents: BigInt(-500_000),
+      dayOfMonth: 10,
+    });
 
     const { rows } = await getSubscriptions(1, "native", 4200);
-    // Filter to only our test rows to avoid seed data interference.
-    const testRows = rows.filter((r) => r.label === cheap || r.label === expensive);
-    expect(testRows[0]!.label).toBe(expensive);
-    expect(testRows[1]!.label).toBe(cheap);
+    const testRows = rows.filter((r) =>
+      [day5, day10cheap, day10expensive, day20].includes(r.label),
+    );
+    // Calendar order: day 5, then day 10 (expensive first as tiebreaker), then day 20.
+    expect(testRows.map((r) => r.label)).toEqual([day5, day10expensive, day10cheap, day20]);
   });
 
   it("nextOccurrence respects skippedMonths from the DB row", async () => {
