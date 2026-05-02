@@ -2,7 +2,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { getUiPreferences } from "@/lib/preferences/repo";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { getSubscriptions } from "./queries";
-import { SubscriptionList } from "@/components/subscriptions/subscription-list";
+import { SubscriptionsCalculator } from "@/components/subscriptions/subscriptions-calculator";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +31,11 @@ export default async function SubscriptionsPage() {
         </p>
       </header>
 
-      <SubscriptionList rows={rows} monthlyTotals={monthlyTotals} annualTotals={annualTotals} />
+      <SubscriptionsCalculator
+        rows={rows}
+        monthlyTotals={monthlyTotals}
+        annualTotals={annualTotals}
+      />
     </main>
   );
 }
