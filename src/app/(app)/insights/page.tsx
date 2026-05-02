@@ -18,6 +18,9 @@ import {
 } from "@/lib/insights/tc-health";
 import { fetchRecentAnomalies } from "@/lib/insights/merchant-anomaly-queries";
 import { fetchCashFlowSummary } from "@/lib/insights/cash-flow-queries";
+import { fetchTemporalSummary } from "@/lib/insights/temporal-queries";
+import { dowNameEs, monthNameEs } from "@/lib/insights/temporal";
+import { SpendingHeatmap } from "@/components/insights/spending-heatmap";
 import { InsightsViewer } from "./insights-viewer";
 
 export const dynamic = "force-dynamic";
@@ -165,10 +168,11 @@ export default async function InsightsPage({
   // TC Health card — real-time snapshot of all the user's TCs (#705)
   const nowDate = new Date();
   const today = nowInBogota(nowDate);
-  const [tcSnapshots, recentAnomalies, cashFlowSummary] = await Promise.all([
+  const [tcSnapshots, recentAnomalies, cashFlowSummary, temporalSummary] = await Promise.all([
     fetchUserTcSnapshots(session.id, fx.rate, today),
     fetchRecentAnomalies(session.id),
     fetchCashFlowSummary(session.id, nowDate),
+    fetchTemporalSummary(session.id, nowDate),
   ]);
   const tcAlerts: Array<{ snap: TcCardSnapshot; triggers: TcAlertTrigger[] }> = tcSnapshots
     .map((snap) => ({ snap, triggers: computeTcAlerts(snap) }))
@@ -282,6 +286,62 @@ export default async function InsightsPage({
 
       {/* Próximos 30 días — D.4 cash flow forecast card (#715) */}
       <CashFlowCard summary={cashFlowSummary} />
+
+      {/* Patrones de gasto — E.1+E.2+E.3 temporal patterns card (#717) */}
+      <Card className="border-slate-200 bg-slate-50/40 dark:border-slate-800 dark:bg-slate-950/15">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-slate-900 dark:text-slate-200">
+            Patrones de gasto
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {/* E.1 — Daily heatmap */}
+          {temporalSummary.hasNoData ? (
+            <p className="text-muted-foreground text-sm">
+              Sin datos suficientes para mostrar el patrón.
+            </p>
+          ) : (
+            <SpendingHeatmap dayBuckets={temporalSummary.dayBuckets} />
+          )}
+
+          {/* E.2 — Expensive days */}
+          {temporalSummary.expensiveDays.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {temporalSummary.expensiveDays.map((row) => (
+                <li key={row.dow} className="text-sm text-slate-800 dark:text-slate-300">
+                  <span className="font-medium capitalize">{dowNameEs(row.dow)}</span>
+                  {": en promedio gastás "}
+                  <span className="font-medium">{row.deltaPct}%</span>
+                  {" más que otros días"}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* E.3 — Seasonality */}
+          {temporalSummary.seasonality.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {temporalSummary.seasonality.map((row) => (
+                <li key={row.monthIndex} className="text-sm text-slate-800 dark:text-slate-300">
+                  <span className="font-medium capitalize">{monthNameEs(row.monthIndex)}</span>
+                  {": gasto histórico "}
+                  <span className="font-medium">{row.deltaPct}%</span>
+                  {" más alto que el promedio anual"}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* Fallback when all three subsections are empty but there IS data */}
+          {!temporalSummary.hasNoData &&
+            temporalSummary.expensiveDays.length === 0 &&
+            temporalSummary.seasonality.length === 0 && (
+              <p className="text-muted-foreground text-sm">
+                Sin patrones destacados por el momento.
+              </p>
+            )}
+        </CardContent>
+      </Card>
 
       <InsightsViewer
         ym={ym}
