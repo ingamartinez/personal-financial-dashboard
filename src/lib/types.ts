@@ -8,6 +8,7 @@ import {
   txChannel,
   txSource,
 } from "@/lib/db/schema";
+import type { AnomalyFlags } from "@/lib/insights/merchant-anomaly";
 
 // Enum types derived from Drizzle `pgEnum` definitions. Adding a variant in
 // schema.ts is the only place needed — every consumer picks it up via these
@@ -98,4 +99,7 @@ export type TxRow = {
   // the SELECT in listTransactions strips them on purpose so server-side
   // metadata never crosses the RSC boundary.
   rawData: Record<string, unknown> | null;
+  // #713 (Epic I B.1+B.2): merchant anomaly/first-encounter flags. Null when
+  // no signal was detected. Used by transaction-table.tsx to render badges.
+  anomalyFlags: AnomalyFlags | null;
 };

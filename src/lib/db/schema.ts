@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { AnomalyFlags } from "@/lib/insights/merchant-anomaly";
 import {
   bigint,
   boolean,
@@ -616,6 +617,12 @@ export const transactions = pgTable(
     sourceMismatch: boolean("source_mismatch").notNull().default(false),
     sourceMismatchDetails: jsonb("source_mismatch_details").$type<SourceMismatchDetails>(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    // #713 (Epic I B.1+B.2): per-merchant anomaly and first-encounter signals.
+    // Populated by detectMerchantSignals after classification. Nullable — null
+    // means no signal was detected for this tx. Shape: AnomalyFlags (see
+    // src/lib/insights/merchant-anomaly.ts). Open-ended: future B.3/B.4 signals
+    // extend the type without a migration.
+    anomalyFlags: jsonb("anomaly_flags").$type<AnomalyFlags>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

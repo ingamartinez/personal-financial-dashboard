@@ -16,6 +16,7 @@ import {
   type TcCardSnapshot,
   type TcAlertTrigger,
 } from "@/lib/insights/tc-health";
+import { fetchRecentAnomalies } from "@/lib/insights/merchant-anomaly-queries";
 import { InsightsViewer } from "./insights-viewer";
 
 export const dynamic = "force-dynamic";
@@ -96,7 +97,10 @@ export default async function InsightsPage({
 
   // TC Health card — real-time snapshot of all the user's TCs (#705)
   const today = nowInBogota(new Date());
-  const tcSnapshots = await fetchUserTcSnapshots(session.id, fx.rate, today);
+  const [tcSnapshots, recentAnomalies] = await Promise.all([
+    fetchUserTcSnapshots(session.id, fx.rate, today),
+    fetchRecentAnomalies(session.id),
+  ]);
   const tcAlerts: Array<{ snap: TcCardSnapshot; triggers: TcAlertTrigger[] }> = tcSnapshots
     .map((snap) => ({ snap, triggers: computeTcAlerts(snap) }))
     .filter((a) => a.triggers.length > 0);
@@ -158,6 +162,48 @@ export default async function InsightsPage({
                     {" · "}
                     {triggers.map((t) => triggerLabel(t, snap)).join(" · ")}
                   </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Anomalías recientes card (#713 B.1+B.2) */}
+      <Card className="border-orange-200 bg-orange-50/40 dark:border-orange-900 dark:bg-orange-950/15">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-orange-900 dark:text-orange-200">
+            Anomalías recientes
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {recentAnomalies.length === 0 ? (
+            <p className="text-muted-foreground text-sm">
+              Sin anomalías ni comercios nuevos en los últimos 7 días.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {recentAnomalies.map((row) => (
+                <li key={`${row.txId}`} className="flex items-start justify-between gap-2 text-sm">
+                  <span>
+                    <span className="font-medium">{row.canonicalMerchant}</span>
+                    {" · "}
+                    {row.kind === "anomaly" && row.factor !== null ? (
+                      <span>
+                        {row.factor.toFixed(1)}× promedio habitual ·{" "}
+                        {formatMoney(BigInt(row.deltaCents ?? "0"), row.currency as "COP" | "USD")}{" "}
+                        más de lo usual
+                      </span>
+                    ) : (
+                      <span className="text-orange-700 dark:text-orange-300">nuevo comercio</span>
+                    )}
+                  </span>
+                  <Link
+                    href={`/transactions?highlight=${row.txId}`}
+                    className="shrink-0 text-xs text-orange-700 underline underline-offset-4 hover:text-orange-900 dark:text-orange-300 dark:hover:text-orange-100"
+                  >
+                    Ver →
+                  </Link>
                 </li>
               ))}
             </ul>

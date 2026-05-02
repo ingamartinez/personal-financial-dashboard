@@ -2,6 +2,7 @@ import type { Job } from "bullmq";
 
 import { createLogger } from "@/lib/logger";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
+import { detectMerchantSignals } from "@/lib/insights/merchant-anomaly";
 import { countUnclassified } from "@/lib/transactions/queries";
 import { createWorker } from "@/lib/queue";
 import { emit } from "@/lib/events/bus";
@@ -41,6 +42,15 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
     await job.log(`start: mode=specific txIds=${txIds.length} userId=${userId}`);
 
     const result = await classifyUnclassifiedBatch(userId, { txIds });
+
+    // Fire-and-forget merchant anomaly detection (B.1 + B.2).
+    // Mirror gap-detector pattern: bare .catch(), no await, no void.
+    detectMerchantSignals(userId, result.classifiedIds).catch((err: unknown) => {
+      log.error(
+        { err, userId, event: "merchant_anomaly_detect_failed" },
+        "merchant anomaly detection failed",
+      );
+    });
 
     await job.updateProgress({
       done: true,
@@ -142,6 +152,14 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
     }
 
     const result = await classifyUnclassifiedBatch(userId);
+
+    // Fire-and-forget merchant anomaly detection (B.1 + B.2).
+    detectMerchantSignals(userId, result.classifiedIds).catch((err: unknown) => {
+      log.error(
+        { err, userId, event: "merchant_anomaly_detect_failed" },
+        "merchant anomaly detection failed",
+      );
+    });
 
     totalAiClassified += result.aiClassified;
     totalRuleClassified += result.ruleClassified;
