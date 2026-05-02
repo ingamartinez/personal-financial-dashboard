@@ -33,7 +33,10 @@ export type NotificationType =
   | "tc_health_alert"
   // #713 (Epic I B.1+B.2): merchant anomaly and first-encounter signals.
   | "merchant_anomaly"
-  | "merchant_first_encounter";
+  | "merchant_first_encounter"
+  // #715 (Epic I D.3+D.4): salary-gap and cash flow forecast signals.
+  | "salary_gap"
+  | "cash_flow_forecast";
 
 export type NotificationAudience = "user" | "admin";
 export type NotificationPriority = "high" | "medium" | "low";
