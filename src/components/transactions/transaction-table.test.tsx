@@ -435,3 +435,134 @@ describe("TransactionTable — #713 combined first-encounter + low-confidence ba
     expect(screen.queryByText("Nuevo merchant — confirmá categoría")).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests — #719 B.4: categoryAnomaly badge priority chain
+// ---------------------------------------------------------------------------
+
+describe("TransactionTable — #719 categoryAnomaly badge priority", () => {
+  beforeEach(() => {
+    vi.mocked(mockedConfidenceBand).mockImplementation(realBand);
+    vi.mocked(MockedConfidenceBadge).mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    vi.mocked(mockedConfidenceBand).mockReturnValue(null);
+    vi.mocked(MockedConfidenceBadge).mockReturnValue(null);
+  });
+
+  it("Priority 1: categoryAnomaly + low-confidence → combined rose badge, suppresses ConfidenceBadge", () => {
+    const tx = makeTxRow({
+      id: 7190,
+      classificationMethod: "ai",
+      classificationConfidence: 30, // low
+      anomalyFlags: {
+        categoryAnomaly: {
+          expectedCategory: "alimentacion",
+          actualCategory: "transporte",
+          modalShare: 0.9,
+        },
+        detectedAt: "2026-05-02T00:00:00Z",
+      },
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    // The combined rose badge text must contain the expected category
+    const badge = screen.getByText(/Categoría inusual — confirmá \(alimentacion\)/);
+    expect(badge).toBeInTheDocument();
+
+    // Standalone "Categoría inusual" badge must NOT appear separately
+    expect(screen.queryByText("Categoría inusual")).not.toBeInTheDocument();
+
+    // ConfidenceBadge mock returns null → no confidence text
+    expect(screen.queryByText("revisar")).not.toBeInTheDocument();
+  });
+
+  it("Priority 2: categoryAnomaly + firstEncounter → combined orange badge, suppresses both", () => {
+    const tx = makeTxRow({
+      id: 7191,
+      classificationMethod: "rule",
+      classificationConfidence: 95, // high
+      anomalyFlags: {
+        categoryAnomaly: {
+          expectedCategory: "alimentacion",
+          actualCategory: "transporte",
+          modalShare: 0.85,
+        },
+        firstEncounter: true,
+        detectedAt: "2026-05-02T00:00:00Z",
+      },
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    expect(screen.getByText("Categoría inusual + nuevo merchant")).toBeInTheDocument();
+
+    // Neither standalone badge nor confidence badge should appear
+    expect(screen.queryByText("Categoría inusual")).not.toBeInTheDocument();
+    expect(screen.queryByText("Nuevo merchant")).not.toBeInTheDocument();
+    expect(screen.queryByText("revisar")).not.toBeInTheDocument();
+  });
+
+  it("Priority 3: categoryAnomaly alone → standalone purple badge, ConfidenceBadge coexists", () => {
+    // Method=ai, confidence=75 → band=medium; category-anomaly alone takes priority 3
+    vi.mocked(MockedConfidenceBadge).mockReturnValue(
+      <span data-testid="confidence-badge-medium">75%</span>,
+    );
+
+    const tx = makeTxRow({
+      id: 7192,
+      classificationMethod: "ai",
+      classificationConfidence: 75, // medium
+      anomalyFlags: {
+        categoryAnomaly: {
+          expectedCategory: "servicios",
+          actualCategory: "entretenimiento",
+          modalShare: 0.9,
+        },
+        detectedAt: "2026-05-02T00:00:00Z",
+      },
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    // Standalone purple badge
+    expect(screen.getByText("Categoría inusual")).toBeInTheDocument();
+
+    // ConfidenceBadge still renders (NOT suppressed in priority 3)
+    expect(screen.getAllByTestId("confidence-badge-medium").length).toBeGreaterThanOrEqual(1);
+
+    // Combined badges must NOT appear
+    expect(screen.queryByText(/confirmá/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Categoría inusual + nuevo merchant")).not.toBeInTheDocument();
+  });
+
+  it("Suppression: categoryAnomaly + low-confidence suppresses standalone Nuevo merchant", () => {
+    // When priority 1 fires (catAnom + low), even if firstEncounter=true,
+    // the combined catAnom+low badge wins and neither firstEncounter badge renders.
+    const tx = makeTxRow({
+      id: 7193,
+      classificationMethod: "ai",
+      classificationConfidence: 30, // low
+      anomalyFlags: {
+        categoryAnomaly: {
+          expectedCategory: "alimentacion",
+          actualCategory: "transporte",
+          modalShare: 0.9,
+        },
+        firstEncounter: true,
+        detectedAt: "2026-05-02T00:00:00Z",
+      },
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    // Priority 1 fires (catAnom+low) — combined rose badge
+    expect(screen.getByText(/Categoría inusual — confirmá/)).toBeInTheDocument();
+
+    // Neither first-encounter badge should appear
+    expect(screen.queryByText("Nuevo merchant")).not.toBeInTheDocument();
+    expect(screen.queryByText("Nuevo merchant — confirmá categoría")).not.toBeInTheDocument();
+  });
+});

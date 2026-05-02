@@ -3,6 +3,9 @@ import type { Job } from "bullmq";
 import { createLogger } from "@/lib/logger";
 import { classifyUnclassifiedBatch } from "@/lib/classification/pipeline";
 import { detectMerchantSignals } from "@/lib/insights/merchant-anomaly";
+import { detectVelocityForUser } from "@/lib/insights/velocity-detector";
+import { detectCategoryAnomalyForUser } from "@/lib/insights/category-anomaly-detector";
+import { detectDuplicatePaymentForUser } from "@/lib/insights/duplicate-payment-detector";
 import { countUnclassified } from "@/lib/transactions/queries";
 import { createWorker } from "@/lib/queue";
 import { emit } from "@/lib/events/bus";
@@ -49,6 +52,24 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       log.error(
         { err, userId, event: "merchant_anomaly_detect_failed" },
         "merchant anomaly detection failed",
+      );
+    });
+    // Fire-and-forget velocity cluster detection (B.3).
+    detectVelocityForUser(userId, result.classifiedIds).catch((err: unknown) => {
+      log.error({ err, userId, event: "velocity_detect_failed" }, "velocity detection failed");
+    });
+    // Fire-and-forget category anomaly detection (B.4).
+    detectCategoryAnomalyForUser(userId, result.classifiedIds).catch((err: unknown) => {
+      log.error(
+        { err, userId, event: "category_anomaly_detect_failed" },
+        "category anomaly detection failed",
+      );
+    });
+    // Fire-and-forget duplicate payment detection (C.4).
+    detectDuplicatePaymentForUser(userId, result.classifiedIds).catch((err: unknown) => {
+      log.error(
+        { err, userId, event: "duplicate_payment_detect_failed" },
+        "duplicate payment detection failed",
       );
     });
 
@@ -158,6 +179,24 @@ export async function classifyTxProcessor(job: Job<ClassifyTxJobData>): Promise<
       log.error(
         { err, userId, event: "merchant_anomaly_detect_failed" },
         "merchant anomaly detection failed",
+      );
+    });
+    // Fire-and-forget velocity cluster detection (B.3).
+    detectVelocityForUser(userId, result.classifiedIds).catch((err: unknown) => {
+      log.error({ err, userId, event: "velocity_detect_failed" }, "velocity detection failed");
+    });
+    // Fire-and-forget category anomaly detection (B.4).
+    detectCategoryAnomalyForUser(userId, result.classifiedIds).catch((err: unknown) => {
+      log.error(
+        { err, userId, event: "category_anomaly_detect_failed" },
+        "category anomaly detection failed",
+      );
+    });
+    // Fire-and-forget duplicate payment detection (C.4).
+    detectDuplicatePaymentForUser(userId, result.classifiedIds).catch((err: unknown) => {
+      log.error(
+        { err, userId, event: "duplicate_payment_detect_failed" },
+        "duplicate payment detection failed",
       );
     });
 
