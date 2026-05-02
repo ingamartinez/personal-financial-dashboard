@@ -18,6 +18,7 @@ import {
   listCounterparties,
   listTransactions,
   PAGE_SIZE,
+  parseClassificationMethod,
 } from "@/lib/transactions/queries";
 import { listActiveRecurrings } from "@/app/(app)/transactions/actions";
 import { getForecastOccurrences } from "@/lib/recurring/expected-occurrences";
@@ -39,6 +40,8 @@ type SearchParams = Promise<{
   showAdjustments?: string;
   showArchived?: string;
   needsRate?: string;
+  // #723: filter by classification_method enum value
+  method?: string;
 }>;
 
 function buildHref(base: Record<string, string | undefined>, cursor: string | null) {
@@ -61,6 +64,8 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
   const hideAdjustments = !sp.showAdjustments;
   const includeArchived = Boolean(sp.showArchived);
   const needsRateActive = Boolean(sp.needsRate);
+  // #723: parse method filter — invalid/missing values are silently ignored
+  const method = parseClassificationMethod(sp.method);
   const filters = {
     from: sp.from,
     to: sp.to,
@@ -71,6 +76,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     hideAdjustments,
     includeArchived,
     needsRate: needsRateActive,
+    method,
   };
 
   // #622: Determine yearMonth for forecast overlay.
@@ -116,6 +122,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
       q: filters.q,
       includeArchived,
       needsRate: needsRateActive,
+      method,
     }),
     countUnclassified(session.id),
     listCounterparties(session.id),
@@ -160,6 +167,8 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     showAdjustments: sp.showAdjustments,
     showArchived: sp.showArchived,
     needsRate: sp.needsRate,
+    // #723: preserve method across pagination
+    method: method,
   };
 
   return (

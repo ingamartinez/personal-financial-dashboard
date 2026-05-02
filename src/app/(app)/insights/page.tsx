@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { insightsReports, transactions } from "@/lib/db/schema";
@@ -25,6 +25,8 @@ import { dowNameEs, monthNameEs } from "@/lib/insights/temporal";
 import { SpendingHeatmap } from "@/components/insights/spending-heatmap";
 import { SavingsSuggestionsCard } from "@/components/insights/savings-suggestions-card";
 import { canAccessFeature } from "@/lib/auth/can-access-feature";
+import { CONFIDENCE_LOW_THRESHOLD } from "@/components/transactions/confidence-badge";
+import { CategorizationCardBody } from "@/components/insights/categorization-card";
 import { InsightsViewer } from "./insights-viewer";
 
 export const dynamic = "force-dynamic";
@@ -151,23 +153,48 @@ export default async function InsightsPage({
 
   const stale = existing ? isStale(existing.generatedAt, existing.inputHash, currentHash) : true;
 
-  // Uncategorized counter — all-time, tenant-scoped (#628)
-  const [uncategorized] = await db
-    .select({
-      count: sql<number>`COUNT(*)::int`,
-      totalCents: sql<string>`COALESCE(SUM(ABS(amount_cents)), 0)::text`,
-    })
-    .from(transactions)
-    .where(
+  // Categorización card — two separate queries, tenant-scoped, all-time (#723)
+  //
+  // Row 1 "Pendientes de revisar": low-confidence rule/ai + fully unclassified
+  // Row 2 "Marcadas como otros": explicitly marked user_uncategorized (resolved, not action-required)
+  const pendingWhere = and(
+    eq(transactions.userId, session.id),
+    or(
       and(
-        eq(transactions.userId, session.id),
-        eq(transactions.classificationMethod, "user_uncategorized"),
-        notDeleted(transactions.deletedAt),
+        inArray(transactions.classificationMethod, ["rule", "ai"]),
+        lt(transactions.classificationConfidence, CONFIDENCE_LOW_THRESHOLD),
       ),
-    );
+      eq(transactions.classificationMethod, "unclassified"),
+    ),
+    notDeleted(transactions.deletedAt),
+  );
+  const otrosWhere = and(
+    eq(transactions.userId, session.id),
+    eq(transactions.classificationMethod, "user_uncategorized"),
+    notDeleted(transactions.deletedAt),
+  );
 
-  const uncategorizedCount = uncategorized?.count ?? 0;
-  const uncategorizedCents = BigInt(uncategorized?.totalCents ?? "0");
+  const [[pendingRow], [otrosRow]] = await Promise.all([
+    db
+      .select({
+        count: sql<number>`COUNT(*)::int`,
+        totalCents: sql<string>`COALESCE(SUM(ABS(amount_cents)), 0)::text`,
+      })
+      .from(transactions)
+      .where(pendingWhere),
+    db
+      .select({
+        count: sql<number>`COUNT(*)::int`,
+        totalCents: sql<string>`COALESCE(SUM(ABS(amount_cents)), 0)::text`,
+      })
+      .from(transactions)
+      .where(otrosWhere),
+  ]);
+
+  const pendingCount = pendingRow?.count ?? 0;
+  const pendingCents = BigInt(pendingRow?.totalCents ?? "0");
+  const otrosCount = otrosRow?.count ?? 0;
+  const otrosCents = BigInt(otrosRow?.totalCents ?? "0");
 
   // TC Health card — real-time snapshot of all the user's TCs (#705)
   const nowDate = new Date();
@@ -203,31 +230,20 @@ export default async function InsightsPage({
         </p>
       </header>
 
-      {/* Sin categorizar widget (#628) */}
+      {/* Categorización card — two rows: pending review + marcadas como otros (#723) */}
       <Card className="border-amber-200 bg-amber-50/40 dark:border-amber-900 dark:bg-amber-950/15">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium text-amber-900 dark:text-amber-200">
-            Sin categorizar
+            Categorización
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {uncategorizedCount === 0 ? (
-            <p className="text-muted-foreground text-sm">Todo está categorizado, fantástico.</p>
-          ) : (
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm">
-                {uncategorizedCount} transacci{uncategorizedCount === 1 ? "ón" : "ones"}
-                {" · "}
-                {formatMoney(uncategorizedCents, "COP")}
-              </p>
-              <Link
-                href="/settings/inbox"
-                className="text-xs text-amber-700 underline underline-offset-4 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100"
-              >
-                Revisar →
-              </Link>
-            </div>
-          )}
+          <CategorizationCardBody
+            pendingCount={pendingCount}
+            pendingCents={pendingCents}
+            otrosCount={otrosCount}
+            otrosCents={otrosCents}
+          />
         </CardContent>
       </Card>
 
