@@ -20,8 +20,9 @@ import postgres from "postgres";
 
 export async function teardown() {
   // Safety: always target findash_test, never the dev DB.
+  const defaultSocket = process.platform === "darwin" ? "/tmp" : "/var/run/postgresql";
   const db = postgres({
-    host: process.env.PGHOST ?? "/var/run/postgresql",
+    host: process.env.PGHOST ?? defaultSocket,
     database: "findash_test",
     username: process.env.PGUSER ?? process.env.USER,
     port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
