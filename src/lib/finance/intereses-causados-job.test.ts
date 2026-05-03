@@ -65,6 +65,28 @@ async function setCutoffDay(accountId: number, day: number | null) {
   }
 }
 
+// Seed a prior synthetic intereses-tc row so the inaugural-cycle guard (#764)
+// sees prior interest history and allows the second pass to run.
+async function seedPriorInterestRow(accountId: number, cycle: string): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO transactions (
+      user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+      classification_method, source, category_slug, raw_data
+    ) VALUES (
+      ${TEST_USER_ID}, ${accountId}, ${`${cycle}-01T00:00:00Z`}::timestamptz,
+      -10000::bigint, 'COP', ${"Intereses causados ciclo " + cycle},
+      'manual'::classification_method, 'manual',
+      'intereses-tc',
+      ${JSON.stringify({
+        job: "intereses-causados-job",
+        cycleKey: `${accountId}-${cycle}`,
+        cycle,
+        synthetic: true,
+      })}::jsonb
+    )
+  `);
+}
+
 async function seedPurchase(opts: {
   accountId: number;
   externalId: string;
@@ -553,6 +575,11 @@ describe("computeInterestForCycle — partial-month accrual (#565)", () => {
     await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
     await setCutoffDay(visa, 31); // clamped to 31 → March 31
 
+    // Seed a prior intereses-tc row so the inaugural-cycle guard (#764) doesn't
+    // suppress the second pass — this test proves the second pass fires normally
+    // on non-inaugural cycles.
+    await seedPriorInterestRow(visa, "2026-02");
+
     // ALKOMPRAR-like: posted 2026-01-15 → by Mar 31 anchor, monthsBetween =
     // months between Jan 15 and Mar 31 = 2 full months (Jan→Mar, day 31≥15)
     // → paidCount=2 for an 8-cuota loan → cuota 3 next.
@@ -744,6 +771,99 @@ describe("computeInterestForCycle — partial-month accrual (#565)", () => {
     expect(run.totalInterestCents).toBe(BigInt(0));
   });
 
+  // #764: inaugural-cycle guard — the second pass must NOT fire when there are
+  // no prior intereses-tc rows for the account (card's very first cycle).
+  // Models the Amex *5367 compra-de-cartera scenario that produced ~$94k COP
+  // phantom interest on cycle 2026-04.
+  it("does NOT apply partial accrual on inaugural cycle — 60-cuota purchase posted mid-cycle (#764)", async () => {
+    const visa = await getVisaId();
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
+    await setCutoffDay(visa, 30); // April 30 anchor
+
+    // Amex *5367-like: 60-cuota compra de cartera posted ~7 days before Apr 30
+    // cut date. On the inaugural cycle (no prior intereses-tc rows) the second
+    // pass must return 0 interest even though daysActive > 0.
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}inaugural-60cuota`,
+      amountCentsMagnitude: BigInt(4_900_000_000), // ~49,000,000 pesos in cents (compra de cartera)
+      occurredAt: "2026-04-23", // 7 days before Apr 30 anchor
+      installmentsTotal: 60,
+      installmentRateEmX10k: 19110,
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-04",
+    });
+
+    // Inaugural cycle → no partial accrual, no synthetic tx should be inserted.
+    expect(run.totalInterestCents).toBe(BigInt(0));
+    expect(run.intereses.length).toBe(0);
+
+    // Confirm applyInteresesCausadosForCycle also skips (zero-interest path).
+    const result = await applyInteresesCausadosForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-04",
+    });
+    expect(result.status).toBe("skipped");
+    if (result.status === "skipped") expect(result.reason).toBe("zero-interest");
+  });
+
+  // #764: subsequent-cycle regression — once a prior intereses-tc row exists for
+  // the account, the second pass MUST still fire for a new mid-cycle grace purchase.
+  it("DOES apply partial accrual on subsequent cycle when prior intereses-tc row exists (#764)", async () => {
+    const visa = await getVisaId();
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
+    await setCutoffDay(visa, 31); // clamped to March 31
+
+    // Seed a PRIOR synthetic intereses-tc row for an earlier cycle to simulate
+    // "this is NOT the inaugural cycle". We insert directly so the inaugural
+    // guard sees prior history.
+    await db.execute(sql`
+      INSERT INTO transactions (
+        user_id, account_id, occurred_at, amount_cents, currency, description_raw,
+        classification_method, source, category_slug, raw_data
+      ) VALUES (
+        ${TEST_USER_ID}, ${visa}, '2026-02-28T23:00:00Z'::timestamptz,
+        -50000::bigint, 'COP', 'Intereses causados ciclo 2026-02',
+        'manual'::classification_method, 'manual',
+        'intereses-tc',
+        ${JSON.stringify({
+          job: "intereses-causados-job",
+          cycleKey: `${visa}-2026-02`,
+          cycle: "2026-02",
+          synthetic: true,
+        })}::jsonb
+      )
+    `);
+
+    // Multi-cuota grace purchase posted 7 days before Mar 31 anchor.
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}subsequent-60cuota`,
+      amountCentsMagnitude: BigInt(409_952_300),
+      occurredAt: "2026-03-24",
+      installmentsTotal: 60,
+      installmentRateEmX10k: 19110,
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: visa,
+      cycle: "2026-03",
+    });
+
+    // Subsequent cycle → second pass MUST fire → partial accrual present.
+    expect(run.totalInterestCents).toBeGreaterThan(BigInt(0));
+    expect(run.intereses.length).toBe(1);
+    const entry = run.intereses[0];
+    expect(entry.installmentsPaid).toBe(0); // still grace month
+    expect(entry.gracePeriodPartialCents).toBe(BigInt(1_769_010)); // 7/31 partial
+  });
+
   // #578: mixed scenario — 1-cuota (no interest) + multi-cuota grace (partial
   // interest). Confirms the guard only fires on 1-cuota while the multi-cuota
   // sibling still gets its partial accrual.
@@ -751,6 +871,11 @@ describe("computeInterestForCycle — partial-month accrual (#565)", () => {
     const visa = await getVisaId();
     await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
     await setCutoffDay(visa, 31);
+
+    // Seed a prior intereses-tc row so the inaugural-cycle guard (#764) doesn't
+    // suppress the second pass — this test proves the installmentsTotal<=1 guard
+    // (not the inaugural guard) is what blocks 1-cuota partial accrual.
+    await seedPriorInterestRow(visa, "2026-02");
 
     // 1-cuota — should produce 0 interest
     await seedPurchase({

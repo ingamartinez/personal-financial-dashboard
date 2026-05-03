@@ -316,8 +316,41 @@ export async function computeInterestForCycle(opts: {
   //   2. rateEmX10k > 0  — interest-bearing; excludes 0%-rate diferido plans
   //   3. not already in `intereses` — mature rows (paidCount>0) were kept above
   //   4. partial > 0 — at least one day active in the cycle
+  //   5. NOT inaugural cycle — if this account has never had an intereses-tc
+  //      row before this cycle, and ALL installment purchases are still at
+  //      paidCount=0 (nothing has accrued or been paid on any prior cycle),
+  //      skip the second pass entirely. Rationale: we have no evidence
+  //      Bancolombia charges partial accrual on the very first cycle of a card.
+  //      The Amex *5367 compra-de-cartera scenario produced ~$94k COP phantom
+  //      interest on cycle 2026-04 (issue #764) because of this missing guard.
+  //      Tenant safety: query scoped by userId per per-user-table-join-tenant-safety.
   const cycleDays = cycleLengthDays(anchor);
   const alreadyInIntereses = new Set(intereses.map((e) => e.txId));
+
+  // Inaugural-cycle guard (#764): count prior intereses-tc synthetic rows for
+  // this account on any cycle strictly before `cycle`. If none exist, this is
+  // the card's first-ever interest cycle — skip the second pass.
+  const [priorInterestRow] = await database.execute<{ count: string }>(sql`
+    SELECT COUNT(*)::text AS count
+    FROM transactions
+    WHERE user_id = ${userId}
+      AND account_id = ${accountId}
+      AND category_slug = 'intereses-tc'
+      AND raw_data ->> 'cycleKey' < ${cycleKeyFor(accountId, cycle)}
+      AND deleted_at IS NULL
+  `);
+  const hasPriorInterestHistory = BigInt(priorInterestRow?.count ?? "0") > BigInt(0);
+
+  if (!hasPriorInterestHistory) {
+    // No prior interest history → inaugural cycle. Skip partial accrual.
+    // Bancolombia does not charge partial-month interest on the card's first
+    // cycle. Return the first-pass result directly.
+    log.debug(
+      { userId, accountId, cycle, event: "inaugural_cycle_skip" },
+      "inaugural cycle — skipping second-pass partial accrual",
+    );
+    return { accountId, cycle, anchor, intereses, totalInterestCents, purchasesNeedingRate };
+  }
 
   for (const p of purchases) {
     // Skip if already priced via the per-cuota path (mature installment)
