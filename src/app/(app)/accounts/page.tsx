@@ -12,6 +12,7 @@ import {
   type PhysicalCardSummary,
 } from "@/lib/accounts/queries";
 import { computeNextPayment } from "@/lib/accounts/next-payment";
+import { computeUsedPct, isHeavyUsage } from "@/lib/accounts/meter";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { toCop } from "@/lib/money";
 import { Money } from "@/components/display/money";
@@ -386,9 +387,8 @@ function CreditMeter({
       </div>
     );
   }
-  const used = limitCents > availableCents ? limitCents - availableCents : BigInt(0);
-  const pct = Math.min(100, Number((used * BigInt(10000)) / limitCents) / 100);
-  const high = pct >= 80;
+  const pct = computeUsedPct(limitCents, availableCents);
+  const high = isHeavyUsage(pct);
   return (
     <div className="flex flex-col gap-1">
       <div className="bg-muted h-1.5 overflow-hidden rounded-full">
