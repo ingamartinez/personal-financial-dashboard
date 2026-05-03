@@ -193,12 +193,20 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
                           <UnskipCycleLink accountId={group.primaryAccountId} cycle={cycle.cycle} />
                         ) : null}
                         {cycle.status === "consolidated" ? (
-                          <Link
-                            href={`/settings/accounts/${group.primaryAccountId}/consolidate/${cycle.cycle}`}
-                            className="text-muted-foreground text-xs underline"
-                          >
-                            Ver run
-                          </Link>
+                          <>
+                            <Link
+                              href={`/settings/accounts/${group.primaryAccountId}/consolidate/${cycle.cycle}`}
+                              className="text-muted-foreground text-xs underline"
+                            >
+                              Ver run
+                            </Link>
+                            <Link
+                              href={`/imports?hint_account_id=${group.primaryAccountId}&hint_cycle=${cycle.cycle}&force=1`}
+                              className="text-muted-foreground text-xs underline"
+                            >
+                              Re-importar
+                            </Link>
+                          </>
                         ) : null}
                       </div>
                       {group.isMultiCurrency ? (

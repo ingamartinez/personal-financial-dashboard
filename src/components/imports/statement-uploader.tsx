@@ -51,6 +51,9 @@ type UploaderProps = {
   initialHint?: {
     accountId?: number;
     cycle?: string;
+    // #760 — when true, the commit step will bypass the already-consolidated
+    // guard and upsert the existing statement_imports row.
+    force?: boolean;
   };
 };
 
@@ -527,6 +530,10 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
     initialHint?.accountId ?? null,
   );
   const [cycleInput, setCycleInput] = useState<string>(initialHint?.cycle ?? "");
+  // #760 — force flag comes from hint (URL query param ?force=1). Stable for
+  // the lifetime of the component — the page is server-rendered so the prop
+  // never changes after initial mount.
+  const [force] = useState<boolean>(initialHint?.force ?? false);
   const [manualKind, setManualKind] = useState<IngestionKind | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [_isPending, startTransition] = useTransition();
@@ -589,10 +596,10 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
 
     startTransition(async () => {
       try {
-        const result = await commitIngestion(
-          token,
-          selectedAccountId ? { accountId: selectedAccountId } : undefined,
-        );
+        const result = await commitIngestion(token, {
+          ...(selectedAccountId ? { accountId: selectedAccountId } : {}),
+          ...(force ? { force: true } : {}),
+        });
 
         if (result.status === "committed") {
           setPhase({ kind: "done", result });
@@ -624,7 +631,7 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
         setPhase({ kind: "error", message });
       }
     });
-  }, [phase, selectedAccountId]);
+  }, [phase, selectedAccountId, force]);
 
   const handleCancel = useCallback(() => {
     setPhase({ kind: "idle" });

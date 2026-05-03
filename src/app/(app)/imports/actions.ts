@@ -53,7 +53,7 @@ import {
   consolidateCycleFromStatement,
   hashStatementBuffer,
 } from "@/lib/ingestion/bancolombia-statement/consolidate";
-import { hintSchema } from "./_dispatch-ui-types";
+import { hintSchema, type HintParams } from "./_dispatch-ui-types";
 
 import type { IngestionKind, ReconciliationParsedStatement } from "@/lib/ingestion/dispatch-types";
 import type { ExistingTxnForMatch, MatchingPlan } from "@/lib/reconciliation/engine/types";
@@ -232,7 +232,7 @@ export async function previewIngestion(formData: FormData): Promise<ImportPrevie
     hint_account_id: rawHintAccountId ?? undefined,
     hint_cycle: rawHintCycle ?? undefined,
   });
-  const hints = hintParse.success ? hintParse.data : {};
+  const hints: HintParams = hintParse.success ? hintParse.data : { force: false };
 
   // --- Validate hint_account_id ownership before use (AC-19) ---
   let validatedHintAccountId: number | null = null;
@@ -681,7 +681,7 @@ export async function previewIngestion(formData: FormData): Promise<ImportPrevie
 
 export async function commitIngestion(
   token: string,
-  overrides?: { accountId?: number },
+  overrides?: { accountId?: number; force?: boolean },
 ): Promise<UnifiedCommitResult> {
   const session = await getSessionUser();
   const userId = session.id;
@@ -765,7 +765,7 @@ export async function commitIngestion(
   }
 
   if (v2.kind === "bancolombia-tc-detallado" && v2.tcDetalladoData) {
-    return _commitTcDetallado(v2, effectiveAccountId!, userId);
+    return _commitTcDetallado(v2, effectiveAccountId!, userId, overrides?.force);
   }
 
   log.error(
@@ -913,6 +913,7 @@ async function _commitTcDetallado(
   entry: CacheEntryV2,
   accountId: number,
   userId: number,
+  force?: boolean,
 ): Promise<UnifiedCommitResult> {
   const { parsedSheets, cycle, siblingAccountId, fileHash } = entry.tcDetalladoData!;
 
@@ -982,6 +983,7 @@ async function _commitTcDetallado(
       parsed: sheet,
       fileHash,
       dryRun: false,
+      force,
     });
 
     allInsertedTxIds.push(...(r.insertedTxIds ?? []));

@@ -1373,3 +1373,109 @@ describe("consolidateCycleFromStatement — balance_at_end_cents persistence (#5
     expect(imp.balanceAtEndCents).toBe(CURRENT_BALANCE);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Force re-import (#760)
+// ---------------------------------------------------------------------------
+// When force=true the already-consolidated guard is bypassed and the existing
+// statement_imports row is upserted in place. Transaction dedup (externalId)
+// handles the rest naturally — result is "0 insertadas, N matched".
+describe("consolidateCycleFromStatement — force re-import (#760)", () => {
+  const TAG_FORCE = "STMT_FORCE_TEST";
+  const FORCE_CYCLE = "2026-06";
+  let userId!: number;
+  let accountId!: number;
+
+  beforeAll(async () => {
+    userId = await createUser(`${TAG_FORCE.toLowerCase()}.${Date.now()}@test.local`);
+    accountId = await createTCAccount(userId);
+  });
+
+  afterAll(async () => {
+    await cleanupUser(userId);
+  });
+
+  function buildSimpleStatement(): ParsedStatement {
+    return buildParsed(
+      [
+        row({
+          authorizationNumber: "FORCE01",
+          merchant: "TIENDA FORCE",
+          occurredAt: utcDate(2026, 6, 15),
+          amountCents: BigInt(500000),
+        }),
+      ],
+      {
+        period: {
+          startDate: utcDate(2026, 5, 31),
+          endDate: utcDate(2026, 6, 30),
+          dueDate: utcDate(2026, 7, 16),
+        },
+      },
+    );
+  }
+
+  it("without force, second call short-circuits to already-consolidated (existing behavior preserved)", async () => {
+    // First consolidation
+    const r1 = await consolidateCycleFromStatement({
+      userId,
+      accountId,
+      cycle: FORCE_CYCLE,
+      parsed: buildSimpleStatement(),
+      fileHash: "force01a".repeat(8),
+      dryRun: false,
+    });
+    expect(r1.status).toBe("consolidated");
+
+    // Second call — no force flag
+    const r2 = await consolidateCycleFromStatement({
+      userId,
+      accountId,
+      cycle: FORCE_CYCLE,
+      parsed: buildSimpleStatement(),
+      fileHash: "force01b".repeat(8),
+      dryRun: false,
+    });
+    expect(r2.status).toBe("already-consolidated");
+    expect(r2.statementImportId).toBe(r1.statementImportId);
+  });
+
+  it("with force=true, second consolidation succeeds and does not throw", async () => {
+    const r3 = await consolidateCycleFromStatement({
+      userId,
+      accountId,
+      cycle: FORCE_CYCLE,
+      parsed: buildSimpleStatement(),
+      fileHash: "force01c".repeat(8),
+      dryRun: false,
+      force: true,
+    });
+    expect(r3.status).toBe("consolidated");
+    // statementImportId must still be present
+    expect(r3.statementImportId).not.toBeNull();
+  });
+
+  it("with force=true, statement_imports has exactly ONE row for the cycle (upsert, not insert)", async () => {
+    const allImports = await db
+      .select({ id: statementImports.id })
+      .from(statementImports)
+      .where(
+        and(
+          eq(statementImports.userId, userId),
+          eq(statementImports.accountId, accountId),
+          eq(statementImports.cycle, FORCE_CYCLE),
+        ),
+      );
+    expect(allImports).toHaveLength(1);
+  });
+
+  it("transactions inserted by the original import are unchanged after force re-import", async () => {
+    const txs = await db
+      .select({ id: transactions.id, merchant: transactions.merchant })
+      .from(transactions)
+      .where(and(eq(transactions.userId, userId), eq(transactions.accountId, accountId)));
+    // The TIENDA FORCE purchase should appear exactly once (externalId dedup)
+    const tiendaTxs = txs.filter((t) => t.merchant === "TIENDA FORCE");
+    expect(tiendaTxs).toHaveLength(1);
+  });
+});
