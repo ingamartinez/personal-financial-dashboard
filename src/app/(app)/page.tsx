@@ -1,5 +1,4 @@
 import {
-  getAccountStatuses,
   getCategoryBreakdown,
   getCreditCardsSummary,
   getFinancialPicture,
@@ -7,6 +6,7 @@ import {
   getMonthlyProgress,
   getTopExpenses,
 } from "@/lib/dashboard/queries";
+import { listAccountsDetailed } from "@/lib/accounts/queries";
 import { getFinancialPeriod, getPayPeriodReadiness } from "@/lib/dashboard/period";
 import { getUiPreferences } from "@/lib/preferences/repo";
 import { SaldoLiquidoCard } from "@/components/dashboard/saldo-liquido-card";
@@ -75,7 +75,7 @@ export default async function DashboardPage({
       getMonthlyProgress(session.id, fx.rate, range),
       getCategoryBreakdown(session.id, fx.rate, range),
       getTopExpenses(session.id, fx.rate, range, 5),
-      getAccountStatuses(session.id),
+      listAccountsDetailed(session.id),
       // #632: window-based query (today ±5d, cross-month, un-matched only).
       getUpcomingForWindow({ userId: session.id, today: now }),
       getSmsHealthSnapshot(session.id, now),
@@ -165,7 +165,7 @@ export default async function DashboardPage({
 
         <section className="flex flex-col gap-4">
           <h2 className="text-eyebrow">Cuentas</h2>
-          <AccountsGrid accounts={accounts} />
+          <AccountsGrid accounts={accounts} copPerUsd={fx.rate} />
         </section>
       </div>
     </main>
