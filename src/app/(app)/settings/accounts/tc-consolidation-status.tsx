@@ -9,7 +9,7 @@
 // reflects that the extract is plastic-level.
 
 import Link from "next/link";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, ilike, or } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { accounts, type AccountMetadata } from "@/lib/db/schema";
@@ -92,7 +92,10 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
       and(
         eq(accounts.userId, userId),
         eq(accounts.type, "credit_card"),
-        eq(accounts.institutionSlug, "bancolombia"),
+        or(
+          eq(accounts.institutionSlug, "bancolombia"),
+          and(eq(accounts.institutionSlug, "other"), ilike(accounts.institution, "bancolombia")),
+        ),
         notDeleted(accounts.deletedAt),
       ),
     )
