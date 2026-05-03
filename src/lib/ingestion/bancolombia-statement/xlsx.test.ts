@@ -352,7 +352,8 @@ describe("parseBancolombiaStatement (synthetic fixture)", () => {
   it("extracts period with inferred start year", () => {
     expect(parsed.period.startDate.toISOString()).toBe("2026-01-01T00:00:00.000Z");
     expect(parsed.period.endDate.toISOString()).toBe("2026-01-31T00:00:00.000Z");
-    expect(parsed.period.dueDate.toISOString()).toBe("2026-02-15T00:00:00.000Z");
+    expect(parsed.period.dueDate).not.toBeNull();
+    expect(parsed.period.dueDate!.toISOString()).toBe("2026-02-15T00:00:00.000Z");
   });
 
   it("extracts summary values", () => {
@@ -487,7 +488,8 @@ describeIfFixture("parseBancolombiaStatement (real fixture 202603 Visa 2575)", (
   it("extracts period 2026-02-28 → 2026-03-30 due 2026-04-16", () => {
     expect(parsed.period.startDate.toISOString()).toBe("2026-02-28T00:00:00.000Z");
     expect(parsed.period.endDate.toISOString()).toBe("2026-03-30T00:00:00.000Z");
-    expect(parsed.period.dueDate.toISOString()).toBe("2026-04-16T00:00:00.000Z");
+    expect(parsed.period.dueDate).not.toBeNull();
+    expect(parsed.period.dueDate!.toISOString()).toBe("2026-04-16T00:00:00.000Z");
   });
 
   it("matches acceptance summary values (issue #417)", () => {
@@ -590,3 +592,70 @@ describeIfMastercardFixture(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// Regression tests for docs/ fixtures (committed to the repo — always run).
+// ---------------------------------------------------------------------------
+
+// Issue #758: Amex *5367 ABR2026 had zero USD movements. The DOLARES sheet
+// has "-" in "Pagar antes de" and no transaction rows — both crashed before
+// this fix.
+describe("parseBancolombiaStatementAllSheets (docs/5367_ABR2026.xlsx — Amex, empty DOLARES)", () => {
+  const fixturePath = resolve(process.cwd(), "docs/5367_ABR2026.xlsx");
+  let parsed: ReturnType<typeof parseBancolombiaStatementAllSheets>;
+
+  beforeAll(() => {
+    parsed = parseBancolombiaStatementAllSheets(readFileSync(fixturePath));
+  });
+
+  it("does not throw", () => {
+    expect(parsed).toBeDefined();
+  });
+
+  it("returns two ParsedStatements — PESOS + DOLARES", () => {
+    expect(parsed).toHaveLength(2);
+  });
+
+  it("PESOS sheet (index 0) has N > 0 transaction rows", () => {
+    expect(parsed[0].account.currency).toBe("COP");
+    expect(parsed[0].rows.length).toBeGreaterThan(0);
+  });
+
+  it("DOLARES sheet (index 1) has zero transaction rows", () => {
+    expect(parsed[1].account.currency).toBe("USD");
+    expect(parsed[1].rows).toHaveLength(0);
+  });
+
+  it("DOLARES sheet period.dueDate is null (was '-' in the xlsx)", () => {
+    expect(parsed[1].period.dueDate).toBeNull();
+  });
+
+  it("PESOS sheet period.dueDate is a valid Date", () => {
+    expect(parsed[0].period.dueDate).toBeInstanceOf(Date);
+  });
+});
+
+// Regression guard: *7291 ABR2026 is multi-currency WITH actual USD movements.
+// Both sheets must still parse correctly after the empty-DOLARES fix.
+describe("parseBancolombiaStatementAllSheets (docs/7291_ABR2026.xlsx — MC, USD populated)", () => {
+  const fixturePath = resolve(process.cwd(), "docs/7291_ABR2026.xlsx");
+  let parsed: ReturnType<typeof parseBancolombiaStatementAllSheets>;
+
+  beforeAll(() => {
+    parsed = parseBancolombiaStatementAllSheets(readFileSync(fixturePath));
+  });
+
+  it("returns two ParsedStatements — PESOS + DOLARES", () => {
+    expect(parsed).toHaveLength(2);
+  });
+
+  it("PESOS sheet has N > 0 rows and non-null dueDate", () => {
+    expect(parsed[0].rows.length).toBeGreaterThan(0);
+    expect(parsed[0].period.dueDate).toBeInstanceOf(Date);
+  });
+
+  it("DOLARES sheet has N > 0 rows and non-null dueDate", () => {
+    expect(parsed[1].rows.length).toBeGreaterThan(0);
+    expect(parsed[1].period.dueDate).toBeInstanceOf(Date);
+  });
+});

@@ -19,7 +19,8 @@ export type StatementAccount = {
 export type StatementPeriod = {
   startDate: Date;
   endDate: Date;
-  dueDate: Date;
+  // null when the sheet has no due date (e.g. DOLARES with zero USD movements).
+  dueDate: Date | null;
 };
 
 export type StatementSummary = {

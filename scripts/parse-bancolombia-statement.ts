@@ -42,8 +42,8 @@ function formatCents(cents: bigint): string {
   return `${negative ? "-" : ""}${unitsStr},${fractional}`;
 }
 
-function formatDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+function formatDate(d: Date | null): string {
+  return d ? d.toISOString().slice(0, 10) : "—";
 }
 
 function rateLabel(x10k: number | null): string {
@@ -106,7 +106,7 @@ function toSerializable(out: ParsedStatement): unknown {
     period: {
       startDate: out.period.startDate.toISOString(),
       endDate: out.period.endDate.toISOString(),
-      dueDate: out.period.dueDate.toISOString(),
+      dueDate: out.period.dueDate?.toISOString() ?? null,
     },
     summary: Object.fromEntries(Object.entries(out.summary).map(([k, v]) => [k, v.toString()])),
     rows: out.rows.map((r) => ({
