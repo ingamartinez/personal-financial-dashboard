@@ -211,3 +211,37 @@ assertions. It loads `/`, `/transactions`, `/budgets`, `/insights`,
 are gitignored; treat them as ephemeral artifacts. Functional E2E tests
 with assertions are out of scope until needed; when added, follow the
 same conventions cc uses (`cc/docs/E2E_TESTING.md`).
+
+## Sub-agent orchestration (Claude Code)
+
+Claude Code on this repo runs project-scoped sub-agents in `.claude/agents/`.
+Each one knows the conventions, reads engram (50+ documented gotchas) at
+start, and follows `AGENTS.md`. **The main orchestrator MUST delegate to
+them** instead of writing code directly — bypassing them re-introduces
+bugs that have already been documented.
+
+| Agent                 | Role                                               | When to invoke                                                                                                                                                                        |
+| --------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `findash-explorer`    | Read-only digest                                   | BEFORE implementer when the task touches 4+ files, requires mapping affected modules, needs prior art from engram, or the issue scope is unclear. Skip for obvious tasks.             |
+| `findash-implementer` | Code + tests + lint+typecheck + commit             | For EVERY code change. Turns a claimed issue into a branch ready to ship. Does NOT push, does NOT open PRs.                                                                           |
+| `findash-reviewer`    | Read-only review (CRITICAL / WARNING / SUGGESTION) | BETWEEN implementer and shipper for non-trivial changes: db schema, queries, server actions, money logic, tenant-scoped data. Skip for docs-only, test-only, or mechanical refactors. |
+| `findash-shipper`     | Push + PR + CI watch + auto-merge                  | AFTER implementer (and reviewer if applicable). Mechanical only — no new logic. Auto-merge per § "PR convention" rules.                                                               |
+
+### Standard flow
+
+```
+gh issue (claim) → findash-explorer  (if 4+ files or scope unclear)
+                 → findash-implementer  (ALWAYS — do not write code directly)
+                 → findash-reviewer     (non-trivial: db, money, tenant, server actions)
+                 → findash-shipper      (ALWAYS — push + PR + merge)
+```
+
+### Why this flow
+
+- **The orchestrator does not know the 50+ gotchas** documented in engram for this repo. The sub-agents do — they `mem_search` first thing. Bypassing them = re-introducing bugs already paid for.
+- **Role separation** keeps implementer out of architectural design (use `/sdd-new` for that) and keeps shipper out of logic changes.
+- **Reviewer between implementer and shipper** catches semantic bugs that lint/typecheck/tests miss: tenant safety on JOINs, soft-delete pattern, money as bigint cents, Next.js 16 server-action quirks.
+
+This applies to Claude Code specifically. Other agents (Codex, etc.) can
+ignore this section — the rules above (issue-first, branch naming,
+commits, PRs, gh identity, testing) still apply to all agents equally.
