@@ -72,6 +72,8 @@ function buildTcLegacyXlsx(): Buffer {
 type SyntheticTcOptions = {
   last4?: string;
   moneda?: string;
+  /** Override the "Periodo facturado" row values (e.g. ["06 mar", "05 abr. 2026"]). */
+  periodo?: [string, string];
 };
 
 function buildSyntheticTcAoa(opts: SyntheticTcOptions = {}): (string | number | null)[][] {
@@ -157,7 +159,7 @@ function buildSyntheticTcAoa(opts: SyntheticTcOptions = {}): (string | number | 
     ["Información de la Tarjeta", `************${last4}`],
     ["Moneda: ", moneda],
     [],
-    ["Periodo facturado: ", "01 ene", "31 ene. 2026"],
+    ["Periodo facturado: ", opts.periodo?.[0] ?? "01 ene", opts.periodo?.[1] ?? "31 ene. 2026"],
     ["Pagar antes de: ", "feb. 15, 2026"],
     ["Pago mínimo", "100.000,00"],
     ["Pago total", "500.000,00"],
@@ -324,6 +326,28 @@ describe("parseAndHint", () => {
     const buf = buildUnrecognizedXlsx();
     const result = await parseAndHint(buf);
     expect(result.kind).toBe("format_unknown");
+  });
+
+  it("#750 — cycleHint uses period endDate (not startDate), so March-start/April-end → 2026-04", async () => {
+    // The statement covers 2026-03-06 → 2026-04-05 (typical Bancolombia TC cycle).
+    // The cycle label must be the CUTOFF month (April) not the start month (March).
+    const wb = XLSX.utils.book_new();
+    const pesos = XLSX.utils.aoa_to_sheet(
+      buildSyntheticTcAoa({ moneda: "PESOS", periodo: ["06 mar", "05 abr. 2026"] }),
+    );
+    const dolares = XLSX.utils.aoa_to_sheet(
+      buildSyntheticTcAoa({ moneda: "USD", periodo: ["06 mar", "05 abr. 2026"] }),
+    );
+    XLSX.utils.book_append_sheet(wb, pesos, "PESOS");
+    XLSX.utils.book_append_sheet(wb, dolares, "DOLARES");
+    const buf = XLSX.write(wb, { bookType: "xlsx", type: "buffer" }) as Buffer;
+
+    const result = await parseAndHint(buf);
+    expect(result.kind).toBe("bancolombia-tc-detallado");
+    if (result.kind === "bancolombia-tc-detallado") {
+      expect(result.cycleHint.source).toBe("file-period");
+      expect(result.cycleHint.cycle).toBe("2026-04");
+    }
   });
 });
 

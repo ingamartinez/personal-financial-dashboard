@@ -198,11 +198,14 @@ export async function parseAndHint(
 
       const multiCurrencySheets = parsedSheets.length >= 2;
       const firstSheet = parsedSheets[0];
-      // Derive cycleHint from the first (COP) sheet's period start.
-      const periodStart = firstSheet?.period.startDate;
+      // Derive cycleHint from the first (COP) sheet's period END date.
+      // The cycle convention labels cycles by the cutoff month (period.endDate),
+      // matching currentCycleFor in src/lib/accounts/cycles.ts and
+      // cycleAnchor in src/lib/finance/intereses-causados-job.ts.
+      const periodEnd = firstSheet?.period.endDate;
       const cycleHint: CycleHint = {
-        cycle: periodStart
-          ? `${periodStart.getUTCFullYear()}-${String(periodStart.getUTCMonth() + 1).padStart(2, "0")}`
+        cycle: periodEnd
+          ? `${periodEnd.getUTCFullYear()}-${String(periodEnd.getUTCMonth() + 1).padStart(2, "0")}`
           : "",
         source: "file-period",
       };
