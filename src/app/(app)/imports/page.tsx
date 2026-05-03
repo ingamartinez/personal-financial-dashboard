@@ -74,7 +74,8 @@ export default async function ImportsPage({
     }
   }
 
-  // Load non-deleted accounts for the dropdown
+  // Load non-deleted accounts for the dropdown.
+  // physicalCardId is required so the client can group multi-currency legs.
   const userAccounts = await db
     .select({
       id: accounts.id,
@@ -82,6 +83,7 @@ export default async function ImportsPage({
       currency: accounts.currency,
       institution: accounts.institution,
       metadata: accounts.metadata,
+      physicalCardId: accounts.physicalCardId,
     })
     .from(accounts)
     .where(and(eq(accounts.userId, session.id), notDeleted(accounts.deletedAt)));
