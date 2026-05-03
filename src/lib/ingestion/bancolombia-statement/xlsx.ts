@@ -308,10 +308,9 @@ function extractPeriod(rows: SheetRows): StatementPeriod {
     throw new Error('parseBancolombiaStatement: missing "Pagar antes de" row');
   }
   const dueRaw = cellText(rows, dueRow, 1);
-  if (!dueRaw) {
-    throw new Error('parseBancolombiaStatement: "Pagar antes de" has no value');
-  }
-  const dueDate = parseSpanishDate(dueRaw);
+  // Amex with zero USD movements has "-" in the DOLARES due-date cell.
+  // Treat any empty / placeholder value as null rather than crashing.
+  const dueDate = dueRaw && dueRaw !== "-" ? parseSpanishDate(dueRaw) : null;
 
   return { startDate, endDate, dueDate };
 }
@@ -470,9 +469,8 @@ function extractStatementRows(rows: SheetRows): StatementRow[] {
     if (!isRowDataRow(rows, i)) continue;
     out.push(parseRow(rows, i, kind));
   }
-  if (out.length === 0) {
-    throw new Error("parseBancolombiaStatement: no movimientos rows found");
-  }
+  // Returning an empty array is valid — e.g. DOLARES sheet when there were no
+  // USD movements this cycle. Callers must tolerate rows: [].
   return out;
 }
 
@@ -559,9 +557,11 @@ export function parseBancolombiaStatement(
 // Multi-sheet helper: one ParsedStatement per PESOS/DOLARES sheet present in
 // the workbook, in the order they appear. Returns length 1 for a single-sheet
 // xlsx (the Visa case) and length 2 for Mastercard/Amex internacionales.
-// Sheet discovery is case-insensitive. If a sheet is present but empty/invalid
-// (can't parse), we surface the underlying parse error with the sheet name
-// prefixed so callers can tell which sheet failed.
+// Sheet discovery is case-insensitive. A sheet with zero transaction rows
+// (e.g. DOLARES when there were no USD purchases this cycle) is included with
+// rows: [] and period.dueDate: null — callers must tolerate both.
+// Structural parse errors (missing header rows) are still surfaced with the
+// sheet name prefixed so callers can tell which sheet failed.
 export function parseBancolombiaStatementAllSheets(buffer: Buffer): ParsedStatement[] {
   const wb = readWorkbook(buffer);
   if (!wb.SheetNames.length) {
