@@ -207,6 +207,7 @@ function buildDropdownOptions(accounts: AccountOption[]): AccountDropdownOption[
         // Prefer COP leg as primary so the backend resolves COP→USD sibling
         if (existing.primary.currency !== "COP" && a.currency === "COP") {
           existing.primary = a;
+          existing.label = a.name;
         }
         // Label stays as primary.name (no currency suffix — the xlsx covers both)
       } else {

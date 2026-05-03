@@ -440,5 +440,33 @@ describe("StatementUploader", () => {
       const secondCallFormData = mockPreviewIngestion.mock.calls[1][0] as FormData;
       expect(secondCallFormData.get("hint_account_id")).toBe("10");
     });
+
+    it("single-member group (sibling archived) renders as ONE option with no currency suffix", () => {
+      // Only the USD leg exists — the COP sibling was archived. The grouping
+      // path still fires (physicalCardId is set) and should collapse to one entry
+      // with no "(USD)" suffix, because the xlsx covers whatever currency is present.
+      const ORPHAN_LEG: AccountOption[] = [
+        {
+          id: 11,
+          name: "Bancolombia Mastercard *7291",
+          currency: "USD",
+          institution: "Bancolombia",
+          physicalCardId: "pc-7291",
+        },
+      ];
+
+      render(<StatementUploader accounts={ORPHAN_LEG} />);
+
+      const dropdown = screen.getByLabelText(/cuenta/i);
+      const options = Array.from(dropdown.querySelectorAll("option"));
+
+      // Blank + 1 grouped entry = 2 (NOT 3 by treating it as a bare single)
+      expect(options).toHaveLength(2);
+
+      const card = options.find((o) => o.textContent?.includes("*7291"));
+      expect(card).toBeTruthy();
+      // physicalCardId is set → no currency suffix appended
+      expect(card!.textContent).not.toMatch(/\(USD\)|\(COP\)/);
+    });
   });
 });
