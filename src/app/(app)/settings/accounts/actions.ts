@@ -19,6 +19,20 @@ import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { getSessionUser } from "@/lib/auth/session";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { convertCents } from "@/lib/money";
+import type {
+  AccountUpsertInput,
+  AdjustBalanceInput,
+  AdjustBalanceResult,
+  UpdatePhysicalCardInput,
+  UpsertAccountResult,
+} from "./actions-types";
+export type {
+  AccountUpsertInput,
+  AdjustBalanceInput,
+  AdjustBalanceResult,
+  UpdatePhysicalCardInput,
+  UpsertAccountResult,
+} from "./actions-types";
 
 const ADJUSTMENT_CATEGORY_SLUG = "adjustments";
 
@@ -134,8 +148,6 @@ const upsertSchema = z
     path: ["physicalCard"],
   });
 
-export type AccountUpsertInput = z.input<typeof upsertSchema>;
-
 function revalidate() {
   revalidatePath("/");
   revalidatePath("/accounts");
@@ -206,10 +218,6 @@ async function ensureAdjustmentsCategory(
     .set({ deletedAt: null, updatedAt: new Date() })
     .where(and(eq(categories.userId, userId), eq(categories.slug, ADJUSTMENT_CATEGORY_SLUG)));
 }
-
-export type UpsertAccountResult =
-  | { ok: true; propagatedToSiblings: number }
-  | { ok: false; message: string };
 
 export async function upsertAccount(input: AccountUpsertInput): Promise<UpsertAccountResult> {
   const session = await getSessionUser();
@@ -406,8 +414,6 @@ const updatePhysicalCardSchema = z
   })
   .strict();
 
-export type UpdatePhysicalCardInput = z.input<typeof updatePhysicalCardSchema>;
-
 /**
  * Partially updates a physical card's shared attributes (#346, #362). Scoped by
  * `user_id = session.id`. Field semantics:
@@ -506,24 +512,6 @@ const adjustSchema = z.object({
   declared: declaredSchema,
   reason: z.string().max(500).optional(),
 });
-
-export type AdjustBalanceInput = z.input<typeof adjustSchema>;
-
-export type AdjustBalanceResult =
-  | { status: "ok"; diffCents: string; txId: number }
-  // #447 — dual-debt commit returns one entry per sub-account (ordered
-  // primary-then-sibling) so the UI can surface both diffs in a single toast.
-  | {
-      status: "ok_dual";
-      results: Array<{
-        accountId: number;
-        currency: "COP" | "USD";
-        diffCents: string;
-        txId: number;
-      }>;
-    }
-  | { status: "noop" }
-  | { status: "error"; message: string };
 
 /**
  * Reconciliation balance adjustment (YNAB pattern). Inserts a transaction for
