@@ -1,6 +1,7 @@
 import { Money } from "@/components/display/money";
 import { CreditMeterBar } from "@/components/accounts/credit-meter-bar";
 import { formatAccountLabel } from "@/lib/accounts/format";
+import { safeLimitCents } from "@/lib/accounts/limit";
 import { groupCreditCards } from "@/lib/accounts/queries";
 import { toCop } from "@/lib/money";
 import type { AccountDetail } from "@/lib/accounts/queries";
@@ -72,8 +73,7 @@ function SharedCreditCardTile({ group, copPerUsd }: { group: AccountDetail[]; co
 }
 
 function SingleCreditCardTile({ account }: { account: AccountDetail }) {
-  const limit = account.metadata.creditLimitCents;
-  const limitCents = limit !== undefined && limit > 0 ? BigInt(limit) : null;
+  const limitCents = safeLimitCents(account.metadata.creditLimitCents);
   const availableCents = limitCents !== null ? limitCents + account.balanceCents : null;
   const debt = account.balanceCents < BigInt(0) ? -account.balanceCents : BigInt(0);
 

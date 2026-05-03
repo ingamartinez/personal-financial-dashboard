@@ -13,6 +13,7 @@ import {
 } from "@/lib/accounts/queries";
 import { computeNextPayment } from "@/lib/accounts/next-payment";
 import { computeUsedPct, isHeavyUsage } from "@/lib/accounts/meter";
+import { safeLimitCents } from "@/lib/accounts/limit";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { toCop } from "@/lib/money";
 import { Money } from "@/components/display/money";
@@ -276,9 +277,8 @@ function CreditCardTile({
     availableCents = limitCents + copDebt + toCop(usdDebt, "USD", copPerUsd);
     meterCurrency = "COP";
   } else {
-    const limit = primary.metadata.creditLimitCents;
-    if (limit !== undefined && limit > 0) {
-      limitCents = BigInt(limit);
+    limitCents = safeLimitCents(primary.metadata.creditLimitCents);
+    if (limitCents !== null) {
       // #420: always derive from limit + ledger. The old
       // `metadata.availableCreditCents` snapshot path went stale whenever a
       // purchase landed via SMS/manual without a balance-adjust.
