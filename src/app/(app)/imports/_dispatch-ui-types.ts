@@ -20,6 +20,11 @@ export const hintSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}$/)
     .optional(),
+  // #760 — when "1", bypass the already-consolidated guard in the commit step.
+  force: z
+    .string()
+    .optional()
+    .transform((v) => v === "1"),
 });
 
 export type HintParams = z.infer<typeof hintSchema>;

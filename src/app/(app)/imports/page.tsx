@@ -15,7 +15,7 @@ import { accounts } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { createLogger } from "@/lib/logger";
-import { hintSchema } from "./_dispatch-ui-types";
+import { hintSchema, type HintParams } from "./_dispatch-ui-types";
 import { StatementUploader } from "@/components/imports/statement-uploader";
 
 const log = createLogger({ module: "imports-page" });
@@ -43,8 +43,9 @@ export default async function ImportsPage({
   const hintParse = hintSchema.safeParse({
     hint_account_id: flatParams.hint_account_id,
     hint_cycle: flatParams.hint_cycle,
+    force: flatParams.force,
   });
-  const hints = hintParse.success ? hintParse.data : {};
+  const hints: HintParams = hintParse.success ? hintParse.data : { force: false };
 
   // Validate hint_account_id ownership server-side before pre-filling (AC-19)
   let validatedHintAccountId: number | undefined;
@@ -111,6 +112,7 @@ export default async function ImportsPage({
         initialHint={{
           accountId: validatedHintAccountId,
           cycle: hints.hint_cycle,
+          force: hints.force,
         }}
       />
     </main>

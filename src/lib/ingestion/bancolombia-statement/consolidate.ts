@@ -181,6 +181,10 @@ export type ConsolidateOptions = {
   // balance_adjustment tx post-intereses so the final ledger SUM matches
   // this value exactly.
   saldoRealLedgerCents?: bigint | null;
+  // #760 — when true, bypass the already-consolidated guard and upsert the
+  // existing statement_imports row instead of inserting a new one. Useful
+  // when the user wants to re-import a corrected extracto.
+  force?: boolean;
 };
 
 export function hashStatementBuffer(buffer: Buffer): string {
@@ -814,6 +818,7 @@ export async function consolidateCycleFromStatement(
 
   // Short-circuit if this cycle is already consolidated. Return the persisted
   // report so callers can display past runs without re-work.
+  // #760: when force=true, skip this guard and proceed to upsert the row.
   const [existing] = await database
     .select({
       id: statementImports.id,
@@ -830,7 +835,7 @@ export async function consolidateCycleFromStatement(
       ),
     )
     .limit(1);
-  if (existing) {
+  if (existing && !opts.force) {
     const persistedReport = (existing.report ?? {}) as Partial<ConsolidationReport>;
     return {
       ...(persistedReport as ConsolidationReport),
@@ -922,24 +927,45 @@ export async function consolidateCycleFromStatement(
     insertedBeforePeriodCount,
     crossTwinReassignedIds,
   } = await database.transaction(async (txDb) => {
-    const [imp] = await txDb
-      .insert(statementImports)
-      .values({
-        userId: opts.userId,
-        accountId: opts.accountId,
-        fileHash: opts.fileHash,
-        periodStart: toIsoDate(opts.parsed.period.startDate),
-        periodEnd: toIsoDate(opts.parsed.period.endDate),
-        txnCount: 0,
-        kind: "extracto_detallado",
-        cycle: opts.cycle,
-        // #563 — persist the cycle-end balance from the extracto summary so
-        // the snapshot backfill (#562) can use it as an opening-balance anchor.
-        // currentBalanceCents = "Pago total" = what the bank says you owe.
-        balanceAtEndCents: opts.parsed.summary.currentBalanceCents,
-        report: null,
-      })
-      .returning({ id: statementImports.id });
+    // #760 — when force=true and a previous row already exists, UPDATE it in
+    // place (upsert) so we never accumulate duplicate rows per (user, account,
+    // cycle). The unique constraint is on (userId, accountId, kind, cycle).
+    let imp: { id: number };
+    if (opts.force && existing) {
+      await txDb
+        .update(statementImports)
+        .set({
+          fileHash: opts.fileHash,
+          periodStart: toIsoDate(opts.parsed.period.startDate),
+          periodEnd: toIsoDate(opts.parsed.period.endDate),
+          txnCount: 0, // will be updated at end of tx
+          balanceAtEndCents: opts.parsed.summary.currentBalanceCents,
+          report: null,
+          importedAt: new Date(),
+        })
+        .where(eq(statementImports.id, existing.id));
+      imp = { id: existing.id };
+    } else {
+      const [inserted] = await txDb
+        .insert(statementImports)
+        .values({
+          userId: opts.userId,
+          accountId: opts.accountId,
+          fileHash: opts.fileHash,
+          periodStart: toIsoDate(opts.parsed.period.startDate),
+          periodEnd: toIsoDate(opts.parsed.period.endDate),
+          txnCount: 0,
+          kind: "extracto_detallado",
+          cycle: opts.cycle,
+          // #563 — persist the cycle-end balance from the extracto summary so
+          // the snapshot backfill (#562) can use it as an opening-balance anchor.
+          // currentBalanceCents = "Pago total" = what the bank says you owe.
+          balanceAtEndCents: opts.parsed.summary.currentBalanceCents,
+          report: null,
+        })
+        .returning({ id: statementImports.id });
+      imp = inserted;
+    }
 
     const matchedIdsToUpdate: number[] = [];
     for (const m of match.matched) {
