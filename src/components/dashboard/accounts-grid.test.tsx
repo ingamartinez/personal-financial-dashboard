@@ -131,8 +131,8 @@ describe("AccountsGrid", () => {
     // "Disponible" heading present.
     expect(screen.getByText(/disponible/i)).toBeInTheDocument();
 
-    // limit=30,000,000_00 COP + copDebt=-500,000_00 + usdDebt=-100_00*4000/1=-400_00
-    // available = 3000000000 - 50000000 - 40000 = 2949960000 cents COP
+    // limit=30,000,000_00 COP + copDebt=-500,000_00 + usdDebt=toCop(-100_00 USD, 4000)=-40_000_000
+    // available = 3_000_000_000 - 50_000_000 - 40_000_000 = 2_910_000_000 COP cents
     // In all-cop mode, since currency is already COP → no conversion. Just format.
     // We don't test exact amount here — the key assertion is that <Money currency="COP">
     // is rendered (not USD), so the displayed number is sane (not ~3640× inflated).
