@@ -175,6 +175,7 @@ export const institutionSlug = pgEnum("institution_slug", [
   "scotiabank",
   "bancogalicia",
   "rappipay",
+  "amex",
   "cash",
   "other",
 ]);

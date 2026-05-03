@@ -23,8 +23,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Money } from "@/components/display/money";
-import { formatAccountLabel } from "@/lib/accounts/format";
+import { formatAccountLabel, INSTITUTION_LABELS } from "@/lib/accounts/format";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { AccountMetadata } from "@/lib/db/schema";
@@ -61,6 +68,7 @@ export type AccountRow = {
   id: number;
   name: string;
   institution: string;
+  institutionSlug: string;
   type: AccountType;
   currency: Currency;
   balanceCents: string;
@@ -631,7 +639,9 @@ function AccountEditor({
   const isEdit = !!editing;
 
   const [name, setName] = useState(editing?.name ?? "");
-  const [institution, setInstitution] = useState(editing?.institution ?? "Bancolombia");
+  const [institutionSlug, setInstitutionSlug] = useState<string>(
+    editing?.institutionSlug ?? "bancolombia",
+  );
   const [type, setType] = useState<AccountType>(editing?.type ?? "savings");
   const [currency, setCurrency] = useState<Currency>(editing?.currency ?? "COP");
   const [balance, setBalance] = useState(
@@ -783,10 +793,12 @@ function AccountEditor({
 
     startTransition(async () => {
       try {
-        await upsertAccount({
+        const result = await upsertAccount({
           id: editing?.id,
           name: name.trim(),
-          institution: institution.trim(),
+          institutionSlug: institutionSlug as Parameters<
+            typeof upsertAccount
+          >[0]["institutionSlug"],
           type,
           primary: { currency, balance: balNum, metadata: primaryMd },
           secondary,
@@ -812,7 +824,13 @@ function AccountEditor({
             return;
           }
         }
-        toast.success(isEdit ? "Updated" : "Created");
+        if (result.ok && result.propagatedToSiblings > 0) {
+          toast.success(
+            `Institución actualizada en ${result.propagatedToSiblings + 1} cuenta${result.propagatedToSiblings + 1 === 1 ? "" : "s"} vinculadas.`,
+          );
+        } else {
+          toast.success(isEdit ? "Updated" : "Created");
+        }
         onClose();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Save failed");
@@ -850,13 +868,18 @@ function AccountEditor({
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="acc-inst">Institution</Label>
-              <Input
-                id="acc-inst"
-                value={institution}
-                onChange={(e) => setInstitution(e.target.value)}
-                required
-                maxLength={50}
-              />
+              <Select value={institutionSlug} onValueChange={setInstitutionSlug}>
+                <SelectTrigger id="acc-inst">
+                  <SelectValue placeholder="Select institution" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(INSTITUTION_LABELS).map(([slug, label]) => (
+                    <SelectItem key={slug} value={slug}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="acc-type">Type</Label>

@@ -54,7 +54,7 @@ describe("accounts actions: single-currency", () => {
   it("creates a savings account then archives it (soft-delete)", async () => {
     await upsertAccount({
       name: `${MARKER}-savings`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "savings",
       active: true,
       primary: { currency: "COP", balance: 1_200_000 },
@@ -103,7 +103,7 @@ describe("accounts actions: single-currency", () => {
   it("updates metadata on an existing account via id (balance is ledger-only, unchanged by upsert edit)", async () => {
     await upsertAccount({
       name: `${MARKER}-edit`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "savings",
       primary: { currency: "COP", balance: 500_000 },
     });
@@ -115,7 +115,7 @@ describe("accounts actions: single-currency", () => {
     await upsertAccount({
       id: before.id,
       name: `${MARKER}-edit`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "savings",
       primary: {
         currency: "COP",
@@ -136,7 +136,7 @@ describe("accounts actions: single-currency", () => {
     await expect(
       upsertAccount({
         name: `${MARKER}-bad`,
-        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
         type: "savings",
         primary: { currency: "COP", balance: 100_000 },
         secondary: { currency: "USD", balance: 50 },
@@ -147,7 +147,7 @@ describe("accounts actions: single-currency", () => {
   it("persists cutoffDay + creditLimit in metadata for single-currency credit_card", async () => {
     await upsertAccount({
       name: `${MARKER}-cc-cutoff`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "credit_card",
       primary: {
         currency: "COP",
@@ -172,7 +172,7 @@ describe("accounts actions: multi-currency credit card", () => {
   it("creates two linked rows sharing physical_card_id", async () => {
     await upsertAccount({
       name: `${MARKER}-amex`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "credit_card",
       primary: {
         currency: "COP",
@@ -200,7 +200,7 @@ describe("accounts actions: multi-currency credit card", () => {
   it("persists name to physical_cards on multi-currency creation (#362)", async () => {
     await upsertAccount({
       name: `${MARKER}-mc-name`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "credit_card",
       primary: { currency: "COP", balance: 0 },
       secondary: { currency: "USD", balance: 0 },
@@ -227,7 +227,7 @@ describe("accounts actions: multi-currency credit card", () => {
   it("creates a physical_cards row with the shared cupo when physicalCard is passed", async () => {
     await upsertAccount({
       name: `${MARKER}-shared`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "credit_card",
       primary: { currency: "COP", balance: 0 },
       secondary: { currency: "USD", balance: 0 },
@@ -260,7 +260,7 @@ describe("accounts actions: multi-currency credit card", () => {
   it("updatePhysicalCard updates shared cupo and attributes", async () => {
     await upsertAccount({
       name: `${MARKER}-update`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "credit_card",
       primary: { currency: "COP", balance: 0 },
       secondary: { currency: "USD", balance: 0 },
@@ -293,7 +293,7 @@ describe("accounts actions: multi-currency credit card", () => {
   it("updatePhysicalCard applies partial updates — undefined leaves fields untouched (#362)", async () => {
     await upsertAccount({
       name: `${MARKER}-partial`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "credit_card",
       primary: { currency: "COP", balance: 0 },
       secondary: { currency: "USD", balance: 0 },
@@ -376,7 +376,7 @@ describe("accounts actions: multi-currency credit card", () => {
     await expect(
       upsertAccount({
         name: `${MARKER}-bad`,
-        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
         type: "credit_card",
         primary: { currency: "COP", balance: 0 },
         physicalCard: { creditLimitCents: 100_000 },
@@ -387,7 +387,7 @@ describe("accounts actions: multi-currency credit card", () => {
   it("archives each linked row independently (no cascade)", async () => {
     await upsertAccount({
       name: `${MARKER}-intl`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "credit_card",
       primary: { currency: "COP", balance: 0 },
       secondary: { currency: "USD", balance: 0 },
@@ -418,7 +418,7 @@ describe("accounts actions: multi-currency credit card", () => {
   it("rejects secondary on edit (multi-currency only at create)", async () => {
     await upsertAccount({
       name: `${MARKER}-single-cc`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "credit_card",
       primary: { currency: "COP", balance: 0 },
     });
@@ -431,7 +431,7 @@ describe("accounts actions: multi-currency credit card", () => {
       upsertAccount({
         id: row.id,
         name: `${MARKER}-single-cc`,
-        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
         type: "credit_card",
         primary: { currency: "COP", balance: 0 },
         secondary: { currency: "USD", balance: 0 },
@@ -478,7 +478,7 @@ describe("accounts actions: auth scoping", () => {
   it("toggleAccountActive flips the flag", async () => {
     await upsertAccount({
       name: `${MARKER}-toggle`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "savings",
       primary: { currency: "COP", balance: 0 },
     });
@@ -512,7 +512,7 @@ describe("adjustAccountBalance", () => {
   async function seedAccount(balance: number): Promise<number> {
     await upsertAccount({
       name: `${ADJ_MARKER}-main`,
-      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
       type: "savings",
       primary: { currency: "COP", balance },
     });
@@ -781,7 +781,7 @@ describe("adjustAccountBalance", () => {
     }): Promise<{ copId: number; usdId: number; pcId: string }> {
       await upsertAccount({
         name: `${ADJ_MARKER}-pair`,
-        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
         type: "credit_card",
         primary: { currency: "COP", balance: params.copBalanceCents / 100 },
         secondary: { currency: "USD", balance: params.usdBalanceCents / 100 },
@@ -921,7 +921,7 @@ describe("adjustAccountBalance", () => {
     }): Promise<{ copId: number; usdId: number; pcId: string }> {
       await upsertAccount({
         name: `${ADJ_MARKER}-dual`,
-        institution: "Bancolombia",
+        institutionSlug: "bancolombia",
         type: "credit_card",
         primary: { currency: "COP", balance: params.copBalanceCents / 100 },
         secondary: { currency: "USD", balance: params.usdBalanceCents / 100 },
@@ -1197,5 +1197,179 @@ describe("adjustAccountBalance", () => {
         expect(result.message).toMatch(/multi-moneda/i);
       }
     });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// #751 — institution Select + propagation to multi-currency legs
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("upsertAccount: institution propagation (#751)", () => {
+  const PROP_MARKER = "__test_institution_prop";
+
+  async function cleanup() {
+    await db.execute(
+      sql`DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE ${PROP_MARKER + "%"})`,
+    );
+    await db.execute(sql`DELETE FROM physical_cards WHERE institution LIKE ${"__test_%"}`);
+    await db.execute(sql`DELETE FROM accounts WHERE name LIKE ${PROP_MARKER + "%"}`);
+  }
+
+  afterEach(cleanup);
+
+  it("derives institution label from institutionSlug on create", async () => {
+    await upsertAccount({
+      name: `${PROP_MARKER}-single`,
+      institutionSlug: "davivienda",
+      type: "savings",
+      primary: { currency: "COP", balance: 0 },
+    });
+    const [row] = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${PROP_MARKER}-single`)));
+    expect(row.institution).toBe("Davivienda");
+    expect(row.institutionSlug).toBe("davivienda");
+  });
+
+  it("single-account edit: updates institution + slug, no propagation", async () => {
+    await upsertAccount({
+      name: `${PROP_MARKER}-single-edit`,
+      institutionSlug: "bancolombia",
+      type: "savings",
+      primary: { currency: "COP", balance: 0 },
+    });
+    const [before] = await db
+      .select()
+      .from(accounts)
+      .where(
+        and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${PROP_MARKER}-single-edit`)),
+      );
+
+    const result = await upsertAccount({
+      id: before.id,
+      name: `${PROP_MARKER}-single-edit`,
+      institutionSlug: "nequi",
+      type: "savings",
+      primary: { currency: "COP", balance: 0 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.propagatedToSiblings).toBe(0);
+
+    const [after] = await db.select().from(accounts).where(eq(accounts.id, before.id));
+    expect(after.institution).toBe("Nequi");
+    expect(after.institutionSlug).toBe("nequi");
+  });
+
+  it("multi-currency edit: propagates institution to sibling leg + physical_cards row", async () => {
+    // Create a multi-currency card pair
+    await upsertAccount({
+      name: `${PROP_MARKER}-mc`,
+      institutionSlug: "bancolombia",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+      secondary: { currency: "USD", balance: 0 },
+      physicalCard: { creditLimitCents: 20_000_000_00, cutoffDay: 15, network: "mastercard" },
+    });
+    const rows = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${PROP_MARKER}-mc`)));
+    expect(rows).toHaveLength(2);
+
+    const copRow = rows.find((r) => r.currency === "COP")!;
+    const usdRow = rows.find((r) => r.currency === "USD")!;
+
+    // Edit the COP leg — change institution to amex
+    const result = await upsertAccount({
+      id: copRow.id,
+      name: `${PROP_MARKER}-mc`,
+      institutionSlug: "amex",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+    });
+
+    expect(result.ok).toBe(true);
+    // COP + USD = 2 total; propagatedToSiblings = 1 (sibling updated)
+    if (result.ok) expect(result.propagatedToSiblings).toBe(1);
+
+    // Both legs should now have amex
+    const [copAfter] = await db.select().from(accounts).where(eq(accounts.id, copRow.id));
+    const [usdAfter] = await db.select().from(accounts).where(eq(accounts.id, usdRow.id));
+    expect(copAfter.institutionSlug).toBe("amex");
+    expect(copAfter.institution).toBe("Amex");
+    expect(usdAfter.institutionSlug).toBe("amex");
+    expect(usdAfter.institution).toBe("Amex");
+
+    // physical_cards row should also be updated
+    const [pc] = await db
+      .select()
+      .from(physicalCards)
+      .where(eq(physicalCards.id, copRow.physicalCardId!));
+    expect(pc.institutionSlug).toBe("amex");
+    expect(pc.institution).toBe("Amex");
+  });
+
+  it("tenant safety: propagation does NOT update sibling accounts owned by another user", async () => {
+    // Create user A's multi-currency card
+    await upsertAccount({
+      name: `${PROP_MARKER}-tenant-a`,
+      institutionSlug: "bancolombia",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+      secondary: { currency: "USD", balance: 0 },
+      physicalCard: { creditLimitCents: 10_000_000_00, network: "mastercard" },
+    });
+    const aRows = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, TEST_USER_ID), eq(accounts.name, `${PROP_MARKER}-tenant-a`)));
+    expect(aRows).toHaveLength(2);
+    const aCopRow = aRows.find((r) => r.currency === "COP")!;
+    const aUsdRow = aRows.find((r) => r.currency === "USD")!;
+
+    // Insert a synthetic "other user" account that re-uses the same physical_card_id
+    // (edge case — shouldn't happen in prod, but we guard against it defensively).
+    const [otherUser] = await db
+      .insert(users)
+      .values({ email: `${PROP_MARKER}-other@test.local`, name: "Other" })
+      .returning({ id: users.id });
+
+    const [alienAccount] = await db
+      .insert(accounts)
+      .values({
+        userId: otherUser.id,
+        name: `${PROP_MARKER}-alien`,
+        institution: "Bancolombia",
+        physicalCardId: aCopRow.physicalCardId,
+        type: "credit_card",
+        currency: "USD",
+      })
+      .returning({ id: accounts.id });
+
+    // Edit user A's COP leg → should propagate to A's USD but NOT to the alien account
+    const result = await upsertAccount({
+      id: aCopRow.id,
+      name: `${PROP_MARKER}-tenant-a`,
+      institutionSlug: "amex",
+      type: "credit_card",
+      primary: { currency: "COP", balance: 0 },
+    });
+
+    expect(result.ok).toBe(true);
+    // Only A's USD sibling updated (not the alien)
+    if (result.ok) expect(result.propagatedToSiblings).toBe(1);
+
+    const [aUsdAfter] = await db.select().from(accounts).where(eq(accounts.id, aUsdRow.id));
+    expect(aUsdAfter.institutionSlug).toBe("amex");
+
+    const [alienAfter] = await db.select().from(accounts).where(eq(accounts.id, alienAccount.id));
+    // Alien account must remain unchanged
+    expect(alienAfter.institutionSlug).toBe("other"); // the default
+
+    // Cleanup alien user
+    await db.execute(sql`DELETE FROM accounts WHERE id = ${alienAccount.id}`);
+    await db.execute(sql`DELETE FROM users WHERE id = ${otherUser.id}`);
   });
 });
