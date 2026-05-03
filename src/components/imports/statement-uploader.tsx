@@ -43,6 +43,7 @@ export type AccountOption = {
   currency: string;
   institution?: string | null;
   metadata?: { last4s?: string[] | null } | null;
+  physicalCardId?: string | null;
 };
 
 type UploaderProps = {
@@ -171,6 +172,62 @@ function DropZone({ onFile, disabled }: { onFile: (file: File) => void; disabled
 }
 
 // ---------------------------------------------------------------------------
+// AccountDropdown helpers
+// ---------------------------------------------------------------------------
+
+type AccountDropdownOption =
+  | {
+      kind: "single";
+      account: AccountOption;
+    }
+  | {
+      kind: "group";
+      physicalCardId: string;
+      /** Primary leg (COP when both COP+USD exist, otherwise whichever comes first) */
+      primary: AccountOption;
+      label: string;
+    };
+
+/**
+ * Collapses multi-currency legs (same physical_card_id) into one option.
+ * Single-currency or ungrouped accounts render as-is with formatAccountLabel.
+ *
+ * The primary leg for a group is the COP leg when one exists; otherwise the
+ * first leg in order. The backend already discovers the sibling via
+ * physicalCardId when the primary account_id is submitted — this is path A.
+ */
+function buildDropdownOptions(accounts: AccountOption[]): AccountDropdownOption[] {
+  const options: AccountDropdownOption[] = [];
+  const seen = new Map<string, AccountDropdownOption & { kind: "group" }>();
+
+  for (const a of accounts) {
+    if (a.physicalCardId) {
+      const existing = seen.get(a.physicalCardId);
+      if (existing) {
+        // Prefer COP leg as primary so the backend resolves COP→USD sibling
+        if (existing.primary.currency !== "COP" && a.currency === "COP") {
+          existing.primary = a;
+        }
+        // Label stays as primary.name (no currency suffix — the xlsx covers both)
+      } else {
+        const entry: AccountDropdownOption & { kind: "group" } = {
+          kind: "group",
+          physicalCardId: a.physicalCardId,
+          primary: a,
+          label: a.name,
+        };
+        seen.set(a.physicalCardId, entry);
+        options.push(entry);
+      }
+    } else {
+      options.push({ kind: "single", account: a });
+    }
+  }
+
+  return options;
+}
+
+// ---------------------------------------------------------------------------
 // AccountDropdown
 // ---------------------------------------------------------------------------
 
@@ -185,6 +242,8 @@ function AccountDropdown({
   onChange: (id: number | null) => void;
   disabled: boolean;
 }) {
+  const options = buildDropdownOptions(accounts);
+
   return (
     <div className="flex flex-col gap-1">
       <label htmlFor="uploader-account" className="text-sm font-medium">
@@ -198,11 +257,20 @@ function AccountDropdown({
         className="bg-background focus:ring-ring w-full rounded-md border px-3 py-2 text-sm focus:ring-2 focus:outline-none disabled:opacity-50"
       >
         <option value="">Seleccioná una cuenta...</option>
-        {accounts.map((a) => (
-          <option key={a.id} value={a.id}>
-            {formatAccountLabel(a)}
-          </option>
-        ))}
+        {options.map((opt) => {
+          if (opt.kind === "group") {
+            return (
+              <option key={`pc-${opt.physicalCardId}`} value={opt.primary.id}>
+                {opt.label}
+              </option>
+            );
+          }
+          return (
+            <option key={opt.account.id} value={opt.account.id}>
+              {formatAccountLabel(opt.account)}
+            </option>
+          );
+        })}
       </select>
     </div>
   );

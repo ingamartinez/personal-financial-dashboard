@@ -337,4 +337,108 @@ describe("StatementUploader", () => {
       expect(screen.queryByText("Subir")).not.toBeInTheDocument();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // #752 — Picker grouping for multi-currency cards
+  // ---------------------------------------------------------------------------
+
+  describe("account picker grouping (#752)", () => {
+    const MULTI_CURRENCY_ACCOUNTS: AccountOption[] = [
+      // Multi-currency Mastercard: COP leg (primary) + USD leg — same physicalCardId
+      {
+        id: 10,
+        name: "Bancolombia Mastercard *7291",
+        currency: "COP",
+        institution: "Bancolombia",
+        physicalCardId: "pc-7291",
+      },
+      {
+        id: 11,
+        name: "Bancolombia Mastercard *7291",
+        currency: "USD",
+        institution: "Bancolombia",
+        physicalCardId: "pc-7291",
+      },
+      // Single-currency Visa (no physicalCardId) — shows with currency suffix
+      {
+        id: 20,
+        name: "Bancolombia Visa *2575",
+        currency: "COP",
+        institution: "Bancolombia",
+      },
+      // Savings — no physicalCardId
+      {
+        id: 30,
+        name: "Bancolombia Ahorros",
+        currency: "COP",
+        institution: "Bancolombia",
+      },
+    ];
+
+    it("renders ONE option for a multi-currency card instead of two", () => {
+      render(<StatementUploader accounts={MULTI_CURRENCY_ACCOUNTS} />);
+
+      const dropdown = screen.getByLabelText(/cuenta/i);
+      const options = dropdown.querySelectorAll("option");
+
+      // Blank + 1 grouped card + 1 Visa + 1 Ahorros = 4 total (NOT 5)
+      expect(options).toHaveLength(4);
+    });
+
+    it("grouped card option has no currency suffix in its label", () => {
+      render(<StatementUploader accounts={MULTI_CURRENCY_ACCOUNTS} />);
+
+      const dropdown = screen.getByLabelText(/cuenta/i);
+      const options = Array.from(dropdown.querySelectorAll("option"));
+
+      const mastercard = options.find((o) => o.textContent?.includes("*7291"));
+      expect(mastercard).toBeTruthy();
+      // Must NOT contain "(COP)" or "(USD)" suffix
+      expect(mastercard!.textContent).not.toMatch(/\(COP\)|\(USD\)/);
+    });
+
+    it("single-currency card renders with currency suffix via formatAccountLabel", () => {
+      render(<StatementUploader accounts={MULTI_CURRENCY_ACCOUNTS} />);
+
+      const dropdown = screen.getByLabelText(/cuenta/i);
+      const options = Array.from(dropdown.querySelectorAll("option"));
+
+      const visa = options.find((o) => o.textContent?.includes("*2575"));
+      expect(visa).toBeTruthy();
+      expect(visa!.textContent).toContain("(COP)");
+    });
+
+    it("grouped option value is the COP leg account_id", () => {
+      render(<StatementUploader accounts={MULTI_CURRENCY_ACCOUNTS} />);
+
+      const dropdown = screen.getByLabelText(/cuenta/i);
+      const options = Array.from(dropdown.querySelectorAll("option"));
+
+      const mastercard = options.find((o) => o.textContent?.includes("*7291"));
+      expect(mastercard).toBeTruthy();
+      // COP leg is id=10; USD leg is id=11 — value must be the COP leg
+      expect(mastercard!.getAttribute("value")).toBe("10");
+    });
+
+    it("selecting the grouped option calls previewIngestion with the COP leg account_id", async () => {
+      mockPreviewIngestion.mockResolvedValue(makeArqPreviewResult());
+
+      const user = userEvent.setup();
+      render(<StatementUploader accounts={MULTI_CURRENCY_ACCOUNTS} />);
+
+      // Drop a file first so re-preview fires on account change
+      simulateFileSelect(makeFakePdf());
+      await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(1));
+
+      // Select the grouped Mastercard option
+      const dropdown = screen.getByLabelText(/cuenta/i);
+      await user.selectOptions(dropdown, "10");
+
+      await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(2));
+
+      // The second call's FormData should contain hint_account_id = "10"
+      const secondCallFormData = mockPreviewIngestion.mock.calls[1][0] as FormData;
+      expect(secondCallFormData.get("hint_account_id")).toBe("10");
+    });
+  });
 });
