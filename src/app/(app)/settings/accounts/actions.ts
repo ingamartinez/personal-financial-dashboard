@@ -2,16 +2,18 @@
 
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
   accounts,
   categories,
+  institutionSlug as institutionSlugEnum,
   physicalCards,
   transactions,
   type AccountMetadata,
 } from "@/lib/db/schema";
+import { INSTITUTION_LABELS } from "@/lib/accounts/format";
 import { notDeleted } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { getSessionUser } from "@/lib/auth/session";
@@ -95,11 +97,20 @@ const physicalCardInputSchema = z
   })
   .strict();
 
+// The enum values exported by drizzle are the string literals from the pgEnum.
+const INSTITUTION_SLUG_VALUES = institutionSlugEnum.enumValues;
+
 const upsertSchema = z
   .object({
     id: z.coerce.number().int().positive().optional(),
     name: z.string().min(1).max(100),
-    institution: z.string().min(1).max(50),
+    // `institutionSlug` is the canonical value bound to the Select. `institution`
+    // is derived from it on the server and is no longer sent from the form.
+    institutionSlug: z.enum(INSTITUTION_SLUG_VALUES),
+    // Legacy free-text `institution` is kept optional for backward-compat with
+    // any caller that pre-dates this issue — the server ignores it when
+    // `institutionSlug` is present (always true for new form submissions).
+    institution: z.string().min(1).max(50).optional(),
     type: z.enum(["savings", "credit_card", "loan"]),
     active: z.coerce.boolean().default(true),
     primary: sideSchema,
@@ -196,33 +207,96 @@ async function ensureAdjustmentsCategory(
     .where(and(eq(categories.userId, userId), eq(categories.slug, ADJUSTMENT_CATEGORY_SLUG)));
 }
 
-export async function upsertAccount(input: AccountUpsertInput) {
+export type UpsertAccountResult =
+  | { ok: true; propagatedToSiblings: number }
+  | { ok: false; message: string };
+
+export async function upsertAccount(input: AccountUpsertInput): Promise<UpsertAccountResult> {
   const session = await getSessionUser();
   const parsed = upsertSchema.parse(input);
+
+  // Derive human-readable institution from the slug. This is the single
+  // source of truth — the form no longer sends a free-text `institution`.
+  const institutionLabel = INSTITUTION_LABELS[parsed.institutionSlug] ?? parsed.institutionSlug;
 
   const base = {
     userId: session.id,
     name: parsed.name,
-    institution: parsed.institution,
+    institution: institutionLabel,
+    institutionSlug: parsed.institutionSlug,
     type: parsed.type,
     active: parsed.active,
     updatedAt: new Date(),
   };
 
   if (parsed.id) {
+    const accountId = parsed.id; // narrow out undefined for TS
     const primaryValues = sideToValues(parsed.primary);
-    await db
-      .update(accounts)
-      .set({ ...base, ...primaryValues })
+
+    // Fetch the current account to check for physical_card_id (propagation).
+    const [current] = await db
+      .select({ physicalCardId: accounts.physicalCardId })
+      .from(accounts)
       .where(
         and(
           eq(accounts.userId, session.id),
-          eq(accounts.id, parsed.id),
+          eq(accounts.id, accountId),
           notDeleted(accounts.deletedAt),
         ),
       );
+
+    let propagatedToSiblings = 0;
+
+    await db.transaction(async (trx) => {
+      // 1. Update the target account.
+      await trx
+        .update(accounts)
+        .set({ ...base, ...primaryValues })
+        .where(
+          and(
+            eq(accounts.userId, session.id),
+            eq(accounts.id, accountId),
+            notDeleted(accounts.deletedAt),
+          ),
+        );
+
+      // 2. If the account belongs to a physical card, propagate institution to
+      //    sibling legs — tenant-guarded (userId must match).
+      if (current?.physicalCardId) {
+        const updated = await trx
+          .update(accounts)
+          .set({
+            institution: institutionLabel,
+            institutionSlug: parsed.institutionSlug,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(accounts.userId, session.id),
+              eq(accounts.physicalCardId, current.physicalCardId),
+              ne(accounts.id, accountId),
+              notDeleted(accounts.deletedAt),
+            ),
+          )
+          .returning({ id: accounts.id });
+        propagatedToSiblings = updated.length;
+
+        // Also update the physical_cards row so its institution_slug stays in sync.
+        await trx
+          .update(physicalCards)
+          .set({
+            institution: institutionLabel,
+            institutionSlug: parsed.institutionSlug,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(eq(physicalCards.id, current.physicalCardId), eq(physicalCards.userId, session.id)),
+          );
+      }
+    });
+
     revalidate();
-    return;
+    return { ok: true, propagatedToSiblings };
   }
 
   if (parsed.secondary) {
@@ -247,7 +321,8 @@ export async function upsertAccount(input: AccountUpsertInput) {
       await trx.insert(physicalCards).values({
         id: physicalCardId,
         userId: session.id,
-        institution: parsed.institution,
+        institution: institutionLabel,
+        institutionSlug: parsed.institutionSlug,
         name: plasticName,
         network,
         last4,
@@ -297,6 +372,7 @@ export async function upsertAccount(input: AccountUpsertInput) {
   }
 
   revalidate();
+  return { ok: true as const, propagatedToSiblings: 0 };
 }
 
 export async function archiveAccount(id: number) {

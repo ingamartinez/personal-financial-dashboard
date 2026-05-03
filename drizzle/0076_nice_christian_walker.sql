@@ -1,0 +1,1 @@
+ALTER TYPE "public"."institution_slug" ADD VALUE 'amex' BEFORE 'cash';

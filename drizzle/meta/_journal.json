@@ -533,6 +533,13 @@
       "when": 1777839292104,
       "tag": "0075_backfill_cycle_and_institution_slug",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1777841901866,
+      "tag": "0076_nice_christian_walker",
+      "breakpoints": true
     }
   ]
 }

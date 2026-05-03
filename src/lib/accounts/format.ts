@@ -1,3 +1,18 @@
+// Institution slug → human-readable label. Keep in sync with the
+// `institution_slug` pgEnum in schema.ts.
+export const INSTITUTION_LABELS: Record<string, string> = {
+  bancolombia: "Bancolombia",
+  davivienda: "Davivienda",
+  nequi: "Nequi",
+  bbva: "BBVA",
+  scotiabank: "Scotiabank",
+  bancogalicia: "Banco Galicia",
+  rappipay: "RappiPay",
+  amex: "Amex",
+  cash: "Efectivo",
+  other: "Otra",
+};
+
 // Single source of truth for rendering an account as a user-visible label.
 // The DB keeps `name`, `currency`, `institution`, and `metadata.last4s` as
 // separate fields — never stuff disambiguating bits back into `name`.
