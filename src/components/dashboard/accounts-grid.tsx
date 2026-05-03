@@ -1,15 +1,10 @@
 import { Money } from "@/components/display/money";
-import { cn } from "@/lib/utils";
+import { CreditMeterBar } from "@/components/accounts/credit-meter-bar";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { groupCreditCards } from "@/lib/accounts/queries";
 import { toCop } from "@/lib/money";
 import type { AccountDetail } from "@/lib/accounts/queries";
 import type { Currency } from "@/lib/types";
-
-function pctOf(part: bigint, whole: bigint): number {
-  if (whole <= BigInt(0)) return 0;
-  return Math.min(100, Math.max(0, Number((part * BigInt(10000)) / whole) / 100));
-}
 
 // COP before USD so the COP leg always renders first in the breakdown.
 const CURRENCY_RANK: Record<Currency, number> = { COP: 0, USD: 1 };
@@ -27,9 +22,6 @@ function SharedCreditCardTile({ group, copPerUsd }: { group: AccountDetail[]; co
     else usdDebt += s.balanceCents;
   }
   const availableCents = limitCents + copDebt + toCop(usdDebt, "USD", copPerUsd);
-  const totalDebtCents = -copDebt - toCop(usdDebt, "USD", copPerUsd);
-  const usedPct = pctOf(totalDebtCents > BigInt(0) ? totalDebtCents : BigInt(0), limitCents);
-  const heavy = usedPct >= 80;
 
   const title = pc.name ?? primary.name;
 
@@ -52,12 +44,7 @@ function SharedCreditCardTile({ group, copPerUsd }: { group: AccountDetail[]; co
         </div>
       </div>
 
-      <div className="meter-track h-1.5">
-        <div
-          className={cn(heavy ? "meter-fill-amber" : "meter-fill")}
-          style={{ width: `${usedPct}%` }}
-        />
-      </div>
+      <CreditMeterBar limitCents={limitCents} availableCents={availableCents} />
 
       {legs.length > 0 ? (
         <div className="flex flex-col gap-0.5">
@@ -89,8 +76,6 @@ function SingleCreditCardTile({ account }: { account: AccountDetail }) {
   const limitCents = limit !== undefined && limit > 0 ? BigInt(limit) : null;
   const availableCents = limitCents !== null ? limitCents + account.balanceCents : null;
   const debt = account.balanceCents < BigInt(0) ? -account.balanceCents : BigInt(0);
-  const usedPct = limitCents ? pctOf(debt, limitCents) : 0;
-  const heavy = usedPct >= 80;
 
   return (
     <article className="card-paper flex flex-col gap-3 p-5">
@@ -108,12 +93,7 @@ function SingleCreditCardTile({ account }: { account: AccountDetail }) {
             </div>
           </div>
 
-          <div className="meter-track h-1.5">
-            <div
-              className={cn(heavy ? "meter-fill-amber" : "meter-fill")}
-              style={{ width: `${usedPct}%` }}
-            />
-          </div>
+          <CreditMeterBar limitCents={limitCents} availableCents={availableCents} />
 
           <div className="text-ink-subtle flex justify-between text-[11px] tabular-nums">
             <span>
