@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import {
   ArchiveIcon,
+  ArrowLeftRightIcon,
   CalendarClockIcon,
   LinkIcon,
   MoreHorizontalIcon,
@@ -39,6 +40,7 @@ import {
 import { TcInstallmentsDialog } from "./tc-installments-dialog";
 import { LinkRecurringDialog } from "./link-recurring-dialog";
 import { LinkCounterpartyDialog } from "./link-counterparty-dialog";
+import { LinkTransferDialog } from "./link-transfer-dialog";
 import type { RecurringOption } from "@/app/(app)/transactions/link-recurring-types";
 import type { AccountType, CounterpartyBrief, CounterpartyValue, Currency } from "@/lib/types";
 
@@ -83,6 +85,7 @@ export function TransactionRowActions({
   const [linkOpen, setLinkOpen] = useState(false);
   const [unlinkConfirmOpen, setUnlinkConfirmOpen] = useState(false);
   const [cpDialogOpen, setCpDialogOpen] = useState(false);
+  const [linkTransferOpen, setLinkTransferOpen] = useState(false);
 
   const onUnlink = () => {
     startTransition(async () => {
@@ -205,6 +208,18 @@ export function TransactionRowActions({
                 <UserIcon className="size-4" />
                 Contraparte…
               </DropdownMenuItem>
+
+              {/* #762: link as transfer pair */}
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setLinkTransferOpen(true);
+                }}
+                disabled={pending}
+              >
+                <ArrowLeftRightIcon className="size-4" />
+                Linkear como transferencia…
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
             </>
           ) : null}
@@ -260,6 +275,13 @@ export function TransactionRowActions({
         txId={txId}
         current={counterparty}
         options={allCounterparties}
+      />
+
+      {/* #762: link as transfer dialog */}
+      <LinkTransferDialog
+        open={linkTransferOpen}
+        onOpenChange={setLinkTransferOpen}
+        sourceTransaction={{ id: txId, amountCents, currency }}
       />
 
       {/* #621: unlink confirm dialog */}

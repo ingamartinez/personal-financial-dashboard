@@ -35,6 +35,11 @@ vi.mock("@/components/transactions/link-counterparty-dialog", () => ({
     <div data-testid="link-counterparty-dialog" data-open={String(open)} />
   ),
 }));
+vi.mock("@/components/transactions/link-transfer-dialog", () => ({
+  LinkTransferDialog: ({ open }: { open: boolean }) => (
+    <div data-testid="link-transfer-dialog" data-open={String(open)} />
+  ),
+}));
 
 // Radix DropdownMenu uses pointer-capture — shim for jsdom.
 beforeEach(() => {
@@ -125,6 +130,35 @@ describe("TransactionRowActions — Contraparte menu item (#683)", () => {
 
     // The mock dialog renders — props are validated at the component level.
     expect(screen.getByTestId("link-counterparty-dialog")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #762: Linkear como transferencia… menu item opens the dialog
+// ---------------------------------------------------------------------------
+describe("TransactionRowActions — Linkear como transferencia menu item (#762)", () => {
+  it("has a 'Linkear como transferencia…' menu item for a non-archived tx", async () => {
+    const user = userEvent.setup();
+
+    render(<TransactionRowActions {...BASE_PROPS} />);
+
+    await user.click(screen.getByRole("button", { name: /row actions/i }));
+
+    expect(await screen.findByText("Linkear como transferencia…")).toBeInTheDocument();
+  });
+
+  it("opens LinkTransferDialog when item is clicked", async () => {
+    const user = userEvent.setup();
+
+    render(<TransactionRowActions {...BASE_PROPS} />);
+
+    // Dialog starts closed.
+    expect(screen.getByTestId("link-transfer-dialog")).toHaveAttribute("data-open", "false");
+
+    await user.click(screen.getByRole("button", { name: /row actions/i }));
+    await user.click(await screen.findByText("Linkear como transferencia…"));
+
+    expect(screen.getByTestId("link-transfer-dialog")).toHaveAttribute("data-open", "true");
   });
 });
 

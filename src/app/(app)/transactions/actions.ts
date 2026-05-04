@@ -43,10 +43,19 @@ import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { decimalStringToCents } from "@/lib/money";
 import {
   insertTransferGroup,
+  linkExistingTransactionsAsTransfer,
   validateTransferGroupLegs,
   type TransferLeg,
 } from "@/lib/transactions/transfer-groups";
+import type {
+  LinkAsTransferInput,
+  LinkAsTransferResult,
+  FindTransferCandidatesInput,
+  TransferCandidate,
+} from "./link-transfer-types";
+import { linkAsTransferSchema, findTransferCandidatesSchema } from "./link-transfer-types";
 import { validateInstallmentRate, rateValidationMessage } from "@/lib/finance/rates";
+import { INSTITUTION_LABELS } from "@/lib/accounts/format";
 import { countUnclassified } from "@/lib/transactions/queries";
 import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
@@ -1889,6 +1898,181 @@ export async function unlinkTxFromRecurring(
     const message = err instanceof Error ? err.message : "Error inesperado";
     return { ok: false, error: message };
   }
+}
+
+// ---------------------------------------------------------------------------
+// #762: Link two existing transactions as a transfer pair
+// ---------------------------------------------------------------------------
+
+/**
+ * Links two already-ingested transactions as a manual transfer pair.
+ * Sets channel="transfer", categorySlug=null on both legs and assigns them
+ * a shared transferGroupId (same logic as the auto-pairer applyGroupId).
+ *
+ * Tenant gate: both transactions must belong to the session user — verified
+ * via a SELECT that requires id IN (txIdA, txIdB) AND user_id = session.id.
+ */
+export async function linkExistingAsTransfer(
+  input: LinkAsTransferInput,
+): Promise<LinkAsTransferResult> {
+  const session = await getSessionUser();
+  const parsed = linkAsTransferSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: "Input inválido." };
+  }
+  const { txIdA, txIdB } = parsed.data;
+
+  if (txIdA === txIdB) {
+    return { status: "error", message: "Las dos transacciones deben ser diferentes." };
+  }
+
+  // Tenant gate: ensure both transactions belong to session user before writing.
+  const owned = await db
+    .select({ id: transactions.id })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        inArray(transactions.id, [txIdA, txIdB]),
+        notDeleted(transactions.deletedAt),
+      ),
+    );
+
+  if (owned.length !== 2) {
+    return {
+      status: "error",
+      message: "Una o ambas transacciones no existen o no te pertenecen.",
+    };
+  }
+
+  const result = await linkExistingTransactionsAsTransfer({
+    userId: session.id,
+    txIdA,
+    txIdB,
+  });
+
+  if (result.status === "conflict") {
+    return { status: "error", message: result.message };
+  }
+  if (result.status === "error") {
+    return { status: "error", message: result.message };
+  }
+
+  revalidatePath("/");
+  revalidatePath("/transactions");
+
+  return { status: "ok" };
+}
+
+/**
+ * Find candidate transactions that could be paired with the given source tx
+ * as the other leg of a manual transfer.
+ *
+ * Candidates must satisfy ALL of:
+ *   - Same user_id (tenant safety)
+ *   - Different account_id (transfers move money between accounts)
+ *   - Same currency (cross-currency is out of scope for v1)
+ *   - Same absolute amount (|amountCents| matches)
+ *   - No existing transferGroupId (not already in a pair)
+ *   - Not archived (deleted_at IS NULL)
+ *   - Within ±30 days of the source tx's occurredAt
+ *
+ * Ordered by proximity to the source date (closest first). Limit 20.
+ */
+export async function findTransferCandidates(
+  input: FindTransferCandidatesInput,
+): Promise<TransferCandidate[]> {
+  const session = await getSessionUser();
+  const parsed = findTransferCandidatesSchema.safeParse(input);
+  if (!parsed.success) return [];
+
+  const { txId } = parsed.data;
+
+  // Fetch source transaction with tenant safety gate.
+  const [source] = await db
+    .select({
+      id: transactions.id,
+      amountCents: transactions.amountCents,
+      currency: transactions.currency,
+      accountId: transactions.accountId,
+      occurredAt: transactions.occurredAt,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        eq(transactions.id, txId),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  if (!source) return [];
+
+  const absAmount = source.amountCents < BigInt(0) ? -source.amountCents : source.amountCents;
+  const window30dMs = 30 * 24 * 60 * 60 * 1000;
+  const windowStart = new Date(source.occurredAt.getTime() - window30dMs);
+  const windowEnd = new Date(source.occurredAt.getTime() + window30dMs);
+
+  const rows = await db
+    .select({
+      id: transactions.id,
+      occurredAt: transactions.occurredAt,
+      amountCents: transactions.amountCents,
+      currency: transactions.currency,
+      descriptionRaw: transactions.descriptionRaw,
+      descriptionClean: transactions.descriptionClean,
+      merchant: transactions.merchant,
+      accountId: transactions.accountId,
+      accountName: accounts.name,
+      accountCurrency: accounts.currency,
+      accountInstitution: accounts.institutionSlug,
+    })
+    .from(transactions)
+    .innerJoin(
+      accounts,
+      // Tenant safety: pair user_id on the JOIN — per engram per-user-table-join-tenant-safety
+      and(eq(accounts.id, transactions.accountId), eq(accounts.userId, transactions.userId)),
+    )
+    .where(
+      and(
+        eq(transactions.userId, session.id),
+        // Different account from source
+        sql`${transactions.accountId} != ${source.accountId}`,
+        // Same currency (cross-currency out of scope v1)
+        eq(transactions.currency, source.currency),
+        // Same absolute amount
+        sql`ABS(${transactions.amountCents}) = ${absAmount}`,
+        // Not already in a transfer group
+        isNull(transactions.transferGroupId),
+        // Not archived
+        notDeleted(transactions.deletedAt),
+        // Within ±30 days
+        sql`${transactions.occurredAt} >= ${windowStart}`,
+        sql`${transactions.occurredAt} <= ${windowEnd}`,
+      ),
+    )
+    .orderBy(
+      // Closest in time to source.occurredAt first
+      sql`ABS(EXTRACT(EPOCH FROM (${transactions.occurredAt} - ${source.occurredAt})))`,
+    )
+    .limit(20);
+
+  return rows.map((r) => ({
+    id: r.id,
+    occurredAt: r.occurredAt.toISOString(),
+    amountCents: r.amountCents,
+    currency: r.currency,
+    descriptionRaw: r.descriptionRaw,
+    descriptionClean: r.descriptionClean,
+    merchant: r.merchant,
+    accountId: r.accountId,
+    accountName: r.accountName,
+    accountCurrency: r.accountCurrency,
+    accountInstitution: r.accountInstitution
+      ? (INSTITUTION_LABELS[r.accountInstitution] ?? r.accountInstitution)
+      : null,
+  }));
 }
 
 /**
