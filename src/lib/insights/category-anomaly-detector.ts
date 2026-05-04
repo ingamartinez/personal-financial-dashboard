@@ -157,7 +157,7 @@ export async function detectCategoryAnomalyForUser(
       // Skip rules
       if (tx.canonicalMerchant === null) continue;
       if (tx.categorySlug === null) continue;
-      if (tx.channel === "transfer") continue;
+      if (tx.channel === "transfer" || tx.channel === "cash_withdrawal") continue;
       if (tx.recurringId !== null) continue;
       if (tx.classificationMethod === "manual" || tx.classificationMethod === "manual_confirmed") {
         continue;

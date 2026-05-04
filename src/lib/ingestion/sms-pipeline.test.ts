@@ -426,6 +426,57 @@ describe("ingestParsed — cartera_tc wire path (#688)", () => {
     expect(tcTx.externalId).toMatch(/:tc$/);
   });
 
+  it("ATM withdrawal inserts with channel='cash_withdrawal' and method='manual'", async () => {
+    // Regression guard for #766: ATM withdrawals must not land with channel='bank'
+    // (which would show the sparkle button and let the AI try to classify them).
+    const ATM_TAG = "+atm-channel-test@findash.local";
+    const [u] = await db
+      .insert(users)
+      .values({
+        email: `${crypto.randomUUID()}${ATM_TAG}`,
+        name: "ATM channel test",
+        role: "user",
+        active: true,
+        googleSub: `sub-atm-${crypto.randomUUID()}`,
+        featureFlags: {},
+      })
+      .returning({ id: users.id });
+    await db.insert(accounts).values({
+      userId: u.id,
+      institution: "Bancolombia",
+      name: "Ahorros *1802",
+      type: "savings",
+      currency: "COP",
+      active: true,
+      metadata: { last4s: ["1802"] },
+    });
+
+    try {
+      const ATM_SMS =
+        "Bancolombia: Retiraste $100.000,00 en 43AVENIDA de tu T.Deb **1802 el 19/02/2026 a las 16:36. Si tienes dudas, llamanos al 6045109095. Estamos cerca";
+      const parsed = parseSmsBancolombia(ATM_SMS);
+      expect(parsed.kind).toBe("atm_withdrawal");
+
+      const outcome = await ingestParsed(u.id, parsed);
+      expect(outcome.status).toBe("inserted");
+
+      const [tx] = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.userId, u.id))
+        .limit(1);
+
+      expect(tx.channel).toBe("cash_withdrawal");
+      expect(tx.classificationMethod).toBe("manual");
+      expect(tx.descriptionRaw).toBe("Retiro ATM 43AVENIDA");
+      expect(tx.amountCents).toBe(BigInt(-10_000_000));
+    } finally {
+      await db.delete(transactions).where(eq(transactions.userId, u.id));
+      await db.delete(accounts).where(eq(accounts.userId, u.id));
+      await db.delete(users).where(eq(users.id, u.id));
+    }
+  });
+
   it("re-ingesting the same SMS returns duplicated (idempotent)", async () => {
     const { userId } = await setupCarteraUsers();
 

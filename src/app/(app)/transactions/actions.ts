@@ -710,11 +710,13 @@ const classifySingleSchema = z.object({
 });
 
 export type ClassifySingleInput = z.input<typeof classifySingleSchema>;
-export type ClassifySingleResult = {
-  categorySlug: string;
-  categoryName: string;
-  confidence: number;
-};
+export type ClassifySingleResult =
+  | { status: "ok"; categorySlug: string; categoryName: string; confidence: number }
+  | {
+      status: "error";
+      code: "not_found" | "already_classified" | "ai_returned_null" | "ai_returned_unknown_slug";
+      message: string;
+    };
 
 export async function classifySingleWithAi(
   input: ClassifySingleInput,
@@ -743,9 +745,11 @@ export async function classifySingleWithAi(
     )
     .limit(1);
 
-  if (!tx) throw new Error("Transaction not found");
+  if (!tx) {
+    return { status: "error", code: "not_found", message: "La transacción no existe" };
+  }
   if (tx.classificationMethod !== "unclassified" || tx.categorySlug !== null) {
-    throw new Error("Transaction is already classified");
+    return { status: "error", code: "already_classified", message: "Ya está clasificada" };
   }
 
   const [cats, userRow] = await Promise.all([
@@ -777,14 +781,22 @@ export async function classifySingleWithAi(
 
   const hit = result.classification;
   if (!hit || !hit.categorySlug) {
-    throw new Error("AI could not classify this transaction");
+    return {
+      status: "error",
+      code: "ai_returned_null",
+      message: "La IA no pudo clasificar esta transacción",
+    };
   }
 
   const pickedCat = cats.find((c) => c.slug === hit.categorySlug);
   if (!pickedCat) {
     // classifyBatchWithAi already filters invalid slugs to null, so this is
     // defense-in-depth — the row stays unclassified if we somehow get here.
-    throw new Error("AI returned an unknown category");
+    return {
+      status: "error",
+      code: "ai_returned_unknown_slug",
+      message: "La IA devolvió una categoría desconocida",
+    };
   }
 
   await db
@@ -801,6 +813,7 @@ export async function classifySingleWithAi(
   revalidatePath("/transactions");
 
   return {
+    status: "ok",
     categorySlug: hit.categorySlug,
     categoryName: pickedCat.name,
     confidence: hit.confidence,

@@ -1,0 +1,1 @@
+ALTER TYPE "public"."tx_channel" ADD VALUE 'cash_withdrawal';

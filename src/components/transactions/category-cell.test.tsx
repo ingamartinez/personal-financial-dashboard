@@ -120,6 +120,89 @@ describe("CategoryCell — channel=transfer (issue #682)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #766: cash_withdrawal branch
+// ---------------------------------------------------------------------------
+describe("CategoryCell — channel=cash_withdrawal (issue #766)", () => {
+  it("renders the 'Retiro de efectivo' badge when channel is 'cash_withdrawal'", () => {
+    render(<CategoryCell txId={10} value={null} options={OPTIONS} channel="cash_withdrawal" />);
+
+    expect(screen.getByTestId("cash-withdrawal-category-badge")).toBeInTheDocument();
+    expect(screen.getByTestId("cash-withdrawal-category-badge")).toHaveTextContent(
+      "Retiro de efectivo",
+    );
+  });
+
+  it("does NOT render the combobox when channel is 'cash_withdrawal'", () => {
+    render(<CategoryCell txId={10} value={null} options={OPTIONS} channel="cash_withdrawal" />);
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("does NOT render the sparkles button when channel is 'cash_withdrawal'", () => {
+    render(<CategoryCell txId={10} value={null} options={OPTIONS} channel="cash_withdrawal" />);
+    expect(screen.queryByLabelText("Classify with AI")).not.toBeInTheDocument();
+  });
+
+  it("renders the '¿Por qué?' trigger button for cash_withdrawal", () => {
+    render(<CategoryCell txId={10} value={null} options={OPTIONS} channel="cash_withdrawal" />);
+
+    const btn = screen.getByTestId("cash-withdrawal-category-why");
+    expect(btn).toBeInTheDocument();
+    expect(btn).toHaveTextContent("¿Por qué?");
+  });
+
+  it("clicking '¿Por qué?' opens the cash withdrawal explainer dialog", async () => {
+    const user = userEvent.setup();
+    render(<CategoryCell txId={10} value={null} options={OPTIONS} channel="cash_withdrawal" />);
+
+    await user.click(screen.getByTestId("cash-withdrawal-category-why"));
+
+    expect(await screen.findByText("¿Por qué no tiene categoría?")).toBeInTheDocument();
+    expect(screen.getByText(/efectivo en tu billetera/i)).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #766: sparkle handler uses Result type (not throw)
+// ---------------------------------------------------------------------------
+describe("CategoryCell — sparkle handler Result type (issue #766)", () => {
+  it("shows toast.error with the returned message when status is error", async () => {
+    classifySingleWithAi.mockResolvedValueOnce({
+      status: "error",
+      code: "ai_returned_null",
+      message: "La IA no pudo clasificar esta transacción",
+    });
+
+    const user = userEvent.setup();
+    render(<CategoryCell txId={20} value={null} options={OPTIONS} />);
+
+    await user.click(screen.getByLabelText("Classify with AI"));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("La IA no pudo clasificar esta transacción");
+    });
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("shows toast.success with category name when status is ok and confidence >= 50", async () => {
+    classifySingleWithAi.mockResolvedValueOnce({
+      status: "ok",
+      categorySlug: "alimentacion",
+      categoryName: "Alimentación",
+      confidence: 85,
+    });
+
+    const user = userEvent.setup();
+    render(<CategoryCell txId={21} value={null} options={OPTIONS} />);
+
+    await user.click(screen.getByLabelText("Classify with AI"));
+
+    await waitFor(() => {
+      expect(toastSuccess).toHaveBeenCalledWith("Classified as Alimentación (85%)");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Default branch (no channel or non-transfer channel)
 // ---------------------------------------------------------------------------
 describe("CategoryCell — default (non-transfer)", () => {

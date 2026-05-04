@@ -22,7 +22,7 @@
 import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { transactions } from "@/lib/db/schema";
-import { notAdjustment, notDeleted, notTransfer } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted, notInternalMovement } from "@/lib/db/helpers";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { toCop } from "@/lib/money";
 import type { Currency } from "@/lib/types";
@@ -222,7 +222,7 @@ export const mesActualHandler: WidgetHandler = async (ctx) => {
         notDeleted(transactions.deletedAt),
         notAdjustment(transactions.isAdjustment),
         sql`${transactions.source} <> 'balance_adjustment'`,
-        notTransfer(transactions.channel),
+        notInternalMovement(transactions.channel),
       ),
     )
     .groupBy(transactions.currency);

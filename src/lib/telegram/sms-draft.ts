@@ -179,6 +179,11 @@ export function buildDraftFromParsedSms(
   const occurredOn =
     "occurredOn" in parsed ? parsed.occurredOn : new Date().toISOString().slice(0, 10);
 
+  // #766: ATM withdrawals are cash movements, not expenses — carry the channel
+  // override so confirm.ts can set channel="cash_withdrawal" on insert.
+  const channel: TelegramDraft["channel"] =
+    parsed.kind === "atm_withdrawal" ? "cash_withdrawal" : undefined;
+
   const draft: TelegramDraft = {
     amountCents: parsed.amountCents.toString(),
     currency: parsed.currency,
@@ -189,6 +194,7 @@ export function buildDraftFromParsedSms(
     accountId,
     categorySlug,
     transfer,
+    channel,
   };
 
   return {

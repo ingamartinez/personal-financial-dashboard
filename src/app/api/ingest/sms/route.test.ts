@@ -446,7 +446,10 @@ describe("POST /api/ingest/sms", () => {
     expect(BigInt(rows[0].amount_cents)).toBe(BigInt(-10000000));
     expect(rows[0].merchant).toBeNull();
     expect(rows[0].category_slug).toBeNull();
-    expect(rows[0].classification_method).toBe("unclassified");
+    // ATM withdrawals get method="manual" structurally so they're excluded from the
+    // AI classifier batch (which queries method="unclassified"). The "Retiro de efectivo"
+    // badge is driven by the tx_channel, not a category. See #766.
+    expect(rows[0].classification_method).toBe("manual");
     expect(rows[0].description_raw).toBe("Retiro ATM 43AVENIDA");
 
     const accs = await db.execute<{ name: string; currency: string }>(sql`

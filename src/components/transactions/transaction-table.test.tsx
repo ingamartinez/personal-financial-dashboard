@@ -222,6 +222,63 @@ describe("TransactionTable — paired transfer suppresses 'Sin clasificar'", () 
 });
 
 // ---------------------------------------------------------------------------
+// Tests — #766: cash_withdrawal also suppresses ClassificationReasonDialog
+// ---------------------------------------------------------------------------
+
+describe("TransactionTable — #766 cash_withdrawal suppresses classification UI", () => {
+  it("does NOT render '¿Por qué?' button for a cash_withdrawal row", () => {
+    // ATM rows have method="manual" by structural convention (not a user action).
+    // Showing "Clasificado manualmente" would be misleading — the dialog must be hidden.
+    const tx = makeTxRow({
+      id: 300,
+      channel: "cash_withdrawal",
+      transferGroupId: null,
+      categorySlug: null,
+      classificationMethod: "manual",
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    const porqueBtns = screen.queryAllByLabelText("¿Por qué esta categoría?");
+    expect(porqueBtns).toHaveLength(0);
+  });
+
+  it("does NOT apply destructive styling for cash_withdrawal with method='unclassified'", () => {
+    const tx = makeTxRow({
+      id: 301,
+      channel: "cash_withdrawal",
+      transferGroupId: null,
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    const methodLabels = screen.getAllByText("unclassified");
+    for (const label of methodLabels) {
+      expect(label).not.toHaveClass("text-destructive");
+    }
+    expect(screen.queryAllByLabelText("¿Por qué esta categoría?")).toHaveLength(0);
+  });
+
+  it("shows '¿Por qué?' button for a regular bank row with method='manual'", () => {
+    // Regression: channel="bank" + method="manual" should still show the dialog.
+    const tx = makeTxRow({
+      id: 302,
+      channel: "bank",
+      transferGroupId: null,
+      categorySlug: "alimentacion",
+      classificationMethod: "manual",
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    const porqueBtns = screen.getAllByLabelText("¿Por qué esta categoría?");
+    expect(porqueBtns.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests — #528: real tx amounts use frozen TRM (MoneyFrozen wire-up)
 // ---------------------------------------------------------------------------
 

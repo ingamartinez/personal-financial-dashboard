@@ -1,7 +1,7 @@
 import { aliasedTable, and, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, categories, counterparties, transactions } from "@/lib/db/schema";
-import { notAdjustment, notDeleted, notTransfer } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted, notInternalMovement } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import { groupCreditCards, listAccountsDetailed } from "@/lib/accounts/queries";
 import { computeNextPayment } from "@/lib/accounts/next-payment";
@@ -145,7 +145,7 @@ export async function getMonthlyFlow(
         eq(transactions.userId, userId),
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
-        notTransfer(transactions.channel),
+        notInternalMovement(transactions.channel),
         notAdjustment(transactions.isAdjustment),
         notDeleted(transactions.deletedAt),
       ),
@@ -263,7 +263,7 @@ export async function getCategoryBreakdown(
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
-        notTransfer(transactions.channel),
+        notInternalMovement(transactions.channel),
         notAdjustment(transactions.isAdjustment),
         notDeleted(transactions.deletedAt),
       ),
@@ -343,7 +343,7 @@ export async function getTopExpenses(
         gte(transactions.occurredAt, start),
         lt(transactions.occurredAt, end),
         sql`${transactions.amountCents} < 0`,
-        notTransfer(transactions.channel),
+        notInternalMovement(transactions.channel),
         notAdjustment(transactions.isAdjustment),
         notDeleted(transactions.deletedAt),
       ),

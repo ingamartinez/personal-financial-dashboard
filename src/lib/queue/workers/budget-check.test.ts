@@ -104,7 +104,9 @@ vi.mock("@/lib/db/schema", () => ({
 vi.mock("@/lib/db/helpers", () => ({
   notDeleted: vi.fn(() => "notDeleted()"),
   notAdjustment: vi.fn(() => "notAdjustment()"),
-  notTransfer: vi.fn(() => "notTransfer()"),
+  notInternalMovement: vi.fn(() => "notInternalMovement()"),
+  // Alias kept for any callers that haven't migrated yet.
+  notTransfer: vi.fn(() => "notInternalMovement()"),
 }));
 
 vi.mock("@/lib/money", () => ({
@@ -318,14 +320,16 @@ describe("fetchExceededBudgets", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 6: notTransfer filter applied — transfers excluded from MTD spend
+  // Test 6: notInternalMovement filter applied — transfers + ATM withdrawals
+  // excluded from MTD spend.
   //
-  // The spent query must invoke notTransfer so that TC payments and other
-  // internal transfers (channel='transfer') are not counted as expense.
-  // See issue #685 and memory `pago-tc-modeled-as-expense`.
+  // The spent query must invoke notInternalMovement so that TC payments and
+  // other internal movements (channel='transfer' or 'cash_withdrawal') are
+  // not counted as expense.
+  // See issues #685, #766 and memory `pago-tc-modeled-as-expense`.
   // -------------------------------------------------------------------------
-  it("invokes notTransfer helper when building the MTD spend query", async () => {
-    const { notTransfer } = await import("@/lib/db/helpers");
+  it("invokes notInternalMovement helper when building the MTD spend query", async () => {
+    const { notInternalMovement } = await import("@/lib/db/helpers");
 
     mocks.dbSelectFromInnerJoinWhere.mockResolvedValueOnce([
       {
@@ -341,9 +345,10 @@ describe("fetchExceededBudgets", () => {
 
     await fetchExceededBudgets("2026-04");
 
-    // notTransfer must have been called with the channel column so the
-    // spent query correctly excludes transfers from the budget calculation.
-    expect(notTransfer).toHaveBeenCalled();
+    // notInternalMovement must have been called with the channel column so
+    // the spent query correctly excludes transfers and ATM withdrawals from
+    // the budget calculation.
+    expect(notInternalMovement).toHaveBeenCalled();
   });
 });
 
