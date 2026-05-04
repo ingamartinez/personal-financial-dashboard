@@ -5,9 +5,11 @@
 // Rules, per parent #345 + scoped validations against real Bancolombia
 // extracts (ver memoria `tc-installments-interest-model`):
 //
-//   - regla 4: when `graceMonth=true`, month 1 pays ONLY capital (interest
-//     is deferred). Month 2 pays its own interest PLUS the deferred month-1
-//     interest. "Francés puro" does NOT apply here.
+//   - regla 4 (validated against real abr-2026 statements, #777): when
+//     `graceMonth=true`, month 1 pays ONLY capital — no interest at all.
+//     Month 2+ each pay their own single-rate interest on the current
+//     outstanding balance. The earlier "defer-to-month-2" interpretation
+//     caused a 2× overcharge; extractos confirmed NO doubling occurs.
 //   - regla 5: capital per period is `amountCents / N`, fixed, with the
 //     final period absorbing the rounding residue. Interest is a separate
 //     line per period, never bundled into capital.
@@ -28,7 +30,7 @@ export type InstallmentScheduleInput = {
   amountCents: bigint; // original purchase amount (positive magnitude)
   rateEmX10k: number; // EM rate stored as percent × 10000 (0 = 0%, 19110 = 1.9110% EM)
   installments: number; // total cuotas, N >= 1
-  graceMonth: boolean; // true = month-1 interest deferred to month 2
+  graceMonth: boolean; // true = mes 1 sin interés (gracia); mes 2+ pagan single-rate own interest
   purchaseDate: Date; // anchor for month counting
   today: Date; // drives paid vs pending split
 };
@@ -37,7 +39,7 @@ export type InstallmentScheduleRow = {
   month: number; // 1..N
   capitalCents: bigint;
   interestCents: bigint; // 0 for month 1 when graceMonth=true
-  deferredInterestCents: bigint; // 0 except for month 2 when graceMonth=true
+  deferredInterestCents: bigint; // always 0; kept for schema/consumer compat (#777)
   cuotaCents: bigint; // capital + interest + deferred
   balanceAfterCents: bigint; // never negative, hits 0 at month N
 };
@@ -104,16 +106,10 @@ export function installmentSchedule(input: InstallmentScheduleInput): Installmen
     let interestThis: bigint;
     let deferredThis: bigint;
     if (graceMonth && month === 1) {
-      // Month 1: interest is computed but deferred to month 2.
+      // Month 1: no interest. Validated against extractos abr-2026 — month-1
+      // deferral does NOT result in a doubled mes-2 charge (#777).
       interestThis = BigInt(0);
       deferredThis = BigInt(0);
-    } else if (graceMonth && month === 2) {
-      // Month 2: own interest + the deferred month-1 interest (based on the
-      // original amount, since month 1 paid no capital either — the balance
-      // entering month 2 is `amountCents - capital_month_1`).
-      const deferredBase = amountCents; // month-1 starts with full amount
-      deferredThis = periodInterestCents(deferredBase, rateEmX10k);
-      interestThis = periodInterestCents(balance, rateEmX10k);
     } else {
       interestThis = periodInterestCents(balance, rateEmX10k);
       deferredThis = BigInt(0);

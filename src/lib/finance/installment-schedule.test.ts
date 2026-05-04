@@ -160,11 +160,12 @@ describe("installmentSchedule — F3 (compra de cartera 29M @ 1.39% EM × 60, gr
     expect(m1.cuotaCents).toBe(m1.capitalCents);
   });
 
-  it("month 2 under grace absorbs the deferred month-1 interest", () => {
+  it("month 2 under grace pays single-rate own interest only — no deferral (#777)", () => {
+    // Validated against real abr-2026 extractos: Bancolombia does NOT double-
+    // charge mes-2. Month 2 gets exactly one period's interest on the balance
+    // entering that month; deferredInterestCents is permanently 0.
     const m2 = result.rows[1];
-    // deferred = month-1 interest on the full amount
-    expect(m2.deferredInterestCents).toBe(periodInterestCents(input.amountCents, 13900));
-    // own interest computed on balance-entering-month-2 = amount - capital_m1
+    expect(m2.deferredInterestCents).toBe(BigInt(0));
     const balanceM2Start = input.amountCents - result.rows[0].capitalCents;
     expect(m2.interestCents).toBe(periodInterestCents(balanceM2Start, 13900));
   });
@@ -192,9 +193,11 @@ describe("installmentSchedule — F3 (compra de cartera 29M @ 1.39% EM × 60, gr
     // normal month), month 60 (residue absorbed).
     const expectedPesos: Record<number, { capital: number; interest: number; cuota: number }> = {
       1: { capital: 483_333, interest: 0, cuota: 483_333 },
-      // Month 2: markdown lumps `interest + deferred = 799_482` into one
-      // column; we split them apart, so we check the sum instead.
-      2: { capital: 483_333, interest: 799_482, cuota: 1_282_815 },
+      // Month 2 (#777 fix): single-rate own interest only on balance after month-1
+      // capital. balance = 2_900_000_000 - 48_333_300 = 2_851_666_700 cents;
+      // periodInterestCents(2_851_666_700, 13900) = 39_638_167 cents ≈ 396_382 pesos.
+      // Old value was 799_482 (doubled — deferred + own); that was wrong.
+      2: { capital: 483_333, interest: 396_382, cuota: 879_715 },
       3: { capital: 483_333, interest: 389_663, cuota: 872_996 },
       60: { capital: 483_353, interest: 6_719, cuota: 490_072 },
     };
@@ -225,6 +228,45 @@ describe("installmentSchedule — F3 (compra de cartera 29M @ 1.39% EM × 60, gr
   it("paid / pending split reflects the today anchor", () => {
     expect(result.paidCount).toBe(0);
     expect(result.pendingCount).toBe(60);
+  });
+});
+
+describe("installmentSchedule — regression #777 (OEM SAS, tx 1019)", () => {
+  // Real production tx: OEM SAS 3,600,000 pesos / 36 cuotas / 1.9110% EM / graceMonth.
+  // This purchase had n_paid=1 (mes 2) and was over-charged by ~2× before #777.
+  // Computed analytically:
+  //   capitalPerPeriod = floor(360_000_000 / 36 / 100) * 100 = 10_000_000 cents (exact, no residue)
+  //   balance after month 1 = 360_000_000 - 10_000_000 = 350_000_000 cents
+  //   month-2 interest = periodInterestCents(350_000_000, 19110)
+  //                    = roundHalfUp(350_000_000 × 19110, 1_000_000)
+  //                    = roundHalfUp(6_688_500_000_000, 1_000_000) = 6_688_500 cents
+  const input = {
+    amountCents: BigInt(360_000_000), // 3_600_000 pesos in cents
+    rateEmX10k: 19110, // 1.9110% EM
+    installments: 36,
+    graceMonth: true,
+    purchaseDate: new Date("2026-01-15"), // arbitrary; paidCount drives selection
+    today: new Date("2026-03-15"), // 2 months later → paidCount=2
+  };
+  const result = installmentSchedule(input);
+
+  it("month 1: interestCents=0 and deferredInterestCents=0 (grace)", () => {
+    expect(result.rows[0].interestCents).toBe(BigInt(0));
+    expect(result.rows[0].deferredInterestCents).toBe(BigInt(0));
+  });
+
+  it("month 2: single-rate interest ≈ 6_688_500 cents and deferredInterestCents=0", () => {
+    const m2 = result.rows[1];
+    expect(m2.deferredInterestCents).toBe(BigInt(0));
+    // Analytically: periodInterestCents(350_000_000, 19110) = 6_688_500 cents exactly.
+    // Tolerance ±5 cents covers any platform-level bigint rounding edge.
+    const expected = BigInt(6_688_500);
+    expect(absDiff(m2.interestCents, expected)).toBeLessThanOrEqual(BigInt(5));
+  });
+
+  it("Σ(capitalCents) === amountCents (no residue for 36 even divisor)", () => {
+    const total = result.rows.reduce((a, r) => a + r.capitalCents, BigInt(0));
+    expect(total).toBe(input.amountCents);
   });
 });
 
