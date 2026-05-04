@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import {
   archiveTransferGroup,
   insertTransferGroup,
+  linkExistingTransactionsAsTransfer,
   listTransferGroupLegs,
   restoreTransferGroup,
   validateTransferGroupLegs,
@@ -430,5 +431,194 @@ describe("no double-counting of debts after the refactor", () => {
     const afterTotal = BigInt(after[0].total ?? "0");
 
     expect(afterTotal).toBe(baselineTotal);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #762: linkExistingTransactionsAsTransfer
+// ---------------------------------------------------------------------------
+describe("linkExistingTransactionsAsTransfer", () => {
+  // Helper: insert a bare transaction and return its id.
+  async function insertBareTransaction(opts: {
+    accountId: number;
+    amountCents: bigint;
+    externalId?: string;
+  }): Promise<number> {
+    const rows = await db.execute<{ id: number }>(sql`
+      INSERT INTO transactions
+        (user_id, account_id, occurred_at, amount_cents, currency,
+         description_raw, source, channel, classification_method, raw_data)
+      VALUES
+        (${TEST_USER_ID}, ${opts.accountId}, NOW(), ${opts.amountCents},
+         'COP', 'test', 'manual', 'bank', 'unclassified', '{"test":true}')
+      RETURNING id
+    `);
+    return rows[0].id;
+  }
+
+  it("happy path: links two unlinked tx, sets channel=transfer, categorySlug=null", async () => {
+    const idA = await insertBareTransaction({
+      accountId: SAVINGS_COP_ID,
+      amountCents: BigInt(-50000),
+    });
+    const idB = await insertBareTransaction({ accountId: VISA_COP_ID, amountCents: BigInt(50000) });
+
+    const result = await linkExistingTransactionsAsTransfer({
+      userId: TEST_USER_ID,
+      txIdA: idA,
+      txIdB: idB,
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+
+    const rows = await db.execute<{
+      id: number;
+      transfer_group_id: string | null;
+      channel: string;
+      category_slug: string | null;
+    }>(sql`
+      SELECT id, transfer_group_id, channel, category_slug
+      FROM transactions WHERE id IN (${idA}, ${idB})
+      ORDER BY id
+    `);
+
+    expect(rows.length).toBe(2);
+    // Both share the same transfer_group_id.
+    expect(rows[0].transfer_group_id).toBeTruthy();
+    expect(rows[0].transfer_group_id).toBe(rows[1].transfer_group_id);
+    // Both get channel=transfer, category wiped.
+    for (const row of rows) {
+      expect(row.channel).toBe("transfer");
+      expect(row.category_slug).toBeNull();
+    }
+  });
+
+  it("idempotent: calling twice on already-paired tx returns ok without mutation", async () => {
+    const idA = await insertBareTransaction({
+      accountId: SAVINGS_COP_ID,
+      amountCents: BigInt(-30000),
+    });
+    const idB = await insertBareTransaction({ accountId: VISA_COP_ID, amountCents: BigInt(30000) });
+
+    const first = await linkExistingTransactionsAsTransfer({
+      userId: TEST_USER_ID,
+      txIdA: idA,
+      txIdB: idB,
+    });
+    expect(first.status).toBe("ok");
+    if (first.status !== "ok") return;
+
+    const second = await linkExistingTransactionsAsTransfer({
+      userId: TEST_USER_ID,
+      txIdA: idA,
+      txIdB: idB,
+    });
+    expect(second.status).toBe("ok");
+    if (second.status !== "ok") return;
+
+    // Must return the same groupId both times.
+    expect(second.transferGroupId).toBe(first.transferGroupId);
+  });
+
+  it("conflict: returns conflict when both tx already have different groupIds", async () => {
+    // Insert two existing pairs, then try to cross-link one leg from each.
+    const pairOne = await insertTransferGroup({
+      userId: TEST_USER_ID,
+      legs: [
+        leg({
+          accountId: SAVINGS_COP_ID,
+          amountCents: BigInt(-10000),
+          externalId: "test-lex:p1:a",
+        }),
+        leg({ accountId: VISA_COP_ID, amountCents: BigInt(10000), externalId: "test-lex:p1:b" }),
+      ],
+    });
+    const pairTwo = await insertTransferGroup({
+      userId: TEST_USER_ID,
+      legs: [
+        leg({
+          accountId: SAVINGS_COP_ID,
+          amountCents: BigInt(-20000),
+          externalId: "test-lex:p2:a",
+        }),
+        leg({ accountId: VISA_COP_ID, amountCents: BigInt(20000), externalId: "test-lex:p2:b" }),
+      ],
+    });
+    expect(pairOne.status).toBe("inserted");
+    expect(pairTwo.status).toBe("inserted");
+    if (pairOne.status !== "inserted" || pairTwo.status !== "inserted") return;
+
+    // Try to link one leg of pairOne with one leg of pairTwo.
+    const result = await linkExistingTransactionsAsTransfer({
+      userId: TEST_USER_ID,
+      txIdA: pairOne.txIds[0],
+      txIdB: pairTwo.txIds[0],
+    });
+
+    expect(result.status).toBe("conflict");
+  });
+
+  it("tenant safety: returns error when txIdB belongs to a different user", async () => {
+    const idA = await insertBareTransaction({
+      accountId: SAVINGS_COP_ID,
+      amountCents: BigInt(-15000),
+    });
+    const idB = await insertBareTransaction({ accountId: VISA_COP_ID, amountCents: BigInt(15000) });
+
+    // Calling with wrong userId — query should find 0 rows (or 1), never link.
+    const result = await linkExistingTransactionsAsTransfer({
+      userId: 999_999,
+      txIdA: idA,
+      txIdB: idB,
+    });
+
+    expect(result.status).toBe("error");
+
+    // Verify neither transaction was modified.
+    const rows = await db.execute<{ transfer_group_id: string | null }>(sql`
+      SELECT transfer_group_id FROM transactions WHERE id IN (${idA}, ${idB})
+    `);
+    expect(rows.every((r) => r.transfer_group_id === null)).toBe(true);
+  });
+
+  it("adopt-partner groupId: when txA already has a groupId, txB adopts it", async () => {
+    // Insert pairOne: idA already linked, idOrphan has no pair yet.
+    const existingPair = await insertTransferGroup({
+      userId: TEST_USER_ID,
+      legs: [
+        leg({
+          accountId: SAVINGS_COP_ID,
+          amountCents: BigInt(-8000),
+          externalId: "test-lex:adopt:a",
+        }),
+        leg({ accountId: VISA_COP_ID, amountCents: BigInt(8000), externalId: "test-lex:adopt:b" }),
+      ],
+    });
+    expect(existingPair.status).toBe("inserted");
+    if (existingPair.status !== "inserted") return;
+
+    // Create an orphan tx.
+    const orphanId = await insertBareTransaction({
+      accountId: MASTERCARD_COP_ID,
+      amountCents: BigInt(-8000),
+    });
+
+    // Link orphan to one leg of the existing pair.
+    const result = await linkExistingTransactionsAsTransfer({
+      userId: TEST_USER_ID,
+      txIdA: existingPair.txIds[0],
+      txIdB: orphanId,
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.transferGroupId).toBe(existingPair.transferGroupId);
+
+    // Orphan now carries the existing groupId.
+    const rows = await db.execute<{ transfer_group_id: string | null }>(sql`
+      SELECT transfer_group_id FROM transactions WHERE id = ${orphanId}
+    `);
+    expect(rows[0].transfer_group_id).toBe(existingPair.transferGroupId);
   });
 });

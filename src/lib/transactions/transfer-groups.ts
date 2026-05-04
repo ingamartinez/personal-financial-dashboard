@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DB } from "@/lib/db";
 import { db as defaultDb } from "@/lib/db";
 import { transactions } from "@/lib/db/schema";
+import { createLogger } from "@/lib/logger";
 import type { Currency, TransactionSource } from "@/lib/types";
+
+const log = createLogger({ module: "transactions/transfer-groups" });
 
 // Single leg of a transfer group — one INSERT into `transactions`. Sign matters:
 // a debit is negative, a credit is positive. Category is NEVER carried on a
@@ -255,4 +258,129 @@ export async function listTransferGroupLegs(opts: {
       deletedAt: Date | null;
     }>
   >;
+}
+
+// ---------------------------------------------------------------------------
+// Link two existing transactions as a manual transfer pair (#762)
+// ---------------------------------------------------------------------------
+
+export type LinkExistingAsTransferResult =
+  | { status: "ok"; transferGroupId: string }
+  | { status: "conflict"; message: string }
+  | { status: "error"; message: string };
+
+/**
+ * Links two already-ingested transactions as a transfer pair by assigning them
+ * a shared transferGroupId and setting channel="transfer", categorySlug=null.
+ *
+ * This is the manual-link equivalent of the auto-pairer's applyGroupId. It
+ * uses the SAME atomic SELECT FOR UPDATE + idempotency logic so it can be
+ * called safely even if one leg is already grouped:
+ *   - Both in same group → idempotent success
+ *   - Both in DIFFERENT groups → conflict (bail without writes)
+ *   - One already grouped → adopt that groupId for the other leg
+ *   - Neither grouped → new randomUUID groupId
+ *
+ * Tenant safety: both txIdA and txIdB MUST belong to userId — the caller
+ * (server action) verifies this before calling us, and the SELECT FOR UPDATE
+ * inside the transaction double-checks via the userId predicate.
+ */
+export async function linkExistingTransactionsAsTransfer(opts: {
+  userId: number;
+  txIdA: number;
+  txIdB: number;
+  database?: DB;
+}): Promise<LinkExistingAsTransferResult> {
+  const { userId, txIdA, txIdB, database = defaultDb } = opts;
+
+  try {
+    const result = await database.transaction(async (trx) => {
+      // Re-read both rows inside the transaction WITH FOR UPDATE so concurrent
+      // calls serialize — same pattern as the auto-pairer.
+      const rows = await trx
+        .select({
+          id: transactions.id,
+          transferGroupId: transactions.transferGroupId,
+        })
+        .from(transactions)
+        .where(and(eq(transactions.userId, userId), inArray(transactions.id, [txIdA, txIdB])))
+        .for("update");
+
+      if (rows.length !== 2) {
+        return {
+          status: "error" as const,
+          message: "Una o ambas transacciones no se encontraron para este usuario.",
+        };
+      }
+
+      const existingA = rows.find((r) => r.id === txIdA)?.transferGroupId ?? null;
+      const existingB = rows.find((r) => r.id === txIdB)?.transferGroupId ?? null;
+
+      let groupId: string;
+      if (existingA && existingB) {
+        if (existingA === existingB) {
+          // Already paired to the same group — fully idempotent.
+          return { status: "ok" as const, transferGroupId: existingA };
+        }
+        // Both grouped but to DIFFERENT groups — conflict. Bail without writes.
+        log.error(
+          {
+            txIdA,
+            txIdB,
+            userId,
+            existingGroupA: existingA,
+            existingGroupB: existingB,
+            event: "manual_link_conflict",
+          },
+          "both legs already paired to different groups — refusing to merge",
+        );
+        return {
+          status: "conflict" as const,
+          message:
+            "Una de las transacciones ya pertenece a otro grupo de transferencia. No se puede fusionar.",
+        };
+      } else if (existingA) {
+        groupId = existingA;
+      } else if (existingB) {
+        groupId = existingB;
+      } else {
+        groupId = randomUUID();
+      }
+
+      // Update only the legs that don't have a group yet.
+      for (const txId of [txIdA, txIdB]) {
+        await trx
+          .update(transactions)
+          .set({
+            transferGroupId: groupId,
+            channel: "transfer",
+            categorySlug: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(transactions.id, txId),
+              eq(transactions.userId, userId),
+              isNull(transactions.transferGroupId),
+            ),
+          );
+      }
+
+      return { status: "ok" as const, transferGroupId: groupId };
+    });
+
+    if (result.status === "ok") {
+      log.info(
+        { txIdA, txIdB, userId, transferGroupId: result.transferGroupId, event: "manual_link_ok" },
+        "transactions manually linked as transfer pair",
+      );
+    }
+    return result;
+  } catch (err) {
+    log.error(
+      { err, txIdA, txIdB, userId, event: "manual_link_error" },
+      "failed to manually link transactions as transfer",
+    );
+    return { status: "error", message: "Error interno al linkear las transacciones." };
+  }
 }
