@@ -78,7 +78,7 @@ export function ReportSection({
         <AlertDescription>{interesesLine}.</AlertDescription>
       </Alert>
       {(report.intereses.status === "inserted" || report.intereses.status === "skipped") &&
-      report.intereses.purchasesNeedingRate > 0 ? (
+      (report.intereses.purchasesNeedingRate ?? 0) > 0 ? (
         <Alert variant="destructive">
           <AlertTriangleIcon className="size-4" />
           <AlertTitle>Tasas desconocidas</AlertTitle>

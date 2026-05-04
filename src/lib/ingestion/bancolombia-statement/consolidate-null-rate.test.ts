@@ -164,7 +164,7 @@ describe("consolidateCycleFromStatement — null-rate multi-cuota insert (#780)"
       accountId,
       cycle: CYCLE,
       parsed,
-      fileHash: "nr01".repeat(16),
+      fileHash: "nr01".repeat(16), // exactly 64 chars (file_hash is varchar(64))
       dryRun: false,
     });
 
@@ -185,11 +185,13 @@ describe("consolidateCycleFromStatement — null-rate multi-cuota insert (#780)"
     expect(inserted.installment_rate_bps).toBeNull();
     expect(inserted.installments_total).toBe(36);
 
-    // Log side: the warn must have fired exactly once with the correct event.
+    // Log side: the warn must have fired exactly once with the correct event,
+    // pinning accountId so a future refactor can't silently log the wrong scope.
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "insert_multi_cuota_without_rate",
         installmentsTotal: 36,
+        accountId,
       }),
       expect.any(String),
     );
