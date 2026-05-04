@@ -106,6 +106,11 @@ jobs:
           cp scripts/backfill-users-reference.ts "$STAGE/scripts/backfill-users-reference.ts"
           # #405: migrate-prod also calls the pago-tc → transfer-group backfill.
           cp scripts/migrate-pago-tc-to-transfer.ts "$STAGE/scripts/migrate-pago-tc-to-transfer.ts"
+          # #766 hotfix: ATM channel backfill runs as a separate post-migrate step.
+          # Data backfills that depend on a newly-added enum value cannot run in the
+          # same drizzle batch as the ALTER TYPE — Postgres rejects "unsafe use of
+          # new value" in the same transaction. See scripts/backfill-atm-channel.ts.
+          cp scripts/backfill-atm-channel.ts "$STAGE/scripts/backfill-atm-channel.ts"
           # migrate-prod imports these for reference-data seeding + per-user
           # backfill; they live under src/ and are NOT traced by Next
           # standalone, so overlay them explicitly.
@@ -208,6 +213,22 @@ jobs:
             set -eu
             cd '$RELEASE_DIR'
             sudo -n -u findash /usr/local/bin/bun scripts/migrate-prod.ts
+          "
+
+      # Data backfill that depends on a newly-added enum value cannot run in the
+      # same drizzle batch as the ALTER TYPE — Postgres rejects "unsafe use of
+      # new value" in the same transaction. The ATM channel backfill is idempotent:
+      # re-running after the first successful pass is a no-op. See #766 hotfix.
+      - name: Run #766 ATM channel backfill
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            cd '$RELEASE_DIR'
+            sudo -n -u findash /usr/local/bin/bun scripts/backfill-atm-channel.ts
           "
 
       - name: Flip symlink + restart findash
