@@ -428,6 +428,30 @@ describe("matchStatementAgainstLedger — credit card date tolerance override", 
     expect(result.matched).toHaveLength(0);
     expect(result.missingInLedger).toHaveLength(1);
   });
+
+  it("matches at exact boundary: delta=3 is matched at dateToleranceDays=3 (operator is <=, not <)", () => {
+    // Regression guard: if someone changes the comparison from <= to <, this
+    // test catches it. tx at day=0, statement row at day=3 → delta=3 must match.
+    const stmt = buildStatement([
+      buildRow({
+        amountCents: BigInt(750000),
+        occurredAt: utcDate(2026, 4, 13),
+        merchant: "FARMACIA",
+      }),
+    ]);
+    const txs = [
+      buildTx({
+        id: 77,
+        amountCents: BigInt(750000),
+        occurredAt: utcDate(2026, 4, 10),
+        merchant: "FARMACIA",
+      }),
+    ];
+    const result = matchStatementAgainstLedger(stmt, txs, { dateToleranceDays: 3 });
+    expect(result.matched).toHaveLength(1);
+    expect(result.matched[0].txId).toBe(77);
+    expect(result.missingInLedger).toHaveLength(0);
+  });
 });
 
 describe("matchStatementAgainstLedger — missing and unmatched", () => {

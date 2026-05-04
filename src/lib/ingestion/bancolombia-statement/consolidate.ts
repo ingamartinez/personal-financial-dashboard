@@ -39,6 +39,11 @@ const log = createLogger({ module: "bancolombia-statement-consolidate" });
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const CYCLE_REGEX = /^\d{4}-\d{2}$/;
 
+// #763 — TC authorization-to-value-date lag: SMS is captured at auth time but
+// the statement's value-date can lag 1–3 days. Widened from 1→3 for credit
+// cards so a 2-day delta doesn't cause a no-match → duplicate insert.
+const TC_STATEMENT_DATE_TOLERANCE_DAYS = 3;
+
 export type ConsolidationStatus = "dry-run" | "consolidated" | "already-consolidated" | "no-op";
 
 export type InteresesOutcome =
@@ -869,10 +874,7 @@ export async function consolidateCycleFromStatement(
     : addDays(opts.parsed.period.startDate, -CROSS_TWIN_DAYS);
   const toDate = addDays(opts.parsed.period.endDate, CROSS_TWIN_DAYS);
   const txs = await loadExistingTxs(database, opts.userId, opts.accountId, fromDate, toDate);
-  // #763 — credit cards: SMS is captured at authorization time (real clock),
-  // but the statement's value-date can lag 1–3 days. Widen the date window so
-  // a ±1-day default doesn't cause a no-match → duplicate-insert.
-  const matchTolerance = account.type === "credit_card" ? 3 : 1;
+  const matchTolerance = account.type === "credit_card" ? TC_STATEMENT_DATE_TOLERANCE_DAYS : 1;
   const match = matchStatementAgainstLedger(opts.parsed, txs, {
     dateToleranceDays: matchTolerance,
   });
@@ -1014,6 +1016,11 @@ export async function consolidateCycleFromStatement(
     const crossTwinReassignedIds: number[] = [];
     const crossTwinReassignedRowIndices = new Set<number>();
     const CROSS_TWIN_SIMILARITY_THRESHOLD = 0.3;
+    // Cross-twin date window: matches a COP tx on the sibling account against
+    // a USD statement row for the same physical purchase. Happens to be the
+    // same 3 days as TC_STATEMENT_DATE_TOLERANCE_DAYS but for a different
+    // reason — this covers email-ingestion timezone skew + same-day float
+    // between the two currency legs, NOT authorization→value-date lag.
     const CROSS_TWIN_DATE_TOLERANCE_DAYS = 3;
 
     if (siblingAccount !== null && siblingTxs.length > 0) {
