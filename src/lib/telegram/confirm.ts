@@ -103,6 +103,8 @@ export async function insertFromDraft(opts: {
         classificationMethod,
         classificationConfidence: confidence,
         source: "telegram",
+        // #766: use explicit channel when present (e.g. cash_withdrawal for ATM).
+        ...(draft.channel ? { channel: draft.channel } : {}),
         externalId,
         rawData: {
           source: "telegram",

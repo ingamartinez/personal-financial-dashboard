@@ -13,7 +13,7 @@ export interface ExistingTxnForMatch {
   currency: "COP" | "USD";
   descriptionRaw: string;
   merchant: string | null;
-  channel: "bank" | "manual" | "transfer";
+  channel: "bank" | "manual" | "transfer" | "cash_withdrawal";
   isAdjustment: boolean;
   reconciliationStatus: "unreconciled" | "matched" | "flagged" | "imported_from_statement";
 }

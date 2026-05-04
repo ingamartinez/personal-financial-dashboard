@@ -3,7 +3,7 @@ import { aliasedTable, and, eq, gte, lt, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { budgets, categories, transactions } from "@/lib/db/schema";
-import { notAdjustment, notDeleted, notTransfer } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted, notInternalMovement } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import { formatCop } from "@/lib/money";
 import { emitNotification } from "@/lib/notifications/emit";
@@ -89,8 +89,8 @@ export async function fetchExceededBudgets(yearMonth: string): Promise<BudgetRow
   //
   // Spend = SUM of negative amountCents (expenses are stored as negative).
   // Matches the same formula used in getBudgetsOverview (queries.ts), including
-  // the notTransfer filter that excludes TC payments and other internal transfers
-  // to prevent double-counting (#685).
+  // the notInternalMovement filter that excludes TC payments, transfers, and ATM
+  // withdrawals to prevent double-counting (#685, #766).
   //
   // The GROUP BY uses the root category slug (COALESCE parent_slug, slug) so
   // sub-categories roll up into their parent — consistent with getBudgetsOverview.
@@ -114,7 +114,7 @@ export async function fetchExceededBudgets(yearMonth: string): Promise<BudgetRow
       and(
         gte(transactions.occurredAt, windowStart),
         lt(transactions.occurredAt, windowEnd),
-        notTransfer(transactions.channel),
+        notInternalMovement(transactions.channel),
         notAdjustment(transactions.isAdjustment),
         notDeleted(transactions.deletedAt),
       ),

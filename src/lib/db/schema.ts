@@ -212,7 +212,7 @@ export const txSource = pgEnum("tx_source", [
   "arq_statement",
 ]);
 
-export const txChannel = pgEnum("tx_channel", ["bank", "manual", "transfer"]);
+export const txChannel = pgEnum("tx_channel", ["bank", "manual", "transfer", "cash_withdrawal"]);
 
 export const reconciliationStatus = pgEnum("reconciliation_status", [
   "unreconciled",
@@ -1208,6 +1208,9 @@ export type TelegramDraft = {
   transfer?: {
     destinationAccountId?: number;
   };
+  // #766: explicit channel override for kinds that are not "bank" expenses but
+  // also not paired transfers. Currently only used for "cash_withdrawal" (ATM).
+  channel?: "bank" | "manual" | "transfer" | "cash_withdrawal";
 };
 
 // #458 — when `step` is `awaiting_backfill_confirm` or `backfill_running`,

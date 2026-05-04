@@ -9,7 +9,7 @@ import {
   transactions,
   type DisplayCurrencyMode,
 } from "@/lib/db/schema";
-import { notAdjustment, notDeleted, notTransfer } from "@/lib/db/helpers";
+import { notAdjustment, notDeleted, notInternalMovement } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import type { Currency } from "@/lib/types";
 import { callClaudeText } from "@/lib/ai/anthropic-client";
@@ -227,7 +227,7 @@ export async function buildInsightsSummary(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, cur.start),
             lt(transactions.occurredAt, cur.end),
-            notTransfer(transactions.channel),
+            notInternalMovement(transactions.channel),
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),
@@ -245,7 +245,7 @@ export async function buildInsightsSummary(
             eq(transactions.userId, userId),
             gte(transactions.occurredAt, prev.start),
             lt(transactions.occurredAt, prev.end),
-            notTransfer(transactions.channel),
+            notInternalMovement(transactions.channel),
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),
@@ -274,7 +274,7 @@ export async function buildInsightsSummary(
               gte(transactions.occurredAt, cur.start),
               lt(transactions.occurredAt, cur.end),
               sql`${transactions.amountCents} < 0`,
-              notTransfer(transactions.channel),
+              notInternalMovement(transactions.channel),
               notAdjustment(transactions.isAdjustment),
               notDeleted(transactions.deletedAt),
             ),
@@ -301,7 +301,7 @@ export async function buildInsightsSummary(
               gte(transactions.occurredAt, prev.start),
               lt(transactions.occurredAt, prev.end),
               sql`${transactions.amountCents} < 0`,
-              notTransfer(transactions.channel),
+              notInternalMovement(transactions.channel),
               notAdjustment(transactions.isAdjustment),
               notDeleted(transactions.deletedAt),
             ),
@@ -324,7 +324,7 @@ export async function buildInsightsSummary(
             lt(transactions.occurredAt, cur.end),
             sql`${transactions.merchant} IS NOT NULL`,
             sql`${transactions.amountCents} < 0`,
-            notTransfer(transactions.channel),
+            notInternalMovement(transactions.channel),
             notAdjustment(transactions.isAdjustment),
             notDeleted(transactions.deletedAt),
           ),

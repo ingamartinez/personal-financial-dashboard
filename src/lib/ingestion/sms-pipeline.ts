@@ -250,7 +250,14 @@ async function ingestParsedBancolombia(
   const occurredAt = new Date(
     `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
   );
-  const { amountCents, descriptionRaw, merchant, categorySlug, method } = buildTxFields(parsed);
+  const {
+    amountCents,
+    descriptionRaw,
+    merchant,
+    categorySlug,
+    method,
+    channel: channelOverride,
+  } = buildTxFields(parsed);
 
   const cp = await resolveCounterparty(userId, parsed, db);
 
@@ -290,6 +297,9 @@ async function ingestParsedBancolombia(
         classificationMethod: finalMethod,
         classificationConfidence: confidence,
         source: cfg.source,
+        // #766: cash_withdrawal overrides the "bank" default so the UI can
+        // distinguish ATM withdrawals from real bank expenses.
+        ...(channelOverride ? { channel: channelOverride } : {}),
         externalId: parsed.externalId,
         rawData: {
           kind: parsed.kind,
@@ -832,6 +842,8 @@ function buildTxFields(
   merchant: string | null;
   categorySlug: string | null;
   method: Exclude<ClassificationMethod, "ai">;
+  /** Explicit channel override. When absent the caller uses the DB default ("bank"). */
+  channel?: "bank" | "manual" | "transfer" | "cash_withdrawal";
 } {
   switch (parsed.kind) {
     case "purchase":
@@ -883,12 +895,17 @@ function buildTxFields(
         method: "unclassified",
       };
     case "atm_withdrawal":
+      // #766: cash withdrawals are NOT expenses — money moves from account to
+      // wallet. Assign cash_withdrawal channel so the UI skips the sparkle
+      // button and shows the "Retiro de efectivo" badge instead. Method is
+      // "manual" (no AI needed; there's nothing to classify here).
       return {
         amountCents: -parsed.amountCents,
         descriptionRaw: `Retiro ATM ${parsed.atmCode}`,
         merchant: null,
         categorySlug: null,
-        method: "unclassified",
+        method: "manual",
+        channel: "cash_withdrawal",
       };
     case "bre_b_transfer":
       return {

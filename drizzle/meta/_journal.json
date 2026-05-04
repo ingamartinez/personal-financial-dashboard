@@ -540,6 +540,20 @@
       "when": 1777841901866,
       "tag": "0076_nice_christian_walker",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1777857414154,
+      "tag": "0077_lumpy_baron_strucker",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1777857414155,
+      "tag": "0078_backfill_atm_channel",
+      "breakpoints": true
     }
   ]
 }

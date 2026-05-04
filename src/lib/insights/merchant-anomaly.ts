@@ -317,7 +317,7 @@ export async function detectMerchantSignals(
     try {
       // Skip rules — short-circuit before any further DB reads
       if (tx.canonicalMerchant === null) continue;
-      if (tx.channel === "transfer") continue;
+      if (tx.channel === "transfer" || tx.channel === "cash_withdrawal") continue;
       if (tx.recurringId !== null) continue;
       if (tx.amountCents >= BigInt(0)) continue; // expenses only (negative amount_cents)
 

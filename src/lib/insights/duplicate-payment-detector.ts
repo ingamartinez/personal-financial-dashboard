@@ -126,7 +126,10 @@ export async function detectDuplicatePaymentForUser(
   // Filter: only expenses, non-transfer, non-null merchant
   const eligibleNew = newTxRows.filter(
     (tx) =>
-      tx.amountCents < BigInt(0) && tx.channel !== "transfer" && tx.canonicalMerchant !== null,
+      tx.amountCents < BigInt(0) &&
+      tx.channel !== "transfer" &&
+      tx.channel !== "cash_withdrawal" &&
+      tx.canonicalMerchant !== null,
   );
 
   if (eligibleNew.length === 0) return;

@@ -11,7 +11,7 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { transactions } from "@/lib/db/schema";
-import { notDeleted, notTransfer } from "@/lib/db/helpers";
+import { notDeleted, notInternalMovement } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { createLogger } from "@/lib/logger";
@@ -81,7 +81,7 @@ export async function fetchTemporalSummary(
         and(
           eq(transactions.userId, userId),
           notDeleted(transactions.deletedAt),
-          notTransfer(transactions.channel),
+          notInternalMovement(transactions.channel),
           // Only expenses (negative amounts)
           sql`${transactions.amountCents} < 0`,
           gte(transactions.occurredAt, windowStart),

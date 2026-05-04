@@ -205,6 +205,7 @@ export async function detectVelocityForUser(
     (tx) =>
       tx.amountCents < BigInt(0) &&
       tx.channel !== "transfer" &&
+      tx.channel !== "cash_withdrawal" &&
       tx.recurringId === null &&
       tx.canonicalMerchant !== null,
   );
