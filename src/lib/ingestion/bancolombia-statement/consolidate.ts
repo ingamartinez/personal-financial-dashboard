@@ -290,12 +290,18 @@ async function loadAccount(
   database: DB,
   userId: number,
   accountId: number,
-): Promise<{ id: number; currency: "COP" | "USD"; physicalCardId: string | null }> {
+): Promise<{
+  id: number;
+  currency: "COP" | "USD";
+  physicalCardId: string | null;
+  type: "savings" | "credit_card" | "loan";
+}> {
   const [row] = await database
     .select({
       id: accounts.id,
       currency: accounts.currency,
       physicalCardId: accounts.physicalCardId,
+      type: accounts.type,
     })
     .from(accounts)
     .where(
@@ -863,7 +869,13 @@ export async function consolidateCycleFromStatement(
     : addDays(opts.parsed.period.startDate, -CROSS_TWIN_DAYS);
   const toDate = addDays(opts.parsed.period.endDate, CROSS_TWIN_DAYS);
   const txs = await loadExistingTxs(database, opts.userId, opts.accountId, fromDate, toDate);
-  const match = matchStatementAgainstLedger(opts.parsed, txs);
+  // #763 — credit cards: SMS is captured at authorization time (real clock),
+  // but the statement's value-date can lag 1–3 days. Widen the date window so
+  // a ±1-day default doesn't cause a no-match → duplicate-insert.
+  const matchTolerance = account.type === "credit_card" ? 3 : 1;
+  const match = matchStatementAgainstLedger(opts.parsed, txs, {
+    dateToleranceDays: matchTolerance,
+  });
 
   // #555 — load sibling twin account + its ledger txs for cross-twin pass.
   // Both are null when the account has no physicalCardId (single-currency TC).
