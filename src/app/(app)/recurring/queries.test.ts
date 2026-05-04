@@ -170,6 +170,19 @@ describe("getRecurringExpenses", () => {
     expect(labels).not.toContain(incomeLabel);
   });
 
+  it("excludes zero-amountCents recurrings", async () => {
+    const accountId = await getAccountId(1);
+
+    const label = `${TEST_LABEL_PREFIX}zero`;
+    await insertRecurring(1, accountId, {
+      label,
+      amountCents: BigInt(0),
+    });
+
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
+    expect(rows.find((r) => r.label === label)).toBeUndefined();
+  });
+
   it("includes expense recurrings regardless of categorySlug (not limited to suscripciones)", async () => {
     // The point: query must return all active expense recurrings, not only those
     // with categorySlug='suscripciones'. We use null and 'suscripciones' (seed
@@ -227,7 +240,11 @@ describe("getRecurringExpenses", () => {
     const accountId = await getAccountId(1);
 
     const label = `${TEST_LABEL_PREFIX}variable`;
-    await insertRecurring(1, accountId, { label, amountType: "variable" });
+    await insertRecurring(1, accountId, {
+      label,
+      amountType: "variable",
+      amountCents: BigInt(-150_000),
+    });
 
     const { rows } = await getRecurringExpenses(1, "native", 4200);
     const found = rows.find((r) => r.label === label);
