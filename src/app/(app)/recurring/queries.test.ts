@@ -7,14 +7,13 @@ vi.mock("@/lib/auth/session", () => ({
   getSessionUser: vi.fn().mockResolvedValue({ id: 1, email: "test@test.local", name: "Test" }),
 }));
 
-const { computeNextOccurrence, getSubscriptions } = await import("./queries");
+const { computeNextOccurrence, getRecurringExpenses } = await import("./queries");
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 const TEST_LABEL_PREFIX = "__test_sub_";
-const SUSCRIPCIONES_SLUG = "suscripciones";
 
 async function getAccountId(userId: number): Promise<number> {
   const [acc] = await db.execute<{ id: number }>(
@@ -22,16 +21,6 @@ async function getAccountId(userId: number): Promise<number> {
   );
   if (!acc) throw new Error(`No seed account for user ${userId}`);
   return acc.id;
-}
-
-async function ensureSuscripcionesCategory(userId: number): Promise<void> {
-  // Insert suscripciones category if not present (it should be from seed, but
-  // test DB may differ — upsert to be safe).
-  await db.execute(sql`
-    INSERT INTO categories (user_id, slug, name, parent_slug, sort_order)
-    VALUES (${userId}, 'suscripciones', 'Suscripciones', 'gastos-fijos', 10)
-    ON CONFLICT (user_id, slug) DO NOTHING
-  `);
 }
 
 async function insertRecurring(
@@ -57,8 +46,7 @@ async function insertRecurring(
       label,
       amountCents: overrides.amountCents ?? BigInt(-150_000),
       currency: (overrides.currency ?? "COP") as "COP" | "USD",
-      categorySlug:
-        overrides.categorySlug !== undefined ? overrides.categorySlug : SUSCRIPCIONES_SLUG,
+      categorySlug: overrides.categorySlug !== undefined ? overrides.categorySlug : null,
       dayOfMonth: overrides.dayOfMonth ?? 15,
       active: overrides.active !== undefined ? overrides.active : true,
       amountType: (overrides.amountType ?? "fixed") as "fixed" | "variable",
@@ -149,38 +137,68 @@ describe("computeNextOccurrence", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getSubscriptions — integration tests (hit findash_test DB)
+// getRecurringExpenses — integration tests (hit findash_test DB)
 // ---------------------------------------------------------------------------
 
-describe("getSubscriptions", () => {
+describe("getRecurringExpenses", () => {
   beforeEach(cleanup);
   afterEach(cleanup);
 
-  it("returns only suscripciones-category rows for the requesting user", async () => {
+  it("returns only expense (amountCents < 0) recurrings for the requesting user", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
-    const subLabel = `${TEST_LABEL_PREFIX}sub`;
-    const otherLabel = `${TEST_LABEL_PREFIX}other`;
+    const expenseLabel = `${TEST_LABEL_PREFIX}expense`;
+    const incomeLabel = `${TEST_LABEL_PREFIX}income`;
 
-    // Insert one suscripciones recurring.
-    await insertRecurring(1, accountId, { label: subLabel });
-    // Insert one with a different (or null) category.
+    // Insert one expense recurring (negative amountCents, any category).
     await insertRecurring(1, accountId, {
-      label: otherLabel,
+      label: expenseLabel,
+      amountCents: BigInt(-150_000),
+      categorySlug: null,
+    });
+    // Insert one income recurring (positive amountCents, e.g. salary).
+    await insertRecurring(1, accountId, {
+      label: incomeLabel,
+      amountCents: BigInt(3_000_000),
       categorySlug: null,
     });
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
 
-    const ids = rows.map((r) => r.label);
-    expect(ids).toContain(subLabel);
-    expect(ids).not.toContain(otherLabel);
+    const labels = rows.map((r) => r.label);
+    expect(labels).toContain(expenseLabel);
+    expect(labels).not.toContain(incomeLabel);
+  });
+
+  it("includes expense recurrings regardless of categorySlug (not limited to suscripciones)", async () => {
+    // The point: query must return all active expense recurrings, not only those
+    // with categorySlug='suscripciones'. We use null and 'suscripciones' (seed
+    // category) to avoid FK violations while still proving the filter is amount-based.
+    const accountId = await getAccountId(1);
+
+    const uncategorizedLabel = `${TEST_LABEL_PREFIX}uncategorized`;
+    const suscripcionesLabel = `${TEST_LABEL_PREFIX}sub_cat`;
+
+    await insertRecurring(1, accountId, {
+      label: uncategorizedLabel,
+      amountCents: BigInt(-95_000),
+      categorySlug: null,
+    });
+    await insertRecurring(1, accountId, {
+      label: suscripcionesLabel,
+      amountCents: BigInt(-29_900),
+      categorySlug: "suscripciones",
+    });
+
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
+    const labels = rows.map((r) => r.label);
+    // Both rows must appear — different categorySlug values, both amountCents < 0.
+    expect(labels).toContain(uncategorizedLabel);
+    expect(labels).toContain(suscripcionesLabel);
   });
 
   it("excludes soft-deleted recurring rows", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label = `${TEST_LABEL_PREFIX}deleted`;
     const { id } = await insertRecurring(1, accountId, { label });
@@ -191,29 +209,27 @@ describe("getSubscriptions", () => {
       .set({ deletedAt: new Date() })
       .where(eq(recurringTransactions.id, id));
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     expect(rows.find((r) => r.label === label)).toBeUndefined();
   });
 
   it("excludes inactive (active=false) rows", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label = `${TEST_LABEL_PREFIX}inactive`;
     await insertRecurring(1, accountId, { label, active: false });
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     expect(rows.find((r) => r.label === label)).toBeUndefined();
   });
 
-  it("includes variable amountType rows with the flag", async () => {
+  it("includes variable amountType expense rows with the flag", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label = `${TEST_LABEL_PREFIX}variable`;
     await insertRecurring(1, accountId, { label, amountType: "variable" });
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     const found = rows.find((r) => r.label === label);
     expect(found).toBeDefined();
     expect(found!.amountType).toBe("variable");
@@ -221,9 +237,7 @@ describe("getSubscriptions", () => {
 
   it("tenant isolation: user 1 does not see user 2 rows", async () => {
     // Upsert a second user inline so this assertion ALWAYS runs even on fresh
-    // test DBs that were seeded with only one user. Raw-SQL upsert avoids
-    // importing the full signup flow (copyCategorySeedsToUser etc.) which is
-    // out of scope here.
+    // test DBs that were seeded with only one user.
     const uniqueEmail = `${TEST_LABEL_PREFIX}user2@test.local`;
     const [user2Row] = await db.execute<{ id: number }>(sql`
       INSERT INTO users (email, name)
@@ -241,36 +255,26 @@ describe("getSubscriptions", () => {
     `);
     const accountId2 = acc2Row!.id;
 
-    // Ensure suscripciones category for user 2 as well.
-    // Use NULL parent_slug to avoid needing the full category tree for this
-    // test user — the FK only requires (user_id, parent_slug) to exist when
-    // parent_slug IS NOT NULL.
-    await db.execute(sql`
-      INSERT INTO categories (user_id, slug, name, parent_slug, sort_order)
-      VALUES (${user2Id}, 'suscripciones', 'Suscripciones', NULL, 10)
-      ON CONFLICT (user_id, slug) DO NOTHING
-    `);
-
     const label2 = `${TEST_LABEL_PREFIX}user2`;
-    await insertRecurring(user2Id, accountId2, { label: label2 });
+    await insertRecurring(user2Id, accountId2, {
+      label: label2,
+      amountCents: BigInt(-100_000),
+    });
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     expect(rows.find((r) => r.label === label2)).toBeUndefined();
 
-    // Cleanup user-2 rows (users row will cascade on delete if needed, but
-    // we only need to remove the recurring — cleanup() handles label-prefix rows).
-    // The account and user are test-ephemeral; they'll be cleaned by the test DB reset.
+    // Cleanup user-2 rows (handled by cleanup() via label prefix and email prefix).
   });
 
   it("computes annualCents as amountCents × 12", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label = `${TEST_LABEL_PREFIX}annual`;
     const amount = BigInt(-100_000);
     await insertRecurring(1, accountId, { label, amountCents: amount });
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     const found = rows.find((r) => r.label === label);
     expect(found).toBeDefined();
     expect(found!.annualCents).toBe(amount * BigInt(12));
@@ -278,7 +282,6 @@ describe("getSubscriptions", () => {
 
   it("rows are sorted by dayOfMonth ascending; amount desc as tiebreaker", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const day5 = `${TEST_LABEL_PREFIX}day5`;
     const day10cheap = `${TEST_LABEL_PREFIX}day10cheap`;
@@ -305,7 +308,7 @@ describe("getSubscriptions", () => {
       dayOfMonth: 10,
     });
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     const testRows = rows.filter((r) =>
       [day5, day10cheap, day10expensive, day20].includes(r.label),
     );
@@ -315,7 +318,6 @@ describe("getSubscriptions", () => {
 
   it("nextOccurrence respects skippedMonths from the DB row", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label = `${TEST_LABEL_PREFIX}skipped`;
     const today = new Date();
@@ -338,7 +340,7 @@ describe("getSubscriptions", () => {
       skippedMonths: [candidateMonth],
     });
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     const found = rows.find((r) => r.label === label);
     expect(found).toBeDefined();
     // The nextOccurrence must NOT be in the skipped month.
@@ -351,9 +353,8 @@ describe("getSubscriptions", () => {
 
   it('totals produce ONE COP bucket in "all-cop" mode over a mix of COP + USD rows', async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
-    // COP subscription: -150 000 COP monthly
+    // COP expense: -150 000 COP monthly
     const copLabel = `${TEST_LABEL_PREFIX}cop_total`;
     const copMonthly = BigInt(-150_000);
     await insertRecurring(1, accountId, {
@@ -362,7 +363,7 @@ describe("getSubscriptions", () => {
       currency: "COP",
     });
 
-    // We need a USD account to insert a USD subscription.
+    // We need a USD account to insert a USD expense.
     const [usdAccRow] = await db.execute<{ id: number }>(sql`
       INSERT INTO accounts (user_id, name, institution, type, currency)
       VALUES (1, '__test_usd_account__', 'Test Bank', 'savings', 'USD')
@@ -378,7 +379,7 @@ describe("getSubscriptions", () => {
         )
       )[0]!.id;
 
-    // USD subscription: -10 USD monthly (i.e. -1000 cents)
+    // USD expense: -10 USD monthly (i.e. -1000 cents)
     const usdLabel = `${TEST_LABEL_PREFIX}usd_total`;
     const usdMonthly = BigInt(-1_000); // -10.00 USD in cents
     const copPerUsd = 4_200;
@@ -388,7 +389,7 @@ describe("getSubscriptions", () => {
       currency: "USD",
     });
 
-    const { monthlyTotals } = await getSubscriptions(1, "all-cop", copPerUsd);
+    const { monthlyTotals } = await getRecurringExpenses(1, "all-cop", copPerUsd);
 
     // In all-cop mode there must be exactly ONE bucket (COP).
     expect(monthlyTotals).toHaveLength(1);
@@ -400,7 +401,7 @@ describe("getSubscriptions", () => {
 
     // The bucket may include other seed rows. To isolate our two rows we run
     // a scoped assertion: extract only our test labels' converted amounts.
-    const allRows = (await getSubscriptions(1, "all-cop", copPerUsd)).rows;
+    const allRows = (await getRecurringExpenses(1, "all-cop", copPerUsd)).rows;
     const copRow = allRows.find((r) => r.label === copLabel);
     const usdRow = allRows.find((r) => r.label === usdLabel);
     expect(copRow).toBeDefined();
@@ -427,9 +428,8 @@ describe("getSubscriptions", () => {
 
   it('totals produce TWO buckets in "native" mode over a mix of COP + USD rows', async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
-    // COP subscription
+    // COP expense
     const copLabel = `${TEST_LABEL_PREFIX}cop_native`;
     await insertRecurring(1, accountId, {
       label: copLabel,
@@ -437,7 +437,7 @@ describe("getSubscriptions", () => {
       currency: "COP",
     });
 
-    // USD account + subscription
+    // USD account + expense
     const [usdAccRow] = await db.execute<{ id: number }>(sql`
       INSERT INTO accounts (user_id, name, institution, type, currency)
       VALUES (1, '__test_usd_account2__', 'Test Bank', 'savings', 'USD')
@@ -459,7 +459,7 @@ describe("getSubscriptions", () => {
       currency: "USD",
     });
 
-    const { monthlyTotals } = await getSubscriptions(1, "native", 4200);
+    const { monthlyTotals } = await getRecurringExpenses(1, "native", 4200);
 
     // In native mode, COP and USD must be in separate buckets.
     const currencies = monthlyTotals.map((b) => b.currency);
@@ -529,9 +529,8 @@ describe("getSubscriptions", () => {
     await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__test_obs_tx_%'`);
   }
 
-  it("fixed subscription with ≥4 qualifying observations gets priceHike populated", async () => {
+  it("fixed expense with ≥4 qualifying observations gets priceHike populated", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label = `${TEST_LABEL_PREFIX}hike_fixed`;
     const { id: recurringId } = await insertRecurring(1, accountId, {
@@ -548,7 +547,7 @@ describe("getSubscriptions", () => {
       BigInt(-2_800_000),
     ]);
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     const found = rows.find((r) => r.label === label);
     expect(found).toBeDefined();
     expect(found!.priceHike).not.toBeNull();
@@ -559,9 +558,8 @@ describe("getSubscriptions", () => {
     await cleanupObsAndTxs();
   });
 
-  it("variable subscription never gets priceHike even with hike-shaped observations", async () => {
+  it("variable expense never gets priceHike even with hike-shaped observations", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label = `${TEST_LABEL_PREFIX}hike_variable`;
     const { id: recurringId } = await insertRecurring(1, accountId, {
@@ -578,7 +576,7 @@ describe("getSubscriptions", () => {
       BigInt(-2_800_000),
     ]);
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     const found = rows.find((r) => r.label === label);
     expect(found).toBeDefined();
     expect(found!.priceHike).toBeNull();
@@ -588,7 +586,6 @@ describe("getSubscriptions", () => {
 
   it("row without enough history (<4 obs) gets no priceHike", async () => {
     const accountId = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label = `${TEST_LABEL_PREFIX}hike_insufficient`;
     const { id: recurringId } = await insertRecurring(1, accountId, {
@@ -604,7 +601,7 @@ describe("getSubscriptions", () => {
       BigInt(-2_800_000),
     ]);
 
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     const found = rows.find((r) => r.label === label);
     expect(found).toBeDefined();
     expect(found!.priceHike).toBeNull();
@@ -630,15 +627,8 @@ describe("getSubscriptions", () => {
     `);
     const accountId2 = acc2Row!.id;
 
-    await db.execute(sql`
-      INSERT INTO categories (user_id, slug, name, parent_slug, sort_order)
-      VALUES (${user2Id}, 'suscripciones', 'Suscripciones', NULL, 10)
-      ON CONFLICT (user_id, slug) DO NOTHING
-    `);
-
     // User 1 row: only 2 observations (not enough for hike alone).
     const accountId1 = await getAccountId(1);
-    await ensureSuscripcionesCategory(1);
 
     const label1 = `${TEST_LABEL_PREFIX}hike_tenant1`;
     const { id: recurringId1 } = await insertRecurring(1, accountId1, {
@@ -664,7 +654,7 @@ describe("getSubscriptions", () => {
     ]);
 
     // User 1 should see NO hike (only 2 obs, < 4 required).
-    const { rows } = await getSubscriptions(1, "native", 4200);
+    const { rows } = await getRecurringExpenses(1, "native", 4200);
     const found1 = rows.find((r) => r.label === label1);
     expect(found1).toBeDefined();
     expect(found1!.priceHike).toBeNull();

@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { SubscriptionCalendarGrid } from "./subscription-calendar-grid";
-import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
+import { RecurringCalendarGrid } from "./recurring-calendar-grid";
+import type { RecurringRow } from "@/app/(app)/recurring/queries";
 
 // ---------------------------------------------------------------------------
 // Radix shims — pointer capture + scrollIntoView not in jsdom.
@@ -31,7 +31,7 @@ afterEach(() => {
 
 let nextId = 1;
 
-function makeRow(overrides: Partial<SubscriptionRow> = {}): SubscriptionRow {
+function makeRow(overrides: Partial<RecurringRow> = {}): RecurringRow {
   const id = nextId++;
   return {
     id,
@@ -69,10 +69,10 @@ const TODAY = new Date("2026-05-02T00:00:00");
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("SubscriptionCalendarGrid", () => {
+describe("RecurringCalendarGrid", () => {
   it("renders 35–42 cells for the month grid", () => {
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[]}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -93,7 +93,7 @@ describe("SubscriptionCalendarGrid", () => {
 
   it("renders 7 day-of-week headers in Spanish uppercase", () => {
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[]}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -108,7 +108,7 @@ describe("SubscriptionCalendarGrid", () => {
 
   it("renders the Spanish month title with first letter capitalized", () => {
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[]}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -122,7 +122,7 @@ describe("SubscriptionCalendarGrid", () => {
 
   it("today cell gets the today-marker data-testid", () => {
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[]}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -143,7 +143,7 @@ describe("SubscriptionCalendarGrid", () => {
     const row = makeRow({ id: 10, label: "Netflix", dayOfMonth: 15, nextOccurrence: "2026-05-15" });
 
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[row]}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -159,7 +159,7 @@ describe("SubscriptionCalendarGrid", () => {
     nextId = 20;
     // Render zero rows: verify no pills appear at all.
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[]}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -173,7 +173,7 @@ describe("SubscriptionCalendarGrid", () => {
 
   it("out-of-month cells render with opacity-40 class", () => {
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[]}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -197,7 +197,7 @@ describe("SubscriptionCalendarGrid", () => {
     ];
 
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={rows}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -220,7 +220,7 @@ describe("SubscriptionCalendarGrid", () => {
     ];
 
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={rows}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -248,7 +248,7 @@ describe("SubscriptionCalendarGrid", () => {
     });
 
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[row]}
         excludedIds={new Set()}
         isCalculatorOpen={false}
@@ -274,7 +274,7 @@ describe("SubscriptionCalendarGrid", () => {
     const row = makeRow({ id: 60, label: "Apple TV", dayOfMonth: 8 });
 
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[row]}
         excludedIds={new Set()}
         isCalculatorOpen={true}
@@ -292,7 +292,7 @@ describe("SubscriptionCalendarGrid", () => {
     const row = makeRow({ id: 70, label: "Paramount+", dayOfMonth: 12 });
 
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[row]}
         excludedIds={new Set([70])}
         isCalculatorOpen={true}
@@ -310,7 +310,7 @@ describe("SubscriptionCalendarGrid", () => {
     const row = makeRow({ id: 80, label: "Crunchyroll", dayOfMonth: 18 });
 
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[row]}
         excludedIds={new Set()}
         isCalculatorOpen={true}
@@ -328,7 +328,7 @@ describe("SubscriptionCalendarGrid", () => {
     const row = makeRow({ id: 90, label: "YouTube Premium", dayOfMonth: 22 });
 
     render(
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={[row]}
         excludedIds={new Set([90])}
         isCalculatorOpen={true}

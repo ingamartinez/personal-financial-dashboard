@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { SubscriptionsCalculator } from "./subscriptions-calculator";
-import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
+import { RecurringCalculator } from "./recurring-calculator";
+import type { RecurringRow } from "@/app/(app)/recurring/queries";
 import type { AggregationBucket } from "@/lib/fx/aggregate";
 
 // ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ afterEach(() => {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function makeRow(overrides: Partial<SubscriptionRow> = {}): SubscriptionRow {
+function makeRow(overrides: Partial<RecurringRow> = {}): RecurringRow {
   return {
     id: 1,
     label: "Netflix",
@@ -85,10 +85,10 @@ const ANNUAL_TOTALS: AggregationBucket[] = [
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("SubscriptionsCalculator", () => {
+describe("RecurringCalculator", () => {
   it("renders closed by default — no checkboxes, only Calculadora button", () => {
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -105,7 +105,7 @@ describe("SubscriptionsCalculator", () => {
 
   it("renders the calendar grid", () => {
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -113,12 +113,12 @@ describe("SubscriptionsCalculator", () => {
     );
 
     // Calendar grid must be present.
-    expect(screen.getByTestId("subscription-calendar-grid")).toBeInTheDocument();
+    expect(screen.getByTestId("recurring-calendar-grid")).toBeInTheDocument();
   });
 
   it("grid shows subscription pills for rows", () => {
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -133,7 +133,7 @@ describe("SubscriptionsCalculator", () => {
   it("click Calculadora — calculator opens, grid is in calculator mode", async () => {
     const user = userEvent.setup();
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -146,7 +146,7 @@ describe("SubscriptionsCalculator", () => {
     expect(screen.getByRole("button", { name: /cerrar calculadora/i })).toBeInTheDocument();
 
     // Grid is still rendered.
-    expect(screen.getByTestId("subscription-calendar-grid")).toBeInTheDocument();
+    expect(screen.getByTestId("recurring-calendar-grid")).toBeInTheDocument();
 
     // Savings lines not shown when none excluded.
     expect(screen.queryByText(/si cancelás/i)).not.toBeInTheDocument();
@@ -156,7 +156,7 @@ describe("SubscriptionsCalculator", () => {
   it("in calculator mode: clicking a pill toggles exclusion and shows savings", async () => {
     const user = userEvent.setup();
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -177,7 +177,7 @@ describe("SubscriptionsCalculator", () => {
   it("in calculator mode: excluded pill gets muted visual state", async () => {
     const user = userEvent.setup();
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -196,7 +196,7 @@ describe("SubscriptionsCalculator", () => {
   it("Marcar todas — re-includes all, savings lines disappear", async () => {
     const user = userEvent.setup();
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -222,7 +222,7 @@ describe("SubscriptionsCalculator", () => {
   it("Cerrar calculadora — returns to normal mode", async () => {
     const user = userEvent.setup();
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -244,7 +244,7 @@ describe("SubscriptionsCalculator", () => {
 
   it("totals card shows próximo cobro", () => {
     render(
-      <SubscriptionsCalculator
+      <RecurringCalculator
         rows={[ROW_NETFLIX, ROW_SPOTIFY]}
         monthlyTotals={MONTHLY_TOTALS}
         annualTotals={ANNUAL_TOTALS}
@@ -255,8 +255,8 @@ describe("SubscriptionsCalculator", () => {
   });
 
   it("renders empty state when rows is empty", () => {
-    render(<SubscriptionsCalculator rows={[]} monthlyTotals={[]} annualTotals={[]} />);
+    render(<RecurringCalculator rows={[]} monthlyTotals={[]} annualTotals={[]} />);
 
-    expect(screen.getByText(/no hay suscripciones activas/i)).toBeInTheDocument();
+    expect(screen.getByText(/no hay gastos fijos activos/i)).toBeInTheDocument();
   });
 });

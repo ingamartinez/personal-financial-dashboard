@@ -17,14 +17,14 @@ import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import type { PriceHike, SubscriptionRow } from "@/app/(app)/subscriptions/queries";
+import type { PriceHike, RecurringRow } from "@/app/(app)/recurring/queries";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface SubscriptionCalendarGridProps {
-  rows: SubscriptionRow[];
+export interface RecurringCalendarGridProps {
+  rows: RecurringRow[];
   excludedIds: Set<number>;
   isCalculatorOpen: boolean;
   onToggleExcluded?: (id: number) => void;
@@ -71,7 +71,7 @@ function PriceHikeBadge({ hike }: { hike: PriceHike }) {
 // SubDetail popover content
 // ---------------------------------------------------------------------------
 
-function SubDetailContent({ row }: { row: SubscriptionRow }) {
+function SubDetailContent({ row }: { row: RecurringRow }) {
   const absDisplayCents = absCents(row.displayAmount.cents);
 
   return (
@@ -104,7 +104,7 @@ function SubDetailContent({ row }: { row: SubscriptionRow }) {
 // ---------------------------------------------------------------------------
 
 interface PillProps {
-  row: SubscriptionRow;
+  row: RecurringRow;
   isCalculatorOpen: boolean;
   isExcluded: boolean;
   onToggle?: (id: number) => void;
@@ -161,7 +161,7 @@ function Pill({ row, isCalculatorOpen, isExcluded, onToggle }: PillProps) {
 // ---------------------------------------------------------------------------
 
 interface OverflowChipProps {
-  rows: SubscriptionRow[];
+  rows: RecurringRow[];
   isCalculatorOpen: boolean;
   onToggle?: (id: number) => void;
 }
@@ -199,7 +199,7 @@ function OverflowChip({ rows, isCalculatorOpen, onToggle }: OverflowChipProps) {
           type="button"
           className={chipClass}
           data-testid="overflow-chip"
-          aria-label={`Ver ${count} suscripciones más`}
+          aria-label={`Ver ${count} recurrentes más`}
         >
           +{count} más
         </button>
@@ -227,7 +227,7 @@ interface DayCellProps {
   date: Date;
   today: Date;
   inMonth: boolean;
-  subs: SubscriptionRow[];
+  subs: RecurringRow[];
   isCalculatorOpen: boolean;
   excludedIds: Set<number>;
   onToggle?: (id: number) => void;
@@ -296,13 +296,13 @@ function DayCell({
 // Main grid component
 // ---------------------------------------------------------------------------
 
-export function SubscriptionCalendarGrid({
+export function RecurringCalendarGrid({
   rows,
   excludedIds,
   isCalculatorOpen,
   onToggleExcluded,
   today: todayProp,
-}: SubscriptionCalendarGridProps) {
+}: RecurringCalendarGridProps) {
   // Stable today reference — avoids re-creating on every render when todayProp is undefined.
   const today = useMemo(() => todayProp ?? new Date(), [todayProp]);
 
@@ -315,7 +315,7 @@ export function SubscriptionCalendarGrid({
 
   // Build subsByDay: ALL rows (exclusions only affect visual state, not grid presence).
   const subsByDay = useMemo(() => {
-    const map = new Map<number, SubscriptionRow[]>();
+    const map = new Map<number, RecurringRow[]>();
     for (const row of rows) {
       const list = map.get(row.dayOfMonth) ?? [];
       list.push(row);
@@ -331,7 +331,7 @@ export function SubscriptionCalendarGrid({
   }, [today]);
 
   return (
-    <div className="flex flex-col gap-2" data-testid="subscription-calendar-grid">
+    <div className="flex flex-col gap-2" data-testid="recurring-calendar-grid">
       {/* Month title */}
       <p className="text-foreground text-sm font-semibold">{monthTitle}</p>
 

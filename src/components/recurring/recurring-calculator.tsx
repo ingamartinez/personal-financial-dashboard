@@ -5,17 +5,17 @@ import { Calculator, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
-import { SubscriptionCalendarGrid } from "./subscription-calendar-grid";
+import { RecurringCalendarGrid } from "./recurring-calendar-grid";
 import { UpcomingCharges } from "./upcoming-charges";
 import type { AggregationBucket } from "@/lib/fx/aggregate";
-import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
+import type { RecurringRow } from "@/app/(app)/recurring/queries";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface SubscriptionsCalculatorProps {
-  rows: SubscriptionRow[];
+interface RecurringCalculatorProps {
+  rows: RecurringRow[];
   monthlyTotals: AggregationBucket[];
   annualTotals: AggregationBucket[];
 }
@@ -27,7 +27,7 @@ interface SubscriptionsCalculatorProps {
 /**
  * Sum `displayAmount.cents` from the given rows, grouped by display currency.
  */
-function sumDisplayAmounts(rows: SubscriptionRow[]): Map<string, bigint> {
+function sumDisplayAmounts(rows: RecurringRow[]): Map<string, bigint> {
   const buckets = new Map<string, bigint>();
   for (const row of rows) {
     const cur = row.displayAmount.currency;
@@ -48,7 +48,7 @@ function absCents(cents: bigint): bigint {
 function computeCalculatorTotals(
   monthlyTotals: AggregationBucket[],
   annualTotals: AggregationBucket[],
-  rows: SubscriptionRow[],
+  rows: RecurringRow[],
   excludedIds: Set<number>,
 ): {
   remainingMonthly: AggregationBucket[];
@@ -145,14 +145,14 @@ function TotalsCard({
 }: {
   monthlyTotals: AggregationBucket[];
   annualTotals: AggregationBucket[];
-  rows: SubscriptionRow[];
+  rows: RecurringRow[];
   excludedIds: Set<number>;
   isCalculatorOpen: boolean;
   onOpenCalculator: () => void;
 }) {
   // Compute earliest nextOccurrence among non-excluded rows.
   const activeRows = rows.filter((r) => !excludedIds.has(r.id));
-  const earliest = activeRows.reduce<SubscriptionRow | null>((acc, r) => {
+  const earliest = activeRows.reduce<RecurringRow | null>((acc, r) => {
     if (!acc || r.nextOccurrence < acc.nextOccurrence) return r;
     return acc;
   }, null);
@@ -260,11 +260,11 @@ function CalculatorHeader({
 // Main orchestrator component
 // ---------------------------------------------------------------------------
 
-export function SubscriptionsCalculator({
+export function RecurringCalculator({
   rows,
   monthlyTotals,
   annualTotals,
-}: SubscriptionsCalculatorProps) {
+}: RecurringCalculatorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set());
 
@@ -306,11 +306,11 @@ export function SubscriptionsCalculator({
       <Card>
         <CardContent className="py-8 text-center">
           <p className="text-muted-foreground text-sm">
-            No hay suscripciones activas. Agregálas en{" "}
+            No hay gastos fijos activos. Agregálos en{" "}
             <a href="/settings/recurring" className="underline underline-offset-4">
               Settings → Recurring
-            </a>{" "}
-            con la categoría <strong>suscripciones</strong>.
+            </a>
+            .
           </p>
         </CardContent>
       </Card>
@@ -374,7 +374,7 @@ export function SubscriptionsCalculator({
       )}
 
       {/* Calendar grid — the main listing */}
-      <SubscriptionCalendarGrid
+      <RecurringCalendarGrid
         rows={rows}
         excludedIds={excludedIds}
         isCalculatorOpen={isOpen}
