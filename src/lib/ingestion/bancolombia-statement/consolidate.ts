@@ -1331,6 +1331,22 @@ async function insertMissingRowInTx(
   txDb: Parameters<Parameters<DB["transaction"]>[0]>[0],
   { opts, account, row, statementImportId }: InsertMissingArgs,
 ): Promise<number | null> {
+  // #780 — Scenario B: a new during-period multi-cuota row has a blank column G
+  // in the extracto (rateEmX10k === null). The insert still proceeds so the tx
+  // lands in the ledger, but without a rate the intereses-causados job cannot
+  // price this purchase. Surface a warn so the blank can be tailed in logs.
+  if ((row.installments?.total ?? 1) > 1 && row.rateEmX10k === null) {
+    log.warn(
+      {
+        accountId: opts.accountId,
+        txDate: row.occurredAt,
+        descriptionRaw: row.merchant,
+        installmentsTotal: row.installments?.total,
+        event: "insert_multi_cuota_without_rate",
+      },
+      "inserting multi-cuota tx with NULL installment_rate_bps — extracto column G empty",
+    );
+  }
   const external = externalIdFor(opts.accountId, opts.cycle, row.authorizationNumber!, row);
   const result = await txDb
     .insert(transactions)
