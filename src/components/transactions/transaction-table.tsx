@@ -143,6 +143,16 @@ function TransferBadge() {
   );
 }
 
+// #766: internal movements (paired transfers + ATM withdrawals) share a guard:
+// they never show ClassificationReasonDialog and suppress "Sin clasificar" styling.
+// ATM rows get method="manual" by structural convention (not a user action), so
+// showing "Clasificado manualmente" would be misleading.
+function isInternalMovement(tx: Pick<TxRow, "channel" | "transferGroupId">): boolean {
+  return (
+    (tx.channel === "transfer" && tx.transferGroupId !== null) || tx.channel === "cash_withdrawal"
+  );
+}
+
 // #622: badge shown on forecast rows indicating their status.
 const forecastStatusConfig: Record<OccurrenceStatus, { label: string; className: string }> = {
   esperado: {
@@ -394,9 +404,10 @@ export function TransactionTable({
                 const isHighlighted = tx.id === highlightId;
                 const isUnclassified = tx.classificationMethod === "unclassified";
                 const isArchived = tx.deletedAt !== null;
-                // #642: paired transfers have category_slug=NULL by design — suppress
-                // "Sin clasificar" styling and the "¿Por qué?" button for these rows.
-                const isPairedTransfer = tx.channel === "transfer" && tx.transferGroupId !== null;
+                // #642/#766: paired transfers and ATM withdrawals have category_slug=NULL
+                // (or method="manual") by structural convention — suppress "Sin clasificar"
+                // styling and the "¿Por qué?" button for these rows.
+                const isPairedTransfer = isInternalMovement(tx);
                 const isLowConfidence =
                   confidenceBand(tx.classificationMethod, tx.classificationConfidence) === "low";
                 return (
@@ -689,14 +700,14 @@ export function TransactionTable({
             const isNew = newIds.has(tx.id);
             const isHighlighted = tx.id === highlightId;
             const isArchived = tx.deletedAt !== null;
-            // #642: paired transfers — same guard as desktop row.
+            // #642/#766: same guard as desktop row — see isInternalMovement() above.
             // NOTE: the method-label `<Badge>` below relies on
             // `methodVariant["unclassified"] = "destructive"` AND on
             // `isPairedTransferMobile` overriding it to "outline". If a future
             // change adds a `text-destructive` span here mirroring desktop's
             // line 467, include the explicit guard:
             //   tx.classificationMethod === "unclassified" && !isPairedTransferMobile
-            const isPairedTransferMobile = tx.channel === "transfer" && tx.transferGroupId !== null;
+            const isPairedTransferMobile = isInternalMovement(tx);
             return (
               <motion.li
                 key={tx.id}
