@@ -91,8 +91,8 @@ async function maybeEmitPriceHikeNotification(
     type: "subscription_price_hike",
     entityId: `price-hike-${recurringId}-${absNew.toString()}`,
     title: `${rec.label} subió de ${oldFormatted} a ${newFormatted}`,
-    body: `+${pctStr}% desde ${sinceStr}. Revisar /subscriptions`,
-    actionUrl: "/subscriptions",
+    body: `+${pctStr}% desde ${sinceStr}. Revisar /recurring`,
+    actionUrl: "/recurring",
     priority: "medium",
     metadata: {
       recurringId,

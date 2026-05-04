@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  async redirects() {
+    return [{ source: "/subscriptions", destination: "/recurring", permanent: true }];
+  },
   // Produces a self-contained .next/standalone/ bundle the CD pipeline can
   // rsync + run via `bun server.js` — no node_modules install on the droplet.
   output: "standalone",

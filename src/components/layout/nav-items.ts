@@ -9,7 +9,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/accounts", label: "Accounts" },
   { href: "/budgets", label: "Budgets" },
   { href: "/insights", label: "Insights" },
-  { href: "/subscriptions", label: "Subscriptions" },
+  { href: "/recurring", label: "Recurring" },
   { href: "/imports", label: "Imports" },
   { href: "/settings", label: "Settings" },
 ];

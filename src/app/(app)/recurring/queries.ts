@@ -12,7 +12,7 @@ import type { DisplayCurrencyMode } from "@/lib/db/schema";
 // Types
 // ---------------------------------------------------------------------------
 
-export interface SubscriptionRow {
+export interface RecurringRow {
   id: number;
   label: string;
   accountLabel: string;
@@ -46,8 +46,8 @@ export interface SubscriptionRow {
 
 export type { PriceHike };
 
-export interface SubscriptionsSummary {
-  rows: SubscriptionRow[];
+export interface RecurringSummary {
+  rows: RecurringRow[];
   /** sumByDisplayCurrency over all rows for the monthly total. */
   monthlyTotals: AggregationBucket[];
   /** sumByDisplayCurrency over all rows × 12 for the annual projection. */
@@ -118,17 +118,16 @@ export function computeNextOccurrence(
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch all active, non-deleted recurring transactions for `userId` whose
- * category slug is 'suscripciones', enriched with next-occurrence + display
- * currency conversion.
+ * Fetch all active, non-deleted expense recurring transactions for `userId`
+ * (amountCents < 0), enriched with next-occurrence + display currency conversion.
  *
  * Sorted by display-currency absolute amount descending (most expensive first).
  */
-export async function getSubscriptions(
+export async function getRecurringExpenses(
   userId: number,
   displayCurrencyMode: DisplayCurrencyMode,
   copPerUsd: number,
-): Promise<SubscriptionsSummary> {
+): Promise<RecurringSummary> {
   const today = new Date();
 
   const raw = await db
@@ -175,7 +174,7 @@ export async function getSubscriptions(
       and(
         eq(recurringTransactions.userId, userId),
         eq(recurringTransactions.active, true),
-        eq(recurringTransactions.categorySlug, "suscripciones"),
+        sql`${recurringTransactions.amountCents} < 0`,
         notDeleted(recurringTransactions.deletedAt),
       ),
     )
@@ -185,9 +184,9 @@ export async function getSubscriptions(
   // We pass rawData: {} so convertToDisplayCurrency falls back gracefully:
   // it will skip conversion if currencies already match (COP), and for USD rows
   // it will log fx_conversion_missing_trm and return the original currency.
-  // For the subscriptions hub, live-TRM conversion via copPerUsd is better than
+  // For the recurring hub, live-TRM conversion via copPerUsd is better than
   // a frozen-TRM fallback; we apply it here using the same integer math pattern.
-  const rows: SubscriptionRow[] = raw.map((r) => {
+  const rows: RecurringRow[] = raw.map((r) => {
     const annualCents = r.amountCents * BigInt(12);
 
     // For recurrings we cannot use frozen TRM (no rawData.fx), so we synthesise

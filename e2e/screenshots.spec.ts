@@ -20,7 +20,7 @@ const pages = [
     path: "/settings/accounts/5/consolidate/2026-03",
     hasDonut: false,
   },
-  { name: "subscriptions", path: "/subscriptions", hasDonut: false },
+  { name: "recurring", path: "/recurring", hasDonut: false },
   { name: "imports", path: "/imports", hasDonut: false },
   { name: "signup-missing", path: "/signup", hasDonut: false },
   { name: "signup-unknown", path: "/signup?code=__DOESNOTEXIST__", hasDonut: false },

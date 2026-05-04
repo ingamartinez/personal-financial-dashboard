@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import { UpcomingCharges } from "./upcoming-charges";
-import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
+import type { RecurringRow } from "@/app/(app)/recurring/queries";
 
 // ---------------------------------------------------------------------------
 // Radix + jsdom shims
@@ -30,7 +30,7 @@ afterEach(() => {
 
 let nextId = 1;
 
-function makeRow(overrides: Partial<SubscriptionRow> = {}): SubscriptionRow {
+function makeRow(overrides: Partial<RecurringRow> = {}): RecurringRow {
   const id = nextId++;
   return {
     id,

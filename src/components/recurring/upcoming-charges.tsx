@@ -3,14 +3,14 @@
 import { addDays, format } from "date-fns";
 import { es } from "date-fns/locale";
 import { formatMoney } from "@/lib/money";
-import type { SubscriptionRow } from "@/app/(app)/subscriptions/queries";
+import type { RecurringRow } from "@/app/(app)/recurring/queries";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface UpcomingChargesProps {
-  rows: SubscriptionRow[];
+  rows: RecurringRow[];
   excludedIds: Set<number>;
   today?: Date;
 }
