@@ -5,7 +5,8 @@
 // The expensive bit — the per-purchase schedule — already lives in
 // `installment-schedule.ts`. This module's job is ledger-side:
 //   1. Resolve the live installment purchases on the TC.
-//   2. Compute each one's current balance and interest for the cycle.
+//   2. For each, project the installment schedule as of the cycle anchor and
+//      extract the cycle's interest (single pass per purchase).
 //   3. Sum them and emit ONE synthetic tx.
 //   4. Skip if the cycle already has an interest tx for this account
 //      (idempotency via `raw_data.cycleKey`).
@@ -13,66 +14,21 @@
 // The output is intentionally a single tx per cycle (not one per purchase)
 // because that's what Bancolombia extracts do — the user sees a single
 // "INTERESES CORRIENTES $X" line on their statement, not one per compra.
+//
+// NOTE: There is NO partial-month accrual for grace-month-1 (cuota 1/N)
+// purchases. Real Bancolombia statements show Intereses corrientes 0,00 for
+// those rows; the "días-activos prorrateo" second pass added in #565 was
+// removed in #778 after extracto evidence proved it charges phantom interest.
 
 import { and, eq, sql } from "drizzle-orm";
 import { db, type DB } from "@/lib/db";
 import { accounts, physicalCards, transactions, type AccountMetadata } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { installmentSchedule } from "@/lib/finance/installment-schedule";
-import { resolveBucketRateX10k, EM_X10K_PER_FRACTIONAL } from "@/lib/finance/rates";
+import { resolveBucketRateX10k } from "@/lib/finance/rates";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "intereses-causados-job" });
-
-// Round-half-up integer division for BigInt. Same policy as installment-
-// schedule.ts — interest is rounded to the nearest cent, half-up.
-// Positive inputs only; negatives would break the half-up bias.
-function bigIntRoundHalfUp(numerator: bigint, denominator: bigint): bigint {
-  if (denominator <= BigInt(0)) throw new Error("denominator must be > 0");
-  return (numerator + denominator / BigInt(2)) / denominator;
-}
-
-// Number of whole calendar days between two UTC dates. The day count is
-// inclusive of the start day (i.e. a purchase on day D accrues starting from D
-// toward the anchor). Returns 0 when `purchaseDate >= anchor`.
-//
-// Used for partial-month accrual on grace-month-1 installments: Bancolombia
-// charges `amount × rate × days_active / cycle_days` even on cuota 1 when the
-// purchase is posted mid-cycle (see issue #565, engram analysis/intereses-
-// daily-balance-hypothesis).
-export function daysActiveInCycle(purchaseDate: Date, anchor: Date): number {
-  const msPerDay = 86_400_000;
-  // Truncate both to UTC day boundaries to avoid partial-day skew.
-  const purchaseDay = Math.floor(purchaseDate.getTime() / msPerDay);
-  const anchorDay = Math.floor(anchor.getTime() / msPerDay);
-  return Math.max(0, anchorDay - purchaseDay);
-}
-
-// Number of calendar days in the month represented by the anchor date (UTC).
-// This is the cycle denominator for partial-month proration.
-export function cycleLengthDays(anchor: Date): number {
-  const y = anchor.getUTCFullYear();
-  const m = anchor.getUTCMonth(); // 0-indexed
-  // New Date(y, m+1, 0) gives the last day of month m (1-indexed). UTC version:
-  return new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-}
-
-// Partial-month interest for a mid-cycle grace-month-1 installment. Formula:
-//   amountCents × rateEmX10k × daysActive / (cycleDays × EM_X10K_PER_FRACTIONAL)
-// Rounded half-up. Returns 0n when daysActive === 0 or rate === 0.
-export function partialMonthInterestCents(
-  amountCents: bigint,
-  rateEmX10k: number,
-  daysActive: number,
-  cycleDays: number,
-): bigint {
-  if (rateEmX10k === 0 || daysActive <= 0 || cycleDays <= 0) return BigInt(0);
-  // Integer math: (amount × rate × daysActive) / (cycleDays × EM_X10K_PER_FRACTIONAL)
-  // Denominator can get large (e.g. 31 × 1_000_000 = 31_000_000) but BigInt handles it.
-  const numerator = amountCents * BigInt(rateEmX10k) * BigInt(daysActive);
-  const denominator = BigInt(cycleDays) * BigInt(EM_X10K_PER_FRACTIONAL);
-  return bigIntRoundHalfUp(numerator, denominator);
-}
 
 // Fallback cut day when neither the account nor its linked physical card has
 // one configured. 31 clamps to each month's last day, so a misconfigured
@@ -102,10 +58,7 @@ export type InterestRun = {
     // a matching bucket was found. Interest can't be computed; the row is
     // surfaced so the UI can prompt for a rate. `interestCents` is 0n.
     needsRate: boolean;
-    // #565: partial-month interest charged by Bancolombia on grace-month-1
-    // installments posted mid-cycle. 0n for mature installments, 0-rate plans,
-    // and full-cycle grace purchases (posted on or before cycle start).
-    gracePeriodPartialCents: bigint;
+    gracePeriodPartialCents: bigint; // #778: always 0n — kept for read-compat with prod synthetic txs.
   }>;
   totalInterestCents: bigint;
   // #416: convenience count of rows with `needsRate: true`. Callers (CLI,
@@ -295,119 +248,10 @@ export async function computeInterestForCycle(opts: {
       outstandingBeforeCents: outstandingBefore,
       interestCents,
       needsRate,
-      gracePeriodPartialCents: BigInt(0), // filled in by second pass below if applicable
+      gracePeriodPartialCents: BigInt(0), // #778: always 0 — partial-month prorrateo removed
     });
     if (needsRate) purchasesNeedingRate += 1;
     else totalInterestCents += interestCents;
-  }
-
-  // #565: second pass — partial-month accrual for grace-month-1 installments
-  // posted mid-cycle. Bancolombia charges `amount × rate × days_active /
-  // cycle_days` even on cuota 1 when the purchase was posted partway through
-  // the cycle.
-  //
-  // The per-installment loop above applied graceMonth=true for ALL purchases,
-  // so cuota-1 rows have interestCents=0 and were dropped by the
-  // `interestCents === 0n && !needsRate` guard. This pass re-scans `purchases`
-  // directly to catch those filtered-out grace rows.
-  //
-  // Guard conditions for a purchase to enter this pass (all must hold):
-  //   1. paidCount === 0 — cuota 1, still in grace month
-  //   2. rateEmX10k > 0  — interest-bearing; excludes 0%-rate diferido plans
-  //   3. not already in `intereses` — mature rows (paidCount>0) were kept above
-  //   4. partial > 0 — at least one day active in the cycle
-  //   5. NOT inaugural cycle — if this account has never had an intereses-tc
-  //      row before this cycle, and ALL installment purchases are still at
-  //      paidCount=0 (nothing has accrued or been paid on any prior cycle),
-  //      skip the second pass entirely. Rationale: we have no evidence
-  //      Bancolombia charges partial accrual on the very first cycle of a card.
-  //      The Amex *5367 compra-de-cartera scenario produced ~$94k COP phantom
-  //      interest on cycle 2026-04 (issue #764) because of this missing guard.
-  //      Tenant safety: query scoped by userId per per-user-table-join-tenant-safety.
-  const cycleDays = cycleLengthDays(anchor);
-  const alreadyInIntereses = new Set(intereses.map((e) => e.txId));
-
-  // Inaugural-cycle guard (#764): count prior intereses-tc synthetic rows for
-  // this account on any cycle strictly before `cycle`. If none exist, this is
-  // the card's first-ever interest cycle — skip the second pass.
-  const [priorInterestRow] = await database.execute<{ count: string }>(sql`
-    SELECT COUNT(*)::text AS count
-    FROM transactions
-    WHERE user_id = ${userId}
-      AND account_id = ${accountId}
-      AND category_slug = 'intereses-tc'
-      AND raw_data ->> 'cycleKey' < ${cycleKeyFor(accountId, cycle)}
-      AND deleted_at IS NULL
-  `);
-  const hasPriorInterestHistory = BigInt(priorInterestRow?.count ?? "0") > BigInt(0);
-
-  if (!hasPriorInterestHistory) {
-    // No prior interest history → inaugural cycle. Skip partial accrual.
-    // Bancolombia does not charge partial-month interest on the card's first
-    // cycle. Return the first-pass result directly.
-    log.debug(
-      { userId, accountId, cycle, event: "inaugural_cycle_skip" },
-      "inaugural cycle — skipping second-pass partial accrual",
-    );
-    return { accountId, cycle, anchor, intereses, totalInterestCents, purchasesNeedingRate };
-  }
-
-  for (const p of purchases) {
-    // Skip if already priced via the per-cuota path (mature installment)
-    if (alreadyInIntereses.has(p.id)) continue;
-    if (p.installmentsTotal <= 1) continue; // Bancolombia: oneMonth bucket = 0 → no interest on 1-cuota
-
-    // Resolve rate — same logic as first pass
-    let rateEmX10k: number;
-    if (p.installmentRateEmX10k != null) {
-      rateEmX10k = p.installmentRateEmX10k;
-    } else {
-      const bucketRate = resolveBucketRateX10k(buckets, p.installmentsTotal);
-      rateEmX10k = bucketRate ?? 0;
-    }
-    if (rateEmX10k === 0) continue; // zero-rate plan — no partial accrual
-
-    // Confirm it's paidCount=0 (grace month 1)
-    const schedule = installmentSchedule({
-      amountCents: -p.amountCents,
-      rateEmX10k,
-      installments: p.installmentsTotal,
-      graceMonth: true,
-      purchaseDate: p.occurredAt,
-      today: anchor,
-    });
-    if (schedule.paidCount !== 0) continue; // should not happen (would be in intereses), safety
-    if (schedule.paidCount >= schedule.rows.length) continue; // fully paid (unlikely for grace)
-
-    const days = Math.min(daysActiveInCycle(p.occurredAt, anchor), cycleDays);
-    const partial = partialMonthInterestCents(-p.amountCents, rateEmX10k, days, cycleDays);
-    if (partial === BigInt(0)) continue; // posted on anchor day or rate=0
-
-    const outstandingBefore = -p.amountCents; // paidCount=0 → full original amount
-
-    intereses.push({
-      txId: p.id,
-      purchaseAmountCents: -p.amountCents,
-      rateEmX10k,
-      installmentsTotal: p.installmentsTotal,
-      installmentsPaid: 0,
-      outstandingBeforeCents: outstandingBefore,
-      interestCents: BigInt(0), // per-cuota is 0 (grace); only partial is charged
-      needsRate: false,
-      gracePeriodPartialCents: partial,
-    });
-    totalInterestCents += partial;
-    log.debug(
-      {
-        txId: p.id,
-        days,
-        cycleDays,
-        rateEmX10k,
-        partial: partial.toString(),
-        event: "partial_month_accrual",
-      },
-      "grace-month-1 partial-month accrual applied",
-    );
   }
 
   return { accountId, cycle, anchor, intereses, totalInterestCents, purchasesNeedingRate };
