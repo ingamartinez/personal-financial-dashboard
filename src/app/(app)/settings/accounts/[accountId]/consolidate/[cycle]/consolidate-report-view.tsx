@@ -75,13 +75,19 @@ export function ReportSection({
       <SummaryGrid report={report} />
       <Alert>
         <AlertTitle>Intereses-causados</AlertTitle>
-        <AlertDescription>
-          {interesesLine}.{" "}
-          {report.intereses.status === "inserted"
-            ? `Compras multi-cuota sin tasa: ${report.intereses.purchasesNeedingRate}.`
-            : null}
-        </AlertDescription>
+        <AlertDescription>{interesesLine}.</AlertDescription>
       </Alert>
+      {(report.intereses.status === "inserted" || report.intereses.status === "skipped") &&
+      (report.intereses.purchasesNeedingRate ?? 0) > 0 ? (
+        <Alert variant="destructive">
+          <AlertTriangleIcon className="size-4" />
+          <AlertTitle>Tasas desconocidas</AlertTitle>
+          <AlertDescription>
+            Hay {report.intereses.purchasesNeedingRate} compra(s) a cuotas con tasa desconocida —
+            los intereses futuros se omitirán hasta que la tasa se complete manualmente.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <MatchesSection rows={willChangeRows} noChangeCount={noChangeMatches} />
       <MissingSection missing={report.missingInLedger} />
