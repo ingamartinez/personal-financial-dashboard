@@ -72,6 +72,51 @@ function TransferCategoryExplanation() {
   );
 }
 
+// #766: Static explainer for ATM cash withdrawals — same pattern as transfers.
+function CashWithdrawalCategoryExplanation() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 rounded-md border border-dashed px-1.5 py-0.5 text-[11px] font-normal"
+          aria-label="¿Por qué no tiene categoría?"
+          title="¿Por qué no tiene categoría?"
+          data-testid="cash-withdrawal-category-why"
+        >
+          <HelpCircleIcon className="size-3" />
+          ¿Por qué?
+        </button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>¿Por qué no tiene categoría?</DialogTitle>
+          <DialogDescription asChild>
+            <div className="space-y-2 text-sm">
+              <p>
+                Este retiro de cajero automático saca plata de tu cuenta y la convierte en{" "}
+                <strong>efectivo en tu billetera</strong> — no es un gasto.
+              </p>
+              <p>
+                Cuando uses ese efectivo para pagar algo, el gasto se registra en ese momento (si
+                ingresás la transacción manualmente). Contar el retiro como gasto generaría{" "}
+                <strong>doble conteo</strong>.
+              </p>
+            </div>
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            Entendido
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function CategoryCell({
   txId,
   value,
@@ -90,6 +135,7 @@ export function CategoryCell({
 
   // #682: transfers never carry a category by design — show a static badge
   // instead of the combobox + sparkles to avoid confusing the user.
+  // #766: same for ATM cash withdrawals — money moves to wallet, not a spend.
   if (channel === "transfer") {
     return (
       <div className="flex items-center gap-1.5">
@@ -97,6 +143,17 @@ export function CategoryCell({
           Transferencia
         </Badge>
         <TransferCategoryExplanation />
+      </div>
+    );
+  }
+
+  if (channel === "cash_withdrawal") {
+    return (
+      <div className="flex items-center gap-1.5">
+        <Badge variant="secondary" data-testid="cash-withdrawal-category-badge">
+          Retiro de efectivo
+        </Badge>
+        <CashWithdrawalCategoryExplanation />
       </div>
     );
   }
@@ -130,16 +187,16 @@ export function CategoryCell({
           title="Classify with AI"
           onClick={() => {
             startAiTransition(async () => {
-              try {
-                const res = await classifySingleWithAi({ txId });
-                const pct = Math.round(res.confidence);
-                if (pct < 50) {
-                  toast.warning(`Classified as ${res.categoryName} · low confidence (${pct}%)`);
-                } else {
-                  toast.success(`Classified as ${res.categoryName} (${pct}%)`);
-                }
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : "AI classify failed");
+              const res = await classifySingleWithAi({ txId });
+              if (res.status === "error") {
+                toast.error(res.message);
+                return;
+              }
+              const pct = Math.round(res.confidence);
+              if (pct < 50) {
+                toast.warning(`Classified as ${res.categoryName} · low confidence (${pct}%)`);
+              } else {
+                toast.success(`Classified as ${res.categoryName} (${pct}%)`);
               }
             });
           }}

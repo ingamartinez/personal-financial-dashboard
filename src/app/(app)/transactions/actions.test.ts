@@ -1447,6 +1447,8 @@ describe("classifySingleWithAi", () => {
 
     const result = await classifySingleWithAi({ txId });
 
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") throw new Error("expected ok");
     expect(result.categorySlug).toBe("suscripciones");
     expect(result.confidence).toBe(92);
     expect(result.categoryName.length).toBeGreaterThan(0);
@@ -1464,10 +1466,13 @@ describe("classifySingleWithAi", () => {
     expect(row.classification_confidence).toBe(92);
   });
 
-  it("rejects when tx is already classified and does not call the AI", async () => {
+  it("returns error when tx is already classified and does not call the AI", async () => {
     const txId = await seedClassifiedTx("test-ai-single:classified");
 
-    await expect(classifySingleWithAi({ txId })).rejects.toThrow(/already classified/);
+    const res = await classifySingleWithAi({ txId });
+    expect(res.status).toBe("error");
+    if (res.status !== "error") throw new Error("expected error");
+    expect(res.code).toBe("already_classified");
     expect(mockAiClassifySingle).not.toHaveBeenCalled();
 
     const [row] = await db.execute<{
@@ -1481,12 +1486,15 @@ describe("classifySingleWithAi", () => {
     expect(row.classification_method).toBe("manual");
   });
 
-  it("rejects when tx does not exist", async () => {
-    await expect(classifySingleWithAi({ txId: 9_999_999 })).rejects.toThrow(/not found/);
+  it("returns error when tx does not exist", async () => {
+    const res = await classifySingleWithAi({ txId: 9_999_999 });
+    expect(res.status).toBe("error");
+    if (res.status !== "error") throw new Error("expected error");
+    expect(res.code).toBe("not_found");
     expect(mockAiClassifySingle).not.toHaveBeenCalled();
   });
 
-  it("rejects and leaves tx unclassified when AI returns null category", async () => {
+  it("returns error and leaves tx unclassified when AI returns null category", async () => {
     const txId = await seedUnclassifiedTx("test-ai-single:null");
     mockAiClassifySingle.mockResolvedValueOnce({
       classification: {
@@ -1498,7 +1506,10 @@ describe("classifySingleWithAi", () => {
       usage: { inputTokens: 50, outputTokens: 10 },
     });
 
-    await expect(classifySingleWithAi({ txId })).rejects.toThrow(/could not classify/);
+    const res = await classifySingleWithAi({ txId });
+    expect(res.status).toBe("error");
+    if (res.status !== "error") throw new Error("expected error");
+    expect(res.code).toBe("ai_returned_null");
 
     const [row] = await db.execute<{
       category_slug: string | null;
@@ -1511,7 +1522,7 @@ describe("classifySingleWithAi", () => {
     expect(row.classification_method).toBe("unclassified");
   });
 
-  it("rejects when the AI returns a slug that isn't in the category taxonomy", async () => {
+  it("returns error when the AI returns a slug that isn't in the category taxonomy", async () => {
     const txId = await seedUnclassifiedTx("test-ai-single:bogus");
     mockAiClassifySingle.mockResolvedValueOnce({
       classification: {
@@ -1523,7 +1534,10 @@ describe("classifySingleWithAi", () => {
       usage: { inputTokens: 50, outputTokens: 10 },
     });
 
-    await expect(classifySingleWithAi({ txId })).rejects.toThrow();
+    const res = await classifySingleWithAi({ txId });
+    expect(res.status).toBe("error");
+    if (res.status !== "error") throw new Error("expected error");
+    expect(res.code).toBe("ai_returned_unknown_slug");
 
     const [row] = await db.execute<{
       category_slug: string | null;
