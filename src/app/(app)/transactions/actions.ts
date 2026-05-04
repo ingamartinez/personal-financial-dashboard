@@ -55,6 +55,7 @@ import type {
 } from "./link-transfer-types";
 import { linkAsTransferSchema, findTransferCandidatesSchema } from "./link-transfer-types";
 import { validateInstallmentRate, rateValidationMessage } from "@/lib/finance/rates";
+import { INSTITUTION_LABELS } from "@/lib/accounts/format";
 import { countUnclassified } from "@/lib/transactions/queries";
 import type { CounterpartyKind, CounterpartyType } from "@/lib/types";
 
@@ -2068,7 +2069,9 @@ export async function findTransferCandidates(
     accountId: r.accountId,
     accountName: r.accountName,
     accountCurrency: r.accountCurrency,
-    accountInstitution: r.accountInstitution,
+    accountInstitution: r.accountInstitution
+      ? (INSTITUTION_LABELS[r.accountInstitution] ?? r.accountInstitution)
+      : null,
   }));
 }
 

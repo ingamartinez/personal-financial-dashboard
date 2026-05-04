@@ -582,8 +582,9 @@ describe("linkExistingTransactionsAsTransfer", () => {
     expect(rows.every((r) => r.transfer_group_id === null)).toBe(true);
   });
 
-  it("adopt-partner groupId: when txA already has a groupId, txB adopts it", async () => {
-    // Insert pairOne: idA already linked, idOrphan has no pair yet.
+  it("adopt-partner groupId: when txA is the ONLY member of its group, txB adopts it", async () => {
+    // Insert a pair but archive one leg, leaving txA as the sole live member.
+    // Then link txA (solo in group) with orphan txB — should succeed and adopt txA's groupId.
     const existingPair = await insertTransferGroup({
       userId: TEST_USER_ID,
       legs: [
@@ -598,13 +599,19 @@ describe("linkExistingTransactionsAsTransfer", () => {
     expect(existingPair.status).toBe("inserted");
     if (existingPair.status !== "inserted") return;
 
+    // Archive the second leg so txA is the only live member of the group.
+    await db.execute(sql`
+      UPDATE transactions SET deleted_at = NOW()
+      WHERE id = ${existingPair.txIds[1]}
+    `);
+
     // Create an orphan tx.
     const orphanId = await insertBareTransaction({
       accountId: MASTERCARD_COP_ID,
       amountCents: BigInt(-8000),
     });
 
-    // Link orphan to one leg of the existing pair.
+    // Link orphan to txA (sole live member) — should succeed.
     const result = await linkExistingTransactionsAsTransfer({
       userId: TEST_USER_ID,
       txIdA: existingPair.txIds[0],
@@ -620,5 +627,53 @@ describe("linkExistingTransactionsAsTransfer", () => {
       SELECT transfer_group_id FROM transactions WHERE id = ${orphanId}
     `);
     expect(rows[0].transfer_group_id).toBe(existingPair.transferGroupId);
+  });
+
+  it("conflict by 3-member guard: txA already paired with partnerX, linking with orphan txB returns conflict", async () => {
+    // Setup: txA + partnerX share groupId G1 (2 live members).
+    const existingPair = await insertTransferGroup({
+      userId: TEST_USER_ID,
+      legs: [
+        leg({
+          accountId: SAVINGS_COP_ID,
+          amountCents: BigInt(-12000),
+          externalId: "test-lex:3member:a",
+        }),
+        leg({
+          accountId: VISA_COP_ID,
+          amountCents: BigInt(12000),
+          externalId: "test-lex:3member:b",
+        }),
+      ],
+    });
+    expect(existingPair.status).toBe("inserted");
+    if (existingPair.status !== "inserted") return;
+
+    // Create orphan txB with no group.
+    const orphanId = await insertBareTransaction({
+      accountId: MASTERCARD_COP_ID,
+      amountCents: BigInt(-12000),
+    });
+
+    // Attempt to link txA (already has a 2-member group) with orphan txB.
+    const result = await linkExistingTransactionsAsTransfer({
+      userId: TEST_USER_ID,
+      txIdA: existingPair.txIds[0],
+      txIdB: orphanId,
+    });
+
+    // Must return conflict — no 3-member groups allowed.
+    expect(result.status).toBe("conflict");
+
+    // Side-effect check: txA still belongs to G1, orphan still has no group.
+    const rows = await db.execute<{ id: number; transfer_group_id: string | null }>(sql`
+      SELECT id, transfer_group_id FROM transactions
+      WHERE id IN (${existingPair.txIds[0]}, ${orphanId})
+      ORDER BY id
+    `);
+    const rowA = rows.find((r) => r.id === existingPair.txIds[0]);
+    const rowOrphan = rows.find((r) => r.id === orphanId);
+    expect(rowA?.transfer_group_id).toBe(existingPair.transferGroupId);
+    expect(rowOrphan?.transfer_group_id).toBeNull();
   });
 });

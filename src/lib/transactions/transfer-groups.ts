@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DB } from "@/lib/db";
 import { db as defaultDb } from "@/lib/db";
 import { transactions } from "@/lib/db/schema";
@@ -316,6 +316,26 @@ export async function linkExistingTransactionsAsTransfer(opts: {
       const existingA = rows.find((r) => r.id === txIdA)?.transferGroupId ?? null;
       const existingB = rows.find((r) => r.id === txIdB)?.transferGroupId ?? null;
 
+      // Defense in depth: when adopting an existing groupId, ensure that group
+      // has exactly 1 active member (the tx we already know about). If it has
+      // more, adopting would create a 3+-member group — an invariant violation.
+      // The UI already prevents this by filtering candidates with
+      // isNull(transferGroupId), but this guard protects callers that bypass
+      // the UI (scripts, tests, future features).
+      async function groupMemberCount(groupId: string): Promise<number> {
+        const [row] = await trx
+          .select({ n: count() })
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.userId, userId),
+              eq(transactions.transferGroupId, groupId),
+              isNull(transactions.deletedAt),
+            ),
+          );
+        return row?.n ?? 0;
+      }
+
       let groupId: string;
       if (existingA && existingB) {
         if (existingA === existingB) {
@@ -340,8 +360,50 @@ export async function linkExistingTransactionsAsTransfer(opts: {
             "Una de las transacciones ya pertenece a otro grupo de transferencia. No se puede fusionar.",
         };
       } else if (existingA) {
+        // txA is already in a group. Only adopt it if that group has exactly
+        // 1 live member (txA itself). If it already has a partner, adding txB
+        // would produce a 3-member group — conflict.
+        const membersA = await groupMemberCount(existingA);
+        if (membersA !== 1) {
+          log.error(
+            {
+              txIdA,
+              txIdB,
+              userId,
+              existingGroupA: existingA,
+              membersA,
+              event: "manual_link_conflict_3member",
+            },
+            "txA's group already has a partner — refusing to adopt into 3-member group",
+          );
+          return {
+            status: "conflict" as const,
+            message:
+              "La transacción A ya está emparejada con otra transacción. No se puede agregar una tercera.",
+          };
+        }
         groupId = existingA;
       } else if (existingB) {
+        // Same guard for the txB path.
+        const membersB = await groupMemberCount(existingB);
+        if (membersB !== 1) {
+          log.error(
+            {
+              txIdA,
+              txIdB,
+              userId,
+              existingGroupB: existingB,
+              membersB,
+              event: "manual_link_conflict_3member",
+            },
+            "txB's group already has a partner — refusing to adopt into 3-member group",
+          );
+          return {
+            status: "conflict" as const,
+            message:
+              "La transacción B ya está emparejada con otra transacción. No se puede agregar una tercera.",
+          };
+        }
         groupId = existingB;
       } else {
         groupId = randomUUID();
