@@ -58,10 +58,7 @@ export type InterestRun = {
     // a matching bucket was found. Interest can't be computed; the row is
     // surfaced so the UI can prompt for a rate. `interestCents` is 0n.
     needsRate: boolean;
-    // #565: partial-month interest charged by Bancolombia on grace-month-1
-    // installments posted mid-cycle. 0n for mature installments, 0-rate plans,
-    // and full-cycle grace purchases (posted on or before cycle start).
-    gracePeriodPartialCents: bigint;
+    gracePeriodPartialCents: bigint; // #778: always 0n — kept for read-compat with prod synthetic txs.
   }>;
   totalInterestCents: bigint;
   // #416: convenience count of rows with `needsRate: true`. Callers (CLI,

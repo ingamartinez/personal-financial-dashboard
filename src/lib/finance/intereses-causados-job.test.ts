@@ -62,6 +62,17 @@ async function setCutoffDay(accountId: number, day: number | null) {
   }
 }
 
+async function getMastercardUsdId(): Promise<number> {
+  const [row] = await db.execute<{ id: number }>(sql`
+    SELECT id FROM accounts
+    WHERE user_id = ${TEST_USER_ID}
+      AND name = 'Bancolombia Mastercard *7291'
+      AND currency = 'USD'
+    LIMIT 1
+  `);
+  return row.id;
+}
+
 async function seedPurchase(opts: {
   accountId: number;
   externalId: string;
@@ -69,16 +80,18 @@ async function seedPurchase(opts: {
   occurredAt: string; // YYYY-MM-DD
   installmentsTotal: number;
   installmentRateEmX10k: number | null;
+  currency?: string; // defaults to 'COP'
 }) {
   const rateSql =
     opts.installmentRateEmX10k === null ? sql`NULL` : sql`${opts.installmentRateEmX10k}`;
+  const currency = opts.currency ?? "COP";
   const [row] = await db.execute<{ id: number }>(sql`
     INSERT INTO transactions (
       user_id, account_id, occurred_at, amount_cents, currency, description_raw,
       classification_method, source, external_id, installments_total, installment_rate_bps
     ) VALUES (
       ${TEST_USER_ID}, ${opts.accountId}, ${`${opts.occurredAt}T12:00:00Z`}::timestamptz,
-      ${(-opts.amountCentsMagnitude).toString()}::bigint, 'COP',
+      ${(-opts.amountCentsMagnitude).toString()}::bigint, ${currency},
       ${`test purchase ${opts.externalId}`},
       'unclassified'::classification_method, 'sms',
       ${opts.externalId}, ${opts.installmentsTotal}, ${rateSql}
@@ -465,27 +478,60 @@ describe("applyInteresesCausadosForCycle", () => {
   });
 });
 
-// Regression #778 — TC *8268 USD ABR2026: Patreon $9 USD cuota 1/36, posted
-// 2026-04-29 (1 day before Apr 30 anchor). The extracto explicitly shows
-// "Intereses corrientes: 0,00". Before #778 our second-pass grace prorrateo
-// returned 1¢ of phantom interest for this row.
+// Regression #778 — grace-month-1 prorrateo days-active second pass removed.
+// Two cases:
+//   A — TC *8268 USD ABR2026: Patreon $9 USD cuota 1/36 posted 1 day before
+//       anchor → extracto shows "Intereses corrientes: 0,00". Pre-fix: the
+//       second pass returned 1¢ phantom interest. Post-fix: 0 entries, $0 total.
+//   B — invariant on emitted rows: a mature purchase (paidCount >= 1) MUST
+//       have gracePeriodPartialCents === 0n on every emitted row (the field is
+//       kept for read-compat with existing prod synthetic txs but is always 0n).
 describe("computeInterestForCycle — regression #778 grace-month-1 prorrateo removed", () => {
-  it("returns zero interest for a cuota 1/36 purchase posted 1 day before anchor (TC *8268 USD scenario)", async () => {
-    const visa = await getVisaId();
+  it("Case A: returns zero interest for a cuota 1/36 USD purchase posted 1 day before anchor (TC *8268 USD scenario)", async () => {
+    const mcUsd = await getMastercardUsdId();
     // TC USD card: rate 19915 (1.9915% EM), cutDay=30 → Apr 30 anchor.
-    await setBucketRates(visa, { oneMonth: 0, months2to36: 19915, advances: 19915 });
-    await setCutoffDay(visa, 30);
+    await setBucketRates(mcUsd, { oneMonth: 0, months2to36: 19915, advances: 19915 });
+    await setCutoffDay(mcUsd, 30);
 
     // Patreon $9 USD posted 2026-04-29 — cuota 1 of 36, grace month applies.
     // Pre-fix: second pass computed gracePartial = 1¢ via días-activos prorrateo.
     // Post-fix: no second pass → total = 0, no intereses entry.
     await seedPurchase({
-      accountId: visa,
+      accountId: mcUsd,
       externalId: `${EXT_PREFIX}778-patreon-usd`,
       amountCentsMagnitude: BigInt(900), // $9.00 USD in cents
       occurredAt: "2026-04-29",
       installmentsTotal: 36,
       installmentRateEmX10k: 19915,
+      currency: "USD",
+    });
+
+    const run = await computeInterestForCycle({
+      userId: TEST_USER_ID,
+      accountId: mcUsd,
+      cycle: "2026-04",
+    });
+
+    // Extracto *8268 USD ABR2026 shows Intereses corrientes 0,00.
+    expect(run.totalInterestCents).toBe(BigInt(0));
+    expect(run.intereses.length).toBe(0);
+  });
+
+  it("Case B: gracePeriodPartialCents is always 0n on emitted intereses rows (mature purchase, paidCount >= 1)", async () => {
+    const visa = await getVisaId();
+    await setBucketRates(visa, { oneMonth: 0, months2to36: 19110, advances: 19110 });
+    await setCutoffDay(visa, 30);
+
+    // Purchase on 2026-01-15 with explicit rate. Cycle "2026-04", cutDay=30
+    // → anchor Apr 30. monthsBetween(Jan 15, Apr 30) = 3 (30 >= 15, no decrement)
+    // → paidCount = 3 → mature, so this row IS emitted in intereses.
+    await seedPurchase({
+      accountId: visa,
+      externalId: `${EXT_PREFIX}778-mature-cop`,
+      amountCentsMagnitude: BigInt(1_000_000), // $10,000 COP
+      occurredAt: "2026-01-15",
+      installmentsTotal: 12,
+      installmentRateEmX10k: 19110,
     });
 
     const run = await computeInterestForCycle({
@@ -494,12 +540,11 @@ describe("computeInterestForCycle — regression #778 grace-month-1 prorrateo re
       cycle: "2026-04",
     });
 
-    // Extracto *8268 USD ABR2026 shows Intereses corrientes 0,00.
-    expect(run.totalInterestCents).toBe(BigInt(0));
-    expect(run.intereses.length).toBe(0);
-
+    // The mature purchase is priced → at least 1 row is emitted.
+    expect(run.intereses.length).toBeGreaterThanOrEqual(1);
     // Invariant: gracePeriodPartialCents is always 0n after #778 (field kept
-    // for read-compat with existing synthetic txs in prod).
+    // for read-compat with existing prod synthetic txs — the second pass that
+    // populated it was deleted).
     for (const i of run.intereses) {
       expect(i.gracePeriodPartialCents).toBe(BigInt(0));
     }
