@@ -261,8 +261,7 @@ describe("installmentSchedule — regression #777 (OEM SAS, tx 1019)", () => {
     // Analytically: periodInterestCents(350_000_000, 19110) = 6_688_500 cents exactly.
     // Tolerance ±5 cents covers any platform-level bigint rounding edge.
     const expected = BigInt(6_688_500);
-    expect(m2.interestCents - expected <= BigInt(5)).toBe(true);
-    expect(expected - m2.interestCents <= BigInt(5)).toBe(true);
+    expect(absDiff(m2.interestCents, expected)).toBeLessThanOrEqual(BigInt(5));
   });
 
   it("Σ(capitalCents) === amountCents (no residue for 36 even divisor)", () => {

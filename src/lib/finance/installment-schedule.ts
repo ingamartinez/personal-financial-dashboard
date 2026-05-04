@@ -30,7 +30,7 @@ export type InstallmentScheduleInput = {
   amountCents: bigint; // original purchase amount (positive magnitude)
   rateEmX10k: number; // EM rate stored as percent × 10000 (0 = 0%, 19110 = 1.9110% EM)
   installments: number; // total cuotas, N >= 1
-  graceMonth: boolean; // true = month-1 interest deferred to month 2
+  graceMonth: boolean; // true = mes 1 sin interés (gracia); mes 2+ pagan single-rate own interest
   purchaseDate: Date; // anchor for month counting
   today: Date; // drives paid vs pending split
 };
