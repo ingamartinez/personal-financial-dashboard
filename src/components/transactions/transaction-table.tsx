@@ -125,13 +125,14 @@ function RecurringBadge({ label }: { label: string | null }) {
       title={tooltipText}
       data-testid="recurring-badge"
     >
+      <span className="sr-only">{tooltipText}</span>
       <CheckCircle2 className="size-3.5 text-emerald-600" aria-hidden="true" />
       <Badge
         variant="outline"
         className="gap-1 border-violet-300 text-[10px] font-medium tracking-wide text-violet-700 uppercase dark:border-violet-700 dark:text-violet-300"
       >
-        <RefreshCwIcon className="size-2.5" />
-        {label ? <span className="max-w-[80px] truncate">{label}</span> : "Recurring"}
+        <RefreshCwIcon className="size-2.5" aria-hidden="true" />
+        {label ? <span className="max-w-[80px] truncate">{label}</span> : "Recurrente"}
       </Badge>
     </span>
   );

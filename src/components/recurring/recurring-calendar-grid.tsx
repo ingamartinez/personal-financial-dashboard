@@ -118,7 +118,7 @@ interface PillProps {
 function Pill({ row, status }: PillProps) {
   const pillClass = cn(
     "bg-emerald-500/20 text-emerald-700 dark:bg-emerald-500/30 dark:text-emerald-300",
-    "rounded-md px-1.5 py-0.5 text-xs truncate w-full text-left",
+    "rounded-md px-1.5 py-0.5 text-xs w-full text-left",
     "inline-flex items-center gap-1",
     "transition-opacity",
   );
@@ -142,7 +142,7 @@ function Pill({ row, status }: PillProps) {
               aria-hidden="true"
             />
           )}
-          <span className="truncate">{row.label}</span>
+          <span className="min-w-0 truncate">{row.label}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" className="w-64">

@@ -177,8 +177,9 @@ function MonthLegend({ rows, slotStatusByRecurringId }: MonthLegendProps) {
     } else if (status === "matched") {
       paidCents += cents;
       paidCount++;
+    } else if (status === "dismissed") {
+      continue;
     }
-    // dismissed → excluded
   }
 
   if (pendingCount === 0 && paidCount === 0) return null;
