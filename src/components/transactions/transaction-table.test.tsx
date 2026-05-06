@@ -623,3 +623,46 @@ describe("TransactionTable — #719 categoryAnomaly badge priority", () => {
     expect(screen.queryByText("Nuevo merchant — confirmá categoría")).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests — #788: RecurringBadge shows CheckCircle2 (emerald) for linked rows
+// ---------------------------------------------------------------------------
+
+describe("TransactionTable — #788 recurring badge CheckCircle2 icon", () => {
+  it("renders the recurring badge with CheckCircle2 when recurringId is set", () => {
+    const tx = makeTxRow({
+      id: 900,
+      recurringId: 1,
+      recurringLabel: "Netflix",
+    });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    // data-testid="recurring-badge" — present in both desktop and mobile.
+    const badges = screen.getAllByTestId("recurring-badge");
+    expect(badges.length).toBeGreaterThanOrEqual(1);
+
+    // The wrapper has the tooltip.
+    expect(badges[0]).toHaveAttribute("title", "Recurrente: Netflix");
+
+    // The label text is rendered inside the badge.
+    expect(screen.getAllByText("Netflix").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does NOT render the recurring badge when recurringId is null", () => {
+    const tx = makeTxRow({ id: 901, recurringId: null, recurringLabel: null });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    expect(screen.queryByTestId("recurring-badge")).not.toBeInTheDocument();
+  });
+
+  it("uses generic 'Recurrente' tooltip when recurringLabel is null but recurringId is set", () => {
+    const tx = makeTxRow({ id: 902, recurringId: 5, recurringLabel: null });
+
+    render(<TransactionTable rows={[tx]} {...TABLE_PROPS} />);
+
+    const badges = screen.getAllByTestId("recurring-badge");
+    expect(badges[0]).toHaveAttribute("title", "Recurrente");
+  });
+});

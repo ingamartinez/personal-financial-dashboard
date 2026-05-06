@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Calculator, X } from "lucide-react";
+import { Calculator, CheckCircle2, Circle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
@@ -16,6 +16,7 @@ import { RecurringList } from "./recurring-list";
 import { UpcomingCharges } from "./upcoming-charges";
 import type { AggregationBucket } from "@/lib/fx/aggregate";
 import type { RecurringRow } from "@/app/(app)/recurring/queries";
+import type { UpcomingStatus } from "@/lib/recurring/upcoming";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,6 +26,7 @@ interface RecurringCalculatorProps {
   rows: RecurringRow[];
   monthlyTotals: AggregationBucket[];
   annualTotals: AggregationBucket[];
+  slotStatusByRecurringId?: Record<number, UpcomingStatus>;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +141,73 @@ function BucketLabel({
 }
 
 // ---------------------------------------------------------------------------
+// MonthLegend — "○ $X (N) te falta · ✓ $Y (M) pagado"
+// ---------------------------------------------------------------------------
+
+interface MonthLegendProps {
+  rows: RecurringRow[];
+  slotStatusByRecurringId: Record<number, UpcomingStatus>;
+}
+
+function MonthLegend({ rows, slotStatusByRecurringId }: MonthLegendProps) {
+  let pendingCents = BigInt(0);
+  let pendingCount = 0;
+  let paidCents = BigInt(0);
+  let paidCount = 0;
+  let mixedCurrency = false;
+  let currency: string | null = null;
+
+  for (const row of rows) {
+    const status = slotStatusByRecurringId[row.id];
+    if (!status) continue;
+
+    const cents =
+      row.displayAmount.cents < BigInt(0) ? -row.displayAmount.cents : row.displayAmount.cents;
+    const cur = row.displayAmount.currency;
+
+    if (currency === null) {
+      currency = cur;
+    } else if (currency !== cur) {
+      mixedCurrency = true;
+    }
+
+    if (status === "upcoming" || status === "overdue") {
+      pendingCents += cents;
+      pendingCount++;
+    } else if (status === "matched") {
+      paidCents += cents;
+      paidCount++;
+    } else if (status === "dismissed") {
+      continue;
+    }
+  }
+
+  if (pendingCount === 0 && paidCount === 0) return null;
+
+  const cur = mixedCurrency || currency === null ? null : (currency as "COP" | "USD");
+
+  return (
+    <p className="text-muted-foreground text-sm" data-testid="month-legend">
+      {pendingCount > 0 && (
+        <span className="inline-flex items-center gap-1">
+          <Circle className="size-3.5 shrink-0 text-sky-500" aria-hidden="true" />
+          {cur ? formatMoney(pendingCents, cur) : null}{" "}
+          <span className="text-xs">({pendingCount}) te falta</span>
+        </span>
+      )}
+      {pendingCount > 0 && paidCount > 0 && <span className="mx-1.5 text-xs">·</span>}
+      {paidCount > 0 && (
+        <span className="inline-flex items-center gap-1">
+          <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" aria-hidden="true" />
+          {cur ? formatMoney(paidCents, cur) : null}{" "}
+          <span className="text-xs">({paidCount}) pagado</span>
+        </span>
+      )}
+    </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Totals header — shows total + próximo cobro
 // ---------------------------------------------------------------------------
 
@@ -149,6 +218,7 @@ function TotalsCard({
   excludedIds,
   isCalculatorOpen,
   onOpenCalculator,
+  slotStatusByRecurringId,
 }: {
   monthlyTotals: AggregationBucket[];
   annualTotals: AggregationBucket[];
@@ -156,6 +226,7 @@ function TotalsCard({
   excludedIds: Set<number>;
   isCalculatorOpen: boolean;
   onOpenCalculator: () => void;
+  slotStatusByRecurringId?: Record<number, UpcomingStatus>;
 }) {
   // Compute earliest nextOccurrence among non-excluded rows.
   const activeRows = rows.filter((r) => !excludedIds.has(r.id));
@@ -203,6 +274,9 @@ function TotalsCard({
             <p className="text-muted-foreground text-sm">
               Próximo cobro: <span className="text-foreground">{proximoCobro}</span>
             </p>
+          )}
+          {slotStatusByRecurringId && Object.keys(slotStatusByRecurringId).length > 0 && (
+            <MonthLegend rows={activeRows} slotStatusByRecurringId={slotStatusByRecurringId} />
           )}
         </div>
         {!isCalculatorOpen && (
@@ -271,6 +345,7 @@ export function RecurringCalculator({
   rows,
   monthlyTotals,
   annualTotals,
+  slotStatusByRecurringId,
 }: RecurringCalculatorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set());
@@ -352,6 +427,7 @@ export function RecurringCalculator({
         excludedIds={excludedIds}
         isCalculatorOpen={isOpen}
         onOpenCalculator={handleOpen}
+        slotStatusByRecurringId={slotStatusByRecurringId}
       />
 
       {/* Calculator header + action bar (when open) */}
@@ -404,13 +480,17 @@ export function RecurringCalculator({
         <AccordionItem value="calendar" className="mt-2 rounded-lg border px-3">
           <AccordionTrigger className="text-sm font-semibold">Calendario</AccordionTrigger>
           <AccordionContent>
-            <RecurringCalendarGrid rows={rows} />
+            <RecurringCalendarGrid rows={rows} slotStatusById={slotStatusByRecurringId} />
           </AccordionContent>
         </AccordionItem>
       </Accordion>
 
       {/* Próximos 7 días callout */}
-      <UpcomingCharges rows={rows} excludedIds={excludedIds} />
+      <UpcomingCharges
+        rows={rows}
+        excludedIds={excludedIds}
+        slotStatusById={slotStatusByRecurringId}
+      />
     </div>
   );
 }

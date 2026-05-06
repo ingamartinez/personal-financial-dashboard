@@ -128,3 +128,95 @@ describe("UpcomingCharges", () => {
     expect(screen.getByText(/mañana/)).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests — #788: slotStatusById dots in UpcomingCharges
+// ---------------------------------------------------------------------------
+
+describe("UpcomingCharges — #788 status dots", () => {
+  it("renders emerald dot when status is matched", () => {
+    const today = new Date("2026-05-10T12:00:00");
+    nextId = 50;
+    const rows = [makeRow({ id: 50, label: "Netflix", nextOccurrence: "2026-05-12" })];
+    const slotStatusById = { 50: "matched" as const };
+
+    render(
+      <UpcomingCharges
+        rows={rows}
+        excludedIds={new Set()}
+        today={today}
+        slotStatusById={slotStatusById}
+      />,
+    );
+
+    const dot = screen.getByTestId("upcoming-status-dot");
+    expect(dot).toBeInTheDocument();
+    expect(dot.className).toMatch(/bg-emerald-600/);
+  });
+
+  it("renders sky dot when status is upcoming", () => {
+    const today = new Date("2026-05-10T12:00:00");
+    nextId = 60;
+    const rows = [makeRow({ id: 60, label: "Spotify", nextOccurrence: "2026-05-13" })];
+    const slotStatusById = { 60: "upcoming" as const };
+
+    render(
+      <UpcomingCharges
+        rows={rows}
+        excludedIds={new Set()}
+        today={today}
+        slotStatusById={slotStatusById}
+      />,
+    );
+
+    const dot = screen.getByTestId("upcoming-status-dot");
+    expect(dot.className).toMatch(/bg-sky-500/);
+  });
+
+  it("renders rose dot when status is overdue", () => {
+    const today = new Date("2026-05-10T12:00:00");
+    nextId = 70;
+    const rows = [makeRow({ id: 70, label: "HBO Max", nextOccurrence: "2026-05-11" })];
+    const slotStatusById = { 70: "overdue" as const };
+
+    render(
+      <UpcomingCharges
+        rows={rows}
+        excludedIds={new Set()}
+        today={today}
+        slotStatusById={slotStatusById}
+      />,
+    );
+
+    const dot = screen.getByTestId("upcoming-status-dot");
+    expect(dot.className).toMatch(/bg-rose-600/);
+  });
+
+  it("does not render a dot when status is dismissed", () => {
+    const today = new Date("2026-05-10T12:00:00");
+    nextId = 80;
+    const rows = [makeRow({ id: 80, label: "Apple TV", nextOccurrence: "2026-05-14" })];
+    const slotStatusById = { 80: "dismissed" as const };
+
+    render(
+      <UpcomingCharges
+        rows={rows}
+        excludedIds={new Set()}
+        today={today}
+        slotStatusById={slotStatusById}
+      />,
+    );
+
+    expect(screen.queryByTestId("upcoming-status-dot")).not.toBeInTheDocument();
+  });
+
+  it("does not render a dot when slotStatusById is not provided", () => {
+    const today = new Date("2026-05-10T12:00:00");
+    nextId = 90;
+    const rows = [makeRow({ id: 90, label: "YouTube Premium", nextOccurrence: "2026-05-12" })];
+
+    render(<UpcomingCharges rows={rows} excludedIds={new Set()} today={today} />);
+
+    expect(screen.queryByTestId("upcoming-status-dot")).not.toBeInTheDocument();
+  });
+});

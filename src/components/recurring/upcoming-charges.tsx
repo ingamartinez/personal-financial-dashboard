@@ -2,8 +2,10 @@
 
 import { addDays, format } from "date-fns";
 import { es } from "date-fns/locale";
+import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/money";
 import type { RecurringRow } from "@/app/(app)/recurring/queries";
+import type { UpcomingStatus } from "@/lib/recurring/upcoming";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -13,7 +15,20 @@ export interface UpcomingChargesProps {
   rows: RecurringRow[];
   excludedIds: Set<number>;
   today?: Date;
+  /** When provided, use for status dots instead of computing locally. */
+  slotStatusById?: Record<number, UpcomingStatus>;
 }
+
+// ---------------------------------------------------------------------------
+// Dot color map
+// ---------------------------------------------------------------------------
+
+const STATUS_DOT_CLASS: Record<UpcomingStatus, string | null> = {
+  matched: "bg-emerald-600",
+  upcoming: "bg-sky-500",
+  overdue: "bg-rose-600",
+  dismissed: null,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,7 +42,12 @@ function absCents(cents: bigint): bigint {
 // UpcomingCharges component
 // ---------------------------------------------------------------------------
 
-export function UpcomingCharges({ rows, excludedIds, today: todayProp }: UpcomingChargesProps) {
+export function UpcomingCharges({
+  rows,
+  excludedIds,
+  today: todayProp,
+  slotStatusById,
+}: UpcomingChargesProps) {
   const rawToday = todayProp ?? new Date();
   // Floor to midnight so same-day charges are included.
   const today = new Date(rawToday.getFullYear(), rawToday.getMonth(), rawToday.getDate());
@@ -60,9 +80,18 @@ export function UpcomingCharges({ rows, excludedIds, today: todayProp }: Upcomin
           );
           const absDisplayCents = absCents(row.displayAmount.cents);
           const formattedDate = format(nextDate, "d MMM", { locale: es });
+          const status = slotStatusById?.[row.id];
+          const dotClass = status ? STATUS_DOT_CLASS[status] : null;
 
           return (
             <li key={row.id} className="text-muted-foreground flex items-center gap-2 text-sm">
+              {dotClass && (
+                <span
+                  className={cn("size-2 shrink-0 rounded-full", dotClass)}
+                  data-testid="upcoming-status-dot"
+                  aria-hidden="true"
+                />
+              )}
               <span className="text-foreground font-medium">{row.label}</span>
               <span>—</span>
               <span className="tabular-nums">

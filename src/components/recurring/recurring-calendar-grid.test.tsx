@@ -222,3 +222,62 @@ describe("RecurringCalendarGrid", () => {
     expect(screen.getByTestId("sub-pill")).toHaveTextContent("YouTube Premium");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests — #788: slot status dots in calendar pills
+// ---------------------------------------------------------------------------
+
+describe("RecurringCalendarGrid — #788 status dots", () => {
+  it("renders emerald dot when status is matched", () => {
+    nextId = 100;
+    const row = makeRow({ id: 100, label: "Netflix", dayOfMonth: 15 });
+    const slotStatusById = { 100: "matched" as const };
+
+    render(<RecurringCalendarGrid rows={[row]} today={TODAY} slotStatusById={slotStatusById} />);
+
+    const dot = screen.getByTestId("status-dot");
+    expect(dot).toBeInTheDocument();
+    expect(dot.className).toMatch(/bg-emerald-600/);
+  });
+
+  it("renders sky dot when status is upcoming", () => {
+    nextId = 110;
+    const row = makeRow({ id: 110, label: "Spotify", dayOfMonth: 20 });
+    const slotStatusById = { 110: "upcoming" as const };
+
+    render(<RecurringCalendarGrid rows={[row]} today={TODAY} slotStatusById={slotStatusById} />);
+
+    const dot = screen.getByTestId("status-dot");
+    expect(dot.className).toMatch(/bg-sky-500/);
+  });
+
+  it("renders rose dot when status is overdue", () => {
+    nextId = 120;
+    const row = makeRow({ id: 120, label: "Disney+", dayOfMonth: 1 });
+    const slotStatusById = { 120: "overdue" as const };
+
+    render(<RecurringCalendarGrid rows={[row]} today={TODAY} slotStatusById={slotStatusById} />);
+
+    const dot = screen.getByTestId("status-dot");
+    expect(dot.className).toMatch(/bg-rose-600/);
+  });
+
+  it("does not render a dot when status is dismissed", () => {
+    nextId = 130;
+    const row = makeRow({ id: 130, label: "HBO Max", dayOfMonth: 8 });
+    const slotStatusById = { 130: "dismissed" as const };
+
+    render(<RecurringCalendarGrid rows={[row]} today={TODAY} slotStatusById={slotStatusById} />);
+
+    expect(screen.queryByTestId("status-dot")).not.toBeInTheDocument();
+  });
+
+  it("does not render a dot when no slotStatusById is provided", () => {
+    nextId = 140;
+    const row = makeRow({ id: 140, label: "Apple TV+", dayOfMonth: 12 });
+
+    render(<RecurringCalendarGrid rows={[row]} today={TODAY} />);
+
+    expect(screen.queryByTestId("status-dot")).not.toBeInTheDocument();
+  });
+});

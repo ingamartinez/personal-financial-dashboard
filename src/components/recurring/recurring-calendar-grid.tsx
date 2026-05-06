@@ -18,6 +18,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { PriceHike, RecurringRow } from "@/app/(app)/recurring/queries";
+import type { UpcomingStatus } from "@/lib/recurring/upcoming";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,6 +28,8 @@ export interface RecurringCalendarGridProps {
   rows: RecurringRow[];
   /** Injected for tests — defaults to new Date() */
   today?: Date;
+  /** Slot status per recurring id for the current month. */
+  slotStatusById?: Record<number, UpcomingStatus>;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,16 +103,27 @@ function SubDetailContent({ row }: { row: RecurringRow }) {
 // Pill component — single subscription pill inside a day cell
 // ---------------------------------------------------------------------------
 
+const STATUS_DOT_CLASS: Record<UpcomingStatus, string | null> = {
+  matched: "bg-emerald-600",
+  upcoming: "bg-sky-500",
+  overdue: "bg-rose-600",
+  dismissed: null,
+};
+
 interface PillProps {
   row: RecurringRow;
+  status?: UpcomingStatus;
 }
 
-function Pill({ row }: PillProps) {
+function Pill({ row, status }: PillProps) {
   const pillClass = cn(
     "bg-emerald-500/20 text-emerald-700 dark:bg-emerald-500/30 dark:text-emerald-300",
-    "rounded-md px-1.5 py-0.5 text-xs truncate w-full text-left",
+    "rounded-md px-1.5 py-0.5 text-xs w-full text-left",
+    "inline-flex items-center gap-1",
     "transition-opacity",
   );
+
+  const dotClass = status ? STATUS_DOT_CLASS[status] : null;
 
   return (
     <Popover>
@@ -121,7 +135,14 @@ function Pill({ row }: PillProps) {
           aria-label={`Ver detalle: ${row.label}`}
           title={row.label}
         >
-          {row.label}
+          {dotClass && (
+            <span
+              className={cn("size-2 shrink-0 rounded-full", dotClass)}
+              data-testid="status-dot"
+              aria-hidden="true"
+            />
+          )}
+          <span className="min-w-0 truncate">{row.label}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" className="w-64">
@@ -181,9 +202,10 @@ interface DayCellProps {
   today: Date;
   inMonth: boolean;
   subs: RecurringRow[];
+  slotStatusById?: Record<number, UpcomingStatus>;
 }
 
-function DayCell({ date, today, inMonth, subs }: DayCellProps) {
+function DayCell({ date, today, inMonth, subs, slotStatusById }: DayCellProps) {
   const isToday = isSameDay(date, today);
   const dayNum = getDate(date);
 
@@ -213,7 +235,7 @@ function DayCell({ date, today, inMonth, subs }: DayCellProps) {
       {inMonth && subs.length > 0 && (
         <div className="flex flex-col gap-0.5">
           {subs.slice(0, MAX_PILLS).map((row) => (
-            <Pill key={row.id} row={row} />
+            <Pill key={row.id} row={row} status={slotStatusById?.[row.id]} />
           ))}
           {subs.length > MAX_PILLS && <OverflowChip rows={subs.slice(MAX_PILLS)} />}
         </div>
@@ -226,7 +248,11 @@ function DayCell({ date, today, inMonth, subs }: DayCellProps) {
 // Main grid component
 // ---------------------------------------------------------------------------
 
-export function RecurringCalendarGrid({ rows, today: todayProp }: RecurringCalendarGridProps) {
+export function RecurringCalendarGrid({
+  rows,
+  today: todayProp,
+  slotStatusById,
+}: RecurringCalendarGridProps) {
   // Stable today reference — avoids re-creating on every render when todayProp is undefined.
   const today = useMemo(() => todayProp ?? new Date(), [todayProp]);
 
@@ -285,6 +311,7 @@ export function RecurringCalendarGrid({ rows, today: todayProp }: RecurringCalen
               today={today}
               inMonth={inMonth}
               subs={subs}
+              slotStatusById={slotStatusById}
             />
           );
         })}
