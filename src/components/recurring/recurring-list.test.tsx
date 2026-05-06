@@ -168,4 +168,48 @@ describe("RecurringList", () => {
     expect(pills[1]).toHaveTextContent("B");
     expect(pills[2]).toHaveTextContent("C");
   });
+
+  // -------------------------------------------------------------------------
+  // #790: status dots threading from slotStatusById prop.
+  // -------------------------------------------------------------------------
+
+  it("renders an emerald dot for matched, sky for upcoming, rose for overdue, none for dismissed", () => {
+    nextId = 70;
+    const rows = [
+      makeRow({ id: 70, label: "Matched" }),
+      makeRow({ id: 71, label: "Upcoming" }),
+      makeRow({ id: 72, label: "Overdue" }),
+      makeRow({ id: 73, label: "Dismissed" }),
+      makeRow({ id: 74, label: "NoStatus" }),
+    ];
+
+    render(
+      <RecurringList
+        rows={rows}
+        excludedIds={new Set()}
+        isCalculatorOpen={false}
+        slotStatusById={{
+          70: "matched",
+          71: "upcoming",
+          72: "overdue",
+          73: "dismissed",
+        }}
+      />,
+    );
+
+    const dots = screen.getAllByTestId("status-dot");
+    expect(dots).toHaveLength(3);
+    expect(dots[0]).toHaveClass("bg-emerald-600");
+    expect(dots[1]).toHaveClass("bg-sky-500");
+    expect(dots[2]).toHaveClass("bg-rose-600");
+  });
+
+  it("renders no dots when slotStatusById is undefined", () => {
+    nextId = 80;
+    const rows = [makeRow({ id: 80, label: "Anything" })];
+
+    render(<RecurringList rows={rows} excludedIds={new Set()} isCalculatorOpen={false} />);
+
+    expect(screen.queryAllByTestId("status-dot")).toHaveLength(0);
+  });
 });
