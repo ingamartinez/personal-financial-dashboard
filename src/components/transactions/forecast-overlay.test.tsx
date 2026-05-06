@@ -262,7 +262,7 @@ describe("TransactionTable — forecast overlay rendering", () => {
     renderTable([tx]);
     // RecurringBadge renders text "Gym" (truncated label).
     // Both desktop and mobile views render the badge — getAllByTitle is intentional.
-    const badges = screen.getAllByTitle("Recurring: Gym");
+    const badges = screen.getAllByTitle("Recurrente: Gym");
     expect(badges.length).toBeGreaterThanOrEqual(1);
   });
 
