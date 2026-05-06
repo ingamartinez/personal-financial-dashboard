@@ -5,7 +5,14 @@ import { Calculator, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { RecurringCalendarGrid } from "./recurring-calendar-grid";
+import { RecurringList } from "./recurring-list";
 import { UpcomingCharges } from "./upcoming-charges";
 import type { AggregationBucket } from "@/lib/fx/aggregate";
 import type { RecurringRow } from "@/app/(app)/recurring/queries";
@@ -373,13 +380,34 @@ export function RecurringCalculator({
         </>
       )}
 
-      {/* Calendar grid — the main listing */}
-      <RecurringCalendarGrid
-        rows={rows}
-        excludedIds={excludedIds}
-        isCalculatorOpen={isOpen}
-        onToggleExcluded={handleToggle}
-      />
+      {/* Accordion: Lista compacta (closed) + Calendario (open) */}
+      <Accordion type="multiple" defaultValue={["calendar"]} className="flex flex-col gap-0">
+        <AccordionItem value="list" className="rounded-lg border px-3">
+          <AccordionTrigger className="text-sm font-semibold">
+            Lista compacta
+            {isOpen && (
+              <span className="text-muted-foreground ml-2 text-xs font-normal">
+                — tocá para excluir
+              </span>
+            )}
+          </AccordionTrigger>
+          <AccordionContent>
+            <RecurringList
+              rows={rows}
+              excludedIds={excludedIds}
+              isCalculatorOpen={isOpen}
+              onToggleExcluded={handleToggle}
+            />
+          </AccordionContent>
+        </AccordionItem>
+
+        <AccordionItem value="calendar" className="mt-2 rounded-lg border px-3">
+          <AccordionTrigger className="text-sm font-semibold">Calendario</AccordionTrigger>
+          <AccordionContent>
+            <RecurringCalendarGrid rows={rows} />
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
 
       {/* Próximos 7 días callout */}
       <UpcomingCharges rows={rows} excludedIds={excludedIds} />
