@@ -130,7 +130,7 @@ describe("RecurringCalculator", () => {
     expect(pills.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("click Calculadora — calculator opens, grid is in calculator mode", async () => {
+  it("click Calculadora — calculator opens, grid is still rendered", async () => {
     const user = userEvent.setup();
     render(
       <RecurringCalculator
@@ -145,7 +145,7 @@ describe("RecurringCalculator", () => {
     // Calculator is open when "Cerrar calculadora" button is visible.
     expect(screen.getByRole("button", { name: /cerrar calculadora/i })).toBeInTheDocument();
 
-    // Grid is still rendered.
+    // Grid is still rendered (calendar accordion open by default).
     expect(screen.getByTestId("recurring-calendar-grid")).toBeInTheDocument();
 
     // Savings lines not shown when none excluded.
@@ -153,7 +153,7 @@ describe("RecurringCalculator", () => {
     expect(screen.queryByText(/ahorrarías/i)).not.toBeInTheDocument();
   });
 
-  it("in calculator mode: clicking a pill toggles exclusion and shows savings", async () => {
+  it("in calculator mode: clicking a list pill toggles exclusion and shows savings", async () => {
     const user = userEvent.setup();
     render(
       <RecurringCalculator
@@ -165,8 +165,11 @@ describe("RecurringCalculator", () => {
 
     await user.click(screen.getByRole("button", { name: /calculadora/i }));
 
-    // Click the first pill to exclude it.
-    const pills = screen.getAllByTestId("sub-pill");
+    // Open the "Lista compacta" accordion item.
+    await user.click(screen.getByRole("button", { name: /lista compacta/i }));
+
+    // Click the first list pill to exclude it.
+    const pills = screen.getAllByTestId("recurring-list-pill");
     await user.click(pills[0]);
 
     // Savings lines appear.
@@ -174,7 +177,7 @@ describe("RecurringCalculator", () => {
     expect(screen.getByText(/ahorrarías/i)).toBeInTheDocument();
   });
 
-  it("in calculator mode: excluded pill gets muted visual state", async () => {
+  it("in calculator mode: excluded list pill gets muted visual state", async () => {
     const user = userEvent.setup();
     render(
       <RecurringCalculator
@@ -186,7 +189,10 @@ describe("RecurringCalculator", () => {
 
     await user.click(screen.getByRole("button", { name: /calculadora/i }));
 
-    const pills = screen.getAllByTestId("sub-pill");
+    // Open the "Lista compacta" accordion item.
+    await user.click(screen.getByRole("button", { name: /lista compacta/i }));
+
+    const pills = screen.getAllByTestId("recurring-list-pill");
     await user.click(pills[0]);
 
     // The clicked pill should now have opacity-50 applied.
@@ -205,8 +211,11 @@ describe("RecurringCalculator", () => {
 
     await user.click(screen.getByRole("button", { name: /calculadora/i }));
 
+    // Open the "Lista compacta" accordion item.
+    await user.click(screen.getByRole("button", { name: /lista compacta/i }));
+
     // Exclude one pill.
-    const pills = screen.getAllByTestId("sub-pill");
+    const pills = screen.getAllByTestId("recurring-list-pill");
     await user.click(pills[0]);
     expect(screen.getByText(/si cancelás/i)).toBeInTheDocument();
 

@@ -25,9 +25,6 @@ import type { PriceHike, RecurringRow } from "@/app/(app)/recurring/queries";
 
 export interface RecurringCalendarGridProps {
   rows: RecurringRow[];
-  excludedIds: Set<number>;
-  isCalculatorOpen: boolean;
-  onToggleExcluded?: (id: number) => void;
   /** Injected for tests — defaults to new Date() */
   today?: Date;
 }
@@ -105,37 +102,15 @@ function SubDetailContent({ row }: { row: RecurringRow }) {
 
 interface PillProps {
   row: RecurringRow;
-  isCalculatorOpen: boolean;
-  isExcluded: boolean;
-  onToggle?: (id: number) => void;
 }
 
-function Pill({ row, isCalculatorOpen, isExcluded, onToggle }: PillProps) {
+function Pill({ row }: PillProps) {
   const pillClass = cn(
     "bg-emerald-500/20 text-emerald-700 dark:bg-emerald-500/30 dark:text-emerald-300",
     "rounded-md px-1.5 py-0.5 text-xs truncate w-full text-left",
     "transition-opacity",
-    isCalculatorOpen && isExcluded && "opacity-50 line-through",
   );
 
-  if (isCalculatorOpen) {
-    // In calculator mode: clicking toggles exclusion, no popover.
-    return (
-      <button
-        type="button"
-        className={pillClass}
-        onClick={() => onToggle?.(row.id)}
-        data-testid="sub-pill"
-        data-excluded={isExcluded ? "true" : "false"}
-        aria-label={`${isExcluded ? "Incluir" : "Excluir"} ${row.label}`}
-        title={row.label}
-      >
-        {row.label}
-      </button>
-    );
-  }
-
-  // Normal mode: click opens detail popover.
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -162,35 +137,13 @@ function Pill({ row, isCalculatorOpen, isExcluded, onToggle }: PillProps) {
 
 interface OverflowChipProps {
   rows: RecurringRow[];
-  isCalculatorOpen: boolean;
-  onToggle?: (id: number) => void;
 }
 
-function OverflowChip({ rows, isCalculatorOpen, onToggle }: OverflowChipProps) {
+function OverflowChip({ rows }: OverflowChipProps) {
   const count = rows.length;
 
   const chipClass =
     "bg-muted text-muted-foreground rounded-md px-1.5 py-0.5 text-xs w-full text-left";
-
-  if (isCalculatorOpen) {
-    // In calculator mode: show a simple "more" indicator — each pill is already visible above.
-    // We still render the overflow chip to toggle them all.
-    return (
-      <button
-        type="button"
-        className={chipClass}
-        data-testid="overflow-chip"
-        onClick={() => {
-          for (const row of rows) {
-            onToggle?.(row.id);
-          }
-        }}
-        title={`Alternar ${count} más`}
-      >
-        +{count} más
-      </button>
-    );
-  }
 
   return (
     <Popover>
@@ -228,20 +181,9 @@ interface DayCellProps {
   today: Date;
   inMonth: boolean;
   subs: RecurringRow[];
-  isCalculatorOpen: boolean;
-  excludedIds: Set<number>;
-  onToggle?: (id: number) => void;
 }
 
-function DayCell({
-  date,
-  today,
-  inMonth,
-  subs,
-  isCalculatorOpen,
-  excludedIds,
-  onToggle,
-}: DayCellProps) {
+function DayCell({ date, today, inMonth, subs }: DayCellProps) {
   const isToday = isSameDay(date, today);
   const dayNum = getDate(date);
 
@@ -271,21 +213,9 @@ function DayCell({
       {inMonth && subs.length > 0 && (
         <div className="flex flex-col gap-0.5">
           {subs.slice(0, MAX_PILLS).map((row) => (
-            <Pill
-              key={row.id}
-              row={row}
-              isCalculatorOpen={isCalculatorOpen}
-              isExcluded={excludedIds.has(row.id)}
-              onToggle={onToggle}
-            />
+            <Pill key={row.id} row={row} />
           ))}
-          {subs.length > MAX_PILLS && (
-            <OverflowChip
-              rows={subs.slice(MAX_PILLS)}
-              isCalculatorOpen={isCalculatorOpen}
-              onToggle={onToggle}
-            />
-          )}
+          {subs.length > MAX_PILLS && <OverflowChip rows={subs.slice(MAX_PILLS)} />}
         </div>
       )}
     </div>
@@ -296,13 +226,7 @@ function DayCell({
 // Main grid component
 // ---------------------------------------------------------------------------
 
-export function RecurringCalendarGrid({
-  rows,
-  excludedIds,
-  isCalculatorOpen,
-  onToggleExcluded,
-  today: todayProp,
-}: RecurringCalendarGridProps) {
+export function RecurringCalendarGrid({ rows, today: todayProp }: RecurringCalendarGridProps) {
   // Stable today reference — avoids re-creating on every render when todayProp is undefined.
   const today = useMemo(() => todayProp ?? new Date(), [todayProp]);
 
@@ -361,9 +285,6 @@ export function RecurringCalendarGrid({
               today={today}
               inMonth={inMonth}
               subs={subs}
-              isCalculatorOpen={isCalculatorOpen}
-              excludedIds={excludedIds}
-              onToggle={onToggleExcluded}
             />
           );
         })}
