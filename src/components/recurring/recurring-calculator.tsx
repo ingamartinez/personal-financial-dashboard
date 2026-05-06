@@ -472,6 +472,7 @@ export function RecurringCalculator({
               rows={rows}
               excludedIds={excludedIds}
               isCalculatorOpen={isOpen}
+              slotStatusById={slotStatusByRecurringId}
               onToggleExcluded={handleToggle}
             />
           </AccordionContent>

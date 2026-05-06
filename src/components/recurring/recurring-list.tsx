@@ -4,6 +4,14 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { PriceHike, RecurringRow } from "@/app/(app)/recurring/queries";
+import type { UpcomingStatus } from "@/lib/recurring/upcoming";
+
+const STATUS_DOT_CLASS: Record<UpcomingStatus, string | null> = {
+  matched: "bg-emerald-600",
+  upcoming: "bg-sky-500",
+  overdue: "bg-rose-600",
+  dismissed: null,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,10 +78,11 @@ interface CompactPillProps {
   row: RecurringRow;
   isCalculatorOpen: boolean;
   isExcluded: boolean;
+  status?: UpcomingStatus;
   onToggle?: (id: number) => void;
 }
 
-function CompactPill({ row, isCalculatorOpen, isExcluded, onToggle }: CompactPillProps) {
+function CompactPill({ row, isCalculatorOpen, isExcluded, status, onToggle }: CompactPillProps) {
   const absDisplayCents = absCents(row.displayAmount.cents);
   const amountStr = formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD");
 
@@ -84,15 +93,24 @@ function CompactPill({ row, isCalculatorOpen, isExcluded, onToggle }: CompactPil
     isCalculatorOpen && isExcluded && "opacity-50",
   );
 
+  const dotClass = status ? STATUS_DOT_CLASS[status] : null;
+
   const label = (
     <>
       <div className="flex items-baseline gap-1.5">
         <span className="text-muted-foreground w-5 shrink-0 text-right text-[11px] font-semibold tabular-nums">
           {row.dayOfMonth}
         </span>
+        {dotClass && (
+          <span
+            className={cn("size-2 shrink-0 self-center rounded-full", dotClass)}
+            data-testid="status-dot"
+            aria-hidden="true"
+          />
+        )}
         <span
           className={cn(
-            "truncate text-xs leading-tight font-medium",
+            "min-w-0 truncate text-xs leading-tight font-medium",
             isCalculatorOpen && isExcluded && "line-through",
           )}
         >
@@ -147,6 +165,7 @@ export interface RecurringListProps {
   rows: RecurringRow[];
   excludedIds: Set<number>;
   isCalculatorOpen: boolean;
+  slotStatusById?: Record<number, UpcomingStatus>;
   onToggleExcluded?: (id: number) => void;
 }
 
@@ -154,6 +173,7 @@ export function RecurringList({
   rows,
   excludedIds,
   isCalculatorOpen,
+  slotStatusById,
   onToggleExcluded,
 }: RecurringListProps) {
   if (rows.length === 0) return null;
@@ -169,6 +189,7 @@ export function RecurringList({
           row={row}
           isCalculatorOpen={isCalculatorOpen}
           isExcluded={excludedIds.has(row.id)}
+          status={slotStatusById?.[row.id]}
           onToggle={onToggleExcluded}
         />
       ))}
