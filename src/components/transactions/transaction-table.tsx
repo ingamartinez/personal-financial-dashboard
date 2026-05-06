@@ -6,6 +6,7 @@ import {
   ArchiveIcon,
   ArrowLeftRightIcon,
   CalendarClockIcon,
+  CheckCircle2,
   ReceiptTextIcon,
   RefreshCwIcon,
   UserIcon,
@@ -115,16 +116,24 @@ function InstallmentsBadge({ total }: { total: number }) {
 }
 
 // #621: badge shown when a tx is linked to a recurring.
+// #788: CheckCircle2 icon (emerald) added inline to signal matched status.
 function RecurringBadge({ label }: { label: string | null }) {
+  const tooltipText = label ? `Recurrente: ${label}` : "Recurrente";
   return (
-    <Badge
-      variant="outline"
-      className="shrink-0 gap-1 border-violet-300 text-[10px] font-medium tracking-wide text-violet-700 uppercase dark:border-violet-700 dark:text-violet-300"
-      title={`Recurring: ${label ?? "linked"}`}
+    <span
+      className="inline-flex shrink-0 items-center gap-1"
+      title={tooltipText}
+      data-testid="recurring-badge"
     >
-      <RefreshCwIcon className="size-2.5" />
-      {label ? <span className="max-w-[80px] truncate">{label}</span> : "Recurring"}
-    </Badge>
+      <CheckCircle2 className="size-3.5 text-emerald-600" aria-hidden="true" />
+      <Badge
+        variant="outline"
+        className="gap-1 border-violet-300 text-[10px] font-medium tracking-wide text-violet-700 uppercase dark:border-violet-700 dark:text-violet-300"
+      >
+        <RefreshCwIcon className="size-2.5" />
+        {label ? <span className="max-w-[80px] truncate">{label}</span> : "Recurring"}
+      </Badge>
+    </span>
   );
 }
 

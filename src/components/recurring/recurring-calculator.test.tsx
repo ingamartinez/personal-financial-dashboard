@@ -269,3 +269,135 @@ describe("RecurringCalculator", () => {
     expect(screen.getByText(/no hay gastos fijos activos/i)).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests — #788: MonthLegend counts and sums
+// ---------------------------------------------------------------------------
+
+describe("RecurringCalculator — #788 month legend", () => {
+  const ROW_A = makeRow({
+    id: 10,
+    label: "Netflix",
+    dayOfMonth: 5,
+    nextOccurrence: "2026-05-05",
+    displayAmount: { cents: BigInt(-4900), currency: "COP", converted: false, appliedTrm: null },
+    displayAmountAbsCents: BigInt(4900),
+  });
+  const ROW_B = makeRow({
+    id: 11,
+    label: "Spotify",
+    dayOfMonth: 10,
+    nextOccurrence: "2026-05-10",
+    displayAmount: { cents: BigInt(-2600), currency: "COP", converted: false, appliedTrm: null },
+    displayAmountAbsCents: BigInt(2600),
+  });
+  const ROW_C = makeRow({
+    id: 12,
+    label: "HBO Max",
+    dayOfMonth: 15,
+    nextOccurrence: "2026-05-15",
+    displayAmount: { cents: BigInt(-1500), currency: "COP", converted: false, appliedTrm: null },
+    displayAmountAbsCents: BigInt(1500),
+  });
+
+  const TOTALS: AggregationBucket[] = [
+    { currency: "COP", cents: BigInt(-9000), txCount: 3, missingTrmCount: 0, convertedCount: 0 },
+  ];
+
+  it("shows legend with correct pending and paid counts when statuses are mixed", () => {
+    const slotStatusByRecurringId = {
+      10: "matched" as const, // paid
+      11: "upcoming" as const, // pending
+      12: "overdue" as const, // pending
+    };
+
+    render(
+      <RecurringCalculator
+        rows={[ROW_A, ROW_B, ROW_C]}
+        monthlyTotals={TOTALS}
+        annualTotals={TOTALS}
+        slotStatusByRecurringId={slotStatusByRecurringId}
+      />,
+    );
+
+    const legend = screen.getByTestId("month-legend");
+    expect(legend).toBeInTheDocument();
+
+    // Pending: 2 items (upcoming + overdue)
+    expect(legend.textContent).toMatch(/\(2\) te falta/);
+    // Paid: 1 item
+    expect(legend.textContent).toMatch(/\(1\) pagado/);
+  });
+
+  it("shows only pending when all are upcoming/overdue", () => {
+    const slotStatusByRecurringId = {
+      10: "upcoming" as const,
+      11: "overdue" as const,
+    };
+
+    render(
+      <RecurringCalculator
+        rows={[ROW_A, ROW_B]}
+        monthlyTotals={TOTALS}
+        annualTotals={TOTALS}
+        slotStatusByRecurringId={slotStatusByRecurringId}
+      />,
+    );
+
+    const legend = screen.getByTestId("month-legend");
+    expect(legend.textContent).toMatch(/\(2\) te falta/);
+    expect(legend.textContent).not.toMatch(/pagado/);
+  });
+
+  it("shows only paid when all are matched", () => {
+    const slotStatusByRecurringId = {
+      10: "matched" as const,
+      11: "matched" as const,
+    };
+
+    render(
+      <RecurringCalculator
+        rows={[ROW_A, ROW_B]}
+        monthlyTotals={TOTALS}
+        annualTotals={TOTALS}
+        slotStatusByRecurringId={slotStatusByRecurringId}
+      />,
+    );
+
+    const legend = screen.getByTestId("month-legend");
+    expect(legend.textContent).not.toMatch(/te falta/);
+    expect(legend.textContent).toMatch(/\(2\) pagado/);
+  });
+
+  it("excludes dismissed from legend", () => {
+    const slotStatusByRecurringId = {
+      10: "dismissed" as const,
+      11: "dismissed" as const,
+    };
+
+    render(
+      <RecurringCalculator
+        rows={[ROW_A, ROW_B]}
+        monthlyTotals={TOTALS}
+        annualTotals={TOTALS}
+        slotStatusByRecurringId={slotStatusByRecurringId}
+      />,
+    );
+
+    // With only dismissed, legend renders nothing
+    expect(screen.queryByTestId("month-legend")).not.toBeInTheDocument();
+  });
+
+  it("does not render legend when slotStatusByRecurringId is empty", () => {
+    render(
+      <RecurringCalculator
+        rows={[ROW_A, ROW_B]}
+        monthlyTotals={TOTALS}
+        annualTotals={TOTALS}
+        slotStatusByRecurringId={{}}
+      />,
+    );
+
+    expect(screen.queryByTestId("month-legend")).not.toBeInTheDocument();
+  });
+});
