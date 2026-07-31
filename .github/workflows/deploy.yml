@@ -142,10 +142,29 @@ jobs:
         # redis.service. Idempotent: a healthy droplet hits the no-op path.
         run: |
           set -eu
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            infra/systemd/redis.service "$DEPLOY_USER@$DEPLOY_HOST:/tmp/redis-findash.service"
+          # #795: stage in /home/deploy/staging (0700, under deploy's
+          # 0750-with-empty-group home), NOT /tmp. /tmp is world-writable and
+          # this droplet has other local principals with a real /tmp view
+          # outside any PrivateTmp sandbox (the cron backup jobs run as
+          # findash/photoshowcase/zyeth — cron does not apply PrivateTmp=),
+          # any of which could have pre-created the staged path and rewritten
+          # it before the privileged install. See
+          # infra/sudoers/findash-redis-provision for the full write-up.
+          #
+          # The path is spelled out literally rather than derived from $HOME
+          # because sudo matches the rule against the expanded argv — it has
+          # to be character-identical to the path pinned in the sudoers file.
+          # The rule names `deploy` specifically, so a DEPLOY_USER whose home
+          # is not /home/deploy fails closed at the sudo call instead of
+          # silently installing from an unpinned path.
+          STAGED=/home/deploy/staging/redis-findash.service
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'install -d -m 0700 /home/deploy/staging'
+          scp -i ~/.ssh/deploy_key \
+            infra/systemd/redis.service "$DEPLOY_USER@$DEPLOY_HOST:$STAGED"
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" '
             set -eu
+            STAGED=/home/deploy/staging/redis-findash.service
             # Install redis-server package only if missing. -y -qq is enough
             # for the no-interaction case (no debconf prompts on this package);
             # passing DEBIAN_FRONTEND through sudo would require an env_keep
@@ -160,15 +179,18 @@ jobs:
             sudo -n systemctl disable --now redis-server.service 2>/dev/null || true
             # Replace our unit only if the on-disk copy differs from the repo.
             # Avoids gratuitous redis restarts on every deploy.
-            if ! sudo -n diff -q /tmp/redis-findash.service /etc/systemd/system/redis.service >/dev/null 2>&1; then
+            # /etc/systemd/system/redis.service is 0644 root:root, so this
+            # comparison needs no sudo grant at all (#795). `install` — not
+            # `mv` — states mode and ownership explicitly instead of
+            # inheriting them from the staged inode.
+            if ! cmp -s "$STAGED" /etc/systemd/system/redis.service; then
               echo "redis unit changed — installing"
-              sudo -n mv /tmp/redis-findash.service /etc/systemd/system/redis.service
+              sudo -n install -m 0644 -o root -g root "$STAGED" /etc/systemd/system/redis.service
               sudo -n systemctl daemon-reload
               sudo -n systemctl enable redis.service
               sudo -n systemctl restart redis.service
-            else
-              rm -f /tmp/redis-findash.service
             fi
+            rm -f "$STAGED"
             # Ensure active (covers fresh-install case + crash recovery).
             sudo -n systemctl is-active --quiet redis.service || sudo -n systemctl start redis.service
             # Verify reachable.
