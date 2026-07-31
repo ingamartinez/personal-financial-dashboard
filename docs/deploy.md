@@ -230,8 +230,11 @@ ssh root@147.182.138.79 'sudo -u findash psql -d findash'
 # Check disk usage
 ssh root@147.182.138.79 'df -h'
 
-# Check app memory
-ssh root@147.182.138.79 'systemctl status findash | grep Memory'
+# Check app memory against its cap (see § "Memory budget" below)
+ssh root@147.182.138.79 'systemctl show findash.service -p MemoryCurrent -p MemoryHigh -p MemoryMax'
+
+# Was findash ever OOM-killed by its own cgroup?
+ssh root@147.182.138.79 'journalctl -u findash | grep -i "memory\|oom"'
 
 # List releases on disk
 ssh root@147.182.138.79 'ls -lth /srv/findash/app/releases/'
@@ -245,6 +248,153 @@ ssh root@147.182.138.79 'sudo -u findash /usr/local/bin/findash-backup.sh'
 # Trigger backup + R2 sync now (skip Sunday check)
 ssh root@147.182.138.79 'sudo -u findash /usr/local/bin/findash-backup.sh --force-r2'
 ```
+
+---
+
+## 7b. Memory budget
+
+**Decided 2026-07-30 for issue #796.** Re-do this arithmetic before adding a
+service to this droplet, resizing it, or changing any cap below.
+
+The droplet is 2 GB (1967 MB usable) with a 2 GB swapfile, and it is **shared**:
+findash, photoshowcase and zyeth are three separate Bun apps, plus postgres,
+redis, caddy and fail2ban. Three nightly `/etc/cron.d` backup jobs run at
+03:15 / 03:30 / 03:45.
+
+### The rule
+
+> A **global** OOM must not be reachable by `findash` growth alone.
+
+Global OOM is the bad outcome because the kernel picks its victim by score —
+it may kill `photoshowcase`, which was inside its own limit the whole time.
+A per-cgroup limit turns that into a contained, attributable kill of the
+service that actually misbehaved, with `Restart=always` bringing it back.
+
+### Measured, 2026-07-30/31
+
+`findash` had been up 2.5 days. Anon RSS unless noted.
+
+| Consumer                       | Measured  | Budget  | Bounded by                |
+| ------------------------------ | --------- | ------- | ------------------------- |
+| `findash`                      | 355 MiB\* | 768 MiB | `MemoryMax` (this repo)   |
+| `photoshowcase`                | 290 MB    | 768 MiB | `MemoryMax` (other repo)  |
+| `postgresql@17`                | 57 MB     | 192 MB  | unbounded                 |
+| `zyeth-backend`                | 55 MB     | 96 MB   | unbounded                 |
+| `fail2ban`                     | 45 MB     | 64 MB   | unbounded                 |
+| `caddy`                        | 34 MB     | 64 MB   | unbounded                 |
+| `systemd-journald`             | 29 MB     | 48 MB   | `journald.conf`           |
+| OS (systemd, multipathd, cron) | ~62 MB    | 96 MB   | —                         |
+| `redis`                        | 16 MB     | 64 MB   | unbounded — see below     |
+| interactive SSH / deploy       | 0–190 MB  | 96 MB   | —                         |
+| nightly backup crons (3×)      | 0 at peak | 96 MB   | off-peak, 03:15–03:45     |
+
+\* `findash` charge splits as anon 303 MiB + file 52 MiB, **plus 265 MiB
+parked in swap**. Its true anon working set is therefore ~568 MiB, and its
+`memory.peak` over that 2.5-day uptime was **763 MiB**.
+
+Non-app subtotal at budget: **816 MB**. Leaves 1151 MB for the two big apps.
+
+### Why 768M and not 512M
+
+The instantaneous 375 MiB reading is misleading — `findash` holds **265 MB of
+the droplet's 318 MB of swap in use** (photoshowcase holds 0). Those are cold
+pages at genuinely zero pressure (`memory.pressure` avg10/avg60/avg300 all
+`0.00`), so this is evidence of a **large working set, not live thrashing**.
+
+Sizing a cap on 375 MiB would have been a mistake: `memory.peak` says 763 MiB.
+A 512M `MemoryMax` would have OOM-killed findash repeatedly over the same 2.5
+days — trading a rare global OOM for a frequent single-service one. That is
+not a win.
+
+So: `MemoryHigh=640M` as the working brake (reclaim + swap, throttle, no kill)
+and `MemoryMax=768M` as the backstop.
+
+### Checking the rule
+
+**Findash growth alone** — everything else at measured, findash at its cap:
+
+```
+805 MB (findash at MemoryMax 768 MiB)
++ 674 MB (all other consumers, measured: 1029 total − 355 findash)
+= 1479 MB  of 1967 MB  →  488 MB free.  Global OOM unreachable. ✓
+```
+
+**Sum of independent worst cases** — both apps pinned at cap, every other
+service at its padded ceiling:
+
+```
+805 MB (findash max) + 805 MB (photoshowcase at today's 768 MiB) + 816 MB
+= 2426 MB  →  459 MB over.
+```
+
+That sum does not close, and it is why **symmetric is not the same as
+correct**: two 768 MiB caps on a 1967 MB box is not a budget, it is two
+numbers that happen to match. It is also not a realistic scenario — it adds up
+independent worst cases that do not co-occur, and the 2 GB swapfile absorbs
+the residual. But it is the reason for the recommendation below.
+
+### Recommendation for photo-showcase (other repo — not changed from here)
+
+`infra/systemd/photoshowcase.service` lives in the **photo-showcase** repo.
+Its `MemoryMax=768M` should come down to **`384M`**, with `MemoryHigh=320M`.
+
+Rationale: photoshowcase measures 290 MB RSS and holds **zero** swap. Its
+768 MiB cap is ~2.6× its actual usage and was never reachable — a nominal cap,
+not a budget. At 384M it keeps ~1.4× headroom over measured, the same ratio
+findash gets, and the worst-case sum closes:
+
+```
+805 MB (findash) + 403 MB (photoshowcase at 384 MiB) + 816 MB = 2024 MB
+```
+
+— 57 MB over on paper, inside the swapfile, and with both `MemoryHigh` brakes
+engaging long before either cap. findash gets the larger share because it
+measurably *is* the larger app (355 MiB + 265 MiB swapped vs 290 MB), which
+inverts the backwards asymmetry #796 was filed about.
+
+### Other uncapped services
+
+`caddy` (34 MB) and `postgresql` (57 MB, `shared_buffers` pinned at 128 MB)
+are not a risk at these sizes and are left alone.
+
+`redis` is different and deserves a follow-up: it measures 16 MB, but it is
+the **BullMQ queue backend**, so a job backlog is a genuinely unbounded growth
+vector. The right lever there is `maxmemory` + `maxmemory-policy noeviction`
+in redis config — **not** a cgroup `MemoryMax`, since an OOM-kill of the queue
+backend silently loses jobs whereas `noeviction` makes producers fail loudly.
+Out of scope for #796.
+
+### ⚠️ `findash.service` is NOT installed by the CD workflow
+
+`infra/bootstrap.sh` installs this unit **once**, on a fresh droplet. Nothing
+re-installs it afterwards — the deploy workflow only ever runs
+`systemctl restart findash.service`. `redis.service` *is* re-installed on every
+deploy; `findash.service` is not.
+
+So **editing `infra/systemd/findash.service` in this repo changes nothing on
+the running box.** It has to be installed by hand:
+
+```bash
+scp infra/systemd/findash.service root@147.182.138.79:/root/findash.service.new
+ssh root@147.182.138.79 '
+  diff -u /etc/systemd/system/findash.service /root/findash.service.new
+  cp -a /etc/systemd/system/findash.service /root/findash.service.bak-$(date +%Y%m%d)
+  install -m 0644 -o root -g root /root/findash.service.new /etc/systemd/system/findash.service
+  systemctl daemon-reload'   # cgroup props apply live, no restart needed
+```
+
+This drift is real and was observed: when #796 was applied on 2026-07-31 the
+live unit was still the 2026-04-18 copy, missing the `TimeoutStopSec` 30→10 and
+`Description` changes that shipped with #185 months earlier. Diff before you
+install. Making CD install this unit the way it installs `redis.service`
+deserves its own issue.
+
+### Related
+
+The 305 → 375 → 763 MiB growth pattern in `findash` itself is not explained by
+this issue and warrants its own investigation. Note also that a droplet resize
+is **downstream** of this cap, not a substitute for it — a resize costs money
+every month to paper over an unbounded process.
 
 ---
 

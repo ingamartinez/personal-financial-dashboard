@@ -27,6 +27,31 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=findash
 
+# Memory budget (#796). Full arithmetic in docs/deploy.md § "Memory budget".
+#
+# This droplet is 2 GB shared with photoshowcase, zyeth, postgres, redis,
+# caddy and fail2ban. Until #796 this unit had no bound at all while
+# photoshowcase did — so the service that could take the whole box down was
+# the one with no limit, and the kernel's global OOM killer could pick
+# photoshowcase as the victim for findash's growth.
+#
+# MemoryHigh is the working brake: past it the kernel reclaims and pushes
+# cold pages to swap, throttling this cgroup instead of killing it.
+# MemoryMax is the backstop that makes a *global* OOM unreachable by findash
+# growth alone — findash hits its own cgroup limit first, gets killed alone
+# and attributably, and Restart=always brings it back.
+#
+# The numbers are sized on the observed peak (763 MiB over a 2.5-day uptime),
+# NOT on the instantaneous 375 MiB — a "prudent" 512M cap would have traded a
+# rare global OOM for a findash kill every couple of days.
+#
+# MemorySwapMax is deliberately left unbounded. findash legitimately parks
+# ~265 MiB of cold anon pages in swap at zero pressure (memory.pressure
+# avg10/60/300 all 0.00); capping swap would drag those back into RAM and
+# make things strictly worse.
+MemoryHigh=640M
+MemoryMax=768M
+
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true
