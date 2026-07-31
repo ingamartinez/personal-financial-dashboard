@@ -253,15 +253,80 @@ jobs:
             sudo -n -u findash /usr/local/bin/bun scripts/backfill-atm-channel.ts
           "
 
+      # ---------------------------------------------------------------------
+      # #799. Everything below this line is rollback-protected.
+      #
+      # `prev` MUST be captured before the first mutation, not inside the flip
+      # step. The rollback step is gated on this output being non-empty, so
+      # capturing it later would make rollback unreachable in the window where
+      # the unit had already been replaced but the symlink had not — that is
+      # the residual bug photo-showcase hit as its task #112 after doing the
+      # same reorder. Capture first, mutate second.
+      - name: Capture rollback state
+        id: prevstate
+        run: |
+          set -eu
+          PREV=$(ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "readlink '$APP_ROOT/app/current' 2>/dev/null || true")
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          echo "previous release: ${PREV:-<none>}"
+          # Snapshot the live unit so rollback can restore it byte-for-byte.
+          # Staged under the deploy-only dir, never /tmp — see #795.
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" '
+            set -eu
+            install -d -m 0700 /home/deploy/staging
+            cp /etc/systemd/system/findash.service \
+               /home/deploy/staging/findash.service.prev
+          '
+
+      - name: Install findash unit
+        # Until #799 nothing re-installed this unit after bootstrap.sh laid it
+        # down on a fresh droplet — CD only ever restarted the service. The
+        # live copy drifted for months (it was still the 2026-04-18 file,
+        # missing the TimeoutStopSec change from #185), and the #796 memory
+        # caps had to be hand-placed, which meant the protection against a
+        # global OOM was not reproducible from this repo.
+        #
+        # Runs BEFORE the symlink flip so the restart in that step picks up
+        # the new unit, and so a bad unit fails the deploy while the previous
+        # release is still serving.
+        run: |
+          set -eu
+          STAGED=/home/deploy/staging/findash.service
+          scp -i ~/.ssh/deploy_key \
+            infra/systemd/findash.service "$DEPLOY_USER@$DEPLOY_HOST:$STAGED"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" '
+            set -eu
+            STAGED=/home/deploy/staging/findash.service
+            LIVE=/etc/systemd/system/findash.service
+            # 0644 root:root, so the comparison needs no sudo grant.
+            if cmp -s "$STAGED" "$LIVE"; then
+              echo "findash unit already matches the repo — no-op"
+            else
+              echo "findash unit differs from the repo — installing"
+              diff -u "$LIVE" "$STAGED" || true
+              sudo -n install -m 0644 -o root -g root "$STAGED" "$LIVE"
+              sudo -n systemctl daemon-reload
+            fi
+            # Drift gate. This is the part that matters: it converts silent
+            # divergence into a red build instead of a surprise months later.
+            if ! cmp -s "$STAGED" "$LIVE"; then
+              echo "FATAL: installed unit does not match infra/systemd/findash.service"
+              diff -u "$LIVE" "$STAGED" || true
+              exit 1
+            fi
+            echo "unit verified byte-identical to the repo"
+            # Surface the memory directives from #796 so a deploy log is
+            # evidence they are actually in force, not merely committed.
+            systemctl show findash.service -p MemoryHigh -p MemoryMax
+          '
+
       - name: Flip symlink + restart findash
         id: flip
         env:
           GIT_SHA: ${{ steps.sha.outputs.sha }}
         run: |
           set -eu
-          PREV=$(ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "readlink '$APP_ROOT/app/current' 2>/dev/null || true")
-          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
             set -eu
             sudo -n -u findash ln -sfn '$APP_ROOT/app/releases/$GIT_SHA' '$APP_ROOT/app/current'
@@ -285,14 +350,28 @@ jobs:
           exit 1
 
       - name: Rollback on failure
-        if: failure() && steps.flip.outputs.prev != ''
+        # Gated on the capture step, NOT on the flip step (#799). Gating on
+        # flip left the unit-install window unprotected: a failure after the
+        # unit was replaced but before the symlink moved skipped rollback
+        # entirely and left unit and release skewed.
+        #
+        # Restores the unit first, then the symlink, then restarts once — so
+        # the single restart brings up the old release under the old unit.
+        if: failure() && steps.prevstate.outputs.prev != ''
         env:
-          PREV: ${{ steps.flip.outputs.prev }}
+          PREV: ${{ steps.prevstate.outputs.prev }}
         run: |
           set -eu
           echo "rolling back to $PREV"
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
             set -eu
+            PREV_UNIT=/home/deploy/staging/findash.service.prev
+            LIVE=/etc/systemd/system/findash.service
+            if [ -f \"\$PREV_UNIT\" ] && ! cmp -s \"\$PREV_UNIT\" \"\$LIVE\"; then
+              echo 'restoring previous findash unit'
+              sudo -n install -m 0644 -o root -g root \"\$PREV_UNIT\" \"\$LIVE\"
+              sudo -n systemctl daemon-reload
+            fi
             sudo -n -u findash ln -sfn '$PREV' '$APP_ROOT/app/current'
             sudo -n systemctl restart findash.service
           "

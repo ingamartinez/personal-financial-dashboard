@@ -1,0 +1,73 @@
+# Findash — allow the `deploy` user to install findash.service from CD.
+#
+# Install to /etc/sudoers.d/findash-unit-install, mode 0440, owned root:root.
+# Validate with `visudo -c -f` BEFORE moving it into place — a syntax error in
+# this directory locks sudo for everyone on the box.
+#
+# Issue: ingamartinez/personal-financial-dashboard#799
+#
+# ---------------------------------------------------------------------------
+# BE PLAIN ABOUT WHAT THIS GRANT IS
+# ---------------------------------------------------------------------------
+# It is root-equivalent for `deploy`. `deploy` controls the contents of the
+# unit installed below and already holds `systemctl restart findash.service`
+# (see findash-deploy in this same directory), so it can run an arbitrary
+# ExecStart= as root. The literal paths bound WHICH file gets written, not
+# what can be put inside it.
+#
+# This is NOT a new power. /etc/sudoers.d/findash-deploy already grants
+# `deploy ALL=(findash) NOPASSWD: ALL`, and findash-redis-provision already
+# grants the same install-a-unit-as-root pattern for redis.service. The real
+# enforcement boundary is PR review of infra/systemd/findash.service, branch
+# protection on `main`, custody of the DEPLOY_SSH_KEY secret, and who may
+# dispatch the Deploy workflow — not sudoers narrowness.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS AT ALL (#799)
+# ---------------------------------------------------------------------------
+# Before #799 nothing re-installed findash.service after infra/bootstrap.sh
+# laid it down on a fresh droplet. CD only ran `systemctl restart`. The repo
+# copy and the live file drifted silently for months — the live unit was still
+# the 2026-04-18 bootstrap copy, missing the TimeoutStopSec=10 change that
+# merged with #185.
+#
+# That made the #796 memory caps (MemoryHigh=640M / MemoryMax=768M) a
+# hand-placed artifact rather than something reproducible from this repo:
+# reprovisioning the droplet, re-running bootstrap.sh, or assuming a deploy
+# syncs the unit would all have produced a machine without them.
+#
+# ---------------------------------------------------------------------------
+# WHY THE STAGING PATHS ARE UNDER /home/deploy AND NOT /tmp
+# ---------------------------------------------------------------------------
+# Same reason as findash-redis-provision — see that file for the full
+# write-up. Short version: /tmp is drwxrwxrwt and this droplet has other local
+# principals with a real /tmp view outside any PrivateTmp sandbox (the
+# /etc/cron.d backup jobs run as findash, photoshowcase and zyeth; cron does
+# not apply PrivateTmp=). Any of them could pre-create the staged path and
+# rewrite it before the privileged install, getting root to install their
+# content. /home/deploy is 0750 with an empty `deploy` group and
+# /home/deploy/staging is 0700, so only `deploy` and root can traverse it.
+#
+# `install -m 0644 -o root -g root` rather than `mv`: mode and ownership are
+# stated explicitly instead of inherited from the staged inode.
+#
+# No sudo grant for reading or comparing the live unit — it is 0644 root:root,
+# so the pipeline's drift gate uses a plain unprivileged `cmp -s`.
+#
+# ---------------------------------------------------------------------------
+# Two source paths, both literal, no wildcards:
+#
+#   findash.service       — the repo copy, scp'd by the "Install findash unit"
+#                           step in .github/workflows/deploy.yml.
+#   findash.service.prev  — a snapshot of the live unit taken by the "Capture
+#                           rollback state" step BEFORE any mutation, so
+#                           "Rollback on failure" can restore it byte-for-byte.
+#
+# The .prev grant is what makes the unit-install window rollback-safe. Without
+# it a failed deploy could leave a new unit paired with an old release.
+#
+# /usr/bin/systemctl is the same binary the sibling findash-deploy file
+# references as /bin/systemctl (/bin -> /usr/bin, Ubuntu 24.04 usrmerge).
+deploy ALL=(root) NOPASSWD: /usr/bin/install -m 0644 -o root -g root /home/deploy/staging/findash.service /etc/systemd/system/findash.service
+deploy ALL=(root) NOPASSWD: /usr/bin/install -m 0644 -o root -g root /home/deploy/staging/findash.service.prev /etc/systemd/system/findash.service
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
