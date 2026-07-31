@@ -1,0 +1,84 @@
+# Findash — allow the `deploy` user to provision Redis on the droplet.
+#
+# Install to /etc/sudoers.d/findash-redis-provision, mode 0440, owned root:root.
+# Validate with `visudo -c -f` BEFORE moving it into place — a syntax error in
+# this directory locks sudo for everyone.
+#
+# Issues: ingamartinez/personal-financial-dashboard#603 (original grant),
+#         ingamartinez/personal-financial-dashboard#795 (/tmp staging fix)
+#
+# ---------------------------------------------------------------------------
+# BE PLAIN ABOUT WHAT THIS GRANT IS
+# ---------------------------------------------------------------------------
+# It is root-equivalent for `deploy`, full stop. `deploy` controls the contents
+# of the unit file installed below, and `deploy` also holds
+# `systemctl restart redis.service` (line further down) — so it can run an
+# arbitrary ExecStart= as root on the next restart. The literal source and
+# destination paths bound WHICH file gets written, not what a hostile or buggy
+# `deploy` can put inside it. They shrink the blast radius of a `deploy` that
+# mistypes a path, not of a `deploy` that is compromised.
+#
+# The real enforcement boundary is PR review of infra/systemd/redis.service,
+# branch protection on `main`, custody of the DEPLOY_SSH_KEY secret, and who
+# may dispatch the Deploy workflow — not sudoers narrowness. This is also not
+# a new power: /etc/sudoers.d/findash-deploy already grants
+# `deploy ALL=(findash) NOPASSWD: ALL`.
+#
+# ---------------------------------------------------------------------------
+# WHY THE STAGING PATH IS /home/deploy/staging AND NOT /tmp (#795)
+# ---------------------------------------------------------------------------
+# The previous version of this file staged the unit at
+# /tmp/redis-findash.service and installed it with `mv`. /tmp is
+# drwxrwxrwt, and this droplet hosts other local principals with a real /tmp
+# view outside any PrivateTmp sandbox:
+#
+#   findash (uid 1000), postgres (109), deploy (1001)  — interactive shells
+#   photoshowcase (997), zyeth (995)                    — cron only
+#
+# The cron exposure is /etc/cron.d/{findash,photoshowcase,zyeth}-backup; cron
+# does not apply PrivateTmp=. The findash/photoshowcase/zyeth *service units*
+# do set PrivateTmp=true and were never the exposure — their cron-run backup
+# scripts and any interactive login were.
+#
+# Any of those principals could pre-create /tmp/redis-findash.service (or a
+# symlink to a file they own), let the pipeline write into that inode, then
+# rewrite the contents in the window before the privileged install — and root
+# would install an attacker-authored unit. CWE-377. The sticky bit does not
+# help: it blocks unlink/rename by non-owners, which that attack never needs.
+#
+# /home/deploy is 0750 with an EMPTY `deploy` group, and
+# /home/deploy/staging is 0700 — so only `deploy` and root can traverse it.
+# That directory permission, not the /tmp sticky bit, is what actually
+# excludes the principals above. This mirrors the fix already live in
+# /etc/sudoers.d/photoshowcase-unit-install (photo-showcase task #102).
+#
+# `install -m 0644 -o root -g root` replaces `mv`: mode and ownership are
+# stated explicitly rather than inherited from whatever inode happened to be
+# at the source path.
+#
+# There is deliberately NO sudo grant for the pre-flight comparison. The old
+# rule needed `sudo diff -q` and, worse, pointed that diff at the same
+# attacker-writable /tmp path it later installed from — so it could not have
+# detected the swap anyway. /etc/systemd/system/redis.service is 0644
+# root:root, so `deploy` reads it with a plain unprivileged `cmp -s`. One
+# fewer root grant.
+#
+# ---------------------------------------------------------------------------
+# The staged file is written by the "Provision Redis (idempotent)" step in
+# .github/workflows/deploy.yml via a plain (non-sudo) scp as the deploy user,
+# so no sudo grant is needed for that half. Changing the path here without
+# changing that step breaks provisioning.
+#
+# /usr/bin/systemctl is the same binary the sibling findash-deploy file
+# references as /bin/systemctl (/bin -> /usr/bin, Ubuntu 24.04 usrmerge).
+#
+# Tight allowlist, no wildcards. Each command is fully literal.
+deploy ALL=(root) NOPASSWD: /usr/bin/apt-get update -qq
+deploy ALL=(root) NOPASSWD: /usr/bin/apt-get install -y -qq redis-server
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl disable --now redis-server.service
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl enable redis.service
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart redis.service
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start redis.service
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl is-active --quiet redis.service
+deploy ALL=(root) NOPASSWD: /usr/bin/install -m 0644 -o root -g root /home/deploy/staging/redis-findash.service /etc/systemd/system/redis.service

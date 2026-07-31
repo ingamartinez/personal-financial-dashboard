@@ -118,10 +118,22 @@ Ordered steps matching what was actually done:
    chmod 600 /home/deploy/.ssh/authorized_keys
    chown -R deploy:deploy /home/deploy/.ssh
    ```
-   Install the sudoers drop-in (already done by bootstrap.sh):
+   Install the sudoers drop-ins. `findash-deploy` is created by
+   `bootstrap.sh`; `findash-redis-provision` is tracked in this repo at
+   [`infra/sudoers/findash-redis-provision`](../infra/sudoers/findash-redis-provision)
+   and installed by hand:
+   ```bash
+   # Validate BEFORE moving into place — a syntax error in /etc/sudoers.d/
+   # locks sudo for everyone on the box.
+   install -m 0440 -o root -g root infra/sudoers/findash-redis-provision /tmp/frp.check
+   visudo -c -f /tmp/frp.check && rm -f /tmp/frp.check
+   install -m 0440 -o root -g root \
+     infra/sudoers/findash-redis-provision /etc/sudoers.d/findash-redis-provision
+   # The Redis provisioning step stages its unit here, NOT in /tmp (#795).
+   install -d -m 0700 -o deploy -g deploy /home/deploy/staging
    ```
-   /etc/sudoers.d/findash-deploy
-   ```
+   `/etc/sudoers.d/findash-deploy` is not yet tracked in this repo — it is
+   still hand-authored live droplet state.
 
 8. **Set GitHub Secrets** (repo Settings → Secrets → Actions):
    - `DEPLOY_SSH_KEY` — private ed25519 key corresponding to the public key added above
