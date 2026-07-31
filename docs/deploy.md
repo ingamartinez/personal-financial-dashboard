@@ -242,8 +242,11 @@ ssh root@147.182.138.79 'sudo -u findash psql -d findash'
 # Check disk usage
 ssh root@147.182.138.79 'df -h'
 
-# Check app memory against its cap (see § "Memory budget" below)
+# Check app memory against its cap (see § 7b "Memory budget")
 ssh root@147.182.138.79 'systemctl show findash.service -p MemoryCurrent -p MemoryHigh -p MemoryMax'
+
+# Is the MemoryHigh brake actually engaged? (see § 7c — memory.peak will lie)
+ssh root@147.182.138.79 'sudo -u findash /usr/local/bin/findash-memstat.sh --report'
 
 # Was findash ever OOM-killed by its own cgroup?
 ssh root@147.182.138.79 'journalctl -u findash | grep -i "memory\|oom"'
@@ -302,7 +305,9 @@ service that actually misbehaved, with `Restart=always` bringing it back.
 
 \* `findash` charge splits as anon 303 MiB + file 52 MiB, **plus 265 MiB
 parked in swap**. Its true anon working set is therefore ~568 MiB, and its
-`memory.peak` over that 2.5-day uptime was **763 MiB**.
+`memory.peak` over that 2.5-day uptime was **763 MiB**. All of these figures
+describe a cgroup with 2.5 days of uptime and **cannot be reproduced after a
+restart** — see § 7c.
 
 Non-app subtotal at budget: **816 MB**. Leaves 1151 MB for the two big apps.
 
@@ -320,6 +325,10 @@ not a win.
 
 So: `MemoryHigh=640M` as the working brake (reclaim + swap, throttle, no kill)
 and `MemoryMax=768M` as the backstop.
+
+> **The evidence above is gone.** The restart that applied these caps reset
+> `memory.peak`, and the caps now censor it. § 7c explains why, and what
+> replaced it. Do not re-derive a number from `memory.peak` alone.
 
 ### Checking the rule
 
@@ -407,6 +416,108 @@ The 305 → 375 → 763 MiB growth pattern in `findash` itself is not explained 
 this issue and warrants its own investigation. Note also that a droplet resize
 is **downstream** of this cap, not a substitute for it — a resize costs money
 every month to paper over an unbounded process.
+
+---
+
+## 7c. Measuring memory (why `memory.peak` will not answer you)
+
+**#800.** The § 7b budget rests on a `memory.peak` of 763 MiB read over 2.5
+days of uptime. That reading no longer exists and cannot be taken again. Two
+properties of the kernel interface are why:
+
+**1. It resets on restart.** `findash` restarted when CD deployed at
+`2026-07-31 01:06:29 UTC`, which recreated the cgroup and zeroed the counter.
+CD restarts findash on **every** deploy, so on an actively developed repo there
+is no multi-day deploy-free window to wait for.
+
+**2. It is censored by `MemoryHigh`.** This is the part that matters. Once a
+brake is set, the kernel reclaims before the charge can grow past it, so
+`memory.peak` pins just above `memory.high` and stays there — regardless of
+true demand. Measured on this droplet within minutes of a clean start:
+
+```
+memory.high   671088640   = 640.00 MiB
+memory.peak   671346688   = 640.25 MiB     <- 252 KiB over the brake
+memory.current 427094016  = 407    MiB
+```
+
+Reading that counter after three days reports the same number and tells you
+nothing. `memory.peak` is also read-only on this kernel (6.8), so it cannot be
+reset to take a fresh high-water mark — writable resets landed in 6.12.
+
+### What to read instead
+
+| Signal | Where | Means |
+|---|---|---|
+| `events_high` | `memory.events` | Cumulative `MemoryHigh` throttle events. **Rising = the brake is engaged.** This is what answers "is 640M throttling normal operation". |
+| `pressure_full_total` | `memory.pressure` | Cumulative µs where *all* tasks stalled on memory. **The cost of the brake.** |
+| `refault_anon` | `memory.stat` | Anon pages swapped out then needed again. Not free. |
+| `events_max`, `oom_kill` | `memory.events` | Must stay `0`. |
+
+High events with flat `pressure_full` is cheap page-cache reclaim. Both rising
+together is real thrashing. That distinction is the whole question.
+
+### The sampler
+
+`memory.peak` cannot be trusted, so the counters are sampled every 5 minutes
+into `/srv/findash/logs/memstat.tsv` and grouped by cgroup generation (they all
+reset together, so cross-generation comparison is meaningless).
+
+```bash
+ssh root@147.182.138.79 'sudo -u findash /usr/local/bin/findash-memstat.sh --report'
+```
+
+Source: `infra/cron/findash-memstat.sh` + `.cron`, installed by `bootstrap.sh`.
+It is host cron rather than a BullMQ worker on purpose — it has to keep
+sampling when findash is throttled or OOM-killed, and a worker inside the
+process being measured dies with it.
+
+### Interim reading — 2026-07-31, ~20 min after a clean start
+
+```
+events high   295      max 0      oom_kill 0
+pressure full 1.21 s cumulative       refault_anon 14680
+memory.current 407 MiB (anon 383 MiB, file 20 MiB), swap 65.6 MiB
+photoshowcase events high: 0
+```
+
+Read carefully, because it cuts both ways:
+
+- The brake **is** load-bearing — 295 throttle events against photoshowcase's
+  zero, and `memory.peak` hit it within minutes. #800 was right to ask.
+- But `events_high` **stopped at 295** and did not move over the following ten
+  minutes while `memory.current` sat at ~407 MiB, far below the 640 MiB brake.
+  So those 295 events look like a **startup spike, not steady-state
+  throttling** — Next.js warm-up plus every BullMQ worker registering at once.
+- `pressure_full` of 1.21 s cumulative, with `avg60` back to `0.00`, says the
+  reclaim was cheap. The app was not meaningfully stalled.
+
+**Still open, and only the sampler can close it:** whether the 763 MiB from the
+2.5-day run was one startup spike of the same kind, or genuine growth toward a
+working set that would sit against `MemoryMax`. Twenty minutes cannot tell
+those apart. If it is growth, this stops being a cap question and becomes the
+growth investigation noted in § 7b.
+
+### Two figures from § 7b that a re-measure did not reproduce
+
+Both were re-read after the restart and came back different. Neither is an
+error in § 7b — a 2.5-day-old cgroup and a nine-minute-old one are different
+states, and the counters reset in between — but neither should be quoted as a
+standing fact either:
+
+| Figure | § 7b (2.5 d uptime) | after restart |
+|---|---|---|
+| findash swap held | 265 MB of 318 MB total | 65.6 MiB of 128 MB total |
+| `memory.pressure` | `avg10/60/300` all `0.00` | `0.00 / 0.07 / 0.19` at 9 min, decaying to `0.00 / 0.00 / 0.02` by 20 min |
+
+The *shape* of the swap argument survives — findash holds roughly half the
+droplet's swap and photoshowcase holds none — but the magnitudes are a function
+of uptime. Swap accumulates as cold pages age out; a freshly started process
+has not had time to park any. The pressure numbers taken at 9 minutes were
+startup transients, which is why they had decayed by 20.
+
+**Do not restart `findash.service` to take a clean baseline.** That resets
+every counter here and puts you back at the start.
 
 ---
 
