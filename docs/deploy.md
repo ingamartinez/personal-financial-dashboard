@@ -129,7 +129,12 @@ Ordered steps matching what was actually done:
    visudo -c -f /tmp/frp.check && rm -f /tmp/frp.check
    install -m 0440 -o root -g root \
      infra/sudoers/findash-redis-provision /etc/sudoers.d/findash-redis-provision
-   # The Redis provisioning step stages its unit here, NOT in /tmp (#795).
+   # Same drill for the unit-install rule (#799).
+   install -m 0440 -o root -g root infra/sudoers/findash-unit-install /tmp/fui.check
+   visudo -c -f /tmp/fui.check && rm -f /tmp/fui.check
+   install -m 0440 -o root -g root \
+     infra/sudoers/findash-unit-install /etc/sudoers.d/findash-unit-install
+   # Both provisioning steps stage their units here, NOT in /tmp (#795).
    install -d -m 0700 -o deploy -g deploy /home/deploy/staging
    ```
    `/etc/sudoers.d/findash-deploy` is not yet tracked in this repo — it is
@@ -164,10 +169,12 @@ Sequence:
 5. **SCP tarball** to `/tmp/release-<sha>.tar.gz` on droplet (as `deploy` user).
 6. **Extract**: `sudo -u findash` creates `releases/<sha>/`, unpacks tarball, writes `release.env` with `GIT_SHA`.
 7. **Run migrations**: `sudo -u findash bun migrate-prod.ts` in the release dir.
-8. **Flip symlink**: `ln -sfn releases/<sha> app/current`, then `sudo systemctl restart findash.service`.
-9. **Health probe**: polls `$APP_HEALTH_URL` for `"ok":true` — 15 attempts × 3s = 45s timeout.
-10. **Rollback on failure**: if health probe fails and a previous `current` symlink existed, flip back and restart.
-11. **Prune**: on success, removes all but the 5 most recent release dirs.
+8. **Capture rollback state** (#799): records the current `app/current` target and snapshots the live `findash.service` to `/home/deploy/staging/findash.service.prev`. Runs **before the first mutation** so rollback is reachable from that point on.
+9. **Install findash unit** (#799): installs `infra/systemd/findash.service`, `daemon-reload`s, then **verifies the installed file byte-matches the repo and fails the deploy if not**. Runs before the flip, so a bad unit fails while the previous release is still serving.
+10. **Flip symlink**: `ln -sfn releases/<sha> app/current`, then `sudo systemctl restart findash.service` — which picks up the unit installed in step 9.
+11. **Health probe**: polls `$APP_HEALTH_URL` for `"ok":true` — 15 attempts × 3s = 45s timeout.
+12. **Rollback on failure**: gated on step 8's output, **not** on the flip — otherwise a failure between the unit install and the symlink flip would skip rollback and leave unit and release skewed. Restores the previous unit if it changed, then the symlink, then restarts once.
+13. **Prune**: on success, removes all but the 5 most recent release dirs.
 
 ---
 
@@ -376,30 +383,32 @@ in redis config — **not** a cgroup `MemoryMax`, since an OOM-kill of the queue
 backend silently loses jobs whereas `noeviction` makes producers fail loudly.
 Out of scope for #796.
 
-### ⚠️ `findash.service` is NOT installed by the CD workflow
+### `findash.service` is installed and drift-gated by CD (#799)
 
-`infra/bootstrap.sh` installs this unit **once**, on a fresh droplet. Nothing
-re-installs it afterwards — the deploy workflow only ever runs
-`systemctl restart findash.service`. `redis.service` *is* re-installed on every
-deploy; `findash.service` is not.
+Since #799 the deploy workflow installs this unit from
+`infra/systemd/findash.service` on **every** deploy and **fails the build** if
+the installed copy does not byte-match the repo. Editing the file here is
+enough; no hand-install step.
 
-So **editing `infra/systemd/findash.service` in this repo changes nothing on
-the running box.** It has to be installed by hand:
+Before #799 that was not true, and the gap was not theoretical:
+`infra/bootstrap.sh` laid the unit down once on a fresh droplet and nothing
+updated it again — CD only ran `systemctl restart`. The live copy was still the
+**2026-04-18** bootstrap file, missing the `TimeoutStopSec` 30→10 and
+`Description` changes that merged with **#185** months earlier. Nothing
+surfaced the gap, because nothing compared them. The #796 memory caps had to be
+hand-placed as a result, which meant the protection against a global OOM was
+not reproducible from this repo.
+
+The drift gate is the point of the change. It converts silent divergence into a
+red build.
+
+To check the live unit against the repo at any time:
 
 ```bash
-scp infra/systemd/findash.service root@147.182.138.79:/root/findash.service.new
-ssh root@147.182.138.79 '
-  diff -u /etc/systemd/system/findash.service /root/findash.service.new
-  cp -a /etc/systemd/system/findash.service /root/findash.service.bak-$(date +%Y%m%d)
-  install -m 0644 -o root -g root /root/findash.service.new /etc/systemd/system/findash.service
-  systemctl daemon-reload'   # cgroup props apply live, no restart needed
+scp infra/systemd/findash.service root@147.182.138.79:/root/repo.service
+ssh root@147.182.138.79 'diff -u /etc/systemd/system/findash.service /root/repo.service \
+  && echo "in sync"; rm -f /root/repo.service'
 ```
-
-This drift is real and was observed: when #796 was applied on 2026-07-31 the
-live unit was still the 2026-04-18 copy, missing the `TimeoutStopSec` 30→10 and
-`Description` changes that shipped with #185 months earlier. Diff before you
-install. Making CD install this unit the way it installs `redis.service`
-deserves its own issue.
 
 ### Related
 

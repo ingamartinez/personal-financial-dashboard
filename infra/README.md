@@ -20,9 +20,10 @@ at [`docs/deploy.md`](../docs/deploy.md) — landed separately in T7.
 files in `/etc/sudoers.d/` on the droplet. Nothing installs them for you —
 editing one here does not change the running box.
 
-| File                      | Grants                                                                            |
-| ------------------------- | --------------------------------------------------------------------------------- |
-| `findash-redis-provision` | `deploy` → install redis-server and the Redis unit, manage `redis.service` (#795) |
+| File                      | Grants                                                                                          |
+| ------------------------- | ----------------------------------------------------------------------------------------------- |
+| `findash-redis-provision` | `deploy` → install redis-server and the Redis unit, manage `redis.service` (#795)               |
+| `findash-unit-install`    | `deploy` → install `findash.service` (and restore the previous copy on rollback) from CD (#799) |
 
 To install or update one, on the droplet as root:
 
