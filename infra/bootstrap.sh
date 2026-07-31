@@ -167,6 +167,16 @@ install -m 0755 -o root -g root "$REPO_ROOT/infra/cron/findash-backup.sh" /usr/l
 log "backup: install cron file to /etc/cron.d"
 install -m 0644 -o root -g root "$REPO_ROOT/infra/cron/findash-backup.cron" /etc/cron.d/findash-backup
 
+# #800: cgroup memory sampler. The #796 caps were sized on a memory.peak that
+# a restart erased, and memory.peak is censored once MemoryHigh is set — so
+# the budget can only be re-checked from a continuous sample. See the script
+# header for why this is host cron and not a BullMQ worker.
+log "memstat: install memory sampler to /usr/local/bin"
+install -m 0755 -o root -g root "$REPO_ROOT/infra/cron/findash-memstat.sh" /usr/local/bin/findash-memstat.sh
+
+log "memstat: install cron file to /etc/cron.d"
+install -m 0644 -o root -g root "$REPO_ROOT/infra/cron/findash-memstat.cron" /etc/cron.d/findash-memstat
+
 log "awscli: install via pipx (system-wide shim in /usr/local/bin)"
 # Ubuntu 24.04 dropped the awscli .deb. pipx isolates the venv; PIPX_BIN_DIR
 # override puts the `aws` shim in /usr/local/bin so it's on PATH for every

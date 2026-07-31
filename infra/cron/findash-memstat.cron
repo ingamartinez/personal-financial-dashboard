@@ -1,0 +1,21 @@
+# findash-memstat — sample findash.service cgroup memory counters every 5 min.
+#
+# Install: cp infra/cron/findash-memstat.cron /etc/cron.d/findash-memstat
+# Permissions: chmod 0644 /etc/cron.d/findash-memstat (owned root:root)
+#
+# Log: /srv/findash/logs/memstat.tsv  (self-trimming, ~30 days / ~2 MB)
+# Read it with: sudo -u findash /usr/local/bin/findash-memstat.sh --report
+#
+# Why 5 minutes: the counters this tracks are cumulative, so the cadence sets
+# resolution, not accuracy — nothing is missed between samples. 5 min is fine
+# for distinguishing a startup spike from steady-state throttling (#800) and
+# costs a few hundred bytes a day.
+#
+# Runs as `findash` — cgroup v2 memory.* files are 0444, no privileges needed.
+# Deliberately NOT a BullMQ worker: it must keep sampling when findash is
+# throttled or OOM-killed. See the script header for the full rationale.
+#
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+*/5 * * * * findash /usr/local/bin/findash-memstat.sh

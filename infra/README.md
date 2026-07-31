@@ -12,6 +12,7 @@ at [`docs/deploy.md`](../docs/deploy.md) — landed separately in T7.
 | `systemd/findash.service` | systemd unit for the Next.js + Telegram worker process.                                       |
 | `systemd/redis.service`   | Hardened Redis unit (BullMQ queue backend). Installed by the CD workflow.                     |
 | `sudoers/`                | `/etc/sudoers.d/` drop-ins. See below — these are NOT applied automatically.                  |
+| `cron/findash-memstat.*`  | cgroup memory sampler for the #796 budget. See `docs/deploy.md § 7c`.                         |
 | `caddy/Caddyfile`         | Reverse proxy config for Cloudflare Full (strict) TLS.                                        |
 
 ## sudoers drop-ins
