@@ -267,3 +267,56 @@ describe("classifyBatchWithAi — system prompt specificity is conditional on ev
     );
   });
 });
+
+describe("classifyBatchWithAi — evidence bundle lives in the user prompt (#814)", () => {
+  it("includes receipt evidence and never sends rawHtml", async () => {
+    let capturedBody = "";
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedBody = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify(
+          fakeMessageResponse({
+            classifications: [{ id: 972, categorySlug: "vivienda", confidence: 90 }],
+          }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    await classifyBatchWithAi({
+      transactions: [
+        {
+          id: 972,
+          description: "MERCADOPAGO COLOMBIA",
+          amountCents: BigInt(-85_211_00),
+          currency: "COP",
+          evidence: [
+            {
+              receiptId: 10,
+              gateway: "mercado_pago",
+              merchant: "Almohada Ortopédica Viscoelástica",
+              amountCents: "8521100",
+              currency: "COP",
+              referenceId: "400227",
+              extra: { network: "redeban" },
+              matchKind: "exact_amount",
+              deltaCents: "0",
+              deltaMs: 0,
+              rank: 1,
+            },
+          ],
+        },
+      ],
+      categories: CATEGORIES,
+      apiKey: "test-key",
+      fetchImpl,
+    });
+
+    expect(capturedBody).toContain("Almohada Ortopédica Viscoelástica");
+    expect(capturedBody).toContain("mercado_pago");
+    expect(capturedBody).toContain("exact_amount");
+    expect(capturedBody).toContain("classify from the receipt merchant");
+    expect(capturedBody).not.toContain("rawHtml");
+    expect(capturedBody).not.toContain("<html");
+  });
+});

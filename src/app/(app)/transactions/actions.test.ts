@@ -1259,10 +1259,13 @@ describe("markUncategorized", () => {
 
     await markUncategorized({ txId });
 
-    const [row] = await db.execute<{ classification_reason: string }>(sql`
+    const [row] = await db.execute<{ classification_reason: unknown }>(sql`
       SELECT classification_reason FROM transactions WHERE id = ${txId}
     `);
-    const parsed = JSON.parse(row.classification_reason);
+    const parsed =
+      typeof row.classification_reason === "string"
+        ? JSON.parse(row.classification_reason)
+        : row.classification_reason;
     expect(parsed).toMatchObject({
       confirmed_from: "ai",
       confidence: 52,
@@ -1457,13 +1460,20 @@ describe("classifySingleWithAi", () => {
       category_slug: string;
       classification_method: string;
       classification_confidence: number;
+      classification_reason: unknown;
     }>(sql`
-      SELECT category_slug, classification_method, classification_confidence
+      SELECT category_slug, classification_method, classification_confidence,
+             classification_reason
       FROM transactions WHERE id = ${txId}
     `);
     expect(row.category_slug).toBe("suscripciones");
     expect(row.classification_method).toBe("ai");
     expect(row.classification_confidence).toBe(92);
+    const reason =
+      typeof row.classification_reason === "string"
+        ? JSON.parse(row.classification_reason)
+        : row.classification_reason;
+    expect(reason).toMatchObject({ aiReason: "NETFLIX" });
   });
 
   it("returns error when tx is already classified and does not call the AI", async () => {

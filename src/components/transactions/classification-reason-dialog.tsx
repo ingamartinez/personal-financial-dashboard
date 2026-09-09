@@ -107,6 +107,7 @@ function DetailPanel({ data }: { data: ClassificationReasonResponse }) {
               ? "Una decisión manual tuya en este mismo comercio"
               : `${priorArt.totalCount} transacciones previas de este comercio`}
           </dd>
+          <ReceiptRows receipt={data.detail.receipt} />
         </dl>
       );
     }
@@ -114,9 +115,17 @@ function DetailPanel({ data }: { data: ClassificationReasonResponse }) {
     const rule = data.detail.rule;
     if (!rule) {
       return (
-        <p className="text-muted-foreground text-sm">
-          La regla que aplicó ya no existe o fue modificada. La categoría sigue siendo la asignada.
-        </p>
+        <div className="space-y-3">
+          <p className="text-muted-foreground text-sm">
+            La regla que aplicó ya no existe o fue modificada. La categoría sigue siendo la
+            asignada.
+          </p>
+          {data.detail.receipt ? (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm">
+              <ReceiptRows receipt={data.detail.receipt} />
+            </dl>
+          ) : null}
+        </div>
       );
     }
     return (
@@ -146,6 +155,7 @@ function DetailPanel({ data }: { data: ClassificationReasonResponse }) {
             Regla #{rule.id}
           </Link>
         </dd>
+        <ReceiptRows receipt={data.detail.receipt} />
       </dl>
     );
   }
@@ -157,6 +167,7 @@ function DetailPanel({ data }: { data: ClassificationReasonResponse }) {
         <dd>{data.detail.confidence !== null ? `${data.detail.confidence}%` : "—"}</dd>
         <dt className="text-muted-foreground">Razón</dt>
         <dd>{data.detail.reason ?? <span className="text-muted-foreground">(sin razón)</span>}</dd>
+        <ReceiptRows receipt={data.detail.receipt} />
       </dl>
     );
   }
@@ -190,4 +201,31 @@ function DetailPanel({ data }: { data: ClassificationReasonResponse }) {
   }
 
   return null;
+}
+
+function ReceiptRows({
+  receipt,
+}: {
+  receipt: {
+    id: number;
+    merchant: string | null;
+    gateway: string;
+    matchKind: string | null;
+  } | null;
+}) {
+  if (!receipt) return null;
+  return (
+    <>
+      <dt className="text-muted-foreground">Recibo</dt>
+      <dd>{receipt.merchant ?? `#${receipt.id}`}</dd>
+      <dt className="text-muted-foreground">Pasarela</dt>
+      <dd>{receipt.gateway}</dd>
+      {receipt.matchKind ? (
+        <>
+          <dt className="text-muted-foreground">Match</dt>
+          <dd>{receipt.matchKind}</dd>
+        </>
+      ) : null}
+    </>
+  );
 }

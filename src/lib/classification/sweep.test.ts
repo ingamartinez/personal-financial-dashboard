@@ -6,8 +6,16 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, categories, transactions, users } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  emailReceipts,
+  gmailConnections,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
+import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 
 vi.mock("@/lib/classification/rules", () => ({
   classifyByRule: vi.fn().mockResolvedValue(null),
@@ -335,7 +343,7 @@ describe("sweepUserOtrosBucket", () => {
     expect(row?.categorySlug).toBe("otros");
     expect(row?.classificationMethod).toBe("user_uncategorized");
     expect(row?.classificationReason).toBeTruthy();
-    const reason = JSON.parse(row!.classificationReason!);
+    const reason = row!.classificationReason;
     expect(reason).toMatchObject({ action: "swept" });
   });
 
@@ -497,7 +505,7 @@ describe("sweepUserOtrosBucket — prior art", () => {
     expect(row?.categorySlug).toBe("vivienda");
     expect(row?.classificationMethod).toBe("rule_retroactive");
     expect(row?.classificationConfidence).toBe(100);
-    const reason = JSON.parse(row!.classificationReason!);
+    const reason = row!.classificationReason;
     expect(reason).toMatchObject({ action: "prior_art", categorySlug: "vivienda" });
   });
 
@@ -768,7 +776,7 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
     expect(row?.categorySlug).toBe("otros");
     expect(row?.classificationMethod).toBe("user_uncategorized");
     expect(row?.classificationConfidence).toBe(0);
-    const reason = JSON.parse(row!.classificationReason!);
+    const reason = row!.classificationReason;
     expect(reason).toMatchObject({
       action: "abstained",
       reason: "opaque_gateway",
@@ -863,7 +871,7 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
       const row = await getTx(id);
       expect(row?.categorySlug).toBe("otros");
       expect(row?.classificationMethod).toBe("user_uncategorized");
-      const reason = JSON.parse(row!.classificationReason!);
+      const reason = row!.classificationReason;
       expect(reason).toMatchObject({ action: "abstained", reason: "probable_transfer_pair" });
     }
   });
@@ -903,7 +911,7 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
     const row = await getTx(txId);
     expect(row?.categorySlug).toBe("otros");
     expect(row?.classificationMethod).toBe("user_uncategorized");
-    const reason = JSON.parse(row!.classificationReason!);
+    const reason = row!.classificationReason;
     expect(reason).toMatchObject({ action: "swept" });
   });
 
@@ -944,7 +952,7 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
     expect(result.abstainedTransferPair).toBe(0);
     const row = await getTx(txId);
     expect(row?.categorySlug).toBe("otros");
-    const reason = JSON.parse(row!.classificationReason!);
+    const reason = row!.classificationReason;
     expect(reason).toMatchObject({ action: "swept" });
   });
 
@@ -985,7 +993,7 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
     expect(result.abstainedTransferPair).toBe(0);
     const row = await getTx(txId);
     expect(row?.categorySlug).toBe("otros");
-    const reason = JSON.parse(row!.classificationReason!);
+    const reason = row!.classificationReason;
     expect(reason).toMatchObject({ action: "swept" });
   });
 
@@ -1020,7 +1028,7 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
     expect(secondRun.abstainedGateway).toBe(1);
     const row = await getTx(txId2);
     expect(row?.categorySlug).toBe("otros");
-    const reason = JSON.parse(row!.classificationReason!);
+    const reason = row!.classificationReason;
     expect(reason).toMatchObject({ action: "abstained", reason: "opaque_gateway" });
   });
 
@@ -1046,6 +1054,245 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
 
     const row = await getTx(txId);
     expect(row?.categorySlug).toBe("otros");
+  });
+});
+
+describe("sweepUserOtrosBucket — #814 evidence-aware opaque rows", () => {
+  const GMAIL_KEY_ENV = "GMAIL_TOKEN_ENCRYPTION_KEY";
+  const ORIGINAL_KEY = process.env[GMAIL_KEY_ENV];
+  let userId: number;
+  let accountId: number;
+  let connId: number;
+
+  beforeAll(() => {
+    process.env[GMAIL_KEY_ENV] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  });
+
+  afterEach(async () => {
+    mockClassifyBatch.mockClear();
+    mockClassifyBatch.mockResolvedValue({
+      classifications: [],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+    mockClassifyByRule.mockClear();
+    mockClassifyByRule.mockResolvedValue(null);
+    mockFindMatchingRule.mockClear();
+    mockFindMatchingRule.mockResolvedValue(null);
+    await cleanup();
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_KEY === undefined) delete process.env[GMAIL_KEY_ENV];
+    else process.env[GMAIL_KEY_ENV] = ORIGINAL_KEY;
+  });
+
+  async function setup() {
+    userId = await createUser(`${TAG}-ev-${Date.now()}-${Math.random()}@test.local`);
+    accountId = await createAccount(userId);
+    const [conn] = await db
+      .insert(gmailConnections)
+      .values({
+        userId,
+        gmailEmail: `${TAG}-ev-${userId}@example.com`,
+        accessTokenEnc: gmailCipher.encrypt("dummy-access"),
+        refreshTokenEnc: gmailCipher.encrypt("dummy-refresh"),
+        accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
+        scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+        status: "active",
+      })
+      .returning({ id: gmailConnections.id });
+    connId = conn.id;
+  }
+
+  async function insertReceipt(opts: {
+    merchant: string;
+    amountCents: number;
+    occurredAt: Date;
+    extra?: Record<string, unknown>;
+  }): Promise<number> {
+    const [row] = await db
+      .insert(emailReceipts)
+      .values({
+        userId,
+        gmailConnectionId: connId,
+        gmailMsgId: `${TAG}-ev-${Date.now()}-${Math.random()}`,
+        gateway: "mercado_pago",
+        merchant: opts.merchant,
+        amountCents: BigInt(opts.amountCents),
+        currency: "COP",
+        occurredAt: opts.occurredAt,
+        emailReceivedAt: opts.occurredAt,
+        rawHtml: "<html>do not put this in a prompt</html>",
+        parsedPayload: {
+          merchant: opts.merchant,
+          amountCents: String(opts.amountCents),
+          currency: "COP",
+          occurredAt: opts.occurredAt.toISOString(),
+          referenceId: "400227",
+          extra: opts.extra ?? { network: "redeban" },
+        },
+        matchStatus: "unmatched",
+      })
+      .returning({ id: emailReceipts.id });
+    return row.id;
+  }
+
+  it("does not abstain an opaque row with a unique correlated receipt — rules on receipt.merchant, zero AI", async () => {
+    await setup();
+    const occurredAt = new Date("2026-01-26T01:15:00Z");
+    await insertReceipt({
+      merchant: "Almohada Ortopédica Viscoelástica",
+      amountCents: 85_211_00,
+      occurredAt,
+    });
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -85_211_00,
+      occurredAt,
+    });
+
+    mockClassifyByRule.mockImplementation(async (_uid, tx) => {
+      if (tx.merchant?.includes("Almohada")) {
+        return { categorySlug: "hogar", ruleId: 99, confidence: 100 as const };
+      }
+      return null;
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedGateway).toBe(0);
+    expect(result.ruleClassified).toBe(1);
+    expect(result.aiClassified).toBe(0);
+    expect(mockClassifyBatch).not.toHaveBeenCalled();
+    expect(mockClassifyByRule).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({ merchant: "Almohada Ortopédica Viscoelástica" }),
+      expect.anything(),
+    );
+    expect(mockClassifyByRule).not.toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({ descriptionRaw: "MERCADOPAGO COLOMBIA" }),
+      expect.anything(),
+    );
+
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("hogar");
+    expect(row?.classificationMethod).toBe("rule");
+    expect(row?.classificationReason).toMatchObject({
+      action: "rule",
+      matchKind: "exact_amount",
+    });
+    expect((row?.classificationReason as { receiptId: number }).receiptId).toBeGreaterThan(0);
+  });
+
+  it("sends exact-amount ties to the AI bundle — never takes rank 1 as unique", async () => {
+    await setup();
+    const occurredAt = new Date("2026-01-26T01:15:00Z");
+    await insertReceipt({ merchant: "Almohada", amountCents: 85_211_00, occurredAt });
+    await insertReceipt({
+      merchant: "Estante Metálico",
+      amountCents: 85_211_00,
+      occurredAt: new Date(occurredAt.getTime() + 60_000),
+    });
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -85_211_00,
+      occurredAt,
+    });
+
+    mockClassifyBatch.mockResolvedValueOnce({
+      classifications: [{ id: txId, categorySlug: "hogar", confidence: 90, reason: "pillow" }],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedGateway).toBe(0);
+    expect(result.ruleClassified).toBe(0);
+    expect(result.aiClassified).toBe(1);
+    expect(mockClassifyBatch).toHaveBeenCalledTimes(1);
+    const sent = mockClassifyBatch.mock.calls[0]![0].transactions[0]!;
+    expect(sent.evidence).toHaveLength(2);
+    expect(sent.evidence?.map((e) => e.merchant)).toEqual(
+      expect.arrayContaining(["Almohada", "Estante Metálico"]),
+    );
+
+    const row = await getTx(txId);
+    expect(row?.classificationReason).toMatchObject({
+      matchKind: "exact_amount",
+      aiReason: "pillow",
+    });
+    expect((row?.classificationReason as { receiptIds: number[] }).receiptIds).toHaveLength(2);
+  });
+
+  it("does not let a classified MercadoPago receipt poison the next unrelated charge", async () => {
+    await setup();
+    const firstAt = new Date("2026-01-26T01:15:00Z");
+    const secondAt = new Date("2026-02-10T18:00:00Z");
+    const firstReceipt = await insertReceipt({
+      merchant: "Almohada Ortopédica Viscoelástica",
+      amountCents: 85_211_00,
+      occurredAt: firstAt,
+    });
+    await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: "hogar",
+      classificationMethod: "ai",
+      amountCents: -85_211_00,
+      occurredAt: firstAt,
+    });
+    await db.execute(sql`
+      UPDATE transactions
+      SET classification_reason = ${JSON.stringify({
+        receiptId: firstReceipt,
+        matchKind: "exact_amount",
+        aiReason: "pillow",
+      })}::jsonb
+      WHERE user_id = ${userId} AND description_raw = 'MERCADOPAGO COLOMBIA'
+    `);
+
+    await insertReceipt({
+      merchant: "Netflix Premium",
+      amountCents: 45_000_00,
+      occurredAt: secondAt,
+    });
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -45_000_00,
+      occurredAt: secondAt,
+    });
+
+    mockClassifyBatch.mockResolvedValueOnce({
+      classifications: [
+        { id: txId, categorySlug: "suscripciones", confidence: 95, reason: "netflix" },
+      ],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.priorArtClassified).toBe(0);
+    expect(result.aiClassified).toBe(1);
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("suscripciones");
+    expect(row?.categorySlug).not.toBe("hogar");
   });
 });
 

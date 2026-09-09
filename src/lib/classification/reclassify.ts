@@ -103,7 +103,11 @@ export async function reclassifyTransaction(
       categorySlug: rule.categorySlug,
       classificationMethod: "rule_retroactive",
       classificationConfidence: 100,
-      classificationReason: `rule_retroactive: matched rule #${rule.id} via enriched_merchant`,
+      classificationReason: {
+        action: "rule_retroactive",
+        ruleId: rule.id,
+        via: "enriched_merchant",
+      },
       updatedAt: new Date(),
     })
     .where(and(eq(transactions.id, txId), eq(transactions.userId, userId)));

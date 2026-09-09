@@ -20,7 +20,14 @@ import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
 import { classifySingleWithAi as classifySingleWithAiLib } from "@/lib/classification/ai";
 import { MERCHANT_HINTS_MAX } from "@/lib/classification/context";
+import {
+  citationFromEvidence,
+  classifiableForRules,
+  loadTxEvidence,
+  toAiClassifiable,
+} from "@/lib/classification/evidence";
 import { AI_BATCH_SIZE } from "@/lib/classification/pipeline";
+import { classifyByRule } from "@/lib/classification/rules";
 import { createQueue, getRedisConnection } from "@/lib/queue";
 import type { ClassifyTxJobData } from "@/lib/queue/workers/classify-tx";
 import type { UserClassificationContext } from "@/lib/db/schema";
@@ -186,14 +193,13 @@ export async function confirmClassification(input: {
 
     if (!current) return [];
 
-    // Snapshot the prior method + confidence into classification_reason as a
-    // JSON blob so the explainability endpoint can surface "confirmed from AI
-    // classification at 45% confidence" without extra columns. VARCHAR(200) has
-    // plenty of room for this shape.
-    const reason = JSON.stringify({
+    // Snapshot the prior method + confidence into classification_reason so the
+    // explainability endpoint can surface "confirmed from AI classification at
+    // 45% confidence" without extra columns.
+    const reason = {
       confirmed_from: current.method,
-      confidence: current.confidence,
-    });
+      confidence: current.confidence ?? undefined,
+    };
 
     return trx
       .update(transactions)
@@ -254,11 +260,11 @@ export async function markUncategorized(input: {
 
     if (!current) return [];
 
-    const reason = JSON.stringify({
+    const reason = {
       confirmed_from: current.method,
-      confidence: current.confidence,
+      confidence: current.confidence ?? undefined,
       action: "user_uncategorized",
-    }).slice(0, 200);
+    };
 
     return trx
       .update(transactions)
@@ -768,13 +774,50 @@ export async function classifySingleWithAi(
       .limit(1),
   ]);
 
+  const evidence = await loadTxEvidence(session.id, tx);
+
+  if (evidence.unique && evidence.opaque) {
+    const ruleHit = await classifyByRule(session.id, classifiableForRules(tx, evidence));
+    if (ruleHit) {
+      const pickedRuleCat = cats.find((c) => c.slug === ruleHit.categorySlug);
+      if (pickedRuleCat) {
+        await db
+          .update(transactions)
+          .set({
+            categorySlug: ruleHit.categorySlug,
+            classificationMethod: "rule",
+            classificationConfidence: ruleHit.confidence,
+            classificationReason: citationFromEvidence(evidence, {
+              action: "rule",
+              ruleId: ruleHit.ruleId,
+            }),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));
+
+        revalidatePath("/");
+        revalidatePath("/transactions");
+
+        return {
+          status: "ok",
+          categorySlug: ruleHit.categorySlug,
+          categoryName: pickedRuleCat.name,
+          confidence: ruleHit.confidence,
+        };
+      }
+    }
+  }
+
+  if (evidence.opaque && evidence.candidates.length === 0) {
+    return {
+      status: "error",
+      code: "ai_returned_null",
+      message: "La IA no pudo clasificar esta transacción",
+    };
+  }
+
   const result = await classifySingleWithAiLib({
-    transaction: {
-      id: tx.id,
-      description: tx.descriptionClean ?? tx.merchant ?? tx.descriptionRaw,
-      amountCents: tx.amountCents,
-      currency: tx.currency,
-    },
+    transaction: toAiClassifiable(tx, evidence),
     categories: cats,
     userHints: userRow[0]?.context?.merchant_hints ?? [],
   });
@@ -805,6 +848,10 @@ export async function classifySingleWithAi(
       categorySlug: hit.categorySlug,
       classificationMethod: "ai",
       classificationConfidence: hit.confidence,
+      classificationReason: citationFromEvidence(
+        evidence,
+        hit.reason ? { aiReason: hit.reason } : {},
+      ),
       updatedAt: new Date(),
     })
     .where(and(eq(transactions.userId, session.id), eq(transactions.id, txId)));

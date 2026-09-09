@@ -44,10 +44,10 @@ export async function classificationAutoUncategorizeProcessor(
       categorySlug: "otros",
       classificationMethod: "user_uncategorized",
       classificationConfidence: 100,
-      classificationReason: JSON.stringify({
+      classificationReason: {
         action: "auto_uncategorized",
         reason: "30d_inbox_stragglers",
-      }),
+      },
       updatedAt: new Date(),
     })
     .where(

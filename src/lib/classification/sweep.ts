@@ -9,19 +9,19 @@
 // Precedence per candidate transaction: ABSTAIN checks → PRIOR ART → rule
 // engine → AI batch → settle.
 //
-// - Abstain (#812): before anything else, check whether the row is
-//   structurally unclassifiable — the description names an opaque payment
-//   gateway (MercadoPago, PayU, Wompi — see opaque-gateways.ts) rather than
-//   a merchant, or the row looks like one leg of an unpaired same-account
-//   transfer (see `findProbableTransferPair`). Confidence scores don't
-//   express "I have no business guessing here": #809's own prod dry-run had
-//   the AI confidently (70-75) assigning `tecnologia` to MercadoPago rows on
-//   reasoning like "user history shows tech preference" — a guess that is
-//   WORSE than `otros` because the sweep's own prior-art pass would then
-//   treat it as evidence and propagate it forward. Abstained rows skip
-//   prior art, the rule engine, and the AI entirely, and settle to `otros`
-//   with a distinct `{"action":"abstained",...}` marker — visibly *awaiting
-//   enrichment*, not *decided*. See `abstain`/`ABSTAINED_MARKER_ACTION`.
+// - Abstain (#812, evidence-aware in #814): before anything else, check
+//   whether the row is structurally unclassifiable. Transfer-pair abstain
+//   stays unconditional. Opaque-gateway abstain fires only when correlation
+//   returns zero candidates — a unique receipt means the row is classifiable
+//   from email. Confidence scores don't express "I have no business guessing
+//   here": #809's own prod dry-run had the AI confidently (70-75) assigning
+//   `tecnologia` to MercadoPago rows on reasoning like "user history shows
+//   tech preference" — a guess that is WORSE than `otros` because the sweep's
+//   own prior-art pass would then treat it as evidence and propagate it
+//   forward. Abstained rows skip prior art, the rule engine, and the AI
+//   entirely, and settle to `otros` with a distinct
+//   `{"action":"abstained",...}` marker — visibly *awaiting enrichment*, not
+//   *decided*. See `abstain`/`ABSTAINED_MARKER_ACTION`.
 // - Prior art: does this SAME user already have a confident, real-category
 //   decision for this SAME merchant elsewhere in their history? If so, reuse
 //   it — see `fetchPriorArtIndex`/`resolvePriorArt` below. This runs BEFORE
@@ -82,6 +82,7 @@ import { categories, transactions, users } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import { canonicalizeMerchant } from "@/lib/insights/merchant-canonical";
+import type { ClassificationReasonJson } from "@/lib/db/schema";
 import {
   classifyBatchWithAi,
   SYSTEM_OWNED_CATEGORY_SLUGS,
@@ -89,8 +90,24 @@ import {
   type AiClassification,
   type AiUserHint,
 } from "./ai";
-import { classifyByRule, findMatchingRule, type ClassifiableTx } from "./rules";
+import {
+  citationFromEvidence,
+  classifiableForRules,
+  loadReceiptsById,
+  loadTxEvidence,
+  priorArtLookupRow,
+  toAiClassifiable,
+  type TxEvidence,
+} from "./evidence";
 import { matchOpaqueGateway } from "./opaque-gateways";
+import {
+  abstainReason,
+  asReason,
+  priorArtReason,
+  receiptIdFromReason,
+  sweptReason,
+} from "./reason";
+import { classifyByRule, findMatchingRule } from "./rules";
 
 const log = createLogger({ module: "classification/sweep" });
 
@@ -104,7 +121,6 @@ export const SWEEP_MIN_CONFIDENCE = 60;
 // rule/ai — see resolvePriorArt).
 export const PRIOR_ART_MIN_AGREEING_ROWS = 2;
 const SWEPT_MARKER_ACTION = "swept";
-const PRIOR_ART_MARKER_ACTION = "prior_art";
 // #812: distinct from SWEPT_MARKER_ACTION on purpose. "swept" means "we tried
 // and this genuinely has no signal" — a deliberate terminal state. "abstained"
 // means "we never even tried because the row is structurally opaque" (an
@@ -130,7 +146,7 @@ export type SweepChange = {
     categorySlug: string | null;
     classificationMethod: string;
     confidence: number;
-    reason: string | null;
+    reason: ClassificationReasonJson | null;
   };
 };
 
@@ -173,15 +189,15 @@ type CandidateTx = {
   transferGroupId: string | null;
 };
 
-function sweptMarker(): string {
-  return JSON.stringify({ action: SWEPT_MARKER_ACTION, run: new Date().toISOString() }).slice(
-    0,
-    200,
-  );
+function sweptMarker(): ClassificationReasonJson {
+  return sweptReason();
 }
 
-function abstainMarker(reason: AbstainReason, extra: Record<string, unknown> = {}): string {
-  return JSON.stringify({ action: ABSTAINED_MARKER_ACTION, reason, ...extra }).slice(0, 200);
+function abstainMarker(
+  reason: AbstainReason,
+  extra: Record<string, unknown> = {},
+): ClassificationReasonJson {
+  return abstainReason(reason, extra);
 }
 
 /**
@@ -261,6 +277,7 @@ async function fetchPriorArtIndex(db: DB, userId: number): Promise<PriorArtIndex
       canonicalMerchant: transactions.canonicalMerchant,
       merchant: transactions.merchant,
       descriptionRaw: transactions.descriptionRaw,
+      classificationReason: transactions.classificationReason,
     })
     .from(transactions)
     .where(
@@ -273,9 +290,26 @@ async function fetchPriorArtIndex(db: DB, userId: number): Promise<PriorArtIndex
       ),
     );
 
+  const opaqueReceiptIds: number[] = [];
+  for (const row of rows) {
+    if (!matchOpaqueGateway([row.descriptionRaw, row.merchant])) continue;
+    const rid = receiptIdFromReason(asReason(row.classificationReason));
+    if (rid != null) opaqueReceiptIds.push(rid);
+  }
+  const opaqueReceipts = await loadReceiptsById(userId, opaqueReceiptIds);
+
   const index: PriorArtIndex = new Map();
   for (const row of rows) {
-    const key = merchantIdentityKey(row);
+    let key: string | null;
+    if (matchOpaqueGateway([row.descriptionRaw, row.merchant])) {
+      const rid = receiptIdFromReason(asReason(row.classificationReason));
+      const receiptMerchant = rid != null ? (opaqueReceipts.get(rid)?.merchant ?? null) : null;
+      key = receiptMerchant
+        ? (canonicalizeMerchant(receiptMerchant)?.toLowerCase() ?? receiptMerchant.toLowerCase())
+        : null;
+    } else {
+      key = merchantIdentityKey(row);
+    }
     if (!key || !row.categorySlug) continue;
 
     const byCategory = index.get(key) ?? new Map<string, PriorArtEvidence>();
@@ -317,13 +351,11 @@ function resolvePriorArt(byCategory: Map<string, PriorArtEvidence> | undefined):
   return null;
 }
 
-function priorArtMarker(categorySlug: string, evidence: PriorArtEvidence): string {
-  return JSON.stringify({
-    action: PRIOR_ART_MARKER_ACTION,
-    categorySlug,
-    manualCount: evidence.manualCount,
-    totalCount: evidence.totalCount,
-  }).slice(0, 200);
+function priorArtMarker(
+  categorySlug: string,
+  evidence: PriorArtEvidence,
+): ClassificationReasonJson {
+  return priorArtReason(categorySlug, evidence);
 }
 
 /**
@@ -364,8 +396,8 @@ function candidateWhereClause(userId: number, excludeIds: number[]) {
       ),
     ),
     sql`(${transactions.classificationReason} IS NULL OR (
-      ${transactions.classificationReason} NOT LIKE '%"action":"swept"%'
-      AND ${transactions.classificationReason} NOT LIKE '%"action":"abstained"%'
+      ${transactions.classificationReason}->>'action' IS DISTINCT FROM ${SWEPT_MARKER_ACTION}
+      AND ${transactions.classificationReason}->>'action' IS DISTINCT FROM ${ABSTAINED_MARKER_ACTION}
     ))`,
     excludeIds.length > 0 ? notInArray(transactions.id, excludeIds) : undefined,
   );
@@ -500,7 +532,7 @@ async function applyCategory(
   categorySlug: string,
   method: "rule" | "ai" | "rule_retroactive",
   confidence: number,
-  reason: string | null,
+  reason: ClassificationReasonJson | null,
   changes: SweepChange[],
   dryRun: boolean,
 ): Promise<void> {
@@ -517,7 +549,7 @@ async function applyCategory(
       categorySlug,
       classificationMethod: method,
       classificationConfidence: confidence,
-      classificationReason: reason?.slice(0, 200) ?? null,
+      classificationReason: reason,
       updatedAt: new Date(),
     })
     .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
@@ -526,7 +558,7 @@ async function applyCategory(
 type ProposalBucket = {
   name: string;
   parentSlug: string;
-  entries: { tx: CandidateTx; confidence: number; reason?: string }[];
+  entries: { tx: CandidateTx; confidence: number; reason?: ClassificationReasonJson | null }[];
 };
 
 /**
@@ -618,48 +650,14 @@ export async function sweepUserOtrosBucket(
     picked += batch.length;
     seenIds.push(...batch.map((t) => t.id));
 
-    const stillPending: CandidateTx[] = [];
+    const stillPending: { tx: CandidateTx; evidence: TxEvidence }[] = [];
     for (const tx of batch) {
-      // #812: abstain checks run BEFORE prior art. Both catch rows where a
-      // guess (even one echoing the user's own past decision on a
-      // structurally-ambiguous description) is unsafe — an opaque gateway
-      // line can front a different merchant every time, and one leg of an
-      // unpaired transfer must never get a spend category at all. This is
-      // stricter than the usual "prior art outranks everything" rule
-      // deliberately: prior art assumes the merchant identity is a stable,
-      // meaningful key, which is exactly what these two cases violate.
-      const gatewayMatch = matchOpaqueGateway([tx.descriptionRaw, tx.merchant]);
-      if (gatewayMatch) {
-        await abstain(db, userId, tx, "opaque_gateway", { gateway: gatewayMatch }, changes, dryRun);
-        abstainedGateway++;
-        // The named gateways (mercado_pago/payu/wompi) are checked against
-        // known enum values, so a mismatch here is essentially impossible.
-        // "unknown_pasarela" is a generic heuristic match instead — a false
-        // positive there is a real merchant silently and permanently
-        // dropped from every future sweep (see candidateWhereClause), so it
-        // gets its own warn-level event distinguishable from the routine
-        // info-level abstains above, instead of blending into the same log
-        // line and vanishing.
-        if (gatewayMatch === "unknown_pasarela") {
-          log.warn(
-            {
-              userId,
-              txId: tx.id,
-              descriptionRaw: tx.descriptionRaw,
-              merchant: tx.merchant,
-              event: "classify_sweep_abstain_unknown_pasarela",
-            },
-            `classify-sweep: abstained tx ${tx.id} — generic PASARELA gateway match, verify this isn't a real merchant`,
-          );
-        } else {
-          log.info(
-            { userId, txId: tx.id, gateway: gatewayMatch, event: "classify_sweep_abstain_gateway" },
-            `classify-sweep: abstained tx ${tx.id} — opaque gateway (${gatewayMatch})`,
-          );
-        }
-        continue;
-      }
-
+      // #812: abstain checks run BEFORE prior art. Transfer-pair stays
+      // unconditional — one leg of an unpaired transfer must never get a
+      // spend category. Opaque-gateway abstain is evidence-aware (#814):
+      // only fire when correlation found nothing. A unique receipt means
+      // the row is classifiable from email; an empty candidate set is the
+      // original "structurally opaque" case.
       const transferPairTxId = await findProbableTransferPair(db, userId, tx);
       if (transferPairTxId) {
         await abstain(
@@ -684,22 +682,48 @@ export async function sweepUserOtrosBucket(
         continue;
       }
 
+      const evidence = await loadTxEvidence(userId, tx);
+      const gatewayMatch = evidence.opaque;
+      if (gatewayMatch && evidence.candidates.length === 0) {
+        await abstain(db, userId, tx, "opaque_gateway", { gateway: gatewayMatch }, changes, dryRun);
+        abstainedGateway++;
+        if (gatewayMatch === "unknown_pasarela") {
+          log.warn(
+            {
+              userId,
+              txId: tx.id,
+              descriptionRaw: tx.descriptionRaw,
+              merchant: tx.merchant,
+              event: "classify_sweep_abstain_unknown_pasarela",
+            },
+            `classify-sweep: abstained tx ${tx.id} — generic PASARELA gateway match, verify this isn't a real merchant`,
+          );
+        } else {
+          log.info(
+            { userId, txId: tx.id, gateway: gatewayMatch, event: "classify_sweep_abstain_gateway" },
+            `classify-sweep: abstained tx ${tx.id} — opaque gateway (${gatewayMatch})`,
+          );
+        }
+        continue;
+      }
+
       // Prior art next — a user's own established decision for this exact
       // merchant outranks any seed rule (see the module doc comment and
-      // resolvePriorArt for why).
-      const identityKey = merchantIdentityKey(tx);
+      // resolvePriorArt for why). Opaque rows key on receipt.merchant, never
+      // the bank gateway string (#814 prior-art poisoning).
+      const identityKey = merchantIdentityKey(priorArtLookupRow(tx, evidence));
       const priorArtByCategory = identityKey ? priorArtIndex.get(identityKey) : undefined;
       const priorArtCategory = resolvePriorArt(priorArtByCategory);
       if (priorArtCategory && priorArtByCategory) {
-        const evidence = priorArtByCategory.get(priorArtCategory)!;
+        const priorEvidence = priorArtByCategory.get(priorArtCategory)!;
         await applyCategory(
           db,
           userId,
           tx,
           priorArtCategory,
           "rule_retroactive",
-          evidence.manualCount >= 1 ? 100 : 90,
-          priorArtMarker(priorArtCategory, evidence),
+          priorEvidence.manualCount >= 1 ? 100 : 90,
+          citationFromEvidence(evidence, priorArtMarker(priorArtCategory, priorEvidence)),
           changes,
           dryRun,
         );
@@ -707,11 +731,7 @@ export async function sweepUserOtrosBucket(
         continue;
       }
 
-      const classifiable: ClassifiableTx = {
-        descriptionRaw: tx.descriptionRaw,
-        descriptionClean: tx.descriptionClean,
-        merchant: tx.merchant,
-      };
+      const classifiable = classifiableForRules(tx, evidence);
       const ruleHit = dryRun
         ? await findMatchingRule(userId, classifiable, db).then((r) =>
             r ? { categorySlug: r.categorySlug, ruleId: r.id, confidence: 100 as const } : null,
@@ -726,25 +746,20 @@ export async function sweepUserOtrosBucket(
           ruleHit.categorySlug,
           "rule",
           100,
-          null,
+          citationFromEvidence(evidence, { action: "rule", ruleId: ruleHit.ruleId }),
           changes,
           dryRun,
         );
         ruleClassified++;
       } else {
-        stillPending.push(tx);
+        stillPending.push({ tx, evidence });
       }
     }
 
     if (stillPending.length === 0) continue;
 
     const aiResult = await classifyBatchWithAi({
-      transactions: stillPending.map((t) => ({
-        id: t.id,
-        description: t.descriptionClean ?? t.merchant ?? t.descriptionRaw,
-        amountCents: t.amountCents,
-        currency: t.currency,
-      })),
+      transactions: stillPending.map(({ tx, evidence }) => toAiClassifiable(tx, evidence)),
       categories: catOptions,
       userHints,
     });
@@ -752,8 +767,12 @@ export async function sweepUserOtrosBucket(
 
     const byId = new Map<number, AiClassification>(aiResult.classifications.map((c) => [c.id, c]));
 
-    for (const tx of stillPending) {
+    for (const { tx, evidence } of stillPending) {
       const hit = byId.get(tx.id);
+      const cited =
+        hit?.reason || evidence.candidates.length > 0
+          ? citationFromEvidence(evidence, hit?.reason ? { aiReason: hit.reason } : {})
+          : null;
 
       if (
         hit?.categorySlug &&
@@ -767,7 +786,7 @@ export async function sweepUserOtrosBucket(
           hit.categorySlug,
           "ai",
           hit.confidence,
-          hit.reason ?? null,
+          cited,
           changes,
           dryRun,
         );
@@ -783,7 +802,7 @@ export async function sweepUserOtrosBucket(
             parentSlug: hit.proposedCategory.parentSlug,
             entries: [],
           };
-          bucket.entries.push({ tx, confidence: hit.confidence, reason: hit.reason });
+          bucket.entries.push({ tx, confidence: hit.confidence, reason: cited });
           proposals.set(normalized, bucket);
           continue;
         }
@@ -884,7 +903,7 @@ export async function sweepUserOtrosBucket(
             slug,
             "ai",
             entry.confidence,
-            entry.reason ?? "ai_proposed_category",
+            entry.reason ?? { aiReason: "ai_proposed_category" },
             changes,
             dryRun,
           );

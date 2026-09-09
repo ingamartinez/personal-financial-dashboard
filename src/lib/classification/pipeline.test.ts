@@ -43,6 +43,7 @@ async function seedUnclassifiedTx(args: {
   userId: number;
   accountId: number;
   externalId: string;
+  descriptionRaw?: string;
 }): Promise<number> {
   const [row] = await db.execute<{ id: number }>(sql`
     INSERT INTO transactions (
@@ -50,7 +51,7 @@ async function seedUnclassifiedTx(args: {
       description_raw, classification_method, source, external_id
     ) VALUES (
       ${args.userId}, ${args.accountId}, now(), -10000, 'COP',
-      'pipeline-test', 'unclassified'::classification_method,
+      ${args.descriptionRaw ?? "pipeline-test"}, 'unclassified'::classification_method,
       'sms', ${args.externalId}
     )
     RETURNING id
@@ -231,5 +232,33 @@ describe("classifyUnclassifiedBatch — default (no opts)", () => {
 
     const result = await classifyUnclassifiedBatch(TEST_USER_A);
     expect(result.picked).toBe(3);
+  });
+
+  it("abstains an opaque gateway row with zero correlated receipts — does not call AI", async () => {
+    const txId = await seedUnclassifiedTx({
+      userId: TEST_USER_A,
+      accountId: accountA,
+      externalId: "pipeline-test:opaque-mp",
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+    });
+
+    const result = await classifyUnclassifiedBatch(TEST_USER_A, { txIds: [txId] });
+
+    expect(result.picked).toBe(1);
+    expect(result.aiClassified).toBe(0);
+    expect(result.ruleClassified).toBe(0);
+    expect(mockClassifyBatch).not.toHaveBeenCalled();
+
+    const [row] = await db
+      .select({
+        categorySlug: transactions.categorySlug,
+        method: transactions.classificationMethod,
+        reason: transactions.classificationReason,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row?.categorySlug).toBe("otros");
+    expect(row?.method).toBe("user_uncategorized");
+    expect(row?.reason).toMatchObject({ action: "abstained", reason: "opaque_gateway" });
   });
 });

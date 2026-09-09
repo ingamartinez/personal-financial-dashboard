@@ -176,8 +176,7 @@ describe("classificationAutoUncategorizeProcessor", () => {
     await classificationAutoUncategorizeProcessor(makeJob());
 
     const setCall = mocks.dbUpdateSet.mock.calls[0][0];
-    const reason = JSON.parse(setCall.classificationReason as string);
-    expect(reason).toMatchObject({
+    expect(setCall.classificationReason).toMatchObject({
       action: "auto_uncategorized",
       reason: "30d_inbox_stragglers",
     });

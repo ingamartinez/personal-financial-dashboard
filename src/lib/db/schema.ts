@@ -103,6 +103,30 @@ export type ParsedReceiptError = {
   error: { reason: string; kind: "needs_review" | "skipped" };
 };
 
+// #814 Phase 3: classification_reason is jsonb so a citation (receiptId +
+// match kind) can sit next to the existing action markers and AI prose.
+// Free-text values that predate this column were wrapped as `{ text }` in
+// the migration — readers should look at `aiReason` / `text` / `action`.
+export type ClassificationReasonJson = {
+  action?: string;
+  reason?: string;
+  gateway?: string;
+  pairedTxId?: number;
+  categorySlug?: string;
+  manualCount?: number;
+  totalCount?: number;
+  confirmed_from?: string;
+  confidence?: number;
+  text?: string;
+  receiptId?: number;
+  receiptIds?: number[];
+  matchKind?: "exact_amount" | "cross_currency";
+  aiReason?: string;
+  ruleId?: number;
+  run?: string;
+  via?: string;
+};
+
 export const users = pgTable(
   "users",
   {
@@ -537,7 +561,7 @@ export const transactions = pgTable(
       .notNull()
       .default("unclassified"),
     classificationConfidence: smallint("classification_confidence"),
-    classificationReason: varchar("classification_reason", { length: 200 }),
+    classificationReason: jsonb("classification_reason").$type<ClassificationReasonJson>(),
     // #406: installment plan for credit-card purchases. Inmutable post-insert
     // (re-installmentizing creates a new transfer group per the modo-B model,
     // not a mutation — see parent #345). Default 1 means "single payment, no
