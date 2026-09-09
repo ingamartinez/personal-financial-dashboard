@@ -1,13 +1,15 @@
-// #667: rule-proposals BullMQ worker.
+// #667 + #814 5d: rule-proposals BullMQ worker.
 // Runs daily at 05:00 America/Bogota. Scans classification_corrections for
 // (user, merchant, category) groups with 3+ corrections in the last 30 days,
-// inserts pending rule_proposals, and emits a rule_proposal_ready notification
-// per inserted proposal.
+// inserts pending rule_proposals, then asks the AI to write generalizing
+// ILIKE patterns (never auto-applied). Emits a rule_proposal_ready
+// notification per inserted proposal.
 
 import type { Job } from "bullmq";
 
 import { createLogger } from "@/lib/logger";
 import { detectAndEnqueueRuleProposals } from "@/lib/classification/proposals";
+import { synthesizeRuleProposals } from "@/lib/classification/synthesize-rules";
 import { emitNotification } from "@/lib/notifications/emit";
 import { createWorker } from "@/lib/queue";
 
@@ -20,6 +22,7 @@ export type RuleProposalsResult = {
   inserted: number;
   skipped: number;
   emitted: number;
+  synthesized: number;
 };
 
 /**
@@ -35,38 +38,65 @@ export async function ruleProposalsProcessor(
 
   const result = await detectAndEnqueueRuleProposals();
 
+  await job.updateProgress({ phase: "synthesizing" });
+  await job.log("start: synthesizing generalizing ILIKE proposals");
+
+  // Synthesis must not fail the correction path. A model timeout still leaves
+  // the 3× merchant proposals in place.
+  let synthesized: { inserted: number; skipped: number; proposals: typeof result.proposals } = {
+    inserted: 0,
+    skipped: 0,
+    proposals: [],
+  };
+  try {
+    synthesized = await synthesizeRuleProposals();
+  } catch (err) {
+    log.error(
+      { err, event: "rule_synthesis_failed", jobId: job.id },
+      "rule synthesis failed — correction proposals still stand",
+    );
+  }
+
+  const proposals = [...result.proposals, ...synthesized.proposals];
+
   log.info(
     {
       event: "rule_proposals_run",
       scanned: result.scanned,
       inserted: result.inserted,
       skipped: result.skipped,
-      proposalsEmitted: result.proposals.length,
+      synthesized: synthesized.inserted,
+      proposalsEmitted: proposals.length,
     },
     "rule proposals run",
   );
 
   await job.log(
-    `detected: scanned=${result.scanned} inserted=${result.inserted} skipped=${result.skipped}`,
+    `detected: scanned=${result.scanned} inserted=${result.inserted} skipped=${result.skipped} synthesized=${synthesized.inserted}`,
   );
-  await job.updateProgress({ phase: "emitting", proposals: result.proposals.length });
+  await job.updateProgress({ phase: "emitting", proposals: proposals.length });
 
   // Emit one rule_proposal_ready notification per inserted proposal.
   // Fire-and-forget with per-proposal error handling — a failed notification
   // must NOT abort the overall result.
   const emitResults = await Promise.allSettled(
-    result.proposals.map((proposal) =>
+    proposals.map((proposal) =>
       emitNotification(proposal.userId, {
         type: "rule_proposal_ready",
         entityId: String(proposal.id),
         priority: "medium",
         title: "Nueva regla sugerida",
-        body: `Detectamos un patrón en tus correcciones: ${proposal.merchant} → ${proposal.categorySlug}. Revisá si querés convertirlo en regla.`,
+        body:
+          proposal.source === "synthesized"
+            ? `La IA sugiere una regla: ${proposal.pattern} → ${proposal.categorySlug}. Revisá el alcance antes de aprobar.`
+            : `Detectamos un patrón en tus correcciones: ${proposal.merchant} → ${proposal.categorySlug}. Revisá si querés convertirlo en regla.`,
         actionUrl: "/settings/rules/proposals",
         metadata: {
           proposalId: proposal.id,
           merchant: proposal.merchant,
+          pattern: proposal.pattern,
           categorySlug: proposal.categorySlug,
+          source: proposal.source,
         },
       }),
     ),
@@ -75,7 +105,7 @@ export async function ruleProposalsProcessor(
   let emitted = 0;
   for (let i = 0; i < emitResults.length; i++) {
     const settledResult = emitResults[i]!;
-    const proposal = result.proposals[i]!;
+    const proposal = proposals[i]!;
     if (settledResult.status === "rejected") {
       log.error(
         {
@@ -106,6 +136,7 @@ export async function ruleProposalsProcessor(
     inserted: result.inserted,
     skipped: result.skipped,
     emitted,
+    synthesized: synthesized.inserted,
   };
 
   await job.updateProgress({ done: true, ...summary });

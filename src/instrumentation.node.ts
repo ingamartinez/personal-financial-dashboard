@@ -243,8 +243,9 @@ export async function registerNode() {
     },
   );
 
-  // 05:00 COT daily — scan correction patterns and insert pending rule_proposals;
-  // emit rule_proposal_ready notification per inserted proposal (#667).
+  // 05:00 COT daily — scan correction patterns and insert pending rule_proposals,
+  // then synthesize generalizing ILIKE proposals (#814 5d); emit
+  // rule_proposal_ready per inserted proposal (#667).
   await ruleProposalsQueue.add(
     "rule-proposals",
     {},
