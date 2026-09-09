@@ -575,6 +575,13 @@
       "when": 1788969100492,
       "tag": "0081_perfect_wallow",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1788982172776,
+      "tag": "0082_boring_tarot",
+      "breakpoints": true
     }
   ]
 }

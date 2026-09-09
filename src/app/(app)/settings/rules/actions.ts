@@ -1,12 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, desc, eq, ilike, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { categories, classificationRules, ruleProposals, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
+import { ruleApplyMatchSql } from "@/lib/classification/rule-apply-match";
 
 const patternSchema = z.string().trim().min(1).max(200);
 const categorySlugSchema = z.string().min(1).max(60);
@@ -81,24 +82,15 @@ async function assertCategoryExists(userId: number, slug: string): Promise<boole
 }
 
 /**
- * Dry-run for retroactive rule application. Counts and samples transactions
- * from the last 90 days that match the pattern (ILIKE on description_clean or
- * merchant) and have a DIFFERENT current category. Unclassified rows are
- * excluded — they'll be picked up by the regular classifier on next pass.
+ * Dry-run for retroactive rule application. Same predicate as apply and as
+ * the proposal-card blast count (ruleApplyMatchSql).
  */
 async function previewRuleApply(
   userId: number,
   pattern: string,
   categorySlug: string,
 ): Promise<RulePreview> {
-  const baseCondition = and(
-    eq(transactions.userId, userId),
-    sql`${transactions.occurredAt} > now() - interval '90 days'`,
-    or(ilike(transactions.descriptionClean, pattern), ilike(transactions.merchant, pattern)),
-    isNotNull(transactions.categorySlug),
-    sql`${transactions.categorySlug} <> ${categorySlug}`,
-    notDeleted(transactions.deletedAt),
-  )!;
+  const baseCondition = ruleApplyMatchSql(userId, pattern, categorySlug);
 
   const [countRow] = await db
     .select({ n: sql<number>`count(*)::int` })
@@ -125,8 +117,7 @@ async function previewRuleApply(
       id: r.id,
       merchant: r.merchant,
       descriptionClean: r.descriptionClean,
-      // Non-null by virtue of isNotNull filter above — the type guard doesn't
-      // propagate through drizzle's select, so coerce here.
+      // Non-null by ruleApplyMatchSql; drizzle's select does not propagate that.
       currentCategorySlug: r.currentCategorySlug as string,
       amountCents: r.amountCents.toString(),
       occurredAt: r.occurredAt.toISOString(),
@@ -280,6 +271,7 @@ export async function approveRuleProposal(
         .select({
           id: ruleProposals.id,
           merchant: ruleProposals.merchant,
+          pattern: ruleProposals.pattern,
           categorySlug: ruleProposals.categorySlug,
           correctionTxnIds: ruleProposals.correctionTxnIds,
           status: ruleProposals.status,
@@ -292,10 +284,10 @@ export async function approveRuleProposal(
       if (!proposal) throw new ProposalNotFoundError();
       if (proposal.status !== "pending") throw new ProposalAlreadyDecidedError();
 
-      // Merchant wrapped in ILIKE wildcards. If merchant contains a literal %
-      // the user can edit the rule after the fact; default keeps the common
-      // case trivial.
-      const pattern = `%${proposal.merchant}%`;
+      // Persist-rather-than-re-derive: the stored pattern is the rule. Do not
+      // wrap merchant — a synthesized proposal's value is a generalizing ILIKE
+      // like %UBER%, not %UBER TRIP%.
+      const pattern = proposal.pattern;
 
       const [inserted] = await trx
         .insert(classificationRules)
@@ -440,11 +432,7 @@ export async function applyRuleRetroactive(
       classification_confidence = 100,
       retroactive_rule_id = ${rule.id},
       updated_at = now()
-    WHERE user_id = ${session.id}
-      AND occurred_at > now() - interval '90 days'
-      AND (description_clean ILIKE ${rule.pattern} OR merchant ILIKE ${rule.pattern})
-      AND category_slug IS NOT NULL
-      AND category_slug <> ${rule.categorySlug}
+    WHERE ${ruleApplyMatchSql(session.id, rule.pattern, rule.categorySlug)}
     RETURNING id
   `);
 

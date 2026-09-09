@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { categories, classificationRules, ruleProposals, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
+import { loadPatternApplyBlastRadius } from "@/lib/classification/rule-apply-match";
 import { RulesManager } from "./rules-manager";
 
 export const dynamic = "force-dynamic";
@@ -39,8 +40,10 @@ export default async function RulesPage() {
       .select({
         id: ruleProposals.id,
         merchant: ruleProposals.merchant,
+        pattern: ruleProposals.pattern,
         categorySlug: ruleProposals.categorySlug,
         correctionTxnIds: ruleProposals.correctionTxnIds,
+        source: ruleProposals.source,
         createdAt: ruleProposals.createdAt,
       })
       .from(ruleProposals)
@@ -73,10 +76,17 @@ export default async function RulesPage() {
     createdAt: r.createdAt.toISOString(),
   }));
 
-  const pending = proposals.map((p) => ({
-    ...p,
-    createdAt: p.createdAt.toISOString(),
-  }));
+  const pending = await Promise.all(
+    proposals.map(async (p) => {
+      const blast = await loadPatternApplyBlastRadius(session.id, p.pattern, p.categorySlug);
+      return {
+        ...p,
+        createdAt: p.createdAt.toISOString(),
+        matchCount: blast.matchCount,
+        sample: blast.sample,
+      };
+    }),
+  );
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">

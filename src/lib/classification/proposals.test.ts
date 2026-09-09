@@ -97,23 +97,29 @@ describe("detectAndEnqueueRuleProposals", () => {
     expect(result.proposals[0]).toMatchObject({
       userId: TEST_USER_ID,
       merchant,
+      pattern: `%${merchant}%`,
       categorySlug: "alimentacion",
+      source: "corrections",
     });
     expect(typeof result.proposals[0]!.id).toBe("number");
     expect(result.proposals[0]!.id).toBeGreaterThan(0);
 
     const [row] = await db.execute<{
       merchant: string;
+      pattern: string;
       category_slug: string;
       status: string;
+      source: string;
       correction_txn_ids: number[];
     }>(sql`
-      SELECT merchant, category_slug, status::text, correction_txn_ids
+      SELECT merchant, pattern, category_slug, status::text, source::text, correction_txn_ids
       FROM rule_proposals WHERE user_id = ${TEST_USER_ID} AND merchant = ${merchant}
     `);
     expect(row.merchant).toBe(merchant);
+    expect(row.pattern).toBe(`%${merchant}%`);
     expect(row.category_slug).toBe("alimentacion");
     expect(row.status).toBe("pending");
+    expect(row.source).toBe("corrections");
     expect(row.correction_txn_ids).toHaveLength(3);
   });
 
@@ -173,9 +179,9 @@ describe("detectAndEnqueueRuleProposals", () => {
     const merchant = `${MERCHANT_PREFIX}DENIED`;
     // Seed a recent denial
     await db.execute(sql`
-      INSERT INTO rule_proposals (user_id, merchant, category_slug, correction_txn_ids, status, decided_at)
+      INSERT INTO rule_proposals (user_id, merchant, pattern, category_slug, correction_txn_ids, status, decided_at)
       VALUES (
-        ${TEST_USER_ID}, ${merchant}, 'alimentacion', ${JSON.stringify([1, 2, 3])}::jsonb,
+        ${TEST_USER_ID}, ${merchant}, ${"%" + merchant + "%"}, 'alimentacion', ${JSON.stringify([1, 2, 3])}::jsonb,
         'denied', now() - interval '5 days'
       )
     `);
@@ -195,9 +201,9 @@ describe("detectAndEnqueueRuleProposals", () => {
   it("re-proposes when the previous denial is older than 30 days", async () => {
     const merchant = `${MERCHANT_PREFIX}STALE-DENY`;
     await db.execute(sql`
-      INSERT INTO rule_proposals (user_id, merchant, category_slug, correction_txn_ids, status, decided_at)
+      INSERT INTO rule_proposals (user_id, merchant, pattern, category_slug, correction_txn_ids, status, decided_at)
       VALUES (
-        ${TEST_USER_ID}, ${merchant}, 'alimentacion', ${JSON.stringify([1, 2, 3])}::jsonb,
+        ${TEST_USER_ID}, ${merchant}, ${"%" + merchant + "%"}, 'alimentacion', ${JSON.stringify([1, 2, 3])}::jsonb,
         'denied', now() - interval '40 days'
       )
     `);
@@ -233,7 +239,9 @@ describe("detectAndEnqueueRuleProposals", () => {
     const proposal = result.proposals[0]!;
     expect(proposal.userId).toBe(TEST_USER_ID);
     expect(proposal.merchant).toBe(merchant);
+    expect(proposal.pattern).toBe(`%${merchant}%`);
     expect(proposal.categorySlug).toBe("alimentacion");
+    expect(proposal.source).toBe("corrections");
     expect(typeof proposal.id).toBe("number");
     expect(proposal.id).toBeGreaterThan(0);
 

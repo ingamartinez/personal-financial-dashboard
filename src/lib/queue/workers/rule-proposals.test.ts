@@ -18,11 +18,16 @@ vi.mock("@/lib/queue", () => ({
 
 const mocks = vi.hoisted(() => ({
   detectAndEnqueueRuleProposals: vi.fn(),
+  synthesizeRuleProposals: vi.fn(),
   emitNotification: vi.fn(),
 }));
 
 vi.mock("@/lib/classification/proposals", () => ({
   detectAndEnqueueRuleProposals: mocks.detectAndEnqueueRuleProposals,
+}));
+
+vi.mock("@/lib/classification/synthesize-rules", () => ({
+  synthesizeRuleProposals: mocks.synthesizeRuleProposals,
 }));
 
 vi.mock("@/lib/notifications/emit", () => ({
@@ -54,8 +59,15 @@ function mockJob(): Job {
 describe("ruleProposalsProcessor", () => {
   beforeEach(() => {
     mocks.detectAndEnqueueRuleProposals.mockReset();
+    mocks.synthesizeRuleProposals.mockReset();
     mocks.emitNotification.mockReset();
     mocks.emitNotification.mockResolvedValue({ id: 99 });
+    mocks.synthesizeRuleProposals.mockResolvedValue({
+      usersScanned: 0,
+      inserted: 0,
+      skipped: 0,
+      proposals: [],
+    });
   });
 
   it("calls detectAndEnqueueRuleProposals and returns summary with zeros when nothing detected", async () => {
@@ -69,7 +81,7 @@ describe("ruleProposalsProcessor", () => {
     const result = await ruleProposalsProcessor(mockJob());
 
     expect(mocks.detectAndEnqueueRuleProposals).toHaveBeenCalledOnce();
-    expect(result).toEqual({ scanned: 0, inserted: 0, skipped: 0, emitted: 0 });
+    expect(result).toEqual({ scanned: 0, inserted: 0, skipped: 0, emitted: 0, synthesized: 0 });
     expect(mocks.emitNotification).not.toHaveBeenCalled();
   });
 
@@ -79,8 +91,22 @@ describe("ruleProposalsProcessor", () => {
       inserted: 2,
       skipped: 0,
       proposals: [
-        { id: 10, userId: 1, merchant: "RAPPI", categorySlug: "alimentacion" },
-        { id: 11, userId: 2, merchant: "NETFLIX", categorySlug: "entretenimiento" },
+        {
+          id: 10,
+          userId: 1,
+          merchant: "RAPPI",
+          pattern: "%RAPPI%",
+          categorySlug: "alimentacion",
+          source: "corrections",
+        },
+        {
+          id: 11,
+          userId: 2,
+          merchant: "NETFLIX",
+          pattern: "%NETFLIX%",
+          categorySlug: "entretenimiento",
+          source: "corrections",
+        },
       ],
     });
 
@@ -126,8 +152,22 @@ describe("ruleProposalsProcessor", () => {
       inserted: 2,
       skipped: 1,
       proposals: [
-        { id: 20, userId: 5, merchant: "UBER", categorySlug: "transporte" },
-        { id: 21, userId: 6, merchant: "SPOTIFY", categorySlug: "entretenimiento" },
+        {
+          id: 20,
+          userId: 5,
+          merchant: "UBER",
+          pattern: "%UBER%",
+          categorySlug: "transporte",
+          source: "corrections",
+        },
+        {
+          id: 21,
+          userId: 6,
+          merchant: "SPOTIFY",
+          pattern: "%SPOTIFY%",
+          categorySlug: "entretenimiento",
+          source: "corrections",
+        },
       ],
     });
 
@@ -150,7 +190,16 @@ describe("ruleProposalsProcessor", () => {
       scanned: 1,
       inserted: 1,
       skipped: 0,
-      proposals: [{ id: 30, userId: 7, merchant: "AMAZON", categorySlug: "compras" }],
+      proposals: [
+        {
+          id: 30,
+          userId: 7,
+          merchant: "AMAZON",
+          pattern: "%AMAZON%",
+          categorySlug: "compras",
+          source: "corrections",
+        },
+      ],
     });
 
     const job = mockJob();
@@ -169,7 +218,16 @@ describe("ruleProposalsProcessor", () => {
       scanned: 1,
       inserted: 1,
       skipped: 0,
-      proposals: [{ id: 40, userId: 8, merchant: "TOSTAO", categorySlug: "cafe" }],
+      proposals: [
+        {
+          id: 40,
+          userId: 8,
+          merchant: "TOSTAO",
+          pattern: "%TOSTAO%",
+          categorySlug: "cafe",
+          source: "corrections",
+        },
+      ],
     });
 
     await ruleProposalsProcessor(mockJob());
@@ -181,5 +239,67 @@ describe("ruleProposalsProcessor", () => {
     expect(input.title).toBe("Nueva regla sugerida");
     expect(input.body).toContain("TOSTAO");
     expect(input.body).toContain("cafe");
+  });
+
+  it("emits synthesized proposals using the stored pattern, not a merchant wrap", async () => {
+    mocks.detectAndEnqueueRuleProposals.mockResolvedValue({
+      scanned: 0,
+      inserted: 0,
+      skipped: 0,
+      proposals: [],
+    });
+    mocks.synthesizeRuleProposals.mockResolvedValue({
+      usersScanned: 1,
+      inserted: 1,
+      skipped: 0,
+      proposals: [
+        {
+          id: 50,
+          userId: 9,
+          merchant: "UBER TRIP",
+          pattern: "%SYNUBER%",
+          categorySlug: "uber-didi",
+          source: "synthesized",
+        },
+      ],
+    });
+
+    const result = await ruleProposalsProcessor(mockJob());
+
+    expect(result.synthesized).toBe(1);
+    expect(result.emitted).toBe(1);
+    const [, input] = mocks.emitNotification.mock.calls[0] as [
+      number,
+      { body: string; metadata: { pattern: string; source: string } },
+    ];
+    expect(input.body).toContain("%SYNUBER%");
+    expect(input.body).not.toContain("%UBER TRIP%");
+    expect(input.metadata.pattern).toBe("%SYNUBER%");
+    expect(input.metadata.source).toBe("synthesized");
+  });
+
+  it("still returns correction proposals when synthesis throws", async () => {
+    mocks.detectAndEnqueueRuleProposals.mockResolvedValue({
+      scanned: 1,
+      inserted: 1,
+      skipped: 0,
+      proposals: [
+        {
+          id: 60,
+          userId: 10,
+          merchant: "CARULLA",
+          pattern: "%CARULLA%",
+          categorySlug: "mercado",
+          source: "corrections",
+        },
+      ],
+    });
+    mocks.synthesizeRuleProposals.mockRejectedValue(new Error("anthropic timeout"));
+
+    const result = await ruleProposalsProcessor(mockJob());
+
+    expect(result.inserted).toBe(1);
+    expect(result.synthesized).toBe(0);
+    expect(result.emitted).toBe(1);
   });
 });

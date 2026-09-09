@@ -283,6 +283,8 @@ export const counterpartyType = pgEnum("counterparty_type", ["person", "merchant
 
 export const ruleProposalStatus = pgEnum("rule_proposal_status", ["pending", "approved", "denied"]);
 
+export const ruleProposalSource = pgEnum("rule_proposal_source", ["corrections", "synthesized"]);
+
 export const counterpartyKeyKind = pgEnum("counterparty_key_kind", [
   "qr",
   "breb",
@@ -844,12 +846,20 @@ export const classificationRuleSeeds = pgTable(
   ],
 );
 
-// Proposed auto-generated rules produced by the daily learning-loop cron when a
-// user has corrected the same merchant → category 3+ times within 30 days. The
-// partial unique index on (user_id, merchant, category_slug) filtered to
-// status='pending' prevents the cron from re-proposing while a pending proposal
-// is awaiting user decision. Denial suppresses re-proposal for 30d (enforced in
-// the cron WHERE clause, not the index, so historic rows are retained).
+// Proposed auto-generated rules. Two producers:
+//   - corrections: daily learning-loop cron, 3+ exact-merchant corrections in 30d
+//   - synthesized: AI-written ILIKE that GENERALIZES across merchant strings
+//     (#814 5d). Approve always uses `pattern`, never re-wraps merchant.
+// Nothing is auto-applied — both go through the same pending/approval flow.
+//
+// The partial unique on (user_id, merchant, category_slug) WHERE pending is
+// the correction-path dedup. The partial unique on (user_id, pattern,
+// category_slug) WHERE pending is the synthesis-path dedup. Denial suppresses
+// re-proposal for 30d (enforced in the producer WHERE, not the index).
+//
+// `rule_proposals_pattern_min_literals` is the database door against a
+// match-everything ILIKE (`%`, `%A%`). App-layer synthesis validation is
+// stricter; this CHECK is what a future caller that bypasses the app hits.
 export const ruleProposals = pgTable(
   "rule_proposals",
   {
@@ -858,9 +868,11 @@ export const ruleProposals = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     merchant: varchar("merchant", { length: 200 }).notNull(),
+    pattern: text("pattern").notNull(),
     categorySlug: varchar("category_slug", { length: 60 }).notNull(),
     correctionTxnIds: jsonb("correction_txn_ids").$type<number[]>().notNull(),
     status: ruleProposalStatus("status").notNull().default("pending"),
+    source: ruleProposalSource("source").notNull().default("corrections"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
   },
@@ -868,12 +880,19 @@ export const ruleProposals = pgTable(
     uniqueIndex("rule_proposals_user_merchant_category_pending_unique")
       .on(t.userId, t.merchant, t.categorySlug)
       .where(sql`${t.status} = 'pending'`),
+    uniqueIndex("rule_proposals_user_pattern_category_pending_unique")
+      .on(t.userId, t.pattern, t.categorySlug)
+      .where(sql`${t.status} = 'pending'`),
     index("rule_proposals_user_status_idx").on(t.userId, t.status, t.createdAt),
     foreignKey({
       columns: [t.userId, t.categorySlug],
       foreignColumns: [categories.userId, categories.slug],
       name: "rule_proposals_user_category_fk",
     }).onDelete("cascade"),
+    check(
+      "rule_proposals_pattern_min_literals",
+      sql`char_length(replace(replace(${t.pattern}, '%', ''), '_', '')) >= 2`,
+    ),
   ],
 );
 

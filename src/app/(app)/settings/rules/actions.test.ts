@@ -57,6 +57,7 @@ async function seedTxn(args: {
   externalId: string;
   merchant: string | null;
   descriptionClean?: string;
+  descriptionRaw?: string;
   categorySlug: string | null;
   daysAgo?: number;
   classificationMethod?: "rule" | "ai" | "manual" | "unclassified";
@@ -76,7 +77,7 @@ async function seedTxn(args: {
       now() - (interval '1 day' * ${args.daysAgo ?? 0}),
       -5000,
       'COP',
-      ${args.descriptionClean ?? args.merchant ?? "test"},
+      ${args.descriptionRaw ?? args.descriptionClean ?? args.merchant ?? "test"},
       ${args.descriptionClean ?? null},
       ${args.merchant},
       ${args.categorySlug},
@@ -94,16 +95,21 @@ async function seedProposal(args: {
   categorySlug: string;
   correctionTxnIds: number[];
   status?: "pending" | "approved" | "denied";
+  pattern?: string;
+  source?: "corrections" | "synthesized";
 }): Promise<number> {
+  const pattern = args.pattern ?? `%${args.merchant}%`;
   const rows = await db.execute<{ id: number }>(sql`
     INSERT INTO rule_proposals (
-      user_id, merchant, category_slug, correction_txn_ids, status
+      user_id, merchant, pattern, category_slug, correction_txn_ids, status, source
     ) VALUES (
       ${TEST_USER_ID},
       ${args.merchant},
+      ${pattern},
       ${args.categorySlug},
       ${JSON.stringify(args.correctionTxnIds)}::jsonb,
-      ${args.status ?? "pending"}::rule_proposal_status
+      ${args.status ?? "pending"}::rule_proposal_status,
+      ${args.source ?? "corrections"}::rule_proposal_source
     )
     RETURNING id
   `);
@@ -210,6 +216,15 @@ describe("createRule", () => {
       merchant: "CARULLA-PV-6",
       categorySlug: null,
       daysAgo: 3,
+    });
+    // Excluded: token only in description_raw (SMS). Merchant/clean do not match.
+    await seedTxn({
+      externalId: `${TXN_EXTERNAL_PREFIX}pv-excl-raw`,
+      merchant: "BANCOLOMBIA-SMS",
+      descriptionClean: "BANCOLOMBIA-SMS",
+      descriptionRaw: "COMPRA CARULLA-PV 1234",
+      categorySlug: "transferencias",
+      daysAgo: 5,
     });
 
     const result = await createRule({
@@ -393,6 +408,33 @@ describe("approveRuleProposal", () => {
     // Cleanup the extra rule we just created.
     await db.execute(sql`
       DELETE FROM classification_rules WHERE pattern = ${`%${merchant}%`}
+    `);
+  });
+
+  it("approves a synthesized proposal using the stored pattern, not a merchant wrap", async () => {
+    const merchant = `${PROPOSAL_PREFIX}UBER TRIP`;
+    const pattern = `%${PROPOSAL_PREFIX}SYNUBER%`;
+    const proposalId = await seedProposal({
+      merchant,
+      pattern,
+      categorySlug: "uber-didi",
+      correctionTxnIds: [1, 2, 3],
+      source: "synthesized",
+    });
+
+    const result = await approveRuleProposal({ id: proposalId });
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") throw new Error("expected ok");
+
+    const [rule] = await db.execute<{ pattern: string }>(sql`
+      SELECT pattern FROM classification_rules
+      WHERE user_id = ${TEST_USER_ID} AND pattern = ${pattern}
+    `);
+    expect(rule.pattern).toBe(pattern);
+    expect(rule.pattern).not.toBe(`%${merchant}%`);
+
+    await db.execute(sql`
+      DELETE FROM classification_rules WHERE pattern = ${pattern}
     `);
   });
 

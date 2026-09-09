@@ -31,7 +31,8 @@ export type ClaudeFeature =
   | "ocr"
   | "sms-fallback"
   | "canary"
-  | "pdf-vision";
+  | "pdf-vision"
+  | "rule-synthesis";
 
 export type ClaudeImage = {
   mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";

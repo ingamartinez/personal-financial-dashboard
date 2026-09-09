@@ -8,7 +8,9 @@ export type ProposalRow = {
   id: number;
   userId: number;
   merchant: string;
+  pattern: string;
   categorySlug: string;
+  source: "corrections" | "synthesized";
 };
 
 export type DetectProposalsResult = {
@@ -65,10 +67,10 @@ export async function detectAndEnqueueRuleProposals(
       )
     ),
     inserted AS (
-      INSERT INTO rule_proposals (user_id, merchant, category_slug, correction_txn_ids, status)
-      SELECT user_id, merchant, new_category_slug, txn_ids, 'pending'
+      INSERT INTO rule_proposals (user_id, merchant, pattern, category_slug, correction_txn_ids, status, source)
+      SELECT user_id, merchant, '%' || merchant || '%', new_category_slug, txn_ids, 'pending', 'corrections'
       FROM insertable
-      RETURNING id, user_id, merchant, category_slug
+      RETURNING id, user_id, merchant, pattern, category_slug, source
     )
     SELECT
       (SELECT count(*) FROM candidates)::text AS scanned,
@@ -79,7 +81,9 @@ export async function detectAndEnqueueRuleProposals(
           'id', id,
           'userId', user_id,
           'merchant', merchant,
-          'categorySlug', category_slug
+          'pattern', pattern,
+          'categorySlug', category_slug,
+          'source', source
         )) FROM inserted),
         '[]'::jsonb
       ) AS proposals
@@ -93,7 +97,9 @@ export async function detectAndEnqueueRuleProposals(
     id: Number(p.id),
     userId: Number(p.userId),
     merchant: p.merchant,
+    pattern: p.pattern,
     categorySlug: p.categorySlug,
+    source: p.source === "synthesized" ? "synthesized" : "corrections",
   }));
 
   const inserted = Number(row.inserted_count);
