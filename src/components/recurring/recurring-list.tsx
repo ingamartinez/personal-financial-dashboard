@@ -1,6 +1,11 @@
 "use client";
 
+import { useTransition } from "react";
+import { UndoIcon } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { unlinkTxFromRecurring } from "@/app/(app)/transactions/actions";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { PriceHike, RecurringRow } from "@/app/(app)/recurring/queries";
@@ -42,7 +47,44 @@ function PriceHikeBadge({ hike }: { hike: PriceHike }) {
   );
 }
 
-function SubDetailContent({ row }: { row: RecurringRow }) {
+// #804: one-tap undo for an auto-matched (or wrongly manually-linked) tx —
+// "aggressive auto-matching without a one-tap undo is silent data corruption".
+function UndoMatchButton({ txId, label }: { txId: number; label: string }) {
+  const [pending, startTransition] = useTransition();
+
+  const onUndo = () => {
+    startTransition(async () => {
+      const result = await unlinkTxFromRecurring({ txId });
+      if (result.ok) {
+        toast.success(`Deshecho el match de ${label}`);
+      } else {
+        toast.error("No se pudo deshacer el match", { description: result.error });
+      }
+    });
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="gap-1.5 self-start"
+      disabled={pending}
+      onClick={onUndo}
+    >
+      <UndoIcon className="size-3.5" />
+      {pending ? "Deshaciendo…" : "Deshacer match"}
+    </Button>
+  );
+}
+
+function SubDetailContent({
+  row,
+  matchedTxId,
+}: {
+  row: RecurringRow;
+  matchedTxId?: number | null;
+}) {
   const absDisplayCents = absCents(row.displayAmount.cents);
 
   return (
@@ -66,6 +108,8 @@ function SubDetailContent({ row }: { row: RecurringRow }) {
 
         {row.notes && <p className="italic">{row.notes}</p>}
       </div>
+
+      {matchedTxId != null && <UndoMatchButton txId={matchedTxId} label={row.label} />}
     </div>
   );
 }
@@ -79,10 +123,18 @@ interface CompactPillProps {
   isCalculatorOpen: boolean;
   isExcluded: boolean;
   status?: UpcomingStatus;
+  matchedTxId?: number | null;
   onToggle?: (id: number) => void;
 }
 
-function CompactPill({ row, isCalculatorOpen, isExcluded, status, onToggle }: CompactPillProps) {
+function CompactPill({
+  row,
+  isCalculatorOpen,
+  isExcluded,
+  status,
+  matchedTxId,
+  onToggle,
+}: CompactPillProps) {
   const absDisplayCents = absCents(row.displayAmount.cents);
   const amountStr = formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD");
 
@@ -151,7 +203,7 @@ function CompactPill({ row, isCalculatorOpen, isExcluded, status, onToggle }: Co
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" className="w-64">
-        <SubDetailContent row={row} />
+        <SubDetailContent row={row} matchedTxId={status === "matched" ? matchedTxId : null} />
       </PopoverContent>
     </Popover>
   );
@@ -166,6 +218,9 @@ export interface RecurringListProps {
   excludedIds: Set<number>;
   isCalculatorOpen: boolean;
   slotStatusById?: Record<number, UpcomingStatus>;
+  // #804: matched transaction id per recurring — powers the one-tap "Deshacer
+  // match" undo affordance on a matched pill's popover.
+  matchedTxIdById?: Record<number, number | null>;
   onToggleExcluded?: (id: number) => void;
 }
 
@@ -174,6 +229,7 @@ export function RecurringList({
   excludedIds,
   isCalculatorOpen,
   slotStatusById,
+  matchedTxIdById,
   onToggleExcluded,
 }: RecurringListProps) {
   if (rows.length === 0) return null;
@@ -190,6 +246,7 @@ export function RecurringList({
           isCalculatorOpen={isCalculatorOpen}
           isExcluded={excludedIds.has(row.id)}
           status={slotStatusById?.[row.id]}
+          matchedTxId={matchedTxIdById?.[row.id]}
           onToggle={onToggleExcluded}
         />
       ))}

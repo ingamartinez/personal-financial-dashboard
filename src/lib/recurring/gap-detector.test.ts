@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
+  recurringDescriptionPatterns,
   recurringGaps,
   recurringTransactions,
   transactions,
@@ -32,18 +33,24 @@ async function cleanup() {
     sql`DELETE FROM recurring_gaps WHERE recurring_id IN (SELECT id FROM recurring_transactions WHERE label LIKE '__gap_test%')`,
   );
   await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__gap_test%'`);
+  // Also catch #804 tests that seed a custom (non-'__gap_test%') description
+  // on a dedicated test account — those transactions must be cleared before
+  // the account FK delete below.
+  await db.execute(
+    sql`DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE ${TEST_ACCOUNT + "%"})`,
+  );
   await db.execute(sql`DELETE FROM recurring_transactions WHERE label LIKE '__gap_test%'`);
-  await db.execute(sql`DELETE FROM accounts WHERE name = ${TEST_ACCOUNT}`);
+  await db.execute(sql`DELETE FROM accounts WHERE name LIKE ${TEST_ACCOUNT + "%"}`);
 }
 
 const TEST_USER_ID = 1;
 
-async function seedAccount() {
+async function seedAccount(nameSuffix = "") {
   const [a] = await db
     .insert(accounts)
     .values({
       userId: TEST_USER_ID,
-      name: TEST_ACCOUNT,
+      name: TEST_ACCOUNT + nameSuffix,
       institution: "Test",
       type: "savings",
       currency: "COP",
@@ -251,22 +258,31 @@ describe("detectGapsForMonth (integration)", () => {
     expect(result.autoLinked).toBe(1);
   });
 
-  it("respects asymmetric window — tx 6 days after expected day is OUT of window", async () => {
+  it("#804: late payment — tx 6 days after the old fixed +5 bound now auto-links", async () => {
+    // Pre-#804 this was outside the fixed ±10/+5 window and created a gap.
+    // #804 replaces the fixed window with slot-claiming, which explicitly
+    // supports late payments — see src/lib/recurring/slot.ts.
     const accountId = await seedAccount();
-    await seedRecurring(accountId, {
+    const recId = await seedRecurring(accountId, {
       label: "__gap_test late pay",
       amountCents: BigInt(-100000),
       dayOfMonth: 10,
     });
     // tx on apr-16 (6 days after day 10)
-    await seedTx(accountId, {
+    const txId = await seedTx(accountId, {
       occurredOn: "2026-04-16",
       amountCents: BigInt(-100000),
     });
 
     const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
-    expect(result.autoLinked).toBe(0);
-    expect(result.gapsCreated).toBe(1);
+    expect(result.autoLinked).toBe(1);
+    expect(result.gapsCreated).toBe(0);
+
+    const [linked] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringId).toBe(recId);
   });
 
   it("is idempotent — re-running on the same month is a no-op", async () => {
@@ -318,6 +334,66 @@ describe("detectGapsForMonth (integration)", () => {
     await seedTx(accountId, {
       occurredOn: "2026-04-05",
       amountCents: BigInt(-347000), // variable — different amount
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(0);
+    expect(result.gapsCreated).toBe(1);
+  });
+});
+
+describe("detectGapsForMonth #804 — cross-account and skip veto", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("auto-links a tx paid from a DIFFERENT account via the learned fingerprint", async () => {
+    const accountA = await seedAccount("_A");
+    const accountB = await seedAccount("_B");
+    const recId = await seedRecurring(accountA, {
+      label: "__gap_test crossaccount",
+      amountCents: BigInt(-4490000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: recId,
+      pattern: "NETFLIX",
+      observationCount: 2,
+      patternAmbiguous: false,
+    });
+
+    const txId = await seedTx(accountB, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-4490000),
+      description: "NETFLIX*DL",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(1);
+    expect(result.gapsCreated).toBe(0);
+
+    const [linked] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringId).toBe(recId);
+  });
+
+  it("does NOT auto-link a same-amount purchase with an unmatched token, even cross-account", async () => {
+    const accountA = await seedAccount("_A2");
+    const accountB = await seedAccount("_B2");
+    await seedRecurring(accountA, {
+      label: "__gap_test appletv",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+
+    // No fingerprint learned yet; description has an extractable-but-unmatched
+    // token ("KFC") — must not fall back to amount-only matching.
+    await seedTx(accountB, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-2990000),
+      description: "KFC UNICENTRO MEDELL",
     });
 
     const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");

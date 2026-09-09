@@ -28,8 +28,14 @@ export default async function RecurringPage() {
 
   // Build a plain JSON-serializable Record (not a Map) for RSC prop boundary.
   const slotStatusByRecurringId: Record<number, UpcomingStatus> = {};
+  // #804: matched transaction id per recurring — powers the "Deshacer match"
+  // one-tap undo affordance so aggressive auto-matching stays reversible.
+  const matchedTxIdByRecurringId: Record<number, number | null> = {};
   for (const item of upcomingItems) {
     slotStatusByRecurringId[item.recurringId] = item.status;
+    if (item.status === "matched") {
+      matchedTxIdByRecurringId[item.recurringId] = item.matchedTransactionId;
+    }
   }
 
   return (
@@ -51,6 +57,7 @@ export default async function RecurringPage() {
         monthlyTotals={monthlyTotals}
         annualTotals={annualTotals}
         slotStatusByRecurringId={slotStatusByRecurringId}
+        matchedTxIdByRecurringId={matchedTxIdByRecurringId}
       />
     </main>
   );
