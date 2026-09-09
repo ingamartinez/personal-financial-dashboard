@@ -272,21 +272,29 @@ describe("autoLinkTransaction (integration)", () => {
     expect(result.status).toBe("no-open-gap");
   });
 
-  it("does not match when outside the asymmetric window", async () => {
+  it("#804: late payment — 6 days after the old fixed +5 bound now still auto-links", async () => {
+    // Pre-#804 this was outside the fixed ±10/+5 window and returned
+    // no-open-gap. #804 replaces the fixed window with slot-claiming, which
+    // explicitly supports late payments (see issue acceptance criteria:
+    // "a day-1 recurring paid on day 20 must match that month's occurrence").
     const accountId = await seedAccount();
-    await seedRecurringWithGap(accountId, {
+    const { recurringId, gapId } = await seedRecurringWithGap(accountId, {
       label: "__autolink window",
       amountCents: BigInt(-100000),
       dayOfMonth: 10,
       yearMonth: "2026-04",
     });
-    // 6 days after day 10 → outside the +5 bound
     const txId = await seedTx(accountId, {
       occurredOn: "2026-04-16",
       amountCents: BigInt(-100000),
     });
     const result = await autoLinkTransaction(1, txId);
-    expect(result.status).toBe("no-open-gap");
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.gapId).toBe(gapId);
+      expect(result.yearMonth).toBe("2026-04");
+    }
   });
 });
 
@@ -368,20 +376,26 @@ describe("autoLinkTransaction direct-recurring path", () => {
     }
   });
 
-  it("window out: tx 6 days after dayOfMonth+5 → no match", async () => {
+  it("#804: late payment — 6 days after the old fixed +5 bound now still auto-links", async () => {
+    // Pre-#804, dayOfMonth=10's window ended at day 15 (10+5); day 16 was
+    // outside it. Slot-claiming replaces that fixed window and explicitly
+    // supports late payments.
     const accountId = await seedAccount();
-    await seedRecurring(accountId, {
+    const recurringId = await seedRecurring(accountId, {
       label: "__autolink direct window",
       amountCents: BigInt(-100000),
       dayOfMonth: 10,
     });
-    // dayOfMonth=10, window end = day 15 (10+5). Day 16 is outside.
     const txId = await seedTx(accountId, {
       occurredOn: "2026-04-16",
       amountCents: BigInt(-100000),
     });
     const result = await autoLinkTransaction(TEST_USER_ID, txId);
-    expect(result.status).toBe("no-open-gap");
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.yearMonth).toBe("2026-04");
+    }
   });
 
   it("window start: tx 10 days before dayOfMonth → matches", async () => {
@@ -403,20 +417,28 @@ describe("autoLinkTransaction direct-recurring path", () => {
     }
   });
 
-  it("window before start: tx 11 days before dayOfMonth → no match", async () => {
+  it("#804: tx 11 days before dayOfMonth=20 now resolves as a LATE payment for the PRIOR month", async () => {
+    // Pre-#804 this was simply "outside the ±10 window" → no match. Under
+    // slot-claiming, Apr 9 is too early to be an early payment for April 20
+    // (grace is only 10 days), but it unambiguously qualifies as a (very)
+    // late payment for March 20 — no active recurring is left unclaimed by
+    // the new rule, by design (see src/lib/recurring/slot.ts).
     const accountId = await seedAccount();
-    await seedRecurring(accountId, {
+    const recurringId = await seedRecurring(accountId, {
       label: "__autolink direct window before",
       amountCents: BigInt(-100000),
       dayOfMonth: 20,
     });
-    // dayOfMonth=20, window start = day 10. Day 9 is outside.
     const txId = await seedTx(accountId, {
       occurredOn: "2026-04-09",
       amountCents: BigInt(-100000),
     });
     const result = await autoLinkTransaction(TEST_USER_ID, txId);
-    expect(result.status).toBe("no-open-gap");
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.yearMonth).toBe("2026-03");
+    }
   });
 
   it("ambiguity: two active recurrings same account+amount in window → returns ambiguous count=2", async () => {
@@ -794,7 +816,12 @@ describe("autoLinkTransaction cross-month", () => {
     expect(result.status).toBe("no-open-gap");
   });
 
-  it("#633: Google Play ambiguity — pattern matches 2 recurrings → no auto-link via description", async () => {
+  it("#804: Google Play token collision — nearest amount disambiguates instead of blocking forever", async () => {
+    // Pre-#804, patternAmbiguous=true permanently disabled the fingerprint
+    // for both recurrings. #804 redefines ambiguity as "requires a second
+    // signal" — the token collision narrows to these two candidates, and the
+    // amount (-19900) is much closer to YouTube's -21900 (distance 2000)
+    // than to Google One's -10900 (distance 9000), so YouTube wins.
     const accountId = await seedAccount();
     const recurringYouTubeId = await seedRecurring(accountId, {
       label: "__autolink_gplay_yt_633__",
@@ -832,16 +859,17 @@ describe("autoLinkTransaction cross-month", () => {
       description: "GOOGLE *PLAY YOUTUBE",
     });
 
-    // Should not auto-link via description since both patterns are ambiguous.
     const result = await autoLinkTransaction(TEST_USER_ID, txId);
-    expect(result.status).toBe("no-open-gap");
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringYouTubeId);
+    }
 
-    // Verify tx is not linked.
     const [row] = await db
       .select({ recurringId: transactions.recurringId })
       .from(transactions)
       .where(eq(transactions.id, txId));
-    expect(row.recurringId).toBeNull();
+    expect(row.recurringId).toBe(recurringYouTubeId);
   });
 
   it("#633: amount-based match still works even when description is Google Play ambiguous", async () => {
@@ -874,6 +902,209 @@ describe("autoLinkTransaction cross-month", () => {
     expect(result.status).toBe("linked");
     if (result.status !== "linked") throw new Error("should not reach");
     expect(result.recurringId).toBe(recurringYouTubeId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #804: cross-account matching, explicit late payment, and the skippedMonths
+// veto (the three acceptance criteria from the issue body).
+// ---------------------------------------------------------------------------
+describe("autoLinkTransaction #804 — cross-account, late payment, skip veto", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("recurring bound to account A, paid from account B, auto-links via the learned fingerprint", async () => {
+    const accountA = await seedAccount(TEST_USER_ID, "_A");
+    const accountB = await seedAccount(TEST_USER_ID, "_B");
+    const recurringId = await seedRecurring(accountA, {
+      label: "__autolink_804_crossaccount__",
+      amountCents: BigInt(-4490000),
+      dayOfMonth: 15,
+    });
+
+    // Simulate a fingerprint already learned from prior manual links.
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern: "NETFLIX",
+      observationCount: 2,
+      patternAmbiguous: false,
+    });
+
+    // Paid from a DIFFERENT account than the recurring's configured account.
+    const txId = await seedTx(accountB, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-4490000),
+      description: "NETFLIX*DL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+    }
+  });
+
+  it("day-1 recurring paid on day 20 auto-links to that month's occurrence (exact-account, no fingerprint needed)", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_804_lateday1__",
+      amountCents: BigInt(-100000),
+      dayOfMonth: 1,
+    });
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-20",
+      amountCents: BigInt(-100000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.yearMonth).toBe("2026-04");
+    }
+  });
+
+  it("a month marked skippedMonths NEVER auto-links, even with a perfect classic (account+amount) candidate", async () => {
+    const accountId = await seedAccount();
+    await db.insert(recurringTransactions).values({
+      userId: TEST_USER_ID,
+      accountId,
+      label: "__autolink_804_skipveto__",
+      amountCents: BigInt(-100000),
+      currency: "COP",
+      dayOfMonth: 1,
+      active: true,
+      skippedMonths: ["2026-04"],
+    });
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-01",
+      amountCents: BigInt(-100000),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("KFC purchase byte-identical to an unrelated recurring's amount does NOT auto-link (integration)", async () => {
+    const accountId = await seedAccount();
+    await seedRecurring(accountId, {
+      label: "__autolink_804_appletv__",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+
+    // Different account, no fingerprint learned, extractable-but-unmatched
+    // token "KFC" — must not fall back to amount-only matching.
+    const otherAccountId = await seedAccount(TEST_USER_ID, "_kfc");
+    const txId = await seedTx(otherAccountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-2990000),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("CRITICAL fix: KFC purchase byte-identical to Apple TV's amount does NOT auto-link even on Apple TV's OWN account", async () => {
+    // Reviewer-flagged regression: the classic (same-account + exact-amount)
+    // fast path must never bypass the token guard. Apple TV already has a
+    // learned fingerprint ("APPLE") — a KFC purchase landing on the exact
+    // same account, at the exact same amount, must still be blocked.
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_804_appletv_sameacct__",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern: "APPLE",
+      observationCount: 2,
+      patternAmbiguous: false,
+    });
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-2990000),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("bootstrap preserved: first-ever payment, own account, exact amount, unfamiliar token, zero learned patterns → still links", async () => {
+    // The classic shortcut is still allowed to fire without a learned
+    // fingerprint when the candidate has NEVER learned anything yet (nothing
+    // to contradict) and no other candidate collides on amount.
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_804_bootstrap__",
+      amountCents: BigInt(-3050000),
+      dayOfMonth: 15,
+    });
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-3050000),
+      description: "SPOTIFY P 12345",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+    }
+  });
+
+  it("classic shortcut declines when amount ALSO collides with another active recurring, falls through to scorer", async () => {
+    // Even though the tx's own account+amount uniquely matches recurring A
+    // (classic), recurring B ALSO shares this exact amount elsewhere — the
+    // amount is not unique in the pool, so the classic shortcut must not
+    // fire blindly. Since neither has a matching token, the scorer blocks.
+    const accountA = await seedAccount(TEST_USER_ID, "_collideA");
+    const accountB = await seedAccount(TEST_USER_ID, "_collideB");
+    await seedRecurring(accountA, {
+      label: "__autolink_804_collide_a__",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+    await seedRecurring(accountB, {
+      label: "__autolink_804_collide_b__",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+
+    const txId = await seedTx(accountA, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-2990000),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
   });
 });
 

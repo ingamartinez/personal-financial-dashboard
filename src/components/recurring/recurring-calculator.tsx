@@ -27,6 +27,9 @@ interface RecurringCalculatorProps {
   monthlyTotals: AggregationBucket[];
   annualTotals: AggregationBucket[];
   slotStatusByRecurringId?: Record<number, UpcomingStatus>;
+  // #804: matched transaction id per recurring, for the "Deshacer match" undo
+  // affordance in the compact list.
+  matchedTxIdByRecurringId?: Record<number, number | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +349,7 @@ export function RecurringCalculator({
   monthlyTotals,
   annualTotals,
   slotStatusByRecurringId,
+  matchedTxIdByRecurringId,
 }: RecurringCalculatorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set());
@@ -473,6 +477,7 @@ export function RecurringCalculator({
               excludedIds={excludedIds}
               isCalculatorOpen={isOpen}
               slotStatusById={slotStatusByRecurringId}
+              matchedTxIdById={matchedTxIdByRecurringId}
               onToggleExcluded={handleToggle}
             />
           </AccordionContent>
@@ -481,7 +486,11 @@ export function RecurringCalculator({
         <AccordionItem value="calendar" className="mt-2 rounded-lg border px-3">
           <AccordionTrigger className="text-sm font-semibold">Calendario</AccordionTrigger>
           <AccordionContent>
-            <RecurringCalendarGrid rows={rows} slotStatusById={slotStatusByRecurringId} />
+            <RecurringCalendarGrid
+              rows={rows}
+              slotStatusById={slotStatusByRecurringId}
+              matchedTxIdById={matchedTxIdByRecurringId}
+            />
           </AccordionContent>
         </AccordionItem>
       </Accordion>

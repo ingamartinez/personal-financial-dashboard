@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+// RecurringList (rendered by RecurringCalculator) imports the real "use
+// server" actions.ts for its undo affordance (#804), which transitively
+// imports next-auth — mock it out, matching recurring-list.test.tsx.
+vi.mock("@/app/(app)/transactions/actions", () => ({ unlinkTxFromRecurring: vi.fn() }));
 
 import { RecurringCalculator } from "./recurring-calculator";
 import type { RecurringRow } from "@/app/(app)/recurring/queries";

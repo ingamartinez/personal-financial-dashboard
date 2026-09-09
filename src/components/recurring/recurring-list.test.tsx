@@ -4,6 +4,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+// ---------------------------------------------------------------------------
+// Hoist mocks before any imports that reference the mocked modules — the real
+// "use server" actions.ts transitively imports next-auth, which fails to
+// resolve under jsdom.
+// ---------------------------------------------------------------------------
+const { unlinkTxFromRecurring, toastSuccess, toastError } = vi.hoisted(() => ({
+  unlinkTxFromRecurring: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}));
+
+vi.mock("@/app/(app)/transactions/actions", () => ({ unlinkTxFromRecurring }));
+vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
+
 import { RecurringList } from "./recurring-list";
 import type { RecurringRow } from "@/app/(app)/recurring/queries";
 
@@ -211,5 +225,69 @@ describe("RecurringList", () => {
     render(<RecurringList rows={rows} excludedIds={new Set()} isCalculatorOpen={false} />);
 
     expect(screen.queryAllByTestId("status-dot")).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // #804: one-tap "Deshacer match" undo affordance on a matched pill.
+  // -------------------------------------------------------------------------
+
+  it("shows a Deshacer match button in a matched pill's popover", async () => {
+    const user = userEvent.setup();
+    nextId = 90;
+    const row = makeRow({ id: 90, label: "Netflix" });
+
+    render(
+      <RecurringList
+        rows={[row]}
+        excludedIds={new Set()}
+        isCalculatorOpen={false}
+        slotStatusById={{ 90: "matched" }}
+        matchedTxIdById={{ 90: 555 }}
+      />,
+    );
+
+    await user.click(screen.getByTestId("recurring-list-pill"));
+    expect(screen.getByRole("button", { name: /deshacer match/i })).toBeInTheDocument();
+  });
+
+  it("does NOT show the undo button for a non-matched pill, even with a stray matchedTxIdById entry", async () => {
+    const user = userEvent.setup();
+    nextId = 91;
+    const row = makeRow({ id: 91, label: "Spotify" });
+
+    render(
+      <RecurringList
+        rows={[row]}
+        excludedIds={new Set()}
+        isCalculatorOpen={false}
+        slotStatusById={{ 91: "upcoming" }}
+        matchedTxIdById={{ 91: 555 }}
+      />,
+    );
+
+    await user.click(screen.getByTestId("recurring-list-pill"));
+    expect(screen.queryByRole("button", { name: /deshacer match/i })).not.toBeInTheDocument();
+  });
+
+  it("calls unlinkTxFromRecurring with the matched tx id when Deshacer match is clicked", async () => {
+    unlinkTxFromRecurring.mockResolvedValueOnce({ ok: true });
+    const user = userEvent.setup();
+    nextId = 92;
+    const row = makeRow({ id: 92, label: "Google One" });
+
+    render(
+      <RecurringList
+        rows={[row]}
+        excludedIds={new Set()}
+        isCalculatorOpen={false}
+        slotStatusById={{ 92: "matched" }}
+        matchedTxIdById={{ 92: 777 }}
+      />,
+    );
+
+    await user.click(screen.getByTestId("recurring-list-pill"));
+    await user.click(screen.getByRole("button", { name: /deshacer match/i }));
+
+    expect(unlinkTxFromRecurring).toHaveBeenCalledWith({ txId: 777 });
   });
 });

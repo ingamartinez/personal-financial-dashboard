@@ -4,13 +4,30 @@ import { accounts, categories, recurringTransactions, transactions } from "@/lib
 import { notDeleted } from "@/lib/db/helpers";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { createLogger } from "@/lib/logger";
-import {
-  DEFAULT_WINDOW_AFTER_DAYS,
-  DEFAULT_WINDOW_BEFORE_DAYS,
-} from "@/lib/recurring/gap-detector";
+import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
+import { fetchPatterns } from "@/lib/recurring/patterns";
+import { LATE_PAYMENT_GRACE_DAYS, occurrenceWindow } from "@/lib/recurring/slot";
 import type { Currency } from "@/lib/types";
 
 const log = createLogger({ module: "recurring/upcoming" });
+
+/**
+ * #804 WARNING fix: the status-dot "matched" heuristic must not lie to the
+ * user. A tx whose description has an extractable token that does NOT match
+ * the recurring's own learned patterns must not be painted as "matched" just
+ * because the amount coincides (the KFC/SmartFit false-positive shape).
+ * Mirrors the real auto-link paths' bootstrap allowance: a recurring with no
+ * learned patterns yet has nothing to contradict, so it passes.
+ */
+function tokenConflictsWithPatterns(
+  descriptionRaw: string | null | undefined,
+  patterns: string[],
+): boolean {
+  if (patterns.length === 0) return false;
+  const token = tokeniseDescription(descriptionRaw);
+  if (token === null) return false;
+  return !patterns.includes(token);
+}
 
 // Default window for getUpcomingForWindow (#632).
 export const UPCOMING_WINDOW_BEFORE_DAYS = 5;
@@ -70,8 +87,6 @@ export async function getUpcomingForMonth(
     month,
     includeDismissed = false,
     includeMatched = true,
-    matchWindowBeforeDays = DEFAULT_WINDOW_BEFORE_DAYS,
-    matchWindowAfterDays = DEFAULT_WINDOW_AFTER_DAYS,
     today = new Date(),
   } = opts;
 
@@ -79,6 +94,11 @@ export async function getUpcomingForMonth(
   const monthDays = daysInMonth(year, month);
   const rangeStart = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
   const rangeEnd = new Date(Date.UTC(year, month, 0, 23, 59, 59));
+  // #804: fetch range wide enough to cover any per-recurring occurrence
+  // window (see occurrenceWindow in slot.ts) — up to grace days before the
+  // month starts, and up to a full month + grace days after it ends.
+  const fetchStart = new Date(rangeStart.getTime() - LATE_PAYMENT_GRACE_DAYS * 86400000);
+  const fetchEnd = new Date(rangeEnd.getTime() + (31 + LATE_PAYMENT_GRACE_DAYS) * 86400000);
 
   const rows = await database
     .select({
@@ -155,23 +175,22 @@ export async function getUpcomingForMonth(
       accountId: transactions.accountId,
       amountCents: transactions.amountCents,
       occurredAt: transactions.occurredAt,
+      descriptionRaw: transactions.descriptionRaw,
     })
     .from(transactions)
     .where(
       and(
         eq(transactions.userId, userId),
-        gte(
-          transactions.occurredAt,
-          new Date(rangeStart.getTime() - matchWindowBeforeDays * 86400000),
-        ),
-        lte(
-          transactions.occurredAt,
-          new Date(rangeEnd.getTime() + matchWindowAfterDays * 86400000),
-        ),
+        gte(transactions.occurredAt, fetchStart),
+        lte(transactions.occurredAt, fetchEnd),
         isNull(transactions.recurringId),
         notDeleted(transactions.deletedAt),
       ),
     );
+
+  // #804: fetch learned patterns for the token-conflict guard on the
+  // heuristic match below.
+  const patternsByRecurringId = await fetchPatterns(userId, recurringIds, database);
 
   const todayDate = new Date(
     Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
@@ -182,20 +201,25 @@ export async function getUpcomingForMonth(
     const day = Math.min(r.dayOfMonth, monthDays);
     const expectedOn = toIso(year, month, day);
     const expectedDate = new Date(`${expectedOn}T00:00:00Z`);
-    const windowStart = new Date(expectedDate.getTime() - matchWindowBeforeDays * 86400000);
-    const windowEnd = new Date(expectedDate.getTime() + matchWindowAfterDays * 86400000);
+    // #804: slot-claiming window (late payments supported), no longer
+    // requires the same account — see src/lib/recurring/slot.ts. This is a
+    // display-only heuristic (explicit links above are authoritative), so it
+    // keeps amount as the disambiguator rather than the full token+amount
+    // scorer used by the real auto-link paths.
+    const win = occurrenceWindow(year, month, r.dayOfMonth);
 
     const isDismissed = (r.skippedMonths ?? []).includes(ym);
 
+    const ownPatterns = patternsByRecurringId.get(r.id) ?? [];
     const explicitMatchTxId = explicitMap.get(r.id);
     const match = explicitMatchTxId
       ? { id: explicitMatchTxId }
       : monthTxs.find(
           (tx) =>
-            tx.accountId === r.accountId &&
             tx.amountCents === r.amountCents &&
-            tx.occurredAt >= windowStart &&
-            tx.occurredAt <= windowEnd,
+            tx.occurredAt >= win.start &&
+            tx.occurredAt < win.endExclusive &&
+            !tokenConflictsWithPatterns(tx.descriptionRaw, ownPatterns),
         );
 
     let status: UpcomingStatus;
@@ -250,8 +274,6 @@ export type UpcomingWindowOptions = {
   today: Date;
   beforeDays?: number;
   afterDays?: number;
-  matchWindowBeforeDays?: number;
-  matchWindowAfterDays?: number;
 };
 
 export async function getUpcomingForWindow(
@@ -278,8 +300,6 @@ async function getUpcomingForWindowImpl(
     today,
     beforeDays = UPCOMING_WINDOW_BEFORE_DAYS,
     afterDays = UPCOMING_WINDOW_AFTER_DAYS,
-    matchWindowBeforeDays = DEFAULT_WINDOW_BEFORE_DAYS,
-    matchWindowAfterDays = DEFAULT_WINDOW_AFTER_DAYS,
   } = opts;
 
   const todayDate = new Date(
@@ -384,10 +404,12 @@ async function getUpcomingForWindowImpl(
     }
   }
 
-  // Heuristic: unlinked txs in a broad range around the window for fallback matching.
-  const heuristicWindowStart = new Date(windowStart.getTime() - matchWindowBeforeDays * 86400000);
+  // Heuristic: unlinked txs in a broad range around the window for fallback
+  // matching. #804: wide enough to cover any per-recurring occurrence window
+  // (slot.ts) — up to grace days before, and up to a month + grace after.
+  const heuristicWindowStart = new Date(windowStart.getTime() - LATE_PAYMENT_GRACE_DAYS * 86400000);
   const heuristicWindowEnd = new Date(
-    windowEnd.getTime() + matchWindowAfterDays * 86400000 + 86399999,
+    windowEnd.getTime() + (31 + LATE_PAYMENT_GRACE_DAYS) * 86400000,
   );
   const nearbyTxs = await database
     .select({
@@ -395,6 +417,7 @@ async function getUpcomingForWindowImpl(
       accountId: transactions.accountId,
       amountCents: transactions.amountCents,
       occurredAt: transactions.occurredAt,
+      descriptionRaw: transactions.descriptionRaw,
     })
     .from(transactions)
     .where(
@@ -406,6 +429,10 @@ async function getUpcomingForWindowImpl(
         notDeleted(transactions.deletedAt),
       ),
     );
+
+  // #804: fetch learned patterns for the token-conflict guard on the
+  // heuristic match below.
+  const patternsByRecurringId = await fetchPatterns(userId, recurringIds, database);
 
   const items: UpcomingItem[] = [];
 
@@ -427,17 +454,17 @@ async function getUpcomingForWindowImpl(
       const explicitTxId = explicitMap.get(`${r.id}:${ym}`);
       if (explicitTxId !== undefined) continue; // already matched — skip
 
-      // Heuristic fallback: tx in same account + same amount in match window.
-      const matchHeurStart = new Date(expectedDate.getTime() - matchWindowBeforeDays * 86400000);
-      const matchHeurEnd = new Date(
-        expectedDate.getTime() + matchWindowAfterDays * 86400000 + 86399999,
-      );
+      // Heuristic fallback: same amount, any account, within the slot-claim
+      // window (#804 — see src/lib/recurring/slot.ts), guarded by the same
+      // token-conflict check as getUpcomingForMonth (KFC/SmartFit shape).
+      const win = occurrenceWindow(year, month, r.dayOfMonth);
+      const ownPatterns = patternsByRecurringId.get(r.id) ?? [];
       const heuristicMatch = nearbyTxs.find(
         (tx) =>
-          tx.accountId === r.accountId &&
           tx.amountCents === r.amountCents &&
-          tx.occurredAt >= matchHeurStart &&
-          tx.occurredAt <= matchHeurEnd,
+          tx.occurredAt >= win.start &&
+          tx.occurredAt < win.endExclusive &&
+          !tokenConflictsWithPatterns(tx.descriptionRaw, ownPatterns),
       );
       if (heuristicMatch) continue; // already covered — skip
 

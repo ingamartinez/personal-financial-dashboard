@@ -1,14 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, recurringTransactions, transactions, users } from "@/lib/db/schema";
+import {
+  accounts,
+  recurringDescriptionPatterns,
+  recurringTransactions,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { getUpcomingForWindow } from "./upcoming";
 
 const TEST_USER_ID = 1;
 const TEST_USER2_EMAIL = "__upcoming_window_u2__@test.local";
 
 async function cleanup() {
+  await db.execute(
+    sql`DELETE FROM recurring_description_patterns WHERE recurring_id IN (SELECT id FROM recurring_transactions WHERE label LIKE '__upwin%')`,
+  );
   await db.execute(sql`DELETE FROM transactions WHERE description_raw LIKE '__upwin%'`);
+  await db.execute(
+    sql`DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE '__upwin%')`,
+  );
   await db.execute(sql`DELETE FROM recurring_transactions WHERE label LIKE '__upwin%'`);
   await db.execute(sql`DELETE FROM accounts WHERE name LIKE '__upwin%'`);
   await db.execute(sql`DELETE FROM users WHERE email = ${TEST_USER2_EMAIL}`);
@@ -60,6 +72,7 @@ async function seedTx(
   opts: {
     occurredOn: string;
     amountCents: bigint;
+    description?: string;
     recurringId?: number;
     recurringYearMonth?: string;
     userId?: number;
@@ -74,7 +87,7 @@ async function seedTx(
       occurredAt: new Date(`${opts.occurredOn}T12:00:00Z`),
       amountCents: opts.amountCents,
       currency: "COP",
-      descriptionRaw: "__upwin_tx",
+      descriptionRaw: opts.description ?? "__upwin_tx",
       source: "manual",
       recurringId: opts.recurringId ?? null,
       recurringYearMonth: opts.recurringYearMonth ?? null,
@@ -277,5 +290,41 @@ describe("getUpcomingForWindow", () => {
     for (const item of inExpanded) {
       expect(["2026-03", "2026-04"]).toContain(item.yearMonth);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // #804 WARNING fix: heuristic "already covered" check must not be fooled
+  // by a same-amount purchase with an unmatched token (KFC shape) — the
+  // recurring must still show up as upcoming/overdue, not silently hidden.
+  // -------------------------------------------------------------------------
+  it("does NOT treat a same-amount, unmatched-token purchase as already covering the slot", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__upwin appletv token guard",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern: "APPLE",
+      observationCount: 2,
+    });
+
+    await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-2990000),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await getUpcomingForWindow({
+      userId: TEST_USER_ID,
+      today: new Date("2026-04-15T12:00:00Z"),
+    });
+
+    // The KFC purchase must NOT be treated as "already covering" this slot —
+    // the recurring should still appear (upcoming/overdue), not be hidden.
+    const found = result.find((i) => i.recurringId === recurringId);
+    expect(found).toBeDefined();
   });
 });
