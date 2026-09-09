@@ -1481,13 +1481,12 @@ describe("autoLinkTransaction #844 — payment before its own gap exists", () =>
   afterEach(cleanup);
 
   it("day-8 APORTES twin: exact amount picks the right recurring, not the shared fingerprint", async () => {
-    // Prod shape of txs 2650/2651 vs recurrings 9/10. Both are day-1, same
-    // account, same learned APORTES token (observation_count >= 2). Amounts
-    // differ by 9,200 COP. Pre-#804 the match window ended day 6
-    // (DEFAULT_WINDOW_AFTER_DAYS = 5), so a day-8 payment returned
-    // no-open-gap. Slot-claiming puts Sept 8 inside September; classic
-    // (account+exact amount) must win even though the fingerprint cannot
-    // tell the twins apart. gapId null = direct path, not a stolen July gap.
+    // Prod shape of tx 2651 vs recurrings 9/10. Aida is inserted first so it
+    // has the lower id — fingerprint-FIFO / lowest-id would therefore pick
+    // Aida. The single tx carries only Alejo's amount. If the matcher is not
+    // actually discriminating by amount, this assertion fails.
+    // Pre-#804 the match window ended day 6; day 8 is the slot-claiming
+    // boundary. gapId null = direct path, not a stolen July gap.
     const accountId = await seedAccount();
     const aida = await seedRecurring(accountId, {
       label: "__autolink_844_aida__",
@@ -1499,6 +1498,7 @@ describe("autoLinkTransaction #844 — payment before its own gap exists", () =>
       amountCents: BigInt(-50_830_000),
       dayOfMonth: 1,
     });
+    expect(aida).toBeLessThan(alejo);
     await db.insert(recurringDescriptionPatterns).values([
       {
         userId: TEST_USER_ID,
@@ -1520,31 +1520,25 @@ describe("autoLinkTransaction #844 — payment before its own gap exists", () =>
       { userId: TEST_USER_ID, recurringId: alejo, yearMonth: "2026-08" },
     ]);
 
-    const txAida = await seedTx(accountId, {
-      occurredOn: "2026-09-08",
-      amountCents: BigInt(-49_910_000),
-      description: "APORTES EN LINEA",
-    });
     const txAlejo = await seedTx(accountId, {
       occurredOn: "2026-09-08",
       amountCents: BigInt(-50_830_000),
       description: "APORTES EN LINEA",
     });
 
-    const r1 = await autoLinkTransaction(TEST_USER_ID, txAida);
-    const r2 = await autoLinkTransaction(TEST_USER_ID, txAlejo);
-    expect(r1).toMatchObject({
-      status: "linked",
-      recurringId: aida,
-      yearMonth: "2026-09",
-      gapId: null,
-    });
-    expect(r2).toMatchObject({
+    const result = await autoLinkTransaction(TEST_USER_ID, txAlejo);
+    expect(result).toMatchObject({
       status: "linked",
       recurringId: alejo,
       yearMonth: "2026-09",
       gapId: null,
     });
+
+    const linkedToAida = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.recurringId, aida));
+    expect(linkedToAida).toHaveLength(0);
 
     const leftover = await db
       .select({ recurringId: recurringGaps.recurringId, yearMonth: recurringGaps.yearMonth })
