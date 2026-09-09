@@ -77,7 +77,13 @@ describe("classifyAskProcessor", () => {
     expect(mocks.investigateResidueForUser.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.processAskForUser.mock.invocationCallOrder[0]!,
     );
-    expect(result).toEqual({ usersProcessed: 1, asked: 1, investigated: 0, failedUserIds: [] });
+    expect(result).toEqual({
+      usersProcessed: 1,
+      asked: 1,
+      investigated: 0,
+      failedUserIds: [],
+      investigateFailures: [],
+    });
   });
 
   it("unions ask users with residue users in all mode", async () => {
@@ -104,6 +110,7 @@ describe("classifyAskProcessor", () => {
     expect(result.asked).toBe(1);
     expect(result.investigated).toBe(1);
     expect(result.failedUserIds).toEqual([]);
+    expect(result.investigateFailures).toEqual([]);
     expect(mocks.investigateResidueForUser).toHaveBeenCalledTimes(2);
   });
 
@@ -121,6 +128,25 @@ describe("classifyAskProcessor", () => {
     expect(result.usersProcessed).toBe(1);
     expect(result.failedUserIds).toEqual([]);
     expect(result.investigated).toBe(0);
+    expect(result.investigateFailures).toEqual([{ userId: 7 }]);
+  });
+
+  it("does not report a clean result when investigation throws", async () => {
+    const err = Object.assign(new Error("anthropic timeout"), { txId: 99 });
+    mocks.investigateResidueForUser.mockRejectedValueOnce(err);
+    mocks.processAskForUser.mockResolvedValueOnce({
+      askedTxId: 42,
+      skipped: null,
+      expiredCount: 0,
+      requeuedCount: 0,
+    });
+    const job = mockJob({ mode: "single-user", userId: 7 });
+    const result = await classifyAskProcessor(job);
+    expect(mocks.processAskForUser).toHaveBeenCalledWith(7);
+    expect(result.asked).toBe(1);
+    expect(result.failedUserIds).toEqual([]);
+    expect(result.investigateFailures).toEqual([{ userId: 7, txId: 99 }]);
+    expect(job.log).toHaveBeenCalledWith("userId=7 investigate_failed txId=99");
   });
 
   it("isolates an ask failure and continues", async () => {
@@ -140,6 +166,7 @@ describe("classifyAskProcessor", () => {
     const result = await classifyAskProcessor(mockJob({ mode: "all" }));
     expect(mocks.processAskForUser).toHaveBeenCalledTimes(2);
     expect(result.failedUserIds).toEqual([1]);
+    expect(result.investigateFailures).toEqual([{ userId: 1 }]);
     expect(result.usersProcessed).toBe(1);
     expect(result.asked).toBe(1);
     expect(result.investigated).toBe(1);

@@ -27,6 +27,7 @@ import {
   SONNET_INPUT_CENTS_PER_MTOK,
   SONNET_OUTPUT_CENTS_PER_MTOK,
   InvestigatorOverBudgetError,
+  ResidueInvestigateFailedError,
   ResidueNotEligibleError,
   assertResidueEligible,
   buildInvestigatorSystemPrompt,
@@ -875,6 +876,32 @@ describe("investigateResidueRow", () => {
     const last = await getTx(ids[0]!);
     expect(
       (last?.classificationReason as { investigatedAt?: string } | null)?.investigatedAt,
+    ).toBeUndefined();
+  });
+
+  it("investigateResidueForUser rethrows a row failure with txId and does not stamp", async () => {
+    const userId = await createUser(`${TAG}-throw-${Date.now()}@test.local`);
+    const accountId = await createAccount(userId);
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: `${TAG} Timeout`,
+      merchant: `${TAG} Timeout`,
+      reason: { action: "swept" },
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValue(new Error("anthropic timeout")) as unknown as typeof fetch;
+    const thrown = await investigateResidueForUser(userId, {
+      apiKey: "sk-test",
+      fetchImpl,
+    }).catch((err: unknown) => err);
+    expect(thrown).toBeInstanceOf(ResidueInvestigateFailedError);
+    expect(thrown).toMatchObject({ name: "ResidueInvestigateFailedError", txId });
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    expect(
+      (row?.classificationReason as { investigatedAt?: string } | null)?.investigatedAt,
     ).toBeUndefined();
   });
 });

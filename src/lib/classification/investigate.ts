@@ -132,6 +132,23 @@ export class InvestigatorOverBudgetError extends Error {
   }
 }
 
+/**
+ * Unexpected row failure (API timeout, etc.). The row is not stamped —
+ * it will retry. `txId` rides on the throw so a bulk caller can put the
+ * outage on its job result instead of looking green.
+ */
+export class ResidueInvestigateFailedError extends Error {
+  readonly txId: number;
+  constructor(txId: number, cause: unknown) {
+    const message =
+      cause instanceof Error ? cause.message : `residue investigation failed for tx ${txId}`;
+    super(message);
+    this.name = "ResidueInvestigateFailedError";
+    this.txId = txId;
+    if (cause instanceof Error) this.cause = cause;
+  }
+}
+
 export type InvestigateResidueRowOpts = {
   apiKey?: string;
   fetchImpl?: typeof fetch;
@@ -1218,7 +1235,8 @@ export async function investigateResidueForUser(
         result.overBudget++;
         continue;
       }
-      throw err;
+      if (err instanceof ResidueInvestigateFailedError) throw err;
+      throw new ResidueInvestigateFailedError(row.id, err);
     }
   }
 

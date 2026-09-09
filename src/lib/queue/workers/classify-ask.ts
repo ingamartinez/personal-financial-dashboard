@@ -19,12 +19,25 @@ const log = createLogger({ module: "worker/classify-ask" });
 
 export type { ClassifyAskJobData };
 
+export type ClassifyAskInvestigateFailure = {
+  userId: number;
+  txId?: number;
+};
+
 export type ClassifyAskResult = {
   usersProcessed: number;
   asked: number;
   investigated: number;
   failedUserIds: number[];
+  investigateFailures: ClassifyAskInvestigateFailure[];
 };
+
+function txIdFromUnknown(err: unknown): number | undefined {
+  if (err === null || typeof err !== "object" || !("txId" in err)) return undefined;
+  const txId = (err as { txId: unknown }).txId;
+  if (typeof txId !== "number" || !Number.isInteger(txId) || txId <= 0) return undefined;
+  return txId;
+}
 
 function uniqueIds(ids: number[]): number[] {
   return [...new Set(ids)];
@@ -46,6 +59,7 @@ export async function classifyAskProcessor(
     asked: 0,
     investigated: 0,
     failedUserIds: [],
+    investigateFailures: [],
   };
 
   for (const userId of userIds) {
@@ -64,10 +78,18 @@ export async function classifyAskProcessor(
       investigated = await investigateResidueForUser(userId);
       result.investigated += investigated.classified;
     } catch (err) {
+      const txId = txIdFromUnknown(err);
+      result.investigateFailures.push(txId != null ? { userId, txId } : { userId });
       log.error(
-        { err, userId, event: "classify_ask_investigate_failed" },
+        {
+          err,
+          userId,
+          ...(txId != null ? { txId } : {}),
+          event: "classify_ask_investigate_failed",
+        },
         "classify-ask: investigation failed — still asking",
       );
+      await job.log(`userId=${userId} investigate_failed txId=${txId ?? "-"}`);
     }
 
     try {
@@ -93,6 +115,8 @@ export async function classifyAskProcessor(
       asked: result.asked,
       investigated: result.investigated,
       failedUsers: result.failedUserIds.length,
+      investigateFailed: result.investigateFailures.length,
+      investigateFailures: result.investigateFailures,
     },
     "classify-ask complete",
   );
