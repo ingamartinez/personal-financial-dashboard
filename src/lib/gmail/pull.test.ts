@@ -127,6 +127,12 @@ function fakeAuthed(opts: {
   return { authed, listCalls, getCalls };
 }
 
+// Exact Gmail `q` for a jetsmart historical window. Substring checks on the
+// domain would also accept a wrong query that merely mentioned jetsmart.com.
+function jetsmartHistoricalQuery(since: Date, until: Date): string {
+  return `from:(@jetsmart.com) after:${Math.floor(since.getTime() / 1000)} before:${Math.floor(until.getTime() / 1000)}`;
+}
+
 describe("gmail/pull", () => {
   beforeAll(async () => {
     process.env.GMAIL_TOKEN_ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -523,12 +529,15 @@ describe("gmail/pull", () => {
   it("does not advance last_pull_at when preserveCursor is set", async () => {
     const frozen = new Date("2026-09-01T12:00:00Z");
     const connId = await seedActiveConnection(userA, { lastPullAt: frozen });
+    const since = new Date("2026-01-01T00:00:00Z");
+    const until = new Date("2026-02-01T00:00:00Z");
+    const expectedQ = jetsmartHistoricalQuery(since, until);
     const { authed } = fakeAuthed({
       userId: userA,
       connectionId: connId,
       gmailEmail: `${TAG}-${userA}@example.com`,
       onList: (call) => {
-        if (call.q?.includes("jetsmart.com")) return { messageIds: ["js-hist-1"] };
+        if (call.q === expectedQ) return { messageIds: ["js-hist-1"] };
         return { messageIds: [] };
       },
     });
@@ -538,8 +547,8 @@ describe("gmail/pull", () => {
       userA,
       {
         senders: ["jetsmart.com"],
-        overrideSince: new Date("2026-01-01T00:00:00Z"),
-        until: new Date("2026-02-01T00:00:00Z"),
+        overrideSince: since,
+        until,
         preserveCursor: true,
       },
       { getClient: async () => authed, now: () => now },
@@ -588,20 +597,23 @@ describe("gmail/pull", () => {
   it("is idempotent across an overlapping window without duplicating receipts", async () => {
     const frozen = new Date("2026-09-01T12:00:00Z");
     const connId = await seedActiveConnection(userA, { lastPullAt: frozen });
+    const since = new Date("2026-01-01T00:00:00Z");
+    const until = new Date("2026-02-01T00:00:00Z");
+    const expectedQ = jetsmartHistoricalQuery(since, until);
     const { authed } = fakeAuthed({
       userId: userA,
       connectionId: connId,
       gmailEmail: `${TAG}-${userA}@example.com`,
       onList: (call) => {
-        if (call.q?.includes("jetsmart.com")) return { messageIds: ["js-hist-1"] };
+        if (call.q === expectedQ) return { messageIds: ["js-hist-1"] };
         return { messageIds: [] };
       },
     });
 
     const opts: PullOpts = {
       senders: ["jetsmart.com"],
-      overrideSince: new Date("2026-01-01T00:00:00Z"),
-      until: new Date("2026-02-01T00:00:00Z"),
+      overrideSince: since,
+      until,
       preserveCursor: true,
     };
 
