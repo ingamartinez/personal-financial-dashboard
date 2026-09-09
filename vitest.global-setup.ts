@@ -10,20 +10,25 @@
  * Rules:
  *  - NEVER truncates full tables — always scoped to known test markers.
  *  - NEVER deletes seeded data (user_id=1 bootstrap accounts/categories/rules).
- *  - Only targets findash_test (hardcoded, cannot be overridden by env).
+ *  - Only targets a findash_test* database — the same one resolved by
+ *    `vitest.setup.ts` via `resolveTestDbName()` (see `vitest.test-db-name.ts`).
+ *    It is never overridable outside the `findash_test*` prefix, but it is NOT
+ *    hardcoded to the literal `findash_test` — it must track FINDASH_TEST_DB
+ *    or it cleans the wrong lane's database.
  *  - Order matters: delete child rows before parent rows (FK constraints).
  *
  * Add new patterns here when a new test file introduces persistent residue.
  */
 
 import postgres from "postgres";
+import { resolveTestDbName } from "./vitest.test-db-name";
 
 export async function teardown() {
-  // Safety: always target findash_test, never the dev DB.
+  // Safety: always target the resolved findash_test* database, never the dev DB.
   const defaultSocket = process.platform === "darwin" ? "/tmp" : "/var/run/postgresql";
   const db = postgres({
     host: process.env.PGHOST ?? defaultSocket,
-    database: "findash_test",
+    database: resolveTestDbName(),
     username: process.env.PGUSER ?? process.env.USER,
     port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
     password: process.env.PGPASSWORD,
