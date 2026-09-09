@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
-import { callClaude } from "@/lib/ai/anthropic-client";
+import { callClaude, HAIKU_MODEL } from "@/lib/ai/anthropic-client";
 import { db } from "@/lib/db";
 import { parserEvents, users } from "@/lib/db/schema";
 import type { ParsedSms } from "./sms-bancolombia";
@@ -109,7 +109,7 @@ export type AiFallbackOutcome =
     };
 
 /**
- * Calls Claude to extract a purchase from an SMS the regex parser couldn't
+ * Calls Haiku to extract a purchase from an SMS the regex parser couldn't
  * match. Returns a status union — callers persist both the transaction
  * (success) and the telemetry row (all outcomes) so dashboards can measure
  * fallback win rate and cost.
@@ -126,6 +126,9 @@ export async function aiFallbackParseSms(
       schema: aiPurchaseSchema,
       maxTokens: 512,
       timeoutMs: opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      // Pinned to Haiku: this path has a 2s wall-clock budget. Inheriting
+      // DEFAULT_MODEL (Sonnet 5) times out and the fallback disables itself.
+      model: HAIKU_MODEL,
       apiKey: opts?.apiKey,
       fetchImpl: opts?.fetchImpl,
     });
