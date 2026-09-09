@@ -4,10 +4,30 @@ import { accounts, categories, recurringTransactions, transactions } from "@/lib
 import { notDeleted } from "@/lib/db/helpers";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { createLogger } from "@/lib/logger";
+import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
+import { fetchPatterns } from "@/lib/recurring/patterns";
 import { LATE_PAYMENT_GRACE_DAYS, occurrenceWindow } from "@/lib/recurring/slot";
 import type { Currency } from "@/lib/types";
 
 const log = createLogger({ module: "recurring/upcoming" });
+
+/**
+ * #804 WARNING fix: the status-dot "matched" heuristic must not lie to the
+ * user. A tx whose description has an extractable token that does NOT match
+ * the recurring's own learned patterns must not be painted as "matched" just
+ * because the amount coincides (the KFC/SmartFit false-positive shape).
+ * Mirrors the real auto-link paths' bootstrap allowance: a recurring with no
+ * learned patterns yet has nothing to contradict, so it passes.
+ */
+function tokenConflictsWithPatterns(
+  descriptionRaw: string | null | undefined,
+  patterns: string[],
+): boolean {
+  if (patterns.length === 0) return false;
+  const token = tokeniseDescription(descriptionRaw);
+  if (token === null) return false;
+  return !patterns.includes(token);
+}
 
 // Default window for getUpcomingForWindow (#632).
 export const UPCOMING_WINDOW_BEFORE_DAYS = 5;
@@ -155,6 +175,7 @@ export async function getUpcomingForMonth(
       accountId: transactions.accountId,
       amountCents: transactions.amountCents,
       occurredAt: transactions.occurredAt,
+      descriptionRaw: transactions.descriptionRaw,
     })
     .from(transactions)
     .where(
@@ -166,6 +187,10 @@ export async function getUpcomingForMonth(
         notDeleted(transactions.deletedAt),
       ),
     );
+
+  // #804: fetch learned patterns for the token-conflict guard on the
+  // heuristic match below.
+  const patternsByRecurringId = await fetchPatterns(userId, recurringIds, database);
 
   const todayDate = new Date(
     Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
@@ -185,6 +210,7 @@ export async function getUpcomingForMonth(
 
     const isDismissed = (r.skippedMonths ?? []).includes(ym);
 
+    const ownPatterns = patternsByRecurringId.get(r.id) ?? [];
     const explicitMatchTxId = explicitMap.get(r.id);
     const match = explicitMatchTxId
       ? { id: explicitMatchTxId }
@@ -192,7 +218,8 @@ export async function getUpcomingForMonth(
           (tx) =>
             tx.amountCents === r.amountCents &&
             tx.occurredAt >= win.start &&
-            tx.occurredAt < win.endExclusive,
+            tx.occurredAt < win.endExclusive &&
+            !tokenConflictsWithPatterns(tx.descriptionRaw, ownPatterns),
         );
 
     let status: UpcomingStatus;
@@ -390,6 +417,7 @@ async function getUpcomingForWindowImpl(
       accountId: transactions.accountId,
       amountCents: transactions.amountCents,
       occurredAt: transactions.occurredAt,
+      descriptionRaw: transactions.descriptionRaw,
     })
     .from(transactions)
     .where(
@@ -401,6 +429,10 @@ async function getUpcomingForWindowImpl(
         notDeleted(transactions.deletedAt),
       ),
     );
+
+  // #804: fetch learned patterns for the token-conflict guard on the
+  // heuristic match below.
+  const patternsByRecurringId = await fetchPatterns(userId, recurringIds, database);
 
   const items: UpcomingItem[] = [];
 
@@ -423,13 +455,16 @@ async function getUpcomingForWindowImpl(
       if (explicitTxId !== undefined) continue; // already matched — skip
 
       // Heuristic fallback: same amount, any account, within the slot-claim
-      // window (#804 — see src/lib/recurring/slot.ts).
+      // window (#804 — see src/lib/recurring/slot.ts), guarded by the same
+      // token-conflict check as getUpcomingForMonth (KFC/SmartFit shape).
       const win = occurrenceWindow(year, month, r.dayOfMonth);
+      const ownPatterns = patternsByRecurringId.get(r.id) ?? [];
       const heuristicMatch = nearbyTxs.find(
         (tx) =>
           tx.amountCents === r.amountCents &&
           tx.occurredAt >= win.start &&
-          tx.occurredAt < win.endExclusive,
+          tx.occurredAt < win.endExclusive &&
+          !tokenConflictsWithPatterns(tx.descriptionRaw, ownPatterns),
       );
       if (heuristicMatch) continue; // already covered — skip
 

@@ -1,8 +1,22 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+// ---------------------------------------------------------------------------
+// #804: recurring-calendar-grid imports recurring-list.tsx for the shared
+// UndoMatchButton, which imports the real "use server" actions.ts — mock it
+// out, matching recurring-list.test.tsx.
+// ---------------------------------------------------------------------------
+const { unlinkTxFromRecurring, toastSuccess, toastError } = vi.hoisted(() => ({
+  unlinkTxFromRecurring: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}));
+
+vi.mock("@/app/(app)/transactions/actions", () => ({ unlinkTxFromRecurring }));
+vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
 
 import { RecurringCalendarGrid } from "./recurring-calendar-grid";
 import type { RecurringRow } from "@/app/(app)/recurring/queries";
@@ -279,5 +293,90 @@ describe("RecurringCalendarGrid — #788 status dots", () => {
     render(<RecurringCalendarGrid rows={[row]} today={TODAY} />);
 
     expect(screen.queryByTestId("status-dot")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — #804: undo is reachable from Calendario (the default-open surface)
+// ---------------------------------------------------------------------------
+
+describe("RecurringCalendarGrid — #804 undo affordance", () => {
+  it("shows a Deshacer match button in a matched pill's popover", async () => {
+    const user = userEvent.setup();
+    nextId = 150;
+    const row = makeRow({ id: 150, label: "Netflix", dayOfMonth: 15 });
+
+    render(
+      <RecurringCalendarGrid
+        rows={[row]}
+        today={TODAY}
+        slotStatusById={{ 150: "matched" }}
+        matchedTxIdById={{ 150: 555 }}
+      />,
+    );
+
+    await user.click(screen.getByTestId("sub-pill"));
+    expect(screen.getByRole("button", { name: /deshacer match/i })).toBeInTheDocument();
+  });
+
+  it("does NOT show the undo button for a non-matched pill", async () => {
+    const user = userEvent.setup();
+    nextId = 151;
+    const row = makeRow({ id: 151, label: "Spotify", dayOfMonth: 15 });
+
+    render(
+      <RecurringCalendarGrid
+        rows={[row]}
+        today={TODAY}
+        slotStatusById={{ 151: "upcoming" }}
+        matchedTxIdById={{ 151: 555 }}
+      />,
+    );
+
+    await user.click(screen.getByTestId("sub-pill"));
+    expect(screen.queryByRole("button", { name: /deshacer match/i })).not.toBeInTheDocument();
+  });
+
+  it("calls unlinkTxFromRecurring with the matched tx id when Deshacer match is clicked", async () => {
+    unlinkTxFromRecurring.mockResolvedValueOnce({ ok: true });
+    const user = userEvent.setup();
+    nextId = 152;
+    const row = makeRow({ id: 152, label: "Google One", dayOfMonth: 15 });
+
+    render(
+      <RecurringCalendarGrid
+        rows={[row]}
+        today={TODAY}
+        slotStatusById={{ 152: "matched" }}
+        matchedTxIdById={{ 152: 777 }}
+      />,
+    );
+
+    await user.click(screen.getByTestId("sub-pill"));
+    await user.click(screen.getByRole("button", { name: /deshacer match/i }));
+
+    expect(unlinkTxFromRecurring).toHaveBeenCalledWith({ txId: 777 });
+  });
+
+  it("shows Deshacer match inside the overflow chip popover for a matched overflow row", async () => {
+    const user = userEvent.setup();
+    nextId = 160;
+    const rows = [
+      makeRow({ id: 160, label: "A", dayOfMonth: 10 }),
+      makeRow({ id: 161, label: "B", dayOfMonth: 10 }),
+      makeRow({ id: 162, label: "C (overflow, matched)", dayOfMonth: 10 }),
+    ];
+
+    render(
+      <RecurringCalendarGrid
+        rows={rows}
+        today={TODAY}
+        slotStatusById={{ 162: "matched" }}
+        matchedTxIdById={{ 162: 999 }}
+      />,
+    );
+
+    await user.click(screen.getByTestId("overflow-chip"));
+    expect(screen.getByRole("button", { name: /deshacer match/i })).toBeInTheDocument();
   });
 });

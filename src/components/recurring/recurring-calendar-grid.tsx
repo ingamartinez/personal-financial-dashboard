@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { UndoMatchButton } from "./recurring-list";
 import type { PriceHike, RecurringRow } from "@/app/(app)/recurring/queries";
 import type { UpcomingStatus } from "@/lib/recurring/upcoming";
 
@@ -30,6 +31,10 @@ export interface RecurringCalendarGridProps {
   today?: Date;
   /** Slot status per recurring id for the current month. */
   slotStatusById?: Record<number, UpcomingStatus>;
+  // #804: matched transaction id per recurring — Calendario opens by default
+  // on /recurring, so the one-tap undo must be reachable here too, not only
+  // from the (collapsed-by-default) compact list.
+  matchedTxIdById?: Record<number, number | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +76,13 @@ function PriceHikeBadge({ hike }: { hike: PriceHike }) {
 // SubDetail popover content
 // ---------------------------------------------------------------------------
 
-function SubDetailContent({ row }: { row: RecurringRow }) {
+function SubDetailContent({
+  row,
+  matchedTxId,
+}: {
+  row: RecurringRow;
+  matchedTxId?: number | null;
+}) {
   const absDisplayCents = absCents(row.displayAmount.cents);
 
   return (
@@ -95,6 +106,8 @@ function SubDetailContent({ row }: { row: RecurringRow }) {
 
         {row.notes && <p className="italic">{row.notes}</p>}
       </div>
+
+      {matchedTxId != null && <UndoMatchButton txId={matchedTxId} label={row.label} />}
     </div>
   );
 }
@@ -113,9 +126,10 @@ const STATUS_DOT_CLASS: Record<UpcomingStatus, string | null> = {
 interface PillProps {
   row: RecurringRow;
   status?: UpcomingStatus;
+  matchedTxId?: number | null;
 }
 
-function Pill({ row, status }: PillProps) {
+function Pill({ row, status, matchedTxId }: PillProps) {
   const pillClass = cn(
     "bg-emerald-500/20 text-emerald-700 dark:bg-emerald-500/30 dark:text-emerald-300",
     "rounded-md px-1.5 py-0.5 text-xs w-full text-left",
@@ -146,7 +160,7 @@ function Pill({ row, status }: PillProps) {
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" className="w-64">
-        <SubDetailContent row={row} />
+        <SubDetailContent row={row} matchedTxId={status === "matched" ? matchedTxId : null} />
       </PopoverContent>
     </Popover>
   );
@@ -158,9 +172,11 @@ function Pill({ row, status }: PillProps) {
 
 interface OverflowChipProps {
   rows: RecurringRow[];
+  slotStatusById?: Record<number, UpcomingStatus>;
+  matchedTxIdById?: Record<number, number | null>;
 }
 
-function OverflowChip({ rows }: OverflowChipProps) {
+function OverflowChip({ rows, slotStatusById, matchedTxIdById }: OverflowChipProps) {
   const count = rows.length;
 
   const chipClass =
@@ -182,7 +198,12 @@ function OverflowChip({ rows }: OverflowChipProps) {
         <div className="flex flex-col gap-3" data-testid="overflow-popover-content">
           {rows.map((row) => (
             <div key={row.id} className="flex flex-col gap-1 border-b pb-2 last:border-0 last:pb-0">
-              <SubDetailContent row={row} />
+              <SubDetailContent
+                row={row}
+                matchedTxId={
+                  slotStatusById?.[row.id] === "matched" ? matchedTxIdById?.[row.id] : null
+                }
+              />
             </div>
           ))}
         </div>
@@ -203,9 +224,10 @@ interface DayCellProps {
   inMonth: boolean;
   subs: RecurringRow[];
   slotStatusById?: Record<number, UpcomingStatus>;
+  matchedTxIdById?: Record<number, number | null>;
 }
 
-function DayCell({ date, today, inMonth, subs, slotStatusById }: DayCellProps) {
+function DayCell({ date, today, inMonth, subs, slotStatusById, matchedTxIdById }: DayCellProps) {
   const isToday = isSameDay(date, today);
   const dayNum = getDate(date);
 
@@ -235,9 +257,20 @@ function DayCell({ date, today, inMonth, subs, slotStatusById }: DayCellProps) {
       {inMonth && subs.length > 0 && (
         <div className="flex flex-col gap-0.5">
           {subs.slice(0, MAX_PILLS).map((row) => (
-            <Pill key={row.id} row={row} status={slotStatusById?.[row.id]} />
+            <Pill
+              key={row.id}
+              row={row}
+              status={slotStatusById?.[row.id]}
+              matchedTxId={matchedTxIdById?.[row.id]}
+            />
           ))}
-          {subs.length > MAX_PILLS && <OverflowChip rows={subs.slice(MAX_PILLS)} />}
+          {subs.length > MAX_PILLS && (
+            <OverflowChip
+              rows={subs.slice(MAX_PILLS)}
+              slotStatusById={slotStatusById}
+              matchedTxIdById={matchedTxIdById}
+            />
+          )}
         </div>
       )}
     </div>
@@ -252,6 +285,7 @@ export function RecurringCalendarGrid({
   rows,
   today: todayProp,
   slotStatusById,
+  matchedTxIdById,
 }: RecurringCalendarGridProps) {
   // Stable today reference — avoids re-creating on every render when todayProp is undefined.
   const today = useMemo(() => todayProp ?? new Date(), [todayProp]);
@@ -312,6 +346,7 @@ export function RecurringCalendarGrid({
               inMonth={inMonth}
               subs={subs}
               slotStatusById={slotStatusById}
+              matchedTxIdById={matchedTxIdById}
             />
           );
         })}

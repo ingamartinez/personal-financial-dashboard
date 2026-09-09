@@ -49,7 +49,9 @@ function PriceHikeBadge({ hike }: { hike: PriceHike }) {
 
 // #804: one-tap undo for an auto-matched (or wrongly manually-linked) tx —
 // "aggressive auto-matching without a one-tap undo is silent data corruption".
-function UndoMatchButton({ txId, label }: { txId: number; label: string }) {
+// Exported so recurring-calendar-grid.tsx (the default-open surface on
+// /recurring) can reuse it instead of duplicating the logic.
+export function UndoMatchButton({ txId, label }: { txId: number; label: string }) {
   const [pending, startTransition] = useTransition();
 
   const onUndo = () => {

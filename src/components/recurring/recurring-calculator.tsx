@@ -486,7 +486,11 @@ export function RecurringCalculator({
         <AccordionItem value="calendar" className="mt-2 rounded-lg border px-3">
           <AccordionTrigger className="text-sm font-semibold">Calendario</AccordionTrigger>
           <AccordionContent>
-            <RecurringCalendarGrid rows={rows} slotStatusById={slotStatusByRecurringId} />
+            <RecurringCalendarGrid
+              rows={rows}
+              slotStatusById={slotStatusByRecurringId}
+              matchedTxIdById={matchedTxIdByRecurringId}
+            />
           </AccordionContent>
         </AccordionItem>
       </Accordion>
