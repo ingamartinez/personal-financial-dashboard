@@ -3,6 +3,7 @@
  * The processor is tested directly — no Worker instantiation needed.
  */
 
+import { readFileSync } from "node:fs";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -13,7 +14,9 @@ const mocks = vi.hoisted(() => ({
   runCashFlowForecastForUser: vi.fn(),
   runSavingsSuggestionForUser: vi.fn(),
   getCurrentFxRate: vi.fn(),
-  dbExecute: vi.fn(),
+  dbSelect: vi.fn(),
+  dbSelectFrom: vi.fn(),
+  dbSelectWhere: vi.fn(),
 }));
 
 vi.mock("@/lib/insights/cash-flow", () => ({
@@ -31,7 +34,7 @@ vi.mock("@/lib/fx/repo", () => ({
 
 vi.mock("@/lib/db", () => ({
   db: {
-    execute: mocks.dbExecute,
+    select: mocks.dbSelect,
   },
 }));
 
@@ -49,6 +52,12 @@ function makeJob(data: CashFlowDailyJobData = {}): Job<CashFlowDailyJobData> {
     updateProgress: vi.fn().mockResolvedValue(undefined),
     log: vi.fn().mockResolvedValue(undefined),
   } as unknown as Job<CashFlowDailyJobData>;
+}
+
+function stubActiveUsers(rows: { id: number }[]) {
+  mocks.dbSelectWhere.mockResolvedValue(rows);
+  mocks.dbSelectFrom.mockReturnValue({ where: mocks.dbSelectWhere });
+  mocks.dbSelect.mockReturnValue({ from: mocks.dbSelectFrom });
 }
 
 // ---------------------------------------------------------------------------
@@ -70,8 +79,7 @@ describe("cashFlowDailyProcessor", () => {
       shortfallChanged: false,
     });
     mocks.runSavingsSuggestionForUser.mockResolvedValue(undefined);
-    // Default: two users
-    mocks.dbExecute.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    stubActiveUsers([{ id: 1 }, { id: 2 }]);
   });
 
   afterAll(() => {
@@ -97,7 +105,7 @@ describe("cashFlowDailyProcessor", () => {
   });
 
   it("handles empty user list (no active users) without error", async () => {
-    mocks.dbExecute.mockResolvedValue([]);
+    stubActiveUsers([]);
 
     const job = makeJob();
     await expect(cashFlowDailyProcessor(job)).resolves.toBeUndefined();
@@ -123,14 +131,14 @@ describe("cashFlowDailyProcessor", () => {
   });
 
   it("propagates top-level errors (e.g. DB down) for BullMQ retry", async () => {
-    mocks.dbExecute.mockRejectedValueOnce(new Error("DB connection lost"));
+    mocks.dbSelectWhere.mockRejectedValueOnce(new Error("DB connection lost"));
 
     await expect(cashFlowDailyProcessor(makeJob())).rejects.toThrow("DB connection lost");
   });
 
   it("passes the FX rate to runCashFlowForecastForUser", async () => {
     mocks.getCurrentFxRate.mockResolvedValue({ rate: 4200, source: "live", fetchedAt: new Date() });
-    mocks.dbExecute.mockResolvedValue([{ id: 1 }]);
+    stubActiveUsers([{ id: 1 }]);
 
     await cashFlowDailyProcessor(makeJob());
 
@@ -156,7 +164,7 @@ describe("cashFlowDailyProcessor", () => {
   });
 
   it("fires runSavingsSuggestionForUser for each user (fire-and-forget hook)", async () => {
-    mocks.dbExecute.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    stubActiveUsers([{ id: 1 }, { id: 2 }]);
 
     await cashFlowDailyProcessor(makeJob());
 
@@ -169,11 +177,18 @@ describe("cashFlowDailyProcessor", () => {
   });
 
   it("does not throw when runSavingsSuggestionForUser rejects (fire-and-forget)", async () => {
-    mocks.dbExecute.mockResolvedValue([{ id: 1 }]);
+    stubActiveUsers([{ id: 1 }]);
     mocks.runSavingsSuggestionForUser.mockRejectedValueOnce(new Error("savings check failed"));
 
     const job = makeJob();
     // The rejection is caught internally — processor must NOT throw
     await expect(cashFlowDailyProcessor(job)).resolves.toBeUndefined();
+  });
+
+  it("loads users via users.active — never deleted_at or raw db.execute", () => {
+    const src = readFileSync(new URL("./cash-flow-daily.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/eq\(\s*users\.active\s*,\s*true\s*\)/);
+    expect(src).not.toMatch(/WHERE\s+deleted_at|users\.deletedAt/);
+    expect(src).not.toMatch(/db\.execute/);
   });
 });
