@@ -3,6 +3,7 @@ import { AlertTriangleIcon } from "lucide-react";
 
 import { overdueCyclesForUser } from "@/lib/accounts/cycles";
 import { dedupeOverdueByPhysicalCard } from "@/lib/accounts/cycle-groups";
+import { isTcAccountingEnabled } from "@/lib/flags/tc-accounting";
 import { db } from "@/lib/db";
 import { accounts } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
@@ -26,6 +27,8 @@ export async function PendingConsolidationBanner({
   userId: number;
   thresholdDays?: number;
 }) {
+  if (!(await isTcAccountingEnabled(userId))) return null;
+
   const tcAccounts = await db
     .select({
       id: accounts.id,

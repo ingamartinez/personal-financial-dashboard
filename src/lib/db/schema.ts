@@ -51,6 +51,10 @@ export type UserFeatureFlags = {
   // AI fallback for SMS needs_review path (#257). If unset, uses
   // AI_FALLBACK_ENABLED env var. If set, user's preference wins.
   aiFallbackEnabled?: boolean;
+  // TC accounting layer (#815): intereses causados + installment editing +
+  // proactive consolidation nags. If unset, uses TC_ACCOUNTING_ENABLED env
+  // var. If set, user's preference wins. Default off.
+  tcAccountingEnabled?: boolean;
 };
 
 export type UserClassificationContextHint = {

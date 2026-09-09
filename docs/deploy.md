@@ -107,7 +107,8 @@ Ordered steps matching what was actually done:
    #   ANTHROPIC_API_KEY, GROQ_API_KEY, TELEGRAM_TOKEN_ENCRYPTION_KEY
    #   FX_REFRESH_TOKEN, BOOTSTRAP_USER_EMAIL, BOOTSTRAP_USER_NAME
    # Optional:
-   #   AI_FALLBACK_ENABLED=true  (SMS AI fallback kill-switch; default off, #257)
+    #   AI_FALLBACK_ENABLED=true  (SMS AI fallback kill-switch; default off, #257)
+    #   TC_ACCOUNTING_ENABLED=true  (TC intereses + nags; default off, #815)
    ```
 
 7. **Add deploy SSH key** to the `deploy` user:

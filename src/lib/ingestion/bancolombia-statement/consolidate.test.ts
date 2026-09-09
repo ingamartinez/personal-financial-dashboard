@@ -14,8 +14,14 @@ function utcDate(y: number, m: number, d: number): Date {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
-async function createUser(email: string): Promise<number> {
-  const [row] = await db.insert(users).values({ email, name: email }).returning({ id: users.id });
+async function createUser(
+  email: string,
+  flags: { tcAccountingEnabled?: boolean } = { tcAccountingEnabled: true },
+): Promise<number> {
+  const [row] = await db
+    .insert(users)
+    .values({ email, name: email, featureFlags: flags })
+    .returning({ id: users.id });
   await copyCategorySeedsToUser(row.id);
   return row.id;
 }
@@ -1477,5 +1483,96 @@ describe("consolidateCycleFromStatement — force re-import (#760)", () => {
     // The TIENDA FORCE purchase should appear exactly once (externalId dedup)
     const tiendaTxs = txs.filter((t) => t.merchant === "TIENDA FORCE");
     expect(tiendaTxs).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #815 — tcAccountingEnabled seam around applyInteresesCausadosForCycle
+// ---------------------------------------------------------------------------
+
+const TAG_FLAG = "STMT_TC_FLAG_TEST";
+
+describe("consolidateCycleFromStatement — tcAccountingEnabled seam (#815)", () => {
+  async function seedCycle(flags: { tcAccountingEnabled?: boolean }) {
+    const userId = await createUser(
+      `${TAG_FLAG.toLowerCase()}.${crypto.randomUUID()}@test.local`,
+      flags,
+    );
+    const accountId = await createTCAccount(userId);
+    const txId = await insertTx({
+      userId,
+      accountId,
+      occurredAt: utcDate(2026, 3, 10),
+      amountCents: BigInt(-15_000_000),
+      merchant: "FLAG SEAM MERCHANT",
+      installmentsTotal: 1,
+    });
+    const parsed = buildParsed([
+      row({
+        authorizationNumber: "FL81501",
+        merchant: "FLAG SEAM MERCHANT",
+        occurredAt: utcDate(2026, 3, 10),
+        amountCents: BigInt(15_000_000),
+        installments: { paid: 1, total: 6 },
+        rateEmX10k: 19110,
+      }),
+    ]);
+    return { userId, accountId, txId, parsed };
+  }
+
+  it("flag off: skips intereses but still corrects installmentsTotal on matched rows", async () => {
+    const { userId, accountId, txId, parsed } = await seedCycle({});
+    try {
+      const report = await consolidateCycleFromStatement({
+        userId,
+        accountId,
+        cycle: "2026-03",
+        parsed,
+        fileHash: "flagoff".repeat(8),
+        dryRun: false,
+      });
+
+      expect(report.status).toBe("consolidated");
+      expect(report.intereses).toEqual({
+        status: "skipped",
+        reason: "tc-accounting-disabled",
+        purchasesNeedingRate: 0,
+      });
+
+      const [updated] = await db.select().from(transactions).where(eq(transactions.id, txId));
+      expect(updated.installmentsTotal).toBe(6);
+      expect(updated.installmentRateEmX10k).toBe(19110);
+      expect(updated.reconciliationStatus).toBe("matched");
+
+      const synthetics = await db
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(and(eq(transactions.userId, userId), eq(transactions.categorySlug, "intereses-tc")));
+      expect(synthetics).toHaveLength(0);
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("flag on: still runs applyInteresesCausadosForCycle (status is not tc-accounting-disabled)", async () => {
+    const { userId, accountId, parsed } = await seedCycle({ tcAccountingEnabled: true });
+    try {
+      const report = await consolidateCycleFromStatement({
+        userId,
+        accountId,
+        cycle: "2026-03",
+        parsed,
+        fileHash: "flagon1".repeat(8),
+        dryRun: false,
+      });
+
+      expect(report.status).toBe("consolidated");
+      expect(report.intereses.status).not.toBe("not-run");
+      if (report.intereses.status === "skipped") {
+        expect(report.intereses.reason).not.toBe("tc-accounting-disabled");
+      }
+    } finally {
+      await cleanupUser(userId);
+    }
   });
 });

@@ -277,6 +277,7 @@ export function TransactionTable({
   highlightId,
   activeRecurrings,
   forecastOccurrences = [],
+  tcAccountingEnabled = false,
 }: {
   rows: TxRow[];
   categories: CategoryOption[];
@@ -286,6 +287,8 @@ export function TransactionTable({
   activeRecurrings: RecurringOption[];
   // #622: forecast occurrences to merge with real tx rows.
   forecastOccurrences?: ForecastOccurrence[];
+  // #815: forwarded to row actions so "Editar cuotas" stays hidden when off.
+  tcAccountingEnabled?: boolean;
 }) {
   const shouldReduceMotion = useReducedMotion();
   const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);
@@ -634,6 +637,7 @@ export function TransactionTable({
                         activeRecurrings={activeRecurrings}
                         counterparty={tx.counterparty}
                         allCounterparties={allCounterparties}
+                        tcAccountingEnabled={tcAccountingEnabled}
                       />
                     </TableCell>
                   </motion.tr>
@@ -793,6 +797,7 @@ export function TransactionTable({
                       activeRecurrings={activeRecurrings}
                       counterparty={tx.counterparty}
                       allCounterparties={allCounterparties}
+                      tcAccountingEnabled={tcAccountingEnabled}
                     />
                   </div>
                 </div>

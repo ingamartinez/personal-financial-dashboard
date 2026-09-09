@@ -186,3 +186,24 @@ describe("TransactionRowActions — archive/restore", () => {
     expect(await screen.findByText("Restore")).toBeInTheDocument();
   });
 });
+
+describe("TransactionRowActions — Editar cuotas (#815)", () => {
+  const tcProps = {
+    ...BASE_PROPS,
+    accountType: "credit_card" as const,
+  };
+
+  it("hides Editar cuotas when tcAccountingEnabled is false", async () => {
+    const user = userEvent.setup();
+    render(<TransactionRowActions {...tcProps} tcAccountingEnabled={false} />);
+    await user.click(screen.getByRole("button", { name: /row actions/i }));
+    expect(screen.queryByText("Editar cuotas")).not.toBeInTheDocument();
+  });
+
+  it("shows Editar cuotas when tcAccountingEnabled is true on a TC row", async () => {
+    const user = userEvent.setup();
+    render(<TransactionRowActions {...tcProps} tcAccountingEnabled={true} />);
+    await user.click(screen.getByRole("button", { name: /row actions/i }));
+    expect(await screen.findByText("Editar cuotas")).toBeInTheDocument();
+  });
+});

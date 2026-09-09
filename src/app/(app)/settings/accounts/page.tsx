@@ -4,15 +4,20 @@ import { accounts, physicalCards } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { getSessionUser } from "@/lib/auth/session";
+import { isTcAccountingEnabled } from "@/lib/flags/tc-accounting";
 import { getCurrentFxRate } from "@/lib/fx/repo";
 import { AccountsManager, type AccountRow } from "./accounts-manager";
+import { TcAccountingToggle } from "./tc-accounting-toggle";
 import { TcConsolidationStatus } from "./tc-consolidation-status";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsAccountsPage() {
   const session = await getSessionUser();
-  const fx = await getCurrentFxRate();
+  const [fx, tcAccountingEnabled] = await Promise.all([
+    getCurrentFxRate(),
+    isTcAccountingEnabled(session.id),
+  ]);
   const rows = await db
     .select({
       id: accounts.id,
@@ -77,6 +82,7 @@ export default async function SettingsAccountsPage() {
         </p>
       </header>
       <AccountsManager items={items} copPerUsd={fx.rate} />
+      <TcAccountingToggle enabled={tcAccountingEnabled} />
       <TcConsolidationStatus userId={session.id} />
     </main>
   );

@@ -21,6 +21,7 @@ import {
   type CycleGroup,
   type GroupAccount,
 } from "@/lib/accounts/cycle-groups";
+import { isTcAccountingEnabled } from "@/lib/flags/tc-accounting";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -103,6 +104,8 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
 
   if (tcAccounts.length === 0) return null;
 
+  const accountingEnabled = await isTcAccountingEnabled(userId);
+
   const perAccount = await Promise.all(
     tcAccounts.map(async (a) => ({
       account: a,
@@ -123,11 +126,17 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
       <CardHeader>
         <CardTitle>Consolidación mensual de TCs</CardTitle>
         <CardDescription>
-          Al cierre de cada ciclo subí el extracto detallado para reconciliar cuotas, tasas y
-          generar los intereses-causados del mes.{" "}
-          {hasPending
-            ? "Tenés al menos un ciclo pendiente."
-            : "Todos los ciclos cerrados están consolidados."}
+          {accountingEnabled ? (
+            <>
+              Al cierre de cada ciclo subí el extracto detallado para reconciliar cuotas, tasas y
+              generar los intereses-causados del mes.{" "}
+              {hasPending
+                ? "Tenés al menos un ciclo pendiente."
+                : "Todos los ciclos cerrados están consolidados."}
+            </>
+          ) : (
+            "Subí el extracto detallado cuando quieras para reconciliar transacciones que se hayan escapado."
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -149,28 +158,32 @@ export async function TcConsolidationStatus({ userId }: { userId: number }) {
                     >
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-xs">{cycle.cycle}</span>
-                        <Badge
-                          variant={
-                            cycle.status === "consolidated"
-                              ? "default"
-                              : cycle.status === "pending"
-                                ? "secondary"
-                                : "outline"
-                          }
-                          className={
-                            cycle.status === "no-activity" || cycle.status === "skipped"
-                              ? "text-muted-foreground"
-                              : undefined
-                          }
-                        >
-                          {statusLabel(cycle.status)}
-                        </Badge>
+                        {accountingEnabled || cycle.status !== "pending" ? (
+                          <Badge
+                            variant={
+                              cycle.status === "consolidated"
+                                ? "default"
+                                : cycle.status === "pending"
+                                  ? "secondary"
+                                  : "outline"
+                            }
+                            className={
+                              cycle.status === "no-activity" || cycle.status === "skipped"
+                                ? "text-muted-foreground"
+                                : undefined
+                            }
+                          >
+                            {statusLabel(cycle.status)}
+                          </Badge>
+                        ) : null}
                         {cycle.status === "consolidated" && cycle.consolidatedAt ? (
                           <span className="text-muted-foreground text-xs">
                             {formatBogotaDate(cycle.consolidatedAt)}
                           </span>
                         ) : null}
-                        {cycle.status === "pending" && cycle.daysOverdue > 0 ? (
+                        {accountingEnabled &&
+                        cycle.status === "pending" &&
+                        cycle.daysOverdue > 0 ? (
                           <span className="text-muted-foreground text-xs">
                             +{cycle.daysOverdue}d
                           </span>

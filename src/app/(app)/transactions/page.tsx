@@ -9,6 +9,7 @@ import { Filters } from "@/components/transactions/filters";
 import { TransactionTable } from "@/components/transactions/transaction-table";
 import { TransferGroupDialog } from "@/components/transactions/transfer-group-dialog";
 import { getSessionUser } from "@/lib/auth/session";
+import { isTcAccountingEnabled } from "@/lib/flags/tc-accounting";
 import {
   countNeedingRate,
   countTotal,
@@ -110,6 +111,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     needingRate,
     activeRecurrings,
     forecastOccurrences,
+    tcAccountingEnabled,
   ] = await Promise.all([
     listTransactions(session.id, filters),
     listAccounts(session.id),
@@ -132,6 +134,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
     forecastYearMonth
       ? getForecastOccurrences(session.id, forecastYearMonth, now)
       : Promise.resolve([]),
+    isTcAccountingEnabled(session.id),
   ]);
 
   // #455 (Epic G): sidecar query — attach ambiguous Gmail receipts to each
@@ -192,7 +195,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
 
       <Filters accounts={accounts} categories={categories} />
 
-      {needingRate > 0 && !needsRateActive ? (
+      {tcAccountingEnabled && needingRate > 0 && !needsRateActive ? (
         <div className="flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 dark:border-amber-900 dark:bg-amber-950/40">
           <div className="flex items-start gap-2 text-sm">
             <AlertTriangleIcon className="mt-0.5 size-4 text-amber-700 dark:text-amber-400" />
@@ -221,6 +224,7 @@ export default async function TransactionsPage({ searchParams }: { searchParams:
         highlightId={highlightId}
         activeRecurrings={activeRecurrings}
         forecastOccurrences={forecastOccurrences}
+        tcAccountingEnabled={tcAccountingEnabled}
       />
 
       <div className="flex items-center justify-between">
