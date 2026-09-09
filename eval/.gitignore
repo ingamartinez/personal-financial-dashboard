@@ -1,0 +1,15 @@
+# Real production transactions — this repository is public. Never commit these.
+# Regenerate them from your own database; see README.md § First run.
+txs.json
+txs_rule.json
+dataset.json
+split.json
+
+# Model outputs and scores, derived from the above and therefore just as personal.
+results/
+results-*/
+scores.json
+run.log
+
+# Reports written next to a run.
+*-report.md
