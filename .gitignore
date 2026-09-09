@@ -46,9 +46,13 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# claude code per-user config
+# claude code per-user config — local only, absent from worktrees
 .claude/
 CLAUDE.md
+
+# `.opencode/` is tracked on purpose. Route B agent definitions live in
+# `.opencode/agents/` and must reach every worktree and CI. Do not add
+# `.opencode/` here next to `.claude/`.
 MovimientosTusCuentasBancolombia*.xlsx
 
 # local-only personal financial artifacts (statements, simulations, etc)

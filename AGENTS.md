@@ -245,6 +245,11 @@ what came back. That rule is route-independent.
 
 ### Route A — Claude Code sub-agents
 
+The four roles and their trigger criteria apply to **both** routes. Route A
+invokes them as Claude Code sub-agents in `.claude/agents/`. Route B launches
+them as opencode primary agents via `--agent`. The table below is the shared
+contract.
+
 Claude Code on this repo runs project-scoped sub-agents in `.claude/agents/`.
 Each one knows the conventions, reads engram (50+ documented gotchas) at
 start, and follows `AGENTS.md`.
@@ -282,12 +287,93 @@ the Grok 4.6 profile doing the implementing and shipping.
 Use this route when you want lanes running in parallel, or a second model's
 judgement on a design. Route A remains valid and is simpler for a single lane.
 
+#### Launch role-specialized
+
+Route B lanes launch already wearing a role. The prompt then carries only the
+objective, per § "Prompt design" below. Do not smuggle the role into the prompt
+— that is the "map" that section measures as producing a worse result.
+
+```bash
+herdr agent start <lane> --kind opencode --pane <pane_id> -- --agent findash-implementer
+```
+
+Definitions live in `.opencode/agents/findash-{explorer,implementer,reviewer,shipper}.md`
+and are committed. `.opencode/` is deliberately **not** gitignored (unlike
+`.claude/`, which is per-user Claude Code config). A worktree does not contain
+`.claude/agents/` — `.gitignore` drops it — so Route B cannot read Route A's
+files without an `external_directory` grant. Do not add that grant. Use the
+committed opencode definitions.
+
+Leave `model` unset on these agents so the operator's profile applies. Do not
+put them in `~/.config/opencode/opencode.json` — that file is the gentle-ai
+base layer and `gentle-ai sync` overwrites it.
+
+#### `--auto` plus deny-first
+
+`opencode --auto` auto-approves anything **not explicitly denied**. Alone that
+is wrong: a shipper lane would merge without asking. Each `findash-*`
+definition therefore carries a deny-first permission block so the role is
+safe unattended. `--auto` is then per-role: a reviewer in auto still cannot
+edit, because its own definition forbids it.
+
+Do not run a lane with `--auto` unless its definition already denies the
+surfaces that role must not touch. Herdr forwards native args after `--`:
+
+```bash
+herdr agent start <lane> --kind opencode --pane <pane_id> -- --auto --agent findash-reviewer
+```
+
+What each role denies (last matching bash rule wins):
+
+| Role               | Denied                                                                   | Why                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| explorer, reviewer | `edit`, mutating git/gh (`commit`/`push`/`merge`/`pr create`/`pr merge`) | Read-only. `edit: deny` also blocks the `write` and `apply_patch` tools (verified on opencode 1.18.30: there is no separate `write` permission key). |
+| implementer        | `git push`, `gh pr create`, `gh pr merge`                                | Commits only. Shipper pushes.                                                                                                                        |
+| shipper            | `gh pr merge`, force-push, `git push origin main`                        | Push + PR + CI are its job. Merge stays a deliberate parent/human action so `--auto` cannot squash-merge.                                            |
+
+`read` is a separate key from `edit`, so `edit: deny` leaves reading intact.
+Definitions do not set `external_directory` and do not hardcode operator
+paths. Once the files are in the worktree, a lane should never leave it.
+
+#### Same chain, orchestrator-driven
+
+The orchestrator launches each stage as its own lane (same worktree, a new
+`--agent`). It does not write code.
+
+```
+gh issue (claim) → findash-explorer  (if 4+ files or scope unclear)
+                 → findash-implementer  (ALWAYS — do not write code directly)
+                 → findash-reviewer     (non-trivial: db, money, tenant, server actions)
+                 → findash-shipper      (ALWAYS — push + PR + CI; merge is a parent/human action)
+```
+
+Trigger criteria are the Route A table's. `findash-implementer` commits and
+stops. It does not push or open PRs.
+
+#### Review gate is not automatic
+
+A Route B lane told to go "end to end" will skip the reviewer unless the
+orchestrator inserts it. For non-trivial changes (db schema/queries, server
+actions, money logic, tenant-scoped data) the orchestrator MUST insert a
+reviewer stage before merge, and the implementing lane MUST stop at PR-open
+rather than auto-merge. Mechanical refactors, docs-only, and test-only changes
+keep skipping the reviewer, same as Route A.
+
+#### Epic-phase PRs do not close the epic
+
+A PR delivering one phase of a multi-phase epic uses `Part of #N`, never
+`Closes #N` — otherwise the epic dies with remaining phases unwritten. That
+PR also fails auto-merge condition (b) ("PR closes a single issue"), so it
+stops at PR-open and waits for a human.
+
 #### One lane, end to end
 
 ```bash
 # 1. Worktree off current main
 git worktree add -b claude/phase-4/<issue>-<slug> \
   ~/projects/personal-financial-dashboard-worktrees/<lane> main
+# .env.local is gitignored — without this copy the worktree fails at runtime
+cp .env.local ~/projects/personal-financial-dashboard-worktrees/<lane>/.env.local
 
 # 2. Its own database — the timezone step is NOT optional (see § Test database)
 createdb findash_test_<lane>
@@ -300,7 +386,8 @@ cd ~/projects/personal-financial-dashboard-worktrees/<lane> && bun install
 
 # 4. One tab per agent — never a pane split of the orchestrator's tab
 herdr tab create --cwd "$PWD" --label <lane> --no-focus     # -> pane_id
-herdr agent start <lane> --kind opencode --pane <pane_id> --timeout 240000
+herdr agent start <lane> --kind opencode --pane <pane_id> --timeout 240000 \
+  -- --agent findash-implementer
 herdr agent prompt <lane> "<objective>" --wait --until idle --until done
 
 # 5. Teardown the moment it merges — tab, worktree, branch, database
@@ -351,14 +438,56 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
 - **A killed watcher is not a dead agent.** Delegated agents live in their own
   panes and keep working when the orchestrator's waiting process dies.
   `herdr agent prompt --wait` is fire-and-forget once the prompt lands; the wait
-  is an observation channel, not a lifeline. Check `herdr agent list` and the
-  lane's real git/PR state before re-prompting, or you duplicate the work.
+  is an observation channel, not a lifeline. Before re-prompting, check the
+  lane's git/PR state (reviews, not just comments) — or you duplicate the work.
 - **Register every lane with your watcher when it starts**, not when you
   remember it. One lane merged completely unobserved because its watcher was
   never rebuilt after being killed.
-- **Poll external state, never the agent's own status.** Some agent kinds report
-  `idle`/`done` while still working. The signals that do not lie: a new commit on
-  the branch, and `gh pr view <n> --json state`.
+- **Do not poll Herdr — it pushes.** Two mechanisms, both verified on herdr
+  0.9.0.
+
+  **Single-shot** — `herdr agent wait <target> --until <status> [--timeout MS]`.
+  Blocks server-side (measured 8.06s wall on 0% CPU, so not a hidden poll).
+  Statuses: `idle`, `working`, `blocked`, `done`, `unknown`. One notification,
+  then it exits. Pair it with a background shell for one specific lane.
+
+  **Streaming** — `events.subscribe` over the Unix socket at
+  `~/.config/herdr/herdr.sock` (named sessions:
+  `~/.config/herdr/sessions/<name>/herdr.sock`; `HERDR_SOCKET_PATH` overrides).
+  Newline-delimited JSON. The first response acknowledges the subscription;
+  every later line is a pushed event.
+
+  ```bash
+  REQ='{"id":"sub_1","method":"events.subscribe","params":{"subscriptions":[
+    {"type":"pane.agent_status_changed","pane_id":"w1:pH","agent_status":"blocked"},
+    {"type":"pane.agent_status_changed","pane_id":"w1:pH","agent_status":"done"}]}}'
+  { printf '%s\n' "$REQ"; while :; do sleep 3600; done; } | nc -U ~/.config/herdr/herdr.sock
+  ```
+
+  Three gotchas:
+  - **`pane_id` is required per subscription.** No wildcard. Omitting it fails
+    with `invalid_request: missing field 'pane_id'`. One entry per pane.
+  - **`agent_status` is a server-side filter.** Subscribe for `blocked` and
+    `done` only; `working`/`idle` never hit the wire.
+  - **Hold the connection with a sleep loop, not `cat`.** Under a runner with
+    no stdin, `cat` takes EOF immediately and the subscription dies one line
+    after `subscription_started`.
+
+  `herdr api schema --json` dumps the request/response/event schema.
+
+- **When you poll GitHub, read the right collection.** A reviewer told to
+  "post your review as a comment" posted a **pull request review**.
+  `gh pr view <n> --json comments` returned `[]` while the verdict sat on the
+  PR. The lane looked silent when it was finished.
+
+  ```bash
+  GH_CONFIG_DIR=~/.config/gh-findash gh api repos/<owner>/<repo>/pulls/<n>/reviews \
+    --jq '.[]|{state,user:.user.login,body}'
+  ```
+
+  A review posted without an explicit approve or request-changes shows
+  `state: "COMMENTED"`. Symptom: pane says "posted", herdr says `done`,
+  comments array empty — check the reviews endpoint before re-prompting.
 
 #### Which route for what
 
