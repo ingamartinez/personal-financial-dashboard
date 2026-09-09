@@ -147,6 +147,148 @@ describe("mercadoPagoParser — year-boundary (Dec 31 / Jan 1 UTC)", () => {
   });
 });
 
+describe("mercadoPagoParser — voucher block (Mercado Libre / #814)", () => {
+  function wrapVoucher(body: string, title = ""): string {
+    return `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8" /><title>${title}</title></head>
+<body>
+<table width="600" align="center" cellpadding="0" cellspacing="0">
+  <tr><td>${body}</td></tr>
+</table>
+</body>
+</html>`;
+  }
+
+  const REDEBAN_VOUCHER = `
+    <p>REDEBAN ES SU RED</p>
+    <p>26/01/2026 01:15:34</p>
+    <p>COD: 11884079 | MERCADOPAGO COLOMBIA</p>
+    <p>VISA | CR | CUOTAS: 1</p>
+    <p>****2575 | REF: 56764274023</p>
+    <p>RECIBO: 56764274023 | AUT: 400227</p>
+    <p>COMPRA NETA: $85211</p>
+    <p>TOTAL: $85211</p>
+  `;
+
+  const CREDIBANCO_VOUCHER = `
+    <p>CREDIBANCO ES SU RED</p>
+    <p>15/03/2026 18:42:10</p>
+    <p>TERM: 000B2SHC | MERCADOPAGO COLOMBIA</p>
+    <p>VISA | CR | CUOTAS: 3</p>
+    <p>****2575 | REF: 111222333</p>
+    <p>RECIBO: 111222333 | AUT: 900111</p>
+    <p>COD. DE RTA: 000</p>
+    <p>COMPRA NETA: $266808</p>
+    <p>TOTAL: $266808</p>
+  `;
+
+  it("parses a REDEBAN voucher and takes TOTAL, not a Pagaste headline", () => {
+    const html = wrapVoucher(`
+      <p>Compraste Almohada Ortopedica Viscoelastica</p>
+      <p>Pagaste $98.999</p>
+      <p>$13.788 con dinero en Mercado Pago</p>
+      <p>1x $85.211 con tarjeta de credito Visa terminada en 2575</p>
+      ${REDEBAN_VOUCHER}
+    `);
+    const r = mercadoPagoParser.parse(html, { receivedAt: new Date("2026-01-26T10:00:00Z") });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    // Card leg is 85,211 COP = 8,521,100 cents. Headline 98,999 must not win.
+    expect(r.data.amountCents).toBe(BigInt(8521100));
+    expect(r.data.currency).toBe("COP");
+    expect(r.data.merchant).toBe("Almohada Ortopedica Viscoelastica");
+    expect(r.data.referenceId).toBe("400227");
+    // 26/01/2026 01:15:34 Bogotá (UTC-5) → 06:15:34 UTC
+    expect(r.data.occurredAt).toEqual(new Date("2026-01-26T06:15:34Z"));
+    expect(r.data.extra).toMatchObject({
+      network: "redeban",
+      last4: "2575",
+      installments: 1,
+      ref: "56764274023",
+    });
+  });
+
+  it("parses a CREDIBANCO voucher (TERM, COD. DE RTA: 000)", () => {
+    const html = wrapVoucher(
+      `<p>Compraste Estante Metalico Cubo Madera</p>${CREDIBANCO_VOUCHER}`,
+      "Compraste Estante Metalico Cubo Madera",
+    );
+    const r = mercadoPagoParser.parse(html);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.amountCents).toBe(BigInt(26680800));
+    expect(r.data.merchant).toBe("Estante Metalico Cubo Madera");
+    expect(r.data.referenceId).toBe("900111");
+    expect(r.data.extra).toMatchObject({
+      network: "credibanco",
+      last4: "2575",
+      installments: 3,
+    });
+    // 15/03/2026 18:42:10 Bogotá → 23:42:10 UTC
+    expect(r.data.occurredAt).toEqual(new Date("2026-03-15T23:42:10Z"));
+  });
+
+  it("accepts period-thousands on TOTAL ($85.211)", () => {
+    const html = wrapVoucher(`
+      <p>REDEBAN ES SU RED</p>
+      <p>26/01/2026 01:15:34</p>
+      <p>TOTAL: $85.211</p>
+    `);
+    const r = mercadoPagoParser.parse(html);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.amountCents).toBe(BigInt(8521100));
+  });
+
+  it("falls back to COMPRA NETA when TOTAL is absent", () => {
+    const html = wrapVoucher(`
+      <p>REDEBAN ES SU RED</p>
+      <p>26/01/2026 01:15:34</p>
+      <p>COMPRA NETA: $85211</p>
+    `);
+    const r = mercadoPagoParser.parse(html);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.amountCents).toBe(BigInt(8521100));
+  });
+
+  it("uses the subject (without Compraste) for multi-product orders", () => {
+    const html = wrapVoucher(
+      `<p>Compraste 5 productos</p>${REDEBAN_VOUCHER}`,
+      "Compraste Estante Metalico Cubo Madera M... y 4 productos mas",
+    );
+    const r = mercadoPagoParser.parse(html, {
+      subject: "Compraste Estante Metalico Cubo Madera M... y 4 productos mas",
+    });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.merchant).toBe("Estante Metalico Cubo Madera M... y 4 productos mas");
+  });
+
+  it("uses <title> when subject is absent and body is 'N productos'", () => {
+    const html = wrapVoucher(
+      `<p>Compraste 5 productos</p>${REDEBAN_VOUCHER}`,
+      "Compraste Estante Metalico Cubo Madera M... y 4 productos mas",
+    );
+    const r = mercadoPagoParser.parse(html);
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.data.merchant).toBe("Estante Metalico Cubo Madera M... y 4 productos mas");
+  });
+
+  it("returns needs_review when a voucher block has no TOTAL or COMPRA NETA", () => {
+    const html = wrapVoucher(`
+      <p>REDEBAN ES SU RED</p>
+      <p>26/01/2026 01:15:34</p>
+      <p>AUT: 400227</p>
+    `);
+    const r = mercadoPagoParser.parse(html);
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("voucher_amount_not_found");
+  });
+});
+
 describe("mercadoPagoParser — needs_review", () => {
   it("returns needs_review when Pagaste is present but amount cannot be parsed", () => {
     const html = wrapMercadoPago(`

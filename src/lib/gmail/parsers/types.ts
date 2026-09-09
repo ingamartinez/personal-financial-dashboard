@@ -4,6 +4,7 @@ export interface ParsedReceipt {
   currency: "COP" | "USD";
   occurredAt: Date;
   referenceId: string | null;
+  extra?: Record<string, unknown>;
 }
 
 export type ParseResult =
@@ -12,5 +13,5 @@ export type ParseResult =
   | { kind: "needs_review"; reason: string };
 
 export interface GatewayParser {
-  parse(html: string, opts?: { receivedAt?: Date }): ParseResult;
+  parse(html: string, opts?: { receivedAt?: Date; subject?: string }): ParseResult;
 }
