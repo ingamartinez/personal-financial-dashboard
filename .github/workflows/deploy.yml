@@ -106,37 +106,39 @@ jobs:
           cp -r node_modules/drizzle-orm "$STAGE/node_modules/drizzle-orm"
           cp -r node_modules/postgres "$STAGE/node_modules/postgres"
           cp -r drizzle "$STAGE/drizzle"
-          # Overlay migrate-prod + backfill scripts under scripts/ preserving
-          # dev layout so their relative `../src/...` imports resolve the same
-          # way on prod as in local runs.
-          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/lib/auth" "$STAGE/src/lib/insights"
-          cp scripts/migrate-prod.ts "$STAGE/scripts/migrate-prod.ts"
-          cp scripts/backfill-users-reference.ts "$STAGE/scripts/backfill-users-reference.ts"
-          # #405: migrate-prod also calls the pago-tc → transfer-group backfill.
-          cp scripts/migrate-pago-tc-to-transfer.ts "$STAGE/scripts/migrate-pago-tc-to-transfer.ts"
-          # #766 hotfix: ATM channel backfill runs as a separate post-migrate step.
-          # Data backfills that depend on a newly-added enum value cannot run in the
-          # same drizzle batch as the ALTER TYPE — Postgres rejects "unsafe use of
-          # new value" in the same transaction. See scripts/backfill-atm-channel.ts.
-          cp scripts/backfill-atm-channel.ts "$STAGE/scripts/backfill-atm-channel.ts"
-          # #712: canonical-merchant backfill is a prod-runnable script. Its
-          # relative imports (`../src/lib/db`, `../src/lib/logger`,
-          # `../src/lib/insights/merchant-canonical`) must be in this overlay
-          # or bun cannot resolve them on the droplet. db + logger are already
-          # copied below; merchant-canonical is a pure module with no further
-          # imports of its own.
-          cp scripts/backfill-canonical-merchant.ts "$STAGE/scripts/backfill-canonical-merchant.ts"
-          cp src/lib/insights/merchant-canonical.ts "$STAGE/src/lib/insights/merchant-canonical.ts"
-          # migrate-prod imports these for reference-data seeding + per-user
-          # backfill; they live under src/ and are NOT traced by Next
-          # standalone, so overlay them explicitly.
-          cp src/lib/db/index.ts "$STAGE/src/lib/db/index.ts"
-          cp src/lib/db/schema.ts "$STAGE/src/lib/db/schema.ts"
-          cp src/lib/db/seed-reference-data.ts "$STAGE/src/lib/db/seed-reference-data.ts"
-          # #538: migrate-prod now calls seedUserAliases — overlay the module.
-          cp src/lib/db/seed-user-aliases.ts "$STAGE/src/lib/db/seed-user-aliases.ts"
-          cp src/lib/auth/signup.ts "$STAGE/src/lib/auth/signup.ts"
-          cp src/lib/logger.ts "$STAGE/src/lib/logger.ts"
+          # Overlay scripts/ and src/ WHOLE, not by explicit filename.
+          #
+          # This used to be a hand-written allow-list of individual `cp`
+          # lines. A missing entry failed open: the deploy went green, the
+          # release was correct, and the data work behind the missing script
+          # simply never ran on prod. That has now bitten three times (#280,
+          # then twice inside epic #814 — backfill-reparse-mercado-pago.ts and
+          # backfill-merchant-knowledge.ts were never copied, so 26 Mercado
+          # Pago receipts stayed all-NULL and merchant_knowledge never
+          # populated). See #848. Copying both trees wholesale means a new
+          # prod-runnable script or src module is on the droplet the moment
+          # it lands on main — there is no list to forget to update.
+          #
+          # Test files are excluded: dead weight on prod, and some pull in
+          # dev-only imports (vitest, @testing-library) that don't belong in
+          # the release. scripts/ is 216K and src/ is 7.2M uncompressed —
+          # against the drizzle-orm + postgres node_modules overlays above
+          # (9.1M + 16M + 380K) the 50 MB tarball ceiling is nowhere close.
+          mkdir -p "$STAGE/scripts" "$STAGE/src"
+          cp -r scripts/. "$STAGE/scripts/"
+          cp -r src/. "$STAGE/src/"
+          find "$STAGE/scripts" "$STAGE/src" \( -name '*.test.ts' -o -name '*.test.tsx' \) -delete
+          # scripts/*.ts and src/**/*.ts import each other via the `@/` path
+          # alias (500+ call sites in src/ alone), not relative `../src/...`
+          # paths — that only happened to work before because the few
+          # modules the allow-list copied didn't need it. Bun resolves `@/*`
+          # only when a tsconfig.json with that `paths` entry is present at
+          # (or above) the cwd it's invoked from; migrate-prod and the
+          # backfills below all run via `cd "$RELEASE_DIR"; bun scripts/x.ts`,
+          # so tsconfig.json must ship at the release root. Verified: the
+          # identical script/import pair fails with "Cannot find module
+          # '@/...'" without this file present and resolves cleanly with it.
+          cp tsconfig.json "$STAGE/tsconfig.json"
           echo "$GIT_SHA" > "$STAGE/GIT_SHA"
           tar -czf release.tar.gz -C "$STAGE" .
           ls -lh release.tar.gz
