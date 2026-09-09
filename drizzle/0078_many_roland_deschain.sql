@@ -1,0 +1,1 @@
+ALTER TABLE "recurring_description_patterns" DROP COLUMN "pattern_ambiguous";

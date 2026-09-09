@@ -359,7 +359,6 @@ describe("detectGapsForMonth #804 — cross-account and skip veto", () => {
       recurringId: recId,
       pattern: "NETFLIX",
       observationCount: 2,
-      patternAmbiguous: false,
     });
 
     const txId = await seedTx(accountB, {
@@ -413,7 +412,6 @@ describe("detectGapsForMonth #804 — cross-account and skip veto", () => {
       recurringId: recId,
       pattern: "APPLE",
       observationCount: 2,
-      patternAmbiguous: false,
     });
 
     await seedTx(accountId, {
@@ -479,14 +477,12 @@ describe("detectGapsForMonth #804 — bijective assignment", () => {
         recurringId: recA,
         pattern: "UNE",
         observationCount: 2,
-        patternAmbiguous: true,
       },
       {
         userId: TEST_USER_ID,
         recurringId: recB,
         pattern: "UNE",
         observationCount: 2,
-        patternAmbiguous: true,
       },
     ]);
 
