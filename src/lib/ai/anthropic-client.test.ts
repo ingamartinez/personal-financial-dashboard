@@ -139,6 +139,18 @@ describe("callClaude", () => {
     expect(captured[0].body.model).toBe("claude-sonnet-5");
   });
 
+  it("does not attach tools — shared by classification, OCR, NLU and insights", async () => {
+    const captured: CapturedRequest[] = [];
+    await callClaude({
+      feature: "classification",
+      userPrompt: "classify this",
+      schema: Schema,
+      apiKey: "sk-test",
+      fetchImpl: mockFetch(fakeMessageResponse({ label: "food", confidence: 0.9 }), captured),
+    });
+    expect(captured[0].body.tools).toBeUndefined();
+  });
+
   it("accepts a bare string system prompt with no cache breakpoint", async () => {
     const captured: CapturedRequest[] = [];
     await callClaude({
