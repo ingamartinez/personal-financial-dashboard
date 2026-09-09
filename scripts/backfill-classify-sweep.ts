@@ -20,15 +20,21 @@
  * gotcha is about scripts migrate-prod.ts calls automatically, not manual
  * one-offs like this one.
  *
- * Also performs a one-time manual assignment (#812) of 11 user-confirmed
- * home-goods/gift transactions (identified from the user's own MercadoPago
- * / Mercado Libre receipts) to their correct categories — see
- * HOME_GOODS_MANUAL_ASSIGNMENTS below. Two of the target categories
- * (`muebles`, `hogar`) are new, seeded for every user; one (`regalos`) is a
- * category user 1 created himself — the same situation as his hand-made
- * `4x100` in #809 — and exists ONLY for that user; it is intentionally
- * absent from seed-reference-data.ts and must never be added there or
- * backfilled for anyone else.
+ * Also performs a one-time manual assignment (#812) of 16 user-confirmed
+ * MercadoPago-gateway transactions (identified from the user's own
+ * MercadoPago / Mercado Libre receipts, or by matching a receipt email's
+ * REDEBAN/CREDIBANCO voucher block to the transaction) to their correct
+ * categories — see HOME_GOODS_MANUAL_ASSIGNMENTS below. This resolves every
+ * currently-identified opaque-gateway row; the gateway-abstain path in
+ * src/lib/classification/opaque-gateways.ts stays in place unweakened as the
+ * standing guard for every FUTURE MercadoPago charge (until #813's parser
+ * fix resolves those automatically at ingest time).
+ *
+ * Two of the target categories (`muebles`, `hogar`) are new, seeded for
+ * every user; one (`regalos`) is a category user 1 created himself — the
+ * same situation as his hand-made `4x100` in #809 — and exists ONLY for
+ * that user; it is intentionally absent from seed-reference-data.ts and
+ * must never be added there or backfilled for anyone else.
  *
  * Idempotent: classify-sweep itself settles/abstains unresolved rows with a
  * "swept"/"abstained" classification_reason marker so re-running is a no-op
@@ -71,26 +77,43 @@ if (userId !== null && (!Number.isFinite(userId) || userId <= 0)) {
 }
 
 // ---------------------------------------------------------------------------
-// One-time manual assignment data (#812) — user-confirmed home-goods/gift
-// transactions, identified from the user's own MercadoPago / Mercado Libre
-// receipts (either directly by the user, or by matching the receipt email's
+// One-time manual assignment data (#812) — every currently-identified
+// opaque-gateway (MercadoPago) transaction, identified from the user's own
+// MercadoPago / Mercado Libre receipts, or by matching the receipt email's
 // REDEBAN/CREDIBANCO voucher block — which carries "MERCADOPAGO COLOMBIA"
-// plus the exact card amount — to the transaction). All `classification_
+// plus the exact card amount — to the transaction. All `classification_
 // method = 'manual'`: these are legitimate human decisions, not AI guesses,
 // so they become prior-art evidence for future sweep runs (see
 // fetchPriorArtIndex in src/lib/classification/sweep.ts).
 //
-// Two of these were SPLIT payments (part MercadoPago balance, part card) —
+// Some of these were SPLIT payments (part MercadoPago balance, part card) —
 // 1357 ($98,999 total / $85,211 on the card) and 1424 ($289,900-ish total /
 // $266,808 on the card). The card leg is what findash holds and is correct
 // as-is; do NOT "fix" the amount. Installment data in prod is already
 // correct for all of these (1106 = 12 cuotas @ 18311 bps, 976 = 9,
 // 1253/1313/959 = 6, the rest = 1) — do NOT touch `installments_total` or
-// `installment_rate_bps` here.
+// `installment_rate_bps` here. 1187 and 1315 are two DIFFERENT termos
+// (different colours, different dates) — not a duplicate, do not dedupe.
+//
+// 1443, 1514, 1624 were inferred rather than read directly off a product
+// line — evidence for each:
+//   - 1443: the Bancolombia alert fires at 05/01 22:42 for
+//     "COP149.650 en MERCADOPAGO COLOMBIA", and a JetSmart itinerary email
+//     (reserva ADMGVX) arrives the same minute. JetSmart bills through
+//     MercadoPago.
+//   - 1514 / 1624: the bank descriptions literally contain "PASARELAEMI",
+//     and prod email_receipts holds MercadoPago receipts for
+//     "EMPRESA DE MEDICINA INTEGRAL EMI S.A.S. SERVICIO DE AMBULANCIA" on
+//     those exact dates, at COP amounts whose implied FX (3,645 and 3,637
+//     COP/USD) agree to 0.2%.
 //
 // Each row is scoped by the EXACT (txId, userId) pair — never inferred from
 // the tx alone — matching the tenant-safety convention everywhere else in
 // this codebase (memory: per-user-table-join-tenant-safety).
+//
+// This resolves every opaque-gateway row identified so far — it does NOT
+// remove or weaken the gateway-abstain path (opaque-gateways.ts), which
+// stays as the standing guard for every future MercadoPago charge.
 // ---------------------------------------------------------------------------
 
 export type ManualHomeGoodsAssignment = {
@@ -110,13 +133,13 @@ export const HOME_GOODS_MANUAL_ASSIGNMENTS: ManualHomeGoodsAssignment[] = [
     label: "Silla De Escritorio Con Cabecero Sam Syncro Bonno Negro Malla",
   },
   // hogar (new, under vivienda)
+  { txId: 1253, userId: 1, categorySlug: "hogar", label: "Microondas Whirlpool 20lt WM1807B" },
   {
     txId: 1424,
     userId: 1,
     categorySlug: "hogar",
     label: "Estante Metálico Cubo Madera + 4 productos más",
   },
-  { txId: 1253, userId: 1, categorySlug: "hogar", label: "Microondas Whirlpool 20lt WM1807B" },
   {
     txId: 1166,
     userId: 1,
@@ -128,7 +151,13 @@ export const HOME_GOODS_MANUAL_ASSIGNMENTS: ManualHomeGoodsAssignment[] = [
     txId: 1187,
     userId: 1,
     categorySlug: "hogar",
-    label: "Termo Botella Térmica Buffer Acero Inoxidable 800ml",
+    label: "Termo Botella Térmica Buffer 800ml — Soaked Lilac",
+  },
+  {
+    txId: 1315,
+    userId: 1,
+    categorySlug: "hogar",
+    label: "Termo Botella Térmica Buffer 800ml — Ice Leopard",
   },
   {
     txId: 956,
@@ -138,13 +167,37 @@ export const HOME_GOODS_MANUAL_ASSIGNMENTS: ManualHomeGoodsAssignment[] = [
   },
   // existing categories
   { txId: 1041, userId: 1, categorySlug: "vivienda", label: "mudanza (Mudango Light)" },
+  {
+    txId: 972,
+    userId: 1,
+    categorySlug: "entretenimiento",
+    label: "tiquetes para un partido de fútbol",
+  },
   { txId: 959, userId: 1, categorySlug: "tecnologia", label: "Xiaomi Smart Band 10 Amoled" },
+  {
+    txId: 1443,
+    userId: 1,
+    categorySlug: "transporte",
+    label: "tiquetes JetSmart (reserva ADMGVX)",
+  },
   // user-created category (NOT in seed-reference-data.ts — see module doc).
   {
     txId: 1357,
     userId: 1,
     categorySlug: "regalos",
-    label: "Collar Mujer Gato Luna Cristales Plata 925 (regalo)",
+    label: 'Collar Mujer Gato Luna Cristales Plata 925 "Regalo Ideal"',
+  },
+  {
+    txId: 1514,
+    userId: 1,
+    categorySlug: "salud",
+    label: "EMI medicina prepagada (MERCPAGO*PASARELAEMI)",
+  },
+  {
+    txId: 1624,
+    userId: 1,
+    categorySlug: "salud",
+    label: "EMI medicina prepagada (Mercado Pago*PASARELAE)",
   },
 ];
 
@@ -157,12 +210,12 @@ export const HOME_GOODS_MANUAL_ASSIGNMENTS: ManualHomeGoodsAssignment[] = [
 //
 // Two different kinds of category populate this check:
 //   - Seeded, per-user-materialized categories (rendimientos, muebles,
-//     hogar, vivienda, tecnologia) — added by seedReferenceData() but only
-//     materialized per-user via migrate-prod.ts's deploy flow or a manual
-//     `bun run db:backfill:users`. This script does NOT call either itself
-//     — it must not silently self-heal by inserting the category, since
-//     that would hide a real deploy-ordering mistake behind a script that
-//     "just worked".
+//     hogar, vivienda, tecnologia, entretenimiento, transporte, salud) —
+//     added by seedReferenceData() but only materialized per-user via
+//     migrate-prod.ts's deploy flow or a manual `bun run db:backfill:users`.
+//     This script does NOT call either itself — it must not silently
+//     self-heal by inserting the category, since that would hide a real
+//     deploy-ordering mistake behind a script that "just worked".
 //   - A user-created category no seed knows about (`regalos`, for user 1
 //     only — same situation as the user's own hand-made `4x100` in #809).
 //     This can NEVER be backfilled by `db:backfill:users` — if missing, the

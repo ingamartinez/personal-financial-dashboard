@@ -178,13 +178,17 @@ describe("ensureHomeGoodsCategoriesExist (#812 backfill precondition)", () => {
       name: "Regalos",
       parentSlug: null,
     });
+    // Every distinct category slug the real 16-row #812 assignment map uses.
     const fixture: ManualHomeGoodsAssignment[] = [
-      { txId: 1, userId: uid, categorySlug: "muebles", label: "a" },
-      { txId: 2, userId: uid, categorySlug: "hogar", label: "b" },
-      { txId: 3, userId: uid, categorySlug: "vivienda", label: "c" },
-      { txId: 4, userId: uid, categorySlug: "tecnologia", label: "d" },
-      { txId: 5, userId: uid, categorySlug: "regalos", label: "e" },
-    ];
+      "muebles",
+      "hogar",
+      "vivienda",
+      "entretenimiento",
+      "tecnologia",
+      "transporte",
+      "regalos",
+      "salud",
+    ].map((slug, i) => ({ txId: i + 1, userId: uid, categorySlug: slug, label: slug }));
 
     await expect(ensureHomeGoodsCategoriesExist(fixture, uid)).resolves.toBeUndefined();
   });
@@ -201,7 +205,7 @@ describe("ensureHomeGoodsCategoriesExist (#812 backfill precondition)", () => {
 });
 
 describe("assignManualHomeGoodsTx (#812)", () => {
-  it("assigns every in-scope tx to its target category as manual, and is idempotent on a second run", async () => {
+  it("assigns all 16 in-scope txs to their target category as manual, and a second run is a no-op", async () => {
     const uid = await createFullUser(`${TAG}-assign-${Date.now()}-${Math.random()}@test.local`);
     const accountId = await createAccountFor(uid);
     await db.insert(categories).values({
@@ -211,21 +215,43 @@ describe("assignManualHomeGoodsTx (#812)", () => {
       parentSlug: null,
     });
 
-    const slugs = ["muebles", "hogar", "vivienda", "tecnologia", "regalos"];
+    // Mirrors the real #812 map's 16 rows: muebles x2, hogar x7, vivienda x1,
+    // entretenimiento x1, tecnologia x1, transporte x1, regalos x1, salud x2.
+    const slugs = [
+      "muebles",
+      "muebles",
+      "hogar",
+      "hogar",
+      "hogar",
+      "hogar",
+      "hogar",
+      "hogar",
+      "hogar",
+      "vivienda",
+      "entretenimiento",
+      "tecnologia",
+      "transporte",
+      "regalos",
+      "salud",
+      "salud",
+    ];
+    expect(slugs).toHaveLength(16);
+
     const fixture: ManualHomeGoodsAssignment[] = [];
-    for (const slug of slugs) {
+    for (const [i, slug] of slugs.entries()) {
       const txId = await createTx({
         userId: uid,
         accountId,
-        descriptionRaw: `HOME GOODS ${slug}`,
+        descriptionRaw: `HOME GOODS ${slug} ${i}`,
         categorySlug: null,
         classificationMethod: "unclassified",
       });
-      fixture.push({ txId, userId: uid, categorySlug: slug, label: slug });
+      fixture.push({ txId, userId: uid, categorySlug: slug, label: `${slug} ${i}` });
     }
 
     const first = await assignManualHomeGoodsTx(fixture, uid);
     expect(first.every((r) => r.updated)).toBe(true);
+    expect(first).toHaveLength(16);
 
     for (const a of fixture) {
       const row = await getTx(a.txId);
@@ -286,5 +312,35 @@ describe("assignManualHomeGoodsTx (#812)", () => {
     await expect(assignManualHomeGoodsTx(fixture, uid)).resolves.toEqual([
       { txId: 1, updated: false },
     ]);
+  });
+});
+
+describe("HOME_GOODS_MANUAL_ASSIGNMENTS (#812 real assignment map)", () => {
+  it("has exactly 16 rows, all for user 1, with no duplicate tx ids", async () => {
+    const { HOME_GOODS_MANUAL_ASSIGNMENTS } = await import("./backfill-classify-sweep");
+
+    expect(HOME_GOODS_MANUAL_ASSIGNMENTS).toHaveLength(16);
+    expect(HOME_GOODS_MANUAL_ASSIGNMENTS.every((a) => a.userId === 1)).toBe(true);
+
+    const txIds = HOME_GOODS_MANUAL_ASSIGNMENTS.map((a) => a.txId);
+    expect(new Set(txIds).size).toBe(txIds.length);
+  });
+
+  it("only targets the 8 expected category slugs", async () => {
+    const { HOME_GOODS_MANUAL_ASSIGNMENTS } = await import("./backfill-classify-sweep");
+
+    const expectedSlugs = new Set([
+      "muebles",
+      "hogar",
+      "vivienda",
+      "entretenimiento",
+      "tecnologia",
+      "transporte",
+      "regalos",
+      "salud",
+    ]);
+    for (const a of HOME_GOODS_MANUAL_ASSIGNMENTS) {
+      expect(expectedSlugs.has(a.categorySlug)).toBe(true);
+    }
   });
 });
