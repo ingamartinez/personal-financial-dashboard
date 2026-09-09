@@ -100,12 +100,20 @@ jobs:
           mkdir -p "$STAGE/.next"
           cp -r .next/static "$STAGE/.next/static"
           if [ -d public ]; then cp -r public "$STAGE/public"; fi
-          # drizzle-orm/postgres-js/migrator isn't traced by Next's standalone
-          # output (no app code imports it), so overlay the full drizzle-orm
-          # and postgres packages. Tarball stays well under 50 MB.
-          cp -r node_modules/drizzle-orm "$STAGE/node_modules/drizzle-orm"
-          cp -r node_modules/postgres "$STAGE/node_modules/postgres"
           cp -r drizzle "$STAGE/drizzle"
+          # bun.lock lets the droplet run a real `bun install --production`
+          # against the release's own package.json (Next always copies the
+          # full repo package.json into standalone, verbatim — all 43 runtime
+          # `dependencies` declared). See the "Install full dependencies"
+          # step below for why: Next's standalone node_modules is only what
+          # the traced page/route graph needed (118 of 43 declared runtime
+          # deps' full closure), so a script run as `bun scripts/x.ts` — which
+          # resolves from disk, not from Next's bundled chunks — can hit a
+          # package Next never traced (#848: googleapis, absent, broke
+          # backfill-reparse-mercado-pago.ts on prod). This replaces the old
+          # hand-overlaid drizzle-orm + postgres node_modules cp (same fix,
+          # one layer down — a fuller install supersedes both).
+          cp bun.lock "$STAGE/bun.lock"
           # Overlay scripts/ and src/ WHOLE, not by explicit filename.
           #
           # This used to be a hand-written allow-list of individual `cp`
@@ -122,8 +130,8 @@ jobs:
           # Test files are excluded: dead weight on prod, and some pull in
           # dev-only imports (vitest, @testing-library) that don't belong in
           # the release. scripts/ is 216K and src/ is 7.2M uncompressed —
-          # against the drizzle-orm + postgres node_modules overlays above
-          # (9.1M + 16M + 380K) the 50 MB tarball ceiling is nowhere close.
+          # against the drizzle/ folder (9.1M) copied above, the 50 MB
+          # tarball ceiling is nowhere close.
           mkdir -p "$STAGE/scripts" "$STAGE/src"
           cp -r scripts/. "$STAGE/scripts/"
           cp -r src/. "$STAGE/src/"
@@ -241,6 +249,55 @@ jobs:
             rm -f '$TARBALL'
             printf 'GIT_SHA=%s\n' '$GIT_SHA' | sudo -n -u findash tee '$ENV_FILE' >/dev/null
             sudo -n -u findash chmod 0640 '$ENV_FILE'
+          "
+
+      # #848: Next's standalone node_modules is only what the traced
+      # page/route graph needed — 118 packages, vs. 43 declared runtime
+      # `dependencies`. That's fine for `bun server.js` (Turbopack bundled
+      # everything it uses into .next/server/chunks) but a script invoked as
+      # `bun scripts/x.ts` resolves `import` from disk, not from those
+      # chunks, and throws on the 31 that are absent (googleapis, zod,
+      # date-fns, xlsx, unpdf, jose, next-auth, and more — verified on prod:
+      # backfill-reparse-mercado-pago.ts died on `Cannot find package
+      # 'googleapis'`). The release's package.json is already the repo's
+      # complete one (Next always copies it verbatim), so a real install
+      # against the release's own bun.lock closes every one of those 31 —
+      # this step supersedes the old hand-overlaid drizzle-orm + postgres
+      # node_modules cp in the tarball step above.
+      #
+      # This targets the NEW release directory ($RELEASE_DIR, keyed by
+      # $GIT_SHA) — never $APP_ROOT/app/current, which is still serving
+      # traffic from the previous release at this point. It runs before the
+      # symlink flip and before the #799 rollback-protected section below,
+      # so a failed install fails the deploy without having mutated anything
+      # on the live path.
+      #
+      # --force discards Next's traced node_modules first: those packages
+      # exist on disk already (per-file, not whole-package — Next only
+      # copies the specific files a traced route required), so a plain
+      # `bun install` sees "package.json present at the right version" and
+      # skips reinstalling it, silently leaving whatever partial file set
+      # Next traced. Verified locally: without --force, a package with only
+      # its package.json intact (rest deleted) is left exactly that way
+      # ("Checked N installs — no changes"); with --force it reinstalls in
+      # full. --force is what makes the result an actual strict superset of
+      # Next's traced set, not a patchwork of traced-partial + freshly-added
+      # packages.
+      #
+      # --production skips the 17 devDependencies (vitest, playwright,
+      # eslint, drizzle-kit, typescript, jsdom, etc.) — confirmed none of
+      # scripts/*.ts (excluding *.test.ts, which never ship) import from any
+      # of them; only the deleted test files do.
+      - name: Install full dependencies in release
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            cd '$RELEASE_DIR'
+            sudo -n -u findash /usr/local/bin/bun install --frozen-lockfile --production --force
           "
 
       - name: Run migrations
