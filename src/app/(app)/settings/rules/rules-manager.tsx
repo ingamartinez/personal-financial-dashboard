@@ -245,7 +245,7 @@ export function RulesManager({
                       ? "IA sintetizada"
                       : `${p.correctionTxnIds.length} correcciones en 30 d`}
                     {" · "}
-                    {p.matchCount} transacci{p.matchCount === 1 ? "ón" : "ones"}
+                    {p.matchCount} transacci{p.matchCount === 1 ? "ón" : "ones"} (últimos 90 d)
                     {p.sample.length > 0
                       ? ` · ${p.sample
                           .map((s) => s.merchant ?? s.descriptionClean ?? `#${s.id}`)

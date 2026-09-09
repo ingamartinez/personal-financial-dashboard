@@ -66,7 +66,6 @@ export type ValidatedSynthesizedPattern = {
 
 export type InsertSynthesizedRuleProposalInput = {
   userId: number;
-  merchant: string;
   categorySlug: string;
   pattern: ValidatedIlikePattern;
   coveredMerchants: readonly string[];
@@ -136,8 +135,10 @@ function patternMatchSql(pattern: string) {
 }
 
 /**
- * What the pattern actually matches for this user right now. Used at
- * synthesis (reject implausible share) and at approval (show blast radius).
+ * Full-history match including description_raw. Synthesis uses this to
+ * reject an implausible share — a too-broad pattern that only hits SMS raw
+ * is still dangerous on the live haystack. The proposal card does not use
+ * this; it uses loadPatternApplyBlastRadius so the number equals apply.
  */
 export async function loadPatternBlastRadius(
   userId: number,
@@ -298,7 +299,10 @@ export async function insertSynthesizedRuleProposal(
     database,
   );
 
-  const merchant = (input.merchant.trim() || ilikeLiteralStem(validated.pattern)).slice(0, 200);
+  // Identity for this path is the pattern. Merchant is NOT NULL and shares a
+  // pending unique with the correction cron — keying on a covered exact
+  // merchant (UBER TRIP) lets that unique swallow the generalizing row.
+  const merchant = validated.pattern.slice(0, 200);
 
   try {
     const [inserted] = await database

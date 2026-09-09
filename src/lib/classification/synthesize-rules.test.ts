@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, classificationCorrections, transactions, users } from "@/lib/db/schema";
+import {
+  accounts,
+  classificationCorrections,
+  ruleProposals,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 import type { CallClaudeOpts } from "@/lib/ai/anthropic-client";
 import {
@@ -206,6 +212,27 @@ describe("synthesizeRulesForUser", () => {
       categorySlug: "uber-didi",
     });
 
+    await db.insert(ruleProposals).values([
+      {
+        userId,
+        merchant: "SYNUBERX TRIP",
+        pattern: "%SYNUBERX TRIP%",
+        categorySlug: "uber-didi",
+        correctionTxnIds: [1, 2, 3],
+        status: "pending",
+        source: "corrections",
+      },
+      {
+        userId,
+        merchant: "SYNUBERX EATS",
+        pattern: "%SYNUBERX EATS%",
+        categorySlug: "uber-didi",
+        correctionTxnIds: [4, 5, 6],
+        status: "pending",
+        source: "corrections",
+      },
+    ]);
+
     mocks.callClaude.mockResolvedValue({
       data: {
         rules: [
@@ -229,6 +256,7 @@ describe("synthesizeRulesForUser", () => {
     expect(result.inserted).toBe(1);
     expect(result.proposals[0]).toMatchObject({
       userId,
+      merchant: "%SYNUBERX%",
       pattern: "%SYNUBERX%",
       categorySlug: "uber-didi",
       source: "synthesized",

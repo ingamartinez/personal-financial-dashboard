@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, transactions, users } from "@/lib/db/schema";
+import { accounts, ruleProposals, transactions, users } from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 import {
   InvalidSynthesizedPatternError,
@@ -97,16 +97,16 @@ describe("type doors", () => {
   });
 
   it("cannot grow an autoApply field onto the insert input", () => {
-    type Allowed =
-      | "userId"
-      | "merchant"
-      | "categorySlug"
-      | "pattern"
-      | "coveredMerchants"
-      | "correctionTxnIds";
+    type Allowed = "userId" | "categorySlug" | "pattern" | "coveredMerchants" | "correctionTxnIds";
     type Extra = Exclude<keyof InsertSynthesizedRuleProposalInput, Allowed>;
     const extra: Extra extends never ? true : Extra = true;
     expect(extra).toBe(true);
+  });
+
+  it("insert input has no merchant field so this path cannot key on a covered exact merchant", () => {
+    type HasMerchant = "merchant" extends keyof InsertSynthesizedRuleProposalInput ? true : false;
+    const hasMerchant: HasMerchant = false;
+    expect(hasMerchant).toBe(false);
   });
 });
 
@@ -190,11 +190,18 @@ describe("validateSynthesizedPattern + insert", () => {
       merchant: "SYNUBERX EATS",
     });
 
+    await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SMS SYNUBERX CHARGE",
+      merchant: "BANCOLOMBIA",
+    });
+
     const blast = await loadPatternBlastRadius(userId, "%SYNUBERX%");
-    expect(blast.matchCount).toBe(2);
-    expect(blast.totalCount).toBe(22);
+    expect(blast.matchCount).toBe(3);
+    expect(blast.totalCount).toBe(23);
     expect(blast.sample.map((s) => s.merchant)).toEqual(
-      expect.arrayContaining(["SYNUBERX TRIP", "SYNUBERX EATS"]),
+      expect.arrayContaining(["SYNUBERX TRIP", "SYNUBERX EATS", "BANCOLOMBIA"]),
     );
     expect(blast.sample.some((s) => s.id === id1)).toBe(true);
   });
@@ -230,7 +237,6 @@ describe("validateSynthesizedPattern + insert", () => {
     });
     const result = await insertSynthesizedRuleProposal({
       userId,
-      merchant: "SYNUBERX TRIP",
       categorySlug: "uber-didi",
       pattern: validated.pattern,
       coveredMerchants: ["SYNUBERX TRIP", "SYNUBERX EATS"],
@@ -240,6 +246,7 @@ describe("validateSynthesizedPattern + insert", () => {
     expect(result.status).toBe("inserted");
     if (result.status !== "inserted") throw new Error("expected inserted");
     expect(result.pattern).toBe("%SYNUBERX%");
+    expect(result.merchant).toBe("%SYNUBERX%");
 
     const [row] = await db.execute<{ status: string; source: string }>(sql`
       SELECT status::text, source::text FROM rule_proposals WHERE id = ${result.id}
@@ -253,6 +260,86 @@ describe("validateSynthesizedPattern + insert", () => {
     expect(rulesAfter.n).toBe(rulesBefore.n);
   });
 
+  it("still inserts a generalizing proposal when exact-merchant pending rows already exist", async () => {
+    const userId = await createUser(`${TAG}-collide@test.local`);
+    const accountId = await createAccount(userId);
+    for (let i = 0; i < 20; i++) {
+      await insertTx({ userId, accountId, descriptionRaw: `OTHER ${i}`, merchant: `OTHER ${i}` });
+    }
+    await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SYNUBERX TRIP",
+      merchant: "SYNUBERX TRIP",
+    });
+    await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SYNUBERX EATS",
+      merchant: "SYNUBERX EATS",
+    });
+
+    await db.insert(ruleProposals).values([
+      {
+        userId,
+        merchant: "SYNUBERX TRIP",
+        pattern: "%SYNUBERX TRIP%",
+        categorySlug: "uber-didi",
+        correctionTxnIds: [1, 2, 3],
+        status: "pending",
+        source: "corrections",
+      },
+      {
+        userId,
+        merchant: "SYNUBERX EATS",
+        pattern: "%SYNUBERX EATS%",
+        categorySlug: "uber-didi",
+        correctionTxnIds: [4, 5, 6],
+        status: "pending",
+        source: "corrections",
+      },
+    ]);
+
+    const validated = await validateSynthesizedPattern({
+      userId,
+      pattern: "%SYNUBERX%",
+      categorySlug: "uber-didi",
+      coveredMerchants: ["SYNUBERX TRIP", "SYNUBERX EATS"],
+    });
+    const result = await insertSynthesizedRuleProposal({
+      userId,
+      categorySlug: "uber-didi",
+      pattern: validated.pattern,
+      coveredMerchants: ["SYNUBERX TRIP", "SYNUBERX EATS"],
+      correctionTxnIds: [1, 2, 3, 4, 5, 6],
+    });
+
+    expect(result.status).toBe("inserted");
+    if (result.status !== "inserted") throw new Error("expected inserted");
+    expect(result.pattern).toBe("%SYNUBERX%");
+    expect(result.merchant).toBe("%SYNUBERX%");
+
+    const pending = await db.execute<{ merchant: string; pattern: string; source: string }>(sql`
+      SELECT merchant, pattern, source::text
+      FROM rule_proposals
+      WHERE user_id = ${userId} AND status = 'pending'
+      ORDER BY source, merchant
+    `);
+    expect(pending).toHaveLength(3);
+    expect(pending.filter((row) => row.source === "synthesized")).toEqual([
+      { merchant: "%SYNUBERX%", pattern: "%SYNUBERX%", source: "synthesized" },
+    ]);
+
+    const again = await insertSynthesizedRuleProposal({
+      userId,
+      categorySlug: "uber-didi",
+      pattern: validated.pattern,
+      coveredMerchants: ["SYNUBERX TRIP", "SYNUBERX EATS"],
+      correctionTxnIds: [1, 2, 3, 4, 5, 6],
+    });
+    expect(again.status).toBe("duplicate");
+  });
+
   it("re-validates on insert so a branded cast of '%' cannot be stored", async () => {
     const userId = await createUser(`${TAG}-cast@test.local`);
     await createAccount(userId);
@@ -260,7 +347,6 @@ describe("validateSynthesizedPattern + insert", () => {
     await expect(
       insertSynthesizedRuleProposal({
         userId,
-        merchant: "X",
         categorySlug: "uber-didi",
         pattern: "%" as ValidatedIlikePattern,
         coveredMerchants: ["SYNUBERX TRIP", "SYNUBERX EATS"],

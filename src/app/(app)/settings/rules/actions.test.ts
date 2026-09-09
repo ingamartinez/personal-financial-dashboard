@@ -57,6 +57,7 @@ async function seedTxn(args: {
   externalId: string;
   merchant: string | null;
   descriptionClean?: string;
+  descriptionRaw?: string;
   categorySlug: string | null;
   daysAgo?: number;
   classificationMethod?: "rule" | "ai" | "manual" | "unclassified";
@@ -76,7 +77,7 @@ async function seedTxn(args: {
       now() - (interval '1 day' * ${args.daysAgo ?? 0}),
       -5000,
       'COP',
-      ${args.descriptionClean ?? args.merchant ?? "test"},
+      ${args.descriptionRaw ?? args.descriptionClean ?? args.merchant ?? "test"},
       ${args.descriptionClean ?? null},
       ${args.merchant},
       ${args.categorySlug},
@@ -215,6 +216,15 @@ describe("createRule", () => {
       merchant: "CARULLA-PV-6",
       categorySlug: null,
       daysAgo: 3,
+    });
+    // Excluded: token only in description_raw (SMS). Merchant/clean do not match.
+    await seedTxn({
+      externalId: `${TXN_EXTERNAL_PREFIX}pv-excl-raw`,
+      merchant: "BANCOLOMBIA-SMS",
+      descriptionClean: "BANCOLOMBIA-SMS",
+      descriptionRaw: "COMPRA CARULLA-PV 1234",
+      categorySlug: "transferencias",
+      daysAgo: 5,
     });
 
     const result = await createRule({

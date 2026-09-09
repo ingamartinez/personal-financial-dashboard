@@ -311,7 +311,6 @@ export async function synthesizeRulesForUser(
       const result = await insertSynthesizedRuleProposal(
         {
           userId,
-          merchant: rule.coveredMerchants[0] ?? rule.pattern,
           categorySlug: rule.categorySlug,
           pattern: rule.pattern as ValidatedIlikePattern,
           coveredMerchants: rule.coveredMerchants,

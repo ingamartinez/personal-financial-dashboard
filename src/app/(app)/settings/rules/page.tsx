@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { categories, classificationRules, ruleProposals, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
-import { loadPatternBlastRadius } from "@/lib/classification/pattern-validation";
+import { loadPatternApplyBlastRadius } from "@/lib/classification/rule-apply-match";
 import { RulesManager } from "./rules-manager";
 
 export const dynamic = "force-dynamic";
@@ -78,7 +78,7 @@ export default async function RulesPage() {
 
   const pending = await Promise.all(
     proposals.map(async (p) => {
-      const blast = await loadPatternBlastRadius(session.id, p.pattern);
+      const blast = await loadPatternApplyBlastRadius(session.id, p.pattern, p.categorySlug);
       return {
         ...p,
         createdAt: p.createdAt.toISOString(),
