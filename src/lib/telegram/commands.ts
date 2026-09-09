@@ -265,8 +265,8 @@ async function handleBackfillConfirm(opts: {
   const to = new Date(session.backfill.to);
 
   // Atomic transition: any subsequent /si arrives, reads backfill_running,
-  // and bails. A /cancel deletes the session row so the loop's shouldCancel
-  // poll returns true.
+  // and bails. A /cancel releases the conversation to idle so the loop's
+  // shouldCancel poll sees getSession() === null. The channel row stays.
   await upsertSession({
     chatId,
     userId,
@@ -338,8 +338,9 @@ async function handleBackfillConfirm(opts: {
     log.error({ err, userId, event: "telegram_backfill_failed" }, "backfill threw");
     await client.sendMessage({ chat_id: chatId, text: renderBackfillFailed() });
   } finally {
-    // Always clear the session at the end — successful, errored, or canceled.
-    // A /cancel mid-flight has already deleted it; clearSession is idempotent.
+    // Always release the conversation at the end — successful, errored, or
+    // canceled. A /cancel mid-flight has already idled it; clearSession is
+    // idempotent. The channel row stays either way.
     await clearSession(chatId);
   }
 }

@@ -5,28 +5,24 @@ import {
   accounts,
   emailReceipts,
   gmailConnections,
+  telegramSessions,
   transactions,
   users,
   type ClassificationReasonJson,
+  type TelegramSessionStep,
 } from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
+import { clearSession, getLatestSessionByUserId } from "@/lib/telegram/session";
 import { ASK_TTL_MS } from "./ask-user";
 
 const mocks = vi.hoisted(() => ({
   pushToUser: vi.fn(),
-  getLatestSessionByUserId: vi.fn(),
-  upsertSession: vi.fn(),
   enqueueClassification: vi.fn(),
 }));
 
 vi.mock("@/lib/telegram/push", () => ({
   pushToUser: mocks.pushToUser,
-}));
-
-vi.mock("@/lib/telegram/session", () => ({
-  getLatestSessionByUserId: mocks.getLatestSessionByUserId,
-  upsertSession: mocks.upsertSession,
 }));
 
 vi.mock("@/lib/classification/enqueue", () => ({
@@ -39,7 +35,6 @@ const {
   applyClassificationAnswer,
   applyClassificationAnswerByIndex,
   skipClassificationQuestion,
-  expireStaleAsks,
 } = await import("./ask-user");
 
 const TAG = "ASK_USER_TEST";
@@ -111,32 +106,42 @@ async function cleanup() {
   await db.delete(users).where(sql`email LIKE ${"%" + TAG + "%"}`);
 }
 
-const idleSession = {
-  chatId: BigInt(7001),
-  telegramUserId: BigInt(8001),
-  state: { step: "idle" as const, draft: {}, sourceChatId: 7001 },
-};
+async function seedChannel(userId: number, step: TelegramSessionStep = "idle"): Promise<number> {
+  const chatId = 9_100_000 + userId;
+  await db.insert(telegramSessions).values({
+    chatId: BigInt(chatId),
+    userId,
+    telegramUserId: BigInt(9_200_000 + userId),
+    state: { step, draft: {}, sourceChatId: chatId },
+    updatedAt: new Date(),
+    expiresAt: new Date(Date.now() + 3_600_000),
+  });
+  return chatId;
+}
 
 describe("processAskForUser", () => {
   let userId: number;
   let accountId: number;
+  let chatId: number;
 
   beforeAll(async () => {
     await cleanup();
   });
   afterAll(cleanup);
 
-  async function setup() {
+  async function setup(opts: { session?: "idle" | "none" | "disambiguation" } = {}) {
     userId = await createUser(`${TAG}-${Date.now()}-${Math.random()}@test.local`);
     accountId = await createAccount(userId);
+    chatId = 0;
     mocks.pushToUser.mockReset();
     mocks.pushToUser.mockResolvedValue({ ok: true });
-    mocks.getLatestSessionByUserId.mockReset();
-    mocks.getLatestSessionByUserId.mockResolvedValue(idleSession);
-    mocks.upsertSession.mockReset();
-    mocks.upsertSession.mockResolvedValue(undefined);
     mocks.enqueueClassification.mockReset();
     mocks.enqueueClassification.mockResolvedValue(undefined);
+    if (opts.session === "none") return;
+    chatId = await seedChannel(
+      userId,
+      opts.session === "disambiguation" ? "awaiting_disambiguation" : "idle",
+    );
   }
 
   afterEach(async () => {
@@ -173,14 +178,9 @@ describe("processAskForUser", () => {
       reason: "opaque_gateway",
     });
     expect(Array.isArray((row?.classificationReason as { offered?: string[] }).offered)).toBe(true);
-    expect(mocks.upsertSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: expect.objectContaining({
-          step: "awaiting_classification",
-          classificationTxId: txId,
-        }),
-      }),
-    );
+    const session = await getLatestSessionByUserId(userId);
+    expect(session?.state.step).toBe("awaiting_classification");
+    expect(session?.state.classificationTxId).toBe(txId);
   });
 
   it("does not ask about a transfer-pair abstain", async () => {
@@ -238,12 +238,8 @@ describe("processAskForUser", () => {
   });
 
   it("skips when a disambiguation session is already open", async () => {
-    await setup();
+    await setup({ session: "disambiguation" });
     await insertTx({ userId, accountId, descriptionRaw: "MERCADOPAGO COLOMBIA" });
-    mocks.getLatestSessionByUserId.mockResolvedValue({
-      ...idleSession,
-      state: { step: "awaiting_disambiguation", draft: {}, sourceChatId: 7001 },
-    });
 
     const result = await processAskForUser(userId);
     expect(result.skipped).toBe("session_open");
@@ -256,9 +252,8 @@ describe("processAskForUser", () => {
   });
 
   it("skips when the user has no Telegram session", async () => {
-    await setup();
+    await setup({ session: "none" });
     await insertTx({ userId, accountId, descriptionRaw: "MERCADOPAGO COLOMBIA" });
-    mocks.getLatestSessionByUserId.mockResolvedValue(null);
 
     const result = await processAskForUser(userId);
     expect(result.skipped).toBe("no_channel");
@@ -285,18 +280,54 @@ describe("processAskForUser", () => {
     const first = await processAskForUser(userId);
     expect(first.askedTxId).toBe(txId);
 
-    const expired = await expireStaleAsks(userId, Date.now() + ASK_TTL_MS + 1_000);
-    expect(expired).toBe(1);
-    const row = await getTx(txId);
-    expect(row?.classificationReason).toMatchObject({
-      action: "abstained",
-      reason: "opaque_gateway",
-    });
-    expect((row?.classificationReason as { askedAt?: string }).askedAt).toBeUndefined();
+    const later = Date.now() + ASK_TTL_MS + 1_000;
+    await db
+      .update(telegramSessions)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(telegramSessions.userId, userId));
 
     mocks.pushToUser.mockClear();
-    const second = await processAskForUser(userId);
+    const second = await processAskForUser(userId, later);
+    expect(second.expiredCount).toBe(1);
     expect(second.askedTxId).toBe(txId);
+    expect(second.skipped).toBeNull();
+    expect(mocks.pushToUser).toHaveBeenCalledOnce();
+    const row = await getTx(txId);
+    expect(row?.classificationReason).toMatchObject({
+      action: "awaiting_user",
+      reason: "opaque_gateway",
+    });
+  });
+
+  it("chains to the next eligible row after the conversation is released", async () => {
+    await setup();
+    const tickets = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      occurredAt: new Date("2026-01-31T10:39:00Z"),
+    });
+    const mattress = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      occurredAt: new Date("2026-02-10T18:00:00Z"),
+    });
+
+    const first = await processAskForUser(userId);
+    expect(first.askedTxId).toBe(mattress);
+    const answered = await applyClassificationAnswer({
+      userId,
+      txId: mattress,
+      categorySlug: "hogar",
+    });
+    expect(answered).toEqual({ ok: true, categorySlug: "hogar" });
+
+    await clearSession(chatId);
+    mocks.pushToUser.mockClear();
+    const second = await processAskForUser(userId);
+    expect(second.skipped).toBeNull();
+    expect(second.askedTxId).toBe(tickets);
     expect(mocks.pushToUser).toHaveBeenCalledOnce();
   });
 
@@ -329,6 +360,7 @@ describe("processAskForUser", () => {
     expect(mattressRow?.classificationReason).toMatchObject({ action: "manual" });
     expect(mattressRow?.classificationReason).not.toMatchObject({ action: "abstained" });
 
+    await clearSession(chatId);
     const second = await processAskForUser(userId);
     expect(second.askedTxId).toBe(tickets);
   });
@@ -454,10 +486,9 @@ describe("late evidence requeue", () => {
     accountId = await createAccount(userId);
     mocks.pushToUser.mockReset();
     mocks.pushToUser.mockResolvedValue({ ok: true });
-    mocks.getLatestSessionByUserId.mockResolvedValue(idleSession);
-    mocks.upsertSession.mockResolvedValue(undefined);
     mocks.enqueueClassification.mockReset();
     mocks.enqueueClassification.mockResolvedValue(undefined);
+    await seedChannel(userId);
 
     const [conn] = await db
       .insert(gmailConnections)

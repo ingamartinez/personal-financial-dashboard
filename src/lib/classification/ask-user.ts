@@ -8,8 +8,10 @@
 // enqueue a classify-ask job. At most one outstanding question per user.
 //
 // Idempotency lives on classification_reason.action=awaiting_user (plus
-// askedAt). The 24h telegram session is a reply interceptor, not asked-state
-// — a draft or disambiguation push will clobber it.
+// askedAt). The 24h telegram conversation is a reply interceptor, not
+// asked-state — a draft or disambiguation push will clobber the step.
+// The telegram_sessions ROW is the channel; clearing/expiring the
+// conversation must not delete it or the next ask dies on no_channel.
 //
 // Unanswered questions expire back to plain abstained and become re-askable.
 // Evidence arrives late in this system; a row pinned awaiting_user forever

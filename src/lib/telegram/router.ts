@@ -375,6 +375,7 @@ async function handleVoice(
 }
 
 async function maybeChainNextAsk(opts: { userId: number }): Promise<void> {
+  // Caller must already have released the conversation (clearSession).
   try {
     await processAskForUser(opts.userId);
   } catch (err) {

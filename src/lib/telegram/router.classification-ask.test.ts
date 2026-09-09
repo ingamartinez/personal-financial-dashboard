@@ -107,6 +107,7 @@ describe("handleUpdate — classification ask callback", () => {
     });
     expect(sent[0]?.text).toMatch(/Hogar/);
     expect(mocks.clearSession).toHaveBeenCalledWith(200);
+    expect(mocks.processAskForUser).toHaveBeenCalledWith(42);
   });
 
   it("skips on cq:{txId}:s without requiring a session", async () => {

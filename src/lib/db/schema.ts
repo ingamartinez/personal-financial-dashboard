@@ -1253,7 +1253,8 @@ export type TelegramDraft = {
 // #458 — when `step` is `awaiting_backfill_confirm` or `backfill_running`,
 // this block holds the requested window (ISO yyyy-mm-dd). `step` is the
 // cancel signal the backfill loop polls — when the user hits /cancel the
-// session row is deleted, and the loop sees `getSession() === null`.
+// conversation is released to idle (channel row stays) and the loop sees
+// `getSession() === null`.
 export type TelegramBackfillState = {
   from: string;
   to: string;
