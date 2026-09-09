@@ -5,7 +5,7 @@ import { emailReceipts, gmailConnections, users } from "@/lib/db/schema";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 import type { AuthedGmailClient } from "./client";
 import { GmailConnectionUnusableError, GmailNotConnectedError } from "./client";
-import { pullForUser, computeSinceDate } from "./pull";
+import { pullForUser, computeSinceDate, type PullOpts } from "./pull";
 
 const TAG = "GMAIL_PULL_TEST";
 
@@ -26,7 +26,10 @@ async function createUser(suffix: string): Promise<number> {
   return row.id;
 }
 
-async function seedActiveConnection(userId: number): Promise<number> {
+async function seedActiveConnection(
+  userId: number,
+  extras: { lastPullAt?: Date } = {},
+): Promise<number> {
   const [row] = await db
     .insert(gmailConnections)
     .values({
@@ -37,6 +40,7 @@ async function seedActiveConnection(userId: number): Promise<number> {
       accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
       scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
       status: "active",
+      lastPullAt: extras.lastPullAt,
     })
     .returning({ id: gmailConnections.id });
   return row.id;
@@ -121,6 +125,12 @@ function fakeAuthed(opts: {
     connection: { id: opts.connectionId, gmailEmail: opts.gmailEmail, accessTokenStale: false },
   } as unknown as AuthedGmailClient;
   return { authed, listCalls, getCalls };
+}
+
+// Exact Gmail `q` for a jetsmart historical window. Substring checks on the
+// domain would also accept a wrong query that merely mentioned jetsmart.com.
+function jetsmartHistoricalQuery(since: Date, until: Date): string {
+  return `from:(@jetsmart.com) after:${Math.floor(since.getTime() / 1000)} before:${Math.floor(until.getTime() / 1000)}`;
 }
 
 describe("gmail/pull", () => {
@@ -510,6 +520,180 @@ describe("gmail/pull", () => {
       .from(emailReceipts)
       .where(and(eq(emailReceipts.userId, userA), eq(emailReceipts.gmailMsgId, "msg-no-date")));
     expect(row.emailReceivedAt).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Historical sender fetch (#849) — explicit window, cursor frozen.
+  // -------------------------------------------------------------------------
+
+  it("does not advance last_pull_at when preserveCursor is set", async () => {
+    const frozen = new Date("2026-09-01T12:00:00Z");
+    const connId = await seedActiveConnection(userA, { lastPullAt: frozen });
+    const since = new Date("2026-01-01T00:00:00Z");
+    const until = new Date("2026-02-01T00:00:00Z");
+    const expectedQ = jetsmartHistoricalQuery(since, until);
+    const { authed } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: (call) => {
+        if (call.q === expectedQ) return { messageIds: ["js-hist-1"] };
+        return { messageIds: [] };
+      },
+    });
+
+    const now = new Date("2026-09-09T16:00:00Z");
+    const result = await pullForUser(
+      userA,
+      {
+        senders: ["jetsmart.com"],
+        overrideSince: since,
+        until,
+        preserveCursor: true,
+      },
+      { getClient: async () => authed, now: () => now },
+    );
+    expect(result.pulled).toBe(1);
+    expect(result.errors).toHaveLength(0);
+
+    const [conn] = await db
+      .select({ lastPullAt: gmailConnections.lastPullAt })
+      .from(gmailConnections)
+      .where(eq(gmailConnections.id, connId));
+    expect(conn.lastPullAt?.getTime()).toBe(frozen.getTime());
+  });
+
+  it("scopes the list query to the sender and the [since, until) window", async () => {
+    const connId = await seedActiveConnection(userA);
+    const { authed, listCalls } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: () => ({ messageIds: [] }),
+    });
+
+    const since = new Date("2026-01-01T00:00:00Z");
+    const until = new Date("2026-02-01T00:00:00Z");
+    await pullForUser(
+      userA,
+      {
+        senders: ["mercadolibre.com"],
+        overrideSince: since,
+        until,
+        preserveCursor: true,
+      },
+      { getClient: async () => authed },
+    );
+
+    expect(listCalls).toHaveLength(1);
+    const q = listCalls[0].q ?? "";
+    expect(q).toContain("from:(@mercadolibre.com)");
+    expect(q).not.toContain("mercadopago.com");
+    expect(q).not.toContain("mercadolibre.com.co");
+    expect(q).toContain(`after:${Math.floor(since.getTime() / 1000)}`);
+    expect(q).toContain(`before:${Math.floor(until.getTime() / 1000)}`);
+  });
+
+  it("is idempotent across an overlapping window without duplicating receipts", async () => {
+    const frozen = new Date("2026-09-01T12:00:00Z");
+    const connId = await seedActiveConnection(userA, { lastPullAt: frozen });
+    const since = new Date("2026-01-01T00:00:00Z");
+    const until = new Date("2026-02-01T00:00:00Z");
+    const expectedQ = jetsmartHistoricalQuery(since, until);
+    const { authed } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: (call) => {
+        if (call.q === expectedQ) return { messageIds: ["js-hist-1"] };
+        return { messageIds: [] };
+      },
+    });
+
+    const opts: PullOpts = {
+      senders: ["jetsmart.com"],
+      overrideSince: since,
+      until,
+      preserveCursor: true,
+    };
+
+    const first = await pullForUser(userA, opts, { getClient: async () => authed });
+    const second = await pullForUser(userA, opts, { getClient: async () => authed });
+    expect(first.pulled).toBe(1);
+    expect(second.pulled).toBe(0);
+    expect(second.skipped).toBe(1);
+
+    const rows = await db
+      .select({ msgId: emailReceipts.gmailMsgId, gateway: emailReceipts.gateway })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.userId, userA));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].gateway).toBe("jetsmart");
+
+    const [conn] = await db
+      .select({ lastPullAt: gmailConnections.lastPullAt })
+      .from(gmailConnections)
+      .where(eq(gmailConnections.id, connId));
+    expect(conn.lastPullAt?.getTime()).toBe(frozen.getTime());
+  });
+
+  it("surfaces a list error instead of silently truncating when the page cap is hit", async () => {
+    const connId = await seedActiveConnection(userA);
+    const { authed } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: () => ({ messageIds: ["js-page-1"], nextPageToken: "more" }),
+    });
+
+    const result = await pullForUser(
+      userA,
+      {
+        senders: ["jetsmart.com"],
+        overrideSince: new Date("2026-01-01T00:00:00Z"),
+        until: new Date("2026-02-01T00:00:00Z"),
+        preserveCursor: true,
+        maxPages: 1,
+      },
+      { getClient: async () => authed },
+    );
+    expect(result.pulled).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].phase).toBe("list");
+    expect(result.errors[0].message).toMatch(/hit page cap/);
+  });
+
+  it("refuses senders/until without preserveCursor and does not advance last_pull_at", async () => {
+    const frozen = new Date("2026-09-01T12:00:00Z");
+    const connId = await seedActiveConnection(userA, { lastPullAt: frozen });
+    let getClientCalls = 0;
+
+    await expect(
+      pullForUser(
+        userA,
+        // Intentional bypass: this is the shape a future JSON/BullMQ caller
+        // would pass if they forgot the flag. The type system rejects the
+        // object literal; runtime must still refuse.
+        {
+          senders: ["jetsmart.com"],
+          overrideSince: new Date("2026-01-01T00:00:00Z"),
+          until: new Date("2026-02-01T00:00:00Z"),
+        } as PullOpts,
+        {
+          getClient: async () => {
+            getClientCalls += 1;
+            throw new Error("getClient must not run when senders/until lack preserveCursor");
+          },
+        },
+      ),
+    ).rejects.toThrow(/preserveCursor: true/);
+    expect(getClientCalls).toBe(0);
+
+    const [conn] = await db
+      .select({ lastPullAt: gmailConnections.lastPullAt })
+      .from(gmailConnections)
+      .where(eq(gmailConnections.id, connId));
+    expect(conn.lastPullAt?.getTime()).toBe(frozen.getTime());
   });
 });
 

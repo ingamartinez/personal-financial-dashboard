@@ -1,7 +1,7 @@
 import type { Job } from "bullmq";
 
 import { createLogger } from "@/lib/logger";
-import { pullForUser, pullAllActiveConnections } from "@/lib/gmail/pull";
+import { pullForUser, pullAllActiveConnections, hydratePullOpts } from "@/lib/gmail/pull";
 import type { PullOpts } from "@/lib/gmail/pull";
 import { createWorker } from "@/lib/queue";
 import { emit } from "@/lib/events/bus";
@@ -30,6 +30,9 @@ const log = createLogger({ module: "worker/gmail-pull" });
 // "single-user" mode below so they target one user without touching others.
 // ---------------------------------------------------------------------------
 
+// Date fields on opts (`overrideSince`, `until`) serialize to ISO strings in
+// Redis. `gmailPullProcessor` hydrates them before calling pullForUser — the
+// type here is the producer contract, not the wire shape (#856).
 export type GmailPullJobData =
   | {
       mode: "all";
@@ -55,11 +58,13 @@ export type GmailPullJobData =
  */
 export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<void> {
   const { mode } = job.data;
+  // Coerce before any consumer (or bus emit): a JSON string is not a Date.
+  const opts = hydratePullOpts(job.data.opts);
 
   log.info({ event: "gmail_pull_start", mode, jobId: job.id }, "gmail-pull started");
 
   if (mode === "single-user") {
-    const { userId, opts = {} } = job.data;
+    const { userId } = job.data;
 
     // BullMQ types job.id as `string | undefined`, but every call to queue.add()
     // for this worker passes an explicit jobId option, so the runtime value is
@@ -122,8 +127,6 @@ export async function gmailPullProcessor(job: Job<GmailPullJobData>): Promise<vo
   }
 
   // mode === "all"
-  const { opts = {} } = job.data;
-
   await job.updateProgress({ users: 0, total: 0 });
   await job.log("start: mode=all pulling all active connections");
 
