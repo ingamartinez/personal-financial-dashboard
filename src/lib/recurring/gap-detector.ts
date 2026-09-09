@@ -12,13 +12,6 @@ import type { Currency } from "@/lib/types";
 
 const log = createLogger({ module: "recurring/gap-detector" });
 
-// Kept for backward compatibility — src/lib/recurring/gap-queries.ts (a
-// separate, possibly-dead manual-link-candidate helper, see #804 issue notes)
-// still uses these. detectGapsForMonth itself now uses the slot-claiming
-// window (src/lib/recurring/slot.ts) instead.
-const DEFAULT_WINDOW_BEFORE_DAYS = 10;
-const DEFAULT_WINDOW_AFTER_DAYS = 5;
-
 export type DetectResult = {
   yearMonth: string;
   checkedRecurrings: number;
@@ -490,5 +483,3 @@ export async function closePreviousMonthForAllUsers(
   }
   return out;
 }
-
-export { DEFAULT_WINDOW_BEFORE_DAYS, DEFAULT_WINDOW_AFTER_DAYS };
