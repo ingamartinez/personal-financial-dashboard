@@ -5,6 +5,8 @@ import {
   accounts,
   emailReceipts,
   gmailConnections,
+  merchantKnowledge,
+  merchantKnowledgeHints,
   transactions,
   userSnapshots,
   users,
@@ -99,8 +101,25 @@ async function createEmailReceipt(
   });
 }
 
+async function createMerchantHint(
+  userId: number,
+  canonicalMerchant: string,
+  categorySlug: string,
+): Promise<number> {
+  await db
+    .insert(merchantKnowledge)
+    .values({ canonicalMerchant })
+    .onConflictDoNothing({ target: merchantKnowledge.canonicalMerchant });
+  const [row] = await db
+    .insert(merchantKnowledgeHints)
+    .values({ userId, canonicalMerchant, categorySlug })
+    .returning({ id: merchantKnowledgeHints.id });
+  return row.id;
+}
+
 async function cleanup() {
   await db.delete(users).where(sql`email LIKE ${TAG + "%"}`);
+  await db.delete(merchantKnowledge).where(sql`canonical_merchant LIKE ${TAG.toLowerCase() + "%"}`);
 }
 
 async function countTransactions(userId: number): Promise<number> {
@@ -144,6 +163,8 @@ describe("#471 user snapshots", () => {
     await db.delete(transactions).where(eq(transactions.userId, userB));
     await db.delete(emailReceipts).where(eq(emailReceipts.userId, userA));
     await db.delete(emailReceipts).where(eq(emailReceipts.userId, userB));
+    await db.delete(merchantKnowledgeHints).where(eq(merchantKnowledgeHints.userId, userA));
+    await db.delete(merchantKnowledgeHints).where(eq(merchantKnowledgeHints.userId, userB));
     await db
       .update(gmailConnections)
       .set({ lastPullAt: new Date("2026-04-01T00:00:00Z"), lastPullHistoryId: "hist-123" })
@@ -192,6 +213,46 @@ describe("#471 user snapshots", () => {
         .from(gmailConnections)
         .where(eq(gmailConnections.id, connA));
       expect(conn.lastPullHistoryId).toBe("hist-123");
+    });
+
+    // Hints FK to categories (config) and merchant_knowledge (global), not to
+    // transactions. Dump/wipe/restore must keep those parents and reinsert
+    // the hint without a foreign-key miss.
+    it("restores a merchant_knowledge_hints row to pre-wipe state", async () => {
+      const merchant = `${TAG}-oxxo`.toLowerCase();
+      const hintId = await createMerchantHint(userA, merchant, "mercado");
+
+      const snap = await createSnapshotForUser({ userId: userA, name: "t-hint" });
+
+      await db.delete(merchantKnowledgeHints).where(eq(merchantKnowledgeHints.userId, userA));
+      const [{ c: hintsAfterWipe }] = await db.execute<{ c: number }>(sql`
+        SELECT COUNT(*)::int AS c FROM merchant_knowledge_hints WHERE user_id = ${userA}
+      `);
+      expect(hintsAfterWipe).toBe(0);
+
+      const result = await restoreSnapshotForUser({
+        userId: userA,
+        snapshotId: snap.id,
+      });
+      expect(result.ok).toBe(true);
+
+      const restored = await db
+        .select({
+          id: merchantKnowledgeHints.id,
+          canonicalMerchant: merchantKnowledgeHints.canonicalMerchant,
+          categorySlug: merchantKnowledgeHints.categorySlug,
+        })
+        .from(merchantKnowledgeHints)
+        .where(eq(merchantKnowledgeHints.userId, userA));
+      expect(restored).toEqual([
+        { id: hintId, canonicalMerchant: merchant, categorySlug: "mercado" },
+      ]);
+
+      const [globalRow] = await db
+        .select({ canonicalMerchant: merchantKnowledge.canonicalMerchant })
+        .from(merchantKnowledge)
+        .where(eq(merchantKnowledge.canonicalMerchant, merchant));
+      expect(globalRow?.canonicalMerchant).toBe(merchant);
     });
 
     it("advances the id sequence past restored rows", async () => {
