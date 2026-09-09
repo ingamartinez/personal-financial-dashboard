@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AMOUNT_TOLERANCE_BPS,
+  isWithinAmountTolerance,
   pickTxForRecurring,
   scoreMatchCandidates,
   type MatchCandidate,
@@ -279,6 +281,80 @@ describe("scoreMatchCandidates", () => {
       expect(result.winner).toBeNull();
       expect(result.ambiguous).toBe(true);
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // #857: bounded leftover tolerance when a shared token collides.
+  // ---------------------------------------------------------------------
+  describe("#857 bounded amount tolerance when tokens collide", () => {
+    // Prod Aida / Alejo amounts. Token "PAGO" is what tokeniseDescription
+    // extracts from "Pago a APORTES EN LINEA".
+    const aida = (recurringId: number) =>
+      candidate({
+        recurringId,
+        accountId: 1,
+        amountCents: BigInt(-49910000),
+        patterns: ["PAGO"],
+      });
+    const alejo = (recurringId: number) =>
+      candidate({
+        recurringId,
+        accountId: 1,
+        amountCents: BigInt(-50830000),
+        patterns: ["PAGO"],
+      });
+
+    it("unique in-tolerance leftover wins even when that recurring has the higher id", () => {
+      // Alejo is first in the array AND has the lower id. Aida is the unique
+      // candidate inside 1% of tx 2460's -50_110_000. If lowest-id or array
+      // order carried this, Alejo would win.
+      const result = scoreMatchCandidates(
+        tx({
+          descriptionRaw: "Pago a APORTES EN LINEA",
+          amountCents: BigInt(-50110000),
+          accountId: 1,
+        }),
+        [alejo(1), aida(99)],
+      );
+      expect(result.winner?.recurringId).toBe(99);
+      expect(result.ambiguous).toBe(false);
+    });
+
+    it("a tx within 1% of two still-available recurrings abstains — neither lowest-id nor nearest", () => {
+      // -50_350_000 is 0.88% from Aida and 0.94% from Alejo — both inside
+      // 1%. Lowest-id and nearest both pick Aida (id 1, slightly closer).
+      // Ambiguity must abstain anyway.
+      const result = scoreMatchCandidates(
+        tx({
+          descriptionRaw: "Pago a APORTES EN LINEA",
+          amountCents: BigInt(-50350000),
+          accountId: 1,
+        }),
+        [aida(1), alejo(99)],
+      );
+      expect(result.winner).toBeNull();
+      expect(result.ambiguous).toBe(true);
+    });
+  });
+});
+
+describe("isWithinAmountTolerance", () => {
+  it("is 1% (100 bps), inclusive at the boundary", () => {
+    expect(AMOUNT_TOLERANCE_BPS).toBe(BigInt(100));
+    const rec = BigInt(-49910000);
+    const onePct = BigInt(499100);
+    expect(isWithinAmountTolerance(rec, rec - onePct, "COP", "COP")).toBe(true);
+    expect(isWithinAmountTolerance(rec, rec - onePct - BigInt(1), "COP", "COP")).toBe(false);
+  });
+
+  it("covers the 0.40% Aida July drift and does not span the 1.84% twin gap", () => {
+    const aida = BigInt(-49910000);
+    expect(isWithinAmountTolerance(aida, BigInt(-50110000), "COP", "COP")).toBe(true);
+    expect(isWithinAmountTolerance(aida, BigInt(-50830000), "COP", "COP")).toBe(false);
+  });
+
+  it("rejects a different currency even at distance 0", () => {
+    expect(isWithinAmountTolerance(BigInt(-100), BigInt(-100), "COP", "USD")).toBe(false);
   });
 });
 

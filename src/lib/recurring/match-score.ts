@@ -67,6 +67,45 @@ function amountDistance(a: bigint, b: bigint): bigint {
   return d < BigInt(0) ? -d : d;
 }
 
+function absCents(n: bigint): bigint {
+  return n < BigInt(0) ? -n : n;
+}
+
+/**
+ * #857: Bounded leftover-amount tolerance, as a fraction of the recurring's
+ * own amount — never an absolute peso figure.
+ *
+ * 100 bps = 1%. Why 1% and not 0.5 / 2 / a COP constant:
+ *   - Prod Aida July (#857) drifted 0.40% (200_000 cents on 49_910_000).
+ *     1% leaves ~2.5× headroom for a slightly larger IBC / late-interest
+ *     tweak without treating it as a different obligation.
+ *   - The Aida/Alejo twin gap is 1.84%. 1% does not span it, so a payment
+ *     sitting on one twin is not "within tolerance" of the other.
+ *   - 2% WOULD span that gap (Aida 2% = 998_200 > 920_000), making both
+ *     twins plausible for the same leftover — the guess this issue forbids.
+ *   - #852 EPM swings tens of percent; 1% cannot swallow them. Opposite fix.
+ *   - Price-hike detection fires at 15%. Orthogonal.
+ *   - Existing unbounded token+amount-nearest cases (Google Play ~9%,
+ *     Apple ~17%) have ZERO candidates inside 1%, so they keep that path.
+ *
+ * Inclusive at exactly 1.00%. Different currencies never match. A zero
+ * recurring amount only matches a zero transaction (no division by zero).
+ */
+export const AMOUNT_TOLERANCE_BPS = BigInt(100);
+
+export function isWithinAmountTolerance(
+  recurringAmountCents: bigint,
+  txAmountCents: bigint,
+  recurringCurrency: Currency,
+  txCurrency: Currency,
+): boolean {
+  if (recurringCurrency !== txCurrency) return false;
+  const rec = absCents(recurringAmountCents);
+  if (rec === BigInt(0)) return txAmountCents === BigInt(0);
+  const dist = amountDistance(recurringAmountCents, txAmountCents);
+  return dist * BigInt(10000) <= rec * AMOUNT_TOLERANCE_BPS;
+}
+
 /**
  * Narrow a tied pool of candidates by same-account bonus. Returns the single
  * winner if exactly one candidate shares the tx's account; otherwise null
@@ -160,11 +199,34 @@ export function scoreMatchCandidates(tx: MatchTx, candidates: MatchCandidate[]):
     return { winner: null, ambiguous: true };
   }
 
-  // No exact amount among token matches — try nearest amount, same currency only.
+  // No exact amount among token matches. #857: a unique candidate inside
+  // 1% of the recurring's amount is an unambiguous leftover — take it.
+  // Two or more inside 1% is genuine ambiguity: abstain. A tolerance that
+  // guesses is worse than no tolerance (wrong link is silent; a missing
+  // link is visible). Zero inside 1% falls through to unbounded nearest
+  // (Google Play ~9%, Apple ~17% — those stay as they were).
   const sameCurrency = tokenMatches.filter((c) => c.currency === tx.currency);
   if (sameCurrency.length === 0) {
     // Token collided but none of the colliding candidates share a currency
     // with the tx — no amount signal available to disambiguate.
+    return { winner: null, ambiguous: true };
+  }
+
+  const inTolerance = sameCurrency.filter((c) =>
+    isWithinAmountTolerance(c.amountCents, tx.amountCents, c.currency, tx.currency),
+  );
+  if (inTolerance.length === 1) {
+    const c = inTolerance[0]!;
+    return {
+      winner: {
+        recurringId: c.recurringId,
+        reason: "token+amount-nearest",
+        sameAccount: c.accountId === tx.accountId,
+      },
+      ambiguous: false,
+    };
+  }
+  if (inTolerance.length >= 2) {
     return { winner: null, ambiguous: true };
   }
 

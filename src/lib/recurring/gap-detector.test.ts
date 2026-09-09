@@ -1151,5 +1151,160 @@ describe("detectGapsForMonth / reconcileOpenGaps #844", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #857: drifted amount + shared fingerprint. Aida/Alejo Seguridad Social.
+// Recurring 9 is ALWAYS seeded first (lower id) — the drifted twin — so
+// insert order / lowest-id cannot silently carry a passing result.
+// ---------------------------------------------------------------------------
+describe("detectGapsForMonth #857 — drifted amount with shared fingerprint", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  const AIDA = BigInt(-49910000);
+  const ALEJO = BigInt(-50830000);
+  const DRIFT_AIDA = BigInt(-50110000); // 0.40% off Aida, 1.42% off Alejo
+  const OVERLAP = BigInt(-50350000); // 0.88% off Aida, 0.94% off Alejo — both inside 1%
+  const DESC = "Pago a APORTES EN LINEA";
+
+  async function seedAportesTwins(accountSuffix: string) {
+    const accountId = await seedAccount(accountSuffix);
+    const aidaId = await seedRecurring(accountId, {
+      label: "__gap_test aportes aida",
+      amountCents: AIDA,
+      dayOfMonth: 1,
+    });
+    const alejoId = await seedRecurring(accountId, {
+      label: "__gap_test aportes alejo",
+      amountCents: ALEJO,
+      dayOfMonth: 1,
+    });
+    expect(aidaId).toBeLessThan(alejoId);
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: aidaId, pattern: "PAGO", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: alejoId, pattern: "PAGO", observationCount: 2 },
+    ]);
+    return { accountId, aidaId, alejoId };
+  }
+
+  it("prod replica: exact Alejo + 0.4% Aida drift both link, even when Aida has the lower id and the exact tx has the lower id", async () => {
+    // Zip-by-lowest-id would pair exact→Aida and drift→Alejo (both wrong).
+    // Current main (Aida processed first, token collision, no exact) leaves
+    // the drift unlinked. Either failure mode must fail this test.
+    const { accountId, aidaId, alejoId } = await seedAportesTwins("_857_prod");
+    const exactTxId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: ALEJO,
+      description: DESC,
+    });
+    const driftTxId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: DRIFT_AIDA,
+      description: DESC,
+    });
+    expect(exactTxId).toBeLessThan(driftTxId);
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(2);
+    expect(result.gapsCreated).toBe(0);
+
+    const [exactRow] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, exactTxId));
+    const [driftRow] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, driftTxId));
+    expect(exactRow.recurringId).toBe(alejoId);
+    expect(driftRow.recurringId).toBe(aidaId);
+  });
+
+  it("a tx within 1% of two still-available recurrings does NOT auto-link", async () => {
+    // Lowest-id and nearest both pick Aida. Ambiguity must still abstain.
+    // If unique-token in the per-recurring loop stole it for Aida (lowest
+    // id, processed first), this assertion fails.
+    const { accountId, aidaId, alejoId } = await seedAportesTwins("_857_amb");
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: OVERLAP,
+      description: DESC,
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(0);
+    expect(result.gapsCreated).toBe(2);
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+
+    const gaps = await db
+      .select({ recurringId: recurringGaps.recurringId })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.userId, TEST_USER_ID));
+    const gapRecurringIds = new Set(gaps.map((g) => g.recurringId));
+    expect(gapRecurringIds).toEqual(new Set([aidaId, alejoId]));
+  });
+
+  it("exact-first then leftover: an overlap-zone tx links to Aida only AFTER Alejo consumes the exact match", async () => {
+    // Without exact-first the overlap tx is within 1% of BOTH, so we abstain
+    // and Aida stays a gap. Exact-first consumes Alejo; the leftover is then
+    // uniquely Aida's. Zip-by-id would assign the exact tx to Aida (wrong).
+    const { accountId, aidaId, alejoId } = await seedAportesTwins("_857_exactfirst");
+    const exactTxId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: ALEJO,
+      description: DESC,
+    });
+    const overlapTxId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: OVERLAP,
+      description: DESC,
+    });
+    expect(exactTxId).toBeLessThan(overlapTxId);
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(2);
+    expect(result.gapsCreated).toBe(0);
+
+    const [exactRow] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, exactTxId));
+    const [overlapRow] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, overlapTxId));
+    expect(exactRow.recurringId).toBe(alejoId);
+    expect(overlapRow.recurringId).toBe(aidaId);
+  });
+
+  it("does not near-match a 0.4% drift whose token contradicts the learned fingerprint", async () => {
+    const accountId = await seedAccount("_857_kfc");
+    const recId = await seedRecurring(accountId, {
+      label: "__gap_test appletv drift",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 1,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: recId,
+      pattern: "APPLE",
+      observationCount: 2,
+    });
+    await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: BigInt(-3002000), // 0.40% off
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(0);
+    expect(result.gapsCreated).toBe(1);
+  });
+});
+
 // Keep the `and` import live — drizzle barrel exports trip tree-shakers.
 void and;

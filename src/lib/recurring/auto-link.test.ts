@@ -1582,3 +1582,57 @@ describe("autoLinkTransaction #844 — payment before its own gap exists", () =>
     }
   });
 });
+
+describe("autoLinkTransaction #857 — drifted amount with shared fingerprint", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("a tx within 1% of two still-available gaps does NOT auto-link", async () => {
+    // Aida seeded first (lower id). The overlap amount is slightly closer to
+    // Aida than to Alejo, so lowest-id AND nearest both pick Aida. Abstain.
+    const accountId = await seedAccount(TEST_USER_ID, "_857");
+    const aida = await seedRecurringWithGap(accountId, {
+      label: "__autolink_857_aida",
+      amountCents: BigInt(-49910000),
+      dayOfMonth: 1,
+      yearMonth: "2026-07",
+    });
+    const alejo = await seedRecurringWithGap(accountId, {
+      label: "__autolink_857_alejo",
+      amountCents: BigInt(-50830000),
+      dayOfMonth: 1,
+      yearMonth: "2026-07",
+    });
+    expect(aida.recurringId).toBeLessThan(alejo.recurringId);
+
+    await db.insert(recurringDescriptionPatterns).values([
+      {
+        userId: TEST_USER_ID,
+        recurringId: aida.recurringId,
+        pattern: "PAGO",
+        observationCount: 2,
+      },
+      {
+        userId: TEST_USER_ID,
+        recurringId: alejo.recurringId,
+        pattern: "PAGO",
+        observationCount: 2,
+      },
+    ]);
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: BigInt(-50350000),
+      description: "Pago a APORTES EN LINEA",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("ambiguous");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+});
