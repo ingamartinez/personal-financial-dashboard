@@ -6,9 +6,22 @@
 // low-confidence rows INTO `otros`. Nothing ever revisited them, so `otros`
 // only ever grew. This module is the weekly job that revisits it.
 //
-// Precedence per candidate transaction: PRIOR ART → rule engine → AI batch →
-// settle.
+// Precedence per candidate transaction: ABSTAIN checks → PRIOR ART → rule
+// engine → AI batch → settle.
 //
+// - Abstain (#812): before anything else, check whether the row is
+//   structurally unclassifiable — the description names an opaque payment
+//   gateway (MercadoPago, PayU, Wompi — see opaque-gateways.ts) rather than
+//   a merchant, or the row looks like one leg of an unpaired same-account
+//   transfer (see `findProbableTransferPair`). Confidence scores don't
+//   express "I have no business guessing here": #809's own prod dry-run had
+//   the AI confidently (70-75) assigning `tecnologia` to MercadoPago rows on
+//   reasoning like "user history shows tech preference" — a guess that is
+//   WORSE than `otros` because the sweep's own prior-art pass would then
+//   treat it as evidence and propagate it forward. Abstained rows skip
+//   prior art, the rule engine, and the AI entirely, and settle to `otros`
+//   with a distinct `{"action":"abstained",...}` marker — visibly *awaiting
+//   enrichment*, not *decided*. See `abstain`/`ABSTAINED_MARKER_ACTION`.
 // - Prior art: does this SAME user already have a confident, real-category
 //   decision for this SAME merchant elsewhere in their history? If so, reuse
 //   it — see `fetchPriorArtIndex`/`resolvePriorArt` below. This runs BEFORE
@@ -71,11 +84,13 @@ import { createLogger } from "@/lib/logger";
 import { canonicalizeMerchant } from "@/lib/insights/merchant-canonical";
 import {
   classifyBatchWithAi,
+  SYSTEM_OWNED_CATEGORY_SLUGS,
   type AiCategoryOption,
   type AiClassification,
   type AiUserHint,
 } from "./ai";
 import { classifyByRule, findMatchingRule, type ClassifiableTx } from "./rules";
+import { matchOpaqueGateway } from "./opaque-gateways";
 
 const log = createLogger({ module: "classification/sweep" });
 
@@ -90,6 +105,17 @@ export const SWEEP_MIN_CONFIDENCE = 60;
 export const PRIOR_ART_MIN_AGREEING_ROWS = 2;
 const SWEPT_MARKER_ACTION = "swept";
 const PRIOR_ART_MARKER_ACTION = "prior_art";
+// #812: distinct from SWEPT_MARKER_ACTION on purpose. "swept" means "we tried
+// and this genuinely has no signal" — a deliberate terminal state. "abstained"
+// means "we never even tried because the row is structurally opaque" (an
+// unidentifiable gateway line, or one leg of a same-account transfer pair) —
+// visibly *awaiting enrichment*, not *decided*. Both settle to
+// category_slug='otros' so both are excluded from fetchPriorArtIndex's
+// `category_slug NOT IN ('otros')` filter — an abstained row can never
+// become prior-art evidence for a future run (see the module doc above).
+const ABSTAINED_MARKER_ACTION = "abstained";
+
+export type AbstainReason = "opaque_gateway" | "probable_transfer_pair";
 
 export type SweepOpts = {
   /** Preview mode: compute every decision but never write to the DB. */
@@ -123,6 +149,10 @@ export type SweepUserResult = {
   ruleClassified: number;
   aiClassified: number;
   settledToOtros: number;
+  /** #812: rows abstained because the description names an opaque payment gateway. */
+  abstainedGateway: number;
+  /** #812: rows abstained because they look like an unpaired transfer leg. */
+  abstainedTransferPair: number;
   categoriesCreated: SweepCategoryCreated[];
   model: string | null;
   changes: SweepChange[];
@@ -130,6 +160,8 @@ export type SweepUserResult = {
 
 type CandidateTx = {
   id: number;
+  accountId: number;
+  occurredAt: Date;
   descriptionRaw: string;
   descriptionClean: string | null;
   merchant: string | null;
@@ -138,6 +170,7 @@ type CandidateTx = {
   currency: "COP" | "USD";
   categorySlug: string | null;
   classificationMethod: string;
+  transferGroupId: string | null;
 };
 
 function sweptMarker(): string {
@@ -145,6 +178,10 @@ function sweptMarker(): string {
     0,
     200,
   );
+}
+
+function abstainMarker(reason: AbstainReason, extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({ action: ABSTAINED_MARKER_ACTION, reason, ...extra }).slice(0, 200);
 }
 
 /**
@@ -209,6 +246,12 @@ type PriorArtIndex = Map<string, Map<string, PriorArtEvidence>>;
  * by (merchant identity, category_slug) counting total rows and how many of
  * those are manual/manual_confirmed — `resolvePriorArt` below turns this
  * into a single winning category or "ambiguous, fall through".
+ *
+ * #812: also excludes SYSTEM_OWNED_CATEGORY_SLUGS (e.g. "adjustments") —
+ * a reconciliation balance-adjustment plug is not a classification decision
+ * and must never become prior-art evidence for an unrelated merchant. This
+ * is on top of (not instead of) ai.ts's own two-layer guard against the AI
+ * ever targeting a system category directly.
  */
 async function fetchPriorArtIndex(db: DB, userId: number): Promise<PriorArtIndex> {
   const rows = await db
@@ -225,7 +268,7 @@ async function fetchPriorArtIndex(db: DB, userId: number): Promise<PriorArtIndex
         eq(transactions.userId, userId),
         notDeleted(transactions.deletedAt),
         ne(transactions.channel, "transfer"),
-        ne(transactions.categorySlug, "otros"),
+        notInArray(transactions.categorySlug, ["otros", ...SYSTEM_OWNED_CATEGORY_SLUGS]),
         isNotNull(transactions.categorySlug),
       ),
     );
@@ -295,7 +338,8 @@ function priorArtMarker(categorySlug: string, evidence: PriorArtEvidence): strin
  *     know" null state (rule/manual nulls don't happen in practice, but the
  *     method filter keeps this scoped to what classifyUnclassifiedBatch would
  *     have produced).
- *   - not already settled by a previous sweep run (the idempotency guard).
+ *   - not already settled OR abstained by a previous sweep run (the
+ *     idempotency guard — see ABSTAINED_MARKER_ACTION above).
  *
  * `excludeIds` additionally drops transactions already pulled earlier in the
  * SAME run. This matters for two reasons: (1) in dry-run mode nothing is
@@ -319,7 +363,10 @@ function candidateWhereClause(userId: number, excludeIds: number[]) {
         inArray(transactions.classificationMethod, ["unclassified", "ai"]),
       ),
     ),
-    sql`(${transactions.classificationReason} IS NULL OR ${transactions.classificationReason} NOT LIKE '%"action":"swept"%')`,
+    sql`(${transactions.classificationReason} IS NULL OR (
+      ${transactions.classificationReason} NOT LIKE '%"action":"swept"%'
+      AND ${transactions.classificationReason} NOT LIKE '%"action":"abstained"%'
+    ))`,
     excludeIds.length > 0 ? notInArray(transactions.id, excludeIds) : undefined,
   );
 }
@@ -354,6 +401,96 @@ async function settle(
       updatedAt: new Date(),
     })
     .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
+}
+
+/**
+ * Settle a row WITHOUT ever having attempted prior-art/rule/AI classification
+ * — the row is structurally opaque (unidentifiable gateway line) or a
+ * probable transfer leg, and a guess would be worse than no guess (#812).
+ * Confidence is stamped 0 (as opposed to `settle`'s 100) precisely to signal
+ * "no confidence was computed" vs. "we tried and genuinely can't tell".
+ *
+ * Same terminal shape as `settle` (category_slug='otros',
+ * classification_method='user_uncategorized') so abstained rows are excluded
+ * from the daily auto-uncategorize job's WHERE clause AND from
+ * fetchPriorArtIndex's `category_slug NOT IN ('otros')` filter — an
+ * abstained row can never resurface as prior-art evidence.
+ */
+async function abstain(
+  db: DB,
+  userId: number,
+  tx: CandidateTx,
+  reason: AbstainReason,
+  extra: Record<string, unknown>,
+  changes: SweepChange[],
+  dryRun: boolean,
+): Promise<void> {
+  const after = {
+    categorySlug: "otros",
+    classificationMethod: "user_uncategorized",
+    confidence: 0,
+    reason: abstainMarker(reason, extra),
+  };
+  changes.push({
+    txId: tx.id,
+    descriptionRaw: tx.descriptionRaw,
+    before: { categorySlug: tx.categorySlug, classificationMethod: tx.classificationMethod },
+    after,
+  });
+  if (dryRun) return;
+  await db
+    .update(transactions)
+    .set({
+      categorySlug: after.categorySlug,
+      classificationMethod: "user_uncategorized",
+      classificationConfidence: after.confidence,
+      classificationReason: after.reason,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
+}
+
+/**
+ * Detect a probable unpaired transfer leg (#812): another LIVE row for the
+ * SAME user, SAME account, SAME calendar date, exact opposite amount, same
+ * currency, and not already grouped. This is deliberately narrower than
+ * `src/lib/transfers/intra-user-pair.ts` (which requires a DIFFERENT
+ * account — a normal cross-account self-transfer) — the rows this catches
+ * are same-account loan refinance / term-extension legs (see #812's prod
+ * evidence: tx 1728/1729, 1738/1739) that would otherwise wear
+ * `channel='bank'` and get a spend category, double-counting the amount.
+ *
+ * Detection ONLY — this never writes `transfer_group_id` or flips `channel`.
+ * Actually pairing the legs is transfer-pairing's own concern and belongs in
+ * its own change (explicitly out of scope per #812).
+ *
+ * Tenant-safe: scoped on `userId` (memory: per-user-table-join-tenant-safety).
+ */
+async function findProbableTransferPair(
+  db: DB,
+  userId: number,
+  tx: CandidateTx,
+): Promise<number | null> {
+  if (tx.transferGroupId !== null) return null;
+
+  const [match] = await db
+    .select({ id: transactions.id })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        notDeleted(transactions.deletedAt),
+        ne(transactions.id, tx.id),
+        eq(transactions.accountId, tx.accountId),
+        eq(transactions.currency, tx.currency),
+        eq(transactions.amountCents, -tx.amountCents),
+        isNull(transactions.transferGroupId),
+        sql`${transactions.occurredAt}::date = ${tx.occurredAt.toISOString()}::date`,
+      ),
+    )
+    .limit(1);
+
+  return match?.id ?? null;
 }
 
 async function applyCategory(
@@ -409,6 +546,8 @@ export async function sweepUserOtrosBucket(
   let ruleClassified = 0;
   let aiClassified = 0;
   let settledToOtros = 0;
+  let abstainedGateway = 0;
+  let abstainedTransferPair = 0;
   let model: string | null = null;
   const changes: SweepChange[] = [];
   const categoriesCreated: SweepCategoryCreated[] = [];
@@ -458,6 +597,8 @@ export async function sweepUserOtrosBucket(
     const batch: CandidateTx[] = await db
       .select({
         id: transactions.id,
+        accountId: transactions.accountId,
+        occurredAt: transactions.occurredAt,
         descriptionRaw: transactions.descriptionRaw,
         descriptionClean: transactions.descriptionClean,
         merchant: transactions.merchant,
@@ -466,6 +607,7 @@ export async function sweepUserOtrosBucket(
         currency: transactions.currency,
         categorySlug: transactions.categorySlug,
         classificationMethod: transactions.classificationMethod,
+        transferGroupId: transactions.transferGroupId,
       })
       .from(transactions)
       .where(candidateWhereClause(userId, seenIds))
@@ -478,7 +620,50 @@ export async function sweepUserOtrosBucket(
 
     const stillPending: CandidateTx[] = [];
     for (const tx of batch) {
-      // Prior art FIRST — a user's own established decision for this exact
+      // #812: abstain checks run BEFORE prior art. Both catch rows where a
+      // guess (even one echoing the user's own past decision on a
+      // structurally-ambiguous description) is unsafe — an opaque gateway
+      // line can front a different merchant every time, and one leg of an
+      // unpaired transfer must never get a spend category at all. This is
+      // stricter than the usual "prior art outranks everything" rule
+      // deliberately: prior art assumes the merchant identity is a stable,
+      // meaningful key, which is exactly what these two cases violate.
+      const gatewayMatch = matchOpaqueGateway([tx.descriptionRaw, tx.merchant]);
+      if (gatewayMatch) {
+        await abstain(db, userId, tx, "opaque_gateway", { gateway: gatewayMatch }, changes, dryRun);
+        abstainedGateway++;
+        log.info(
+          { userId, txId: tx.id, gateway: gatewayMatch, event: "classify_sweep_abstain_gateway" },
+          `classify-sweep: abstained tx ${tx.id} — opaque gateway (${gatewayMatch})`,
+        );
+        continue;
+      }
+
+      const transferPairTxId = await findProbableTransferPair(db, userId, tx);
+      if (transferPairTxId) {
+        await abstain(
+          db,
+          userId,
+          tx,
+          "probable_transfer_pair",
+          { pairedTxId: transferPairTxId },
+          changes,
+          dryRun,
+        );
+        abstainedTransferPair++;
+        log.info(
+          {
+            userId,
+            txId: tx.id,
+            pairedTxId: transferPairTxId,
+            event: "classify_sweep_abstain_transfer_pair",
+          },
+          `classify-sweep: abstained tx ${tx.id} — probable unpaired transfer leg (partner ${transferPairTxId})`,
+        );
+        continue;
+      }
+
+      // Prior art next — a user's own established decision for this exact
       // merchant outranks any seed rule (see the module doc comment and
       // resolvePriorArt for why).
       const identityKey = merchantIdentityKey(tx);
@@ -745,6 +930,8 @@ export async function sweepUserOtrosBucket(
     ruleClassified,
     aiClassified,
     settledToOtros,
+    abstainedGateway,
+    abstainedTransferPair,
     categoriesCreated,
     model,
     changes,
@@ -758,6 +945,8 @@ export type ClassifySweepResult = {
   totalRuleClassified: number;
   totalAiClassified: number;
   totalSettledToOtros: number;
+  totalAbstainedGateway: number;
+  totalAbstainedTransferPair: number;
   categoriesCreated: (SweepCategoryCreated & { userId: number })[];
   perUser: SweepUserResult[];
   /** userIds whose sweep threw and was skipped — see the per-user try/catch below. */
@@ -798,6 +987,8 @@ export async function runClassifySweep(
     totalRuleClassified: 0,
     totalAiClassified: 0,
     totalSettledToOtros: 0,
+    totalAbstainedGateway: 0,
+    totalAbstainedTransferPair: 0,
     categoriesCreated: [],
     perUser: [],
     failedUserIds: [],
@@ -816,6 +1007,8 @@ export async function runClassifySweep(
       result.totalRuleClassified += userResult.ruleClassified;
       result.totalAiClassified += userResult.aiClassified;
       result.totalSettledToOtros += userResult.settledToOtros;
+      result.totalAbstainedGateway += userResult.abstainedGateway;
+      result.totalAbstainedTransferPair += userResult.abstainedTransferPair;
       result.categoriesCreated.push(
         ...userResult.categoriesCreated.map((c) => ({ ...c, userId: u.id })),
       );

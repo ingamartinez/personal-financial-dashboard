@@ -37,6 +37,12 @@ export type ClassificationRuleSeed = {
 
 export const categorySeedRows: CategorySeed[] = [
   { slug: "vivienda", name: "Vivienda", icon: "home", color: "#0ea5e9", sortOrder: 10 },
+  // #812: user-confirmed home purchases (mattress, desk chair, small
+  // appliances/home goods) were landing in `otros` for lack of a home.
+  // `muebles` = furniture proper; `hogar` = smaller home goods that aren't
+  // furniture (pillows, kitchen appliances, drying racks, etc.).
+  { slug: "muebles", name: "Muebles", parentSlug: "vivienda", icon: "sofa" },
+  { slug: "hogar", name: "Hogar", parentSlug: "vivienda", icon: "house" },
   { slug: "alimentacion", name: "Alimentación", icon: "utensils", color: "#f97316", sortOrder: 20 },
   { slug: "mercado", name: "Mercado", parentSlug: "alimentacion", icon: "shopping-cart" },
   {
