@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { FALLBACK_COP_PER_USD } from "@/lib/money";
-import { getCurrentFxRate, microsToRate, rateToMicros, upsertFxRate } from "./repo";
+import {
+  backfillTrmHistory,
+  getCurrentFxRate,
+  getFxRateAsOf,
+  microsToRate,
+  rateToMicros,
+  upsertFxRate,
+} from "./repo";
 
 async function cleanup() {
   await db.execute(sql`DELETE FROM fx_rates WHERE base = 'USD' AND quote = 'COP'`);
@@ -84,5 +91,88 @@ describe("getCurrentFxRate (integration)", () => {
     const rate = await getCurrentFxRate();
     expect(rate.asOf).toBe("2026-04-17");
     expect(rate.rate).toBe(3620);
+  });
+});
+
+describe("getFxRateAsOf (integration)", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("returns null when no covering row exists (does not use the 4000 fallback)", async () => {
+    const rate = await getFxRateAsOf("2026-01-14");
+    expect(rate).toBeNull();
+  });
+
+  it("returns the covering rate for a weekend/holiday (asOf <= date)", async () => {
+    await upsertFxRate({
+      base: "USD",
+      quote: "COP",
+      rate: 3757.08,
+      asOf: "2025-12-31",
+      source: "trm",
+    });
+    const newYears = await getFxRateAsOf("2026-01-01");
+    expect(newYears?.asOf).toBe("2025-12-31");
+    expect(newYears?.rate).toBe(3757.08);
+
+    await upsertFxRate({
+      base: "USD",
+      quote: "COP",
+      rate: 3655.16,
+      asOf: "2026-01-15",
+      source: "trm",
+    });
+    const stillCovered = await getFxRateAsOf("2026-01-14");
+    expect(stillCovered?.asOf).toBe("2025-12-31");
+    expect(stillCovered?.rate).toBe(3757.08);
+  });
+
+  it("prefers the latest asOf that still covers the requested day", async () => {
+    await upsertFxRate({
+      base: "USD",
+      quote: "COP",
+      rate: 3663.24,
+      asOf: "2026-01-14",
+      source: "trm",
+    });
+    await upsertFxRate({
+      base: "USD",
+      quote: "COP",
+      rate: 3655.16,
+      asOf: "2026-01-15",
+      source: "trm",
+    });
+    const onTheDay = await getFxRateAsOf("2026-01-14");
+    expect(onTheDay?.asOf).toBe("2026-01-14");
+    expect(onTheDay?.rate).toBe(3663.24);
+  });
+});
+
+describe("backfillTrmHistory (integration)", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("upserts every published row from fetchTrmHistory", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify([
+          {
+            valor: "3757.08",
+            vigenciadesde: "2025-12-31T00:00:00.000",
+            vigenciahasta: "2026-01-02T00:00:00.000",
+          },
+          {
+            valor: "3663.24",
+            vigenciadesde: "2026-01-14T00:00:00.000",
+            vigenciahasta: "2026-01-14T00:00:00.000",
+          },
+        ]),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    const result = await backfillTrmHistory("2026-01-01", "2026-01-14", { fetchImpl });
+    expect(result.upserted).toBe(2);
+    expect((await getFxRateAsOf("2026-01-01"))?.rate).toBe(3757.08);
+    expect((await getFxRateAsOf("2026-01-14"))?.rate).toBe(3663.24);
   });
 });
