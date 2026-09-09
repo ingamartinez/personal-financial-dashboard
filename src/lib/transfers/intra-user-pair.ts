@@ -23,12 +23,12 @@
 //
 // Tenant safety: ALL queries scope on user_id. Memory: per-user-table-join-tenant-safety.
 
-import { randomUUID } from "node:crypto";
-import { and, eq, gte, lte, isNull, sql, inArray } from "drizzle-orm";
+import { and, eq, gte, lte, isNull, sql } from "drizzle-orm";
 import type { DB } from "@/lib/db";
 import { db as defaultDb } from "@/lib/db";
 import { transactions, counterparties, fiatPartners, userAliases, users } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
+import { applyExistingTransferPair } from "@/lib/transactions/transfer-groups";
 import { parseFxMetadata } from "@/lib/types/fx-metadata";
 
 const log = createLogger({ module: "transfers/intra-user-pair" });
@@ -433,89 +433,56 @@ async function applyGroupId(
   txIdB: number,
 ): Promise<PairResult> {
   try {
-    const result = await dbc.transaction(async (trx) => {
-      // Re-read both rows inside the transaction WITH FOR UPDATE so concurrent
-      // pair calls serialize at this point. Without the lock, a double-arrival
-      // race (both legs ingested in the same batch — e.g. statement reconciler
-      // processing transfer_sent and transfer_received in sequence) produces
-      // two orphan singletons because each call's idempotency guard
-      // (isNull(transferGroupId)) sees the partner already stamped.
-      const rows = await trx
-        .select({
-          id: transactions.id,
-          transferGroupId: transactions.transferGroupId,
-        })
-        .from(transactions)
-        .where(and(eq(transactions.userId, userId), inArray(transactions.id, [txIdA, txIdB])))
-        .for("update");
-
-      if (rows.length !== 2) {
-        return { groupId: null as string | null, pairedTxId: null as number | null };
-      }
-
-      const existingA = rows.find((r) => r.id === txIdA)?.transferGroupId ?? null;
-      const existingB = rows.find((r) => r.id === txIdB)?.transferGroupId ?? null;
-
-      // Adopt-or-create the groupId. If either leg is already grouped, the
-      // current call adopts that groupId — the partner just arrived later.
-      let groupId: string;
-      if (existingA && existingB) {
-        if (existingA === existingB) {
-          // Already paired to the same group — fully idempotent.
-          return { groupId: existingA, pairedTxId: txIdB };
-        }
-        // Both grouped but to DIFFERENT groups — conflict. Bail without writes.
-        log.error(
-          {
-            txIdA,
-            txIdB,
-            userId,
-            existingGroupA: existingA,
-            existingGroupB: existingB,
-            event: "pair_conflict_distinct_groups",
-          },
-          "both legs already paired to different groups — refusing to merge",
-        );
-        return { groupId: null, pairedTxId: null };
-      } else if (existingA) {
-        groupId = existingA;
-      } else if (existingB) {
-        groupId = existingB;
-      } else {
-        groupId = randomUUID();
-      }
-
-      // Update only the legs that don't have a group yet. The isNull guard
-      // is a belt-and-suspenders check — the SELECT FOR UPDATE above already
-      // serialized us, so the DB state cannot have changed.
-      for (const txId of [txIdA, txIdB]) {
-        await trx
-          .update(transactions)
-          .set({
-            transferGroupId: groupId,
-            channel: "transfer",
-            categorySlug: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(transactions.id, txId),
-              eq(transactions.userId, userId),
-              isNull(transactions.transferGroupId),
-            ),
-          );
-      }
-
-      return { groupId, pairedTxId: txIdB };
+    const result = await applyExistingTransferPair({
+      userId,
+      txIdA,
+      txIdB,
+      database: dbc,
     });
 
-    if (result.groupId !== null) {
-      log.info(
-        { txIdA, txIdB, userId, groupId: result.groupId, event: "pair_success" },
-        "intra-user transfer legs paired",
-      );
+    switch (result.status) {
+      case "idempotent":
+      case "adopt":
+      case "new":
+        log.info(
+          { txIdA, txIdB, userId, groupId: result.groupId, event: "pair_success" },
+          "intra-user transfer legs paired",
+        );
+        return { groupId: result.groupId, pairedTxId: txIdB };
+      case "missing":
+        return { groupId: null, pairedTxId: null };
+      case "conflict":
+        if (result.reason === "distinct-groups") {
+          log.error(
+            {
+              txIdA,
+              txIdB,
+              userId,
+              existingGroupA: result.existingGroupA,
+              existingGroupB: result.existingGroupB,
+              event: "pair_conflict_distinct_groups",
+            },
+            "both legs already paired to different groups — refusing to merge",
+          );
+        } else {
+          // 3-member guard now shared with the manual-link path (#770).
+          // Auto-pairer candidates are filtered isNull(transferGroupId), so
+          // this only fires on a race where the partner was grouped between
+          // candidate search and FOR UPDATE. Refuse rather than grow the group.
+          log.error(
+            {
+              txIdA,
+              txIdB,
+              userId,
+              existingGroupId: result.existingGroupId,
+              members: result.members,
+              event: "pair_conflict_3member",
+            },
+            "partner group already has a partner — refusing to adopt into 3-member group",
+          );
+        }
+        return { groupId: null, pairedTxId: null };
     }
-    return result;
   } catch (err) {
     log.error(
       { err, txIdA, txIdB, userId, event: "pair_error" },
