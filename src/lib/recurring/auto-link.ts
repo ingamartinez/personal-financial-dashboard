@@ -13,7 +13,7 @@ import {
   tokeniseDescription,
 } from "@/lib/recurring/observation-recorder";
 import { scoreMatchCandidates, type MatchCandidate } from "@/lib/recurring/match-score";
-import { fetchPatterns } from "@/lib/recurring/patterns";
+import { fetchPatterns, patternSetsEqual } from "@/lib/recurring/patterns";
 import { claimSlotForTx, occurrenceWindow } from "@/lib/recurring/slot";
 import { detectPriceHike } from "@/lib/recurring/price-hike-detector";
 import { emitNotification } from "@/lib/notifications/emit";
@@ -140,9 +140,13 @@ export type AutoLinkResult =
 // the full description-fingerprint + amount scorer over the WHOLE candidate
 // pool (cross-account matches included), which itself blocks amount-only
 // guessing whenever the description has an extractable-but-unmatched token.
-// Two+ classic candidates are a genuine, strong-signal collision; the scorer
-// gets a chance to break the tie, but if it can't, that is real ambiguity
-// (not "no signal"), reported as `ambiguous`.
+// Two+ classic candidates: the scorer gets a chance to break the tie. If it
+// can't AND every tied candidate has an identical learned pattern set
+// (empty-on-all counts as identical — #804 cold-start), pick the lowest
+// recurringId. That pairing is CONVENTIONAL, not an identity claim: the
+// leftover sibling is claimed by the next charge via the existing `taken`
+// filter. Distinct pattern sets that still tie stay `ambiguous` — the tx
+// matched none of them.
 // ---------------------------------------------------------------------------
 
 type Candidate = {
@@ -243,9 +247,18 @@ async function resolveCandidate(
   }
 
   if (classic.length >= 2) {
-    // Strong classic matches tied and the scorer couldn't break the tie —
-    // genuine ambiguity, regardless of the scorer's blocked/ambiguous
-    // distinction (both classic candidates already look equally plausible).
+    // Strong classic matches tied and the scorer couldn't break the tie.
+    // If the tied recurrings are genuinely indistinguishable (identical
+    // learned pattern sets, empty-on-all included), pick the lowest
+    // recurringId — conventional pairing, not identity. The next charge
+    // inherits the leftover via the `taken` filter. Distinct pattern sets
+    // that still tied mean NONE matched the description: stay ambiguous.
+    const sets = classic.map((c) => new Set(patternMap.get(c.recurringId) ?? []));
+    const allIdentical = sets.every((s) => patternSetsEqual(s, sets[0]!));
+    if (allIdentical) {
+      const winner = classic.reduce((min, c) => (c.recurringId < min.recurringId ? c : min));
+      return { winner, ambiguousCount: null };
+    }
     return { winner: null, ambiguousCount: classic.length };
   }
 
@@ -268,10 +281,28 @@ async function resolveCandidate(
  * occurrence) and the one-tx-per-occurrence invariant (enforced here via a
  * pre-check, and at the DB level by the transactions_recurring_unique index).
  */
+function isRecurringSlotTakenError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const causeMsg = err instanceof Error && err.cause instanceof Error ? err.cause.message : "";
+  return (
+    msg.includes("transactions_recurring_unique") ||
+    causeMsg.includes("transactions_recurring_unique")
+  );
+}
+
 export async function autoLinkTransaction(
   userId: number,
   txId: number,
   database: DB = defaultDb,
+): Promise<AutoLinkResult> {
+  return autoLinkTransactionOnce(userId, txId, database, true);
+}
+
+async function autoLinkTransactionOnce(
+  userId: number,
+  txId: number,
+  database: DB,
+  retryOnSlotTaken: boolean,
 ): Promise<AutoLinkResult> {
   const [tx] = await database
     .select({
@@ -353,33 +384,73 @@ export async function autoLinkTransaction(
   if (gapResolution.winner) {
     const hit = gapResolution.winner;
 
-    const result = await database.transaction(async (trx) => {
-      await trx
-        .update(transactions)
-        .set({
+    let result: {
+      status: "linked";
+      gapId: number | null;
+      recurringId: number;
+      yearMonth: string;
+    };
+    try {
+      const committed = await database.transaction(async (trx) => {
+        const updated = await trx
+          .update(transactions)
+          .set({
+            recurringId: hit.recurringId,
+            recurringYearMonth: hit.yearMonth,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(transactions.userId, userId),
+              eq(transactions.id, txId),
+              isNull(transactions.recurringId),
+            ),
+          )
+          .returning({ id: transactions.id });
+        if (updated.length === 0) return null;
+
+        await trx
+          .delete(recurringGaps)
+          .where(and(eq(recurringGaps.userId, userId), eq(recurringGaps.id, hit.gapId!)));
+
+        return {
+          status: "linked" as const,
+          gapId: hit.gapId,
           recurringId: hit.recurringId,
-          recurringYearMonth: hit.yearMonth,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(transactions.userId, userId),
-            eq(transactions.id, txId),
-            isNull(transactions.recurringId),
-          ),
+          yearMonth: hit.yearMonth,
+        };
+      });
+      if (!committed) return { status: "already-linked" };
+      result = committed;
+    } catch (err: unknown) {
+      if (isRecurringSlotTakenError(err)) {
+        if (retryOnSlotTaken) {
+          log.info(
+            {
+              event: "auto_link_slot_retry",
+              path: "gap",
+              txId,
+              recurringId: hit.recurringId,
+              yearMonth: hit.yearMonth,
+              userId,
+            },
+            "gap auto-link: slot taken — retrying once against remaining candidates",
+          );
+          return autoLinkTransactionOnce(userId, txId, database, false);
+        }
+        log.info(
+          {
+            txId,
+            recurringId: hit.recurringId,
+            yearMonth: hit.yearMonth,
+            userId,
+          },
+          "gap auto-link: slot already taken — skipping",
         );
-
-      await trx
-        .delete(recurringGaps)
-        .where(and(eq(recurringGaps.userId, userId), eq(recurringGaps.id, hit.gapId!)));
-
-      return {
-        status: "linked" as const,
-        gapId: hit.gapId,
-        recurringId: hit.recurringId,
-        yearMonth: hit.yearMonth,
-      };
-    });
+        return { status: "no-open-gap" };
+      }
+      throw err;
+    }
 
     emit({
       type: "recurring-gap:resolved",
@@ -496,8 +567,8 @@ export async function autoLinkTransaction(
   const directHit = directResolution.winner;
 
   try {
-    await database.transaction(async (trx) => {
-      await trx
+    const updated = await database.transaction(async (trx) => {
+      return trx
         .update(transactions)
         .set({
           recurringId: directHit.recurringId,
@@ -510,19 +581,30 @@ export async function autoLinkTransaction(
             eq(transactions.id, txId),
             isNull(transactions.recurringId),
           ),
-        );
+        )
+        .returning({ id: transactions.id });
     });
+    if (updated.length === 0) return { status: "already-linked" };
   } catch (err: unknown) {
     // The unique partial index transactions_recurring_unique will throw if
     // another tx already claimed this (recurringId, yearMonth) slot in a
     // race. Match the constraint name precisely — "Failed query" alone is
     // too broad (matches connection errors, FK violations, etc.).
-    const msg = err instanceof Error ? err.message : String(err);
-    const causeMsg = err instanceof Error && err.cause instanceof Error ? err.cause.message : "";
-    if (
-      msg.includes("transactions_recurring_unique") ||
-      causeMsg.includes("transactions_recurring_unique")
-    ) {
+    if (isRecurringSlotTakenError(err)) {
+      if (retryOnSlotTaken) {
+        log.info(
+          {
+            event: "auto_link_slot_retry",
+            path: "direct",
+            txId,
+            recurringId: directHit.recurringId,
+            yearMonth: directHit.yearMonth,
+            userId,
+          },
+          "direct auto-link: slot taken — retrying once against remaining candidates",
+        );
+        return autoLinkTransactionOnce(userId, txId, database, false);
+      }
       log.info(
         {
           txId,

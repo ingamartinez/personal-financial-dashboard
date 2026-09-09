@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, recurringDescriptionPatterns, recurringTransactions } from "@/lib/db/schema";
-import { fetchPatterns, fetchPatternsForOne } from "./patterns";
+import { fetchPatterns, fetchPatternsForOne, patternSetsEqual } from "./patterns";
 
 const TEST_USER_ID = 1;
 const TEST_ACCOUNT = "__patterns_test_account__";
@@ -44,6 +44,21 @@ async function seedRecurring(accountId: number, label: string) {
     .returning({ id: recurringTransactions.id });
   return r.id;
 }
+
+describe("patternSetsEqual", () => {
+  it("treats two empty sets as equal (cold-start)", () => {
+    expect(patternSetsEqual(new Set(), new Set())).toBe(true);
+  });
+
+  it("treats identical tokens as equal regardless of insertion order", () => {
+    expect(patternSetsEqual(new Set(["UNE", "TIGO"]), new Set(["TIGO", "UNE"]))).toBe(true);
+  });
+
+  it("rejects different sizes or different tokens", () => {
+    expect(patternSetsEqual(new Set(["UNE"]), new Set(["UNE", "TIGO"]))).toBe(false);
+    expect(patternSetsEqual(new Set(["UNE"]), new Set(["NETFLIX"]))).toBe(false);
+  });
+});
 
 describe("fetchPatterns / fetchPatternsForOne", () => {
   beforeEach(cleanup);

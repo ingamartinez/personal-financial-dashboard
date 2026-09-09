@@ -6,7 +6,7 @@ import { createLogger } from "@/lib/logger";
 import { emitNotification } from "@/lib/notifications/emit";
 import { pickTxForRecurring, type TxCandidate } from "@/lib/recurring/match-score";
 import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
-import { fetchPatterns, fetchPatternsForOne } from "@/lib/recurring/patterns";
+import { fetchPatterns, fetchPatternsForOne, patternSetsEqual } from "@/lib/recurring/patterns";
 import { occurrenceWindow } from "@/lib/recurring/slot";
 import type { Currency } from "@/lib/types";
 
@@ -138,12 +138,6 @@ type ToProcessRow = {
   dayOfMonth: number;
   skippedMonths: string[];
 };
-
-function patternSetsEqual(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const p of a) if (!b.has(p)) return false;
-  return true;
-}
 
 async function resolveBijectiveGroups(
   userId: number,
