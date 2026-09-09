@@ -6,7 +6,7 @@ import { createLogger } from "@/lib/logger";
 import { emitNotification } from "@/lib/notifications/emit";
 import { pickTxForRecurring, type TxCandidate } from "@/lib/recurring/match-score";
 import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
-import { fetchPatterns } from "@/lib/recurring/patterns";
+import { fetchPatterns, fetchPatternsForOne } from "@/lib/recurring/patterns";
 import { occurrenceWindow } from "@/lib/recurring/slot";
 import type { Currency } from "@/lib/types";
 
@@ -87,8 +87,8 @@ async function resolveTxWinner(
     const lone = classic[0]!;
     const token = tokeniseDescription(lone.descriptionRaw);
     if (token === null) return lone;
-    const ownPatterns = (await fetchPatterns(userId, [recurring.id], database)).get(recurring.id);
-    if (!ownPatterns || ownPatterns.length === 0 || ownPatterns.includes(token)) {
+    const ownPatterns = await fetchPatternsForOne(userId, recurring.id, database);
+    if (ownPatterns.length === 0 || ownPatterns.includes(token)) {
       return lone;
     }
     // Extractable token contradicts this recurring's own learned patterns —
@@ -96,7 +96,7 @@ async function resolveTxWinner(
   }
 
   const pool = classic.length >= 2 ? classic : candidates;
-  const patterns = (await fetchPatterns(userId, [recurring.id], database)).get(recurring.id) ?? [];
+  const patterns = await fetchPatternsForOne(userId, recurring.id, database);
   const txCandidates: TxCandidate[] = pool.map((c) => ({
     txId: c.id,
     accountId: c.accountId,
@@ -208,18 +208,27 @@ async function resolveBijectiveGroups(
           lt(transactions.occurredAt, rangeEnd),
           notDeleted(transactions.deletedAt),
         ),
-      );
+      )
+      // Deterministic order — the cron re-runs monthly and must not reshuffle
+      // prior pairings when two txs share an occurredAt timestamp.
+      .orderBy(asc(transactions.occurredAt), asc(transactions.id));
 
-    // Only candidates whose own token doesn't actively contradict the
-    // shared pattern set are eligible — mirrors the KFC guard.
+    // Only candidates whose own token doesn't actively contradict the shared
+    // pattern set are eligible — mirrors the KFC guard. An EMPTY shared
+    // pattern set means "nothing learned yet" (bootstrap) — nothing to
+    // contradict — so it passes through, exactly like the single-classic
+    // path in resolveTxWinner()/auto-link.ts's resolveCandidate(). Treating
+    // an empty set as "matches nothing" here would silently defeat the
+    // feature on the very first month two indistinguishable recurrings exist.
     const eligibleTxs = candidateTxs.filter((tx) => {
+      if (sharedPatterns.size === 0) return true;
       const token = tokeniseDescription(tx.descriptionRaw);
       return token === null || sharedPatterns.has(token);
     });
     if (eligibleTxs.length === 0) continue;
 
     const sortedTxs = [...eligibleTxs].sort(
-      (a, b) => a.occurredAt.getTime() - b.occurredAt.getTime(),
+      (a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.id - b.id,
     );
     const sortedMembers = [...members].sort((a, b) => a.dayOfMonth - b.dayOfMonth || a.id - b.id);
 
@@ -387,7 +396,16 @@ export async function detectGapsForMonth(
           recurringYearMonth: yearMonth,
           updatedAt: new Date(),
         })
-        .where(and(eq(transactions.userId, userId), eq(transactions.id, winner.id)));
+        .where(
+          and(
+            eq(transactions.userId, userId),
+            eq(transactions.id, winner.id),
+            // Race guard — "one tx links to at most one occurrence" (#804):
+            // without this, a concurrent writer that claimed this tx between
+            // the SELECT above and this UPDATE could be silently overwritten.
+            isNull(transactions.recurringId),
+          ),
+        );
       result.autoLinked += 1;
       continue;
     }
