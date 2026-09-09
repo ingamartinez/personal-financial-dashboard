@@ -400,6 +400,216 @@ describe("detectGapsForMonth #804 — cross-account and skip veto", () => {
     expect(result.autoLinked).toBe(0);
     expect(result.gapsCreated).toBe(1);
   });
+
+  it("CRITICAL fix: KFC purchase byte-identical to Apple TV's amount does NOT auto-link even on Apple TV's OWN account", async () => {
+    const accountId = await seedAccount("_sameacct");
+    const recId = await seedRecurring(accountId, {
+      label: "__gap_test appletv sameacct",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: recId,
+      pattern: "APPLE",
+      observationCount: 2,
+      patternAmbiguous: false,
+    });
+
+    await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-2990000),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(0);
+    expect(result.gapsCreated).toBe(1);
+  });
+
+  it("bootstrap preserved: classic match still links when the recurring has zero learned patterns", async () => {
+    const accountId = await seedAccount("_bootstrap");
+    const recId = await seedRecurring(accountId, {
+      label: "__gap_test bootstrap",
+      amountCents: BigInt(-3050000),
+      dayOfMonth: 15,
+    });
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-3050000),
+      description: "SPOTIFY P 12345",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(1);
+
+    const [linked] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringId).toBe(recId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #804 NEW REQUIREMENT: bijective pairing for genuinely indistinguishable
+// recurrings (the "Tigo Aida / Tigo Alejo" shape — same account, same
+// amount, same learned token, no signal to tell them apart).
+// ---------------------------------------------------------------------------
+describe("detectGapsForMonth #804 — bijective assignment", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("two indistinguishable recurrings + two matching txs → both link, one each", async () => {
+    const accountId = await seedAccount("_tigo");
+    const recA = await seedRecurring(accountId, {
+      label: "__gap_test tigo aida",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 5,
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__gap_test tigo alejo",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 8,
+    });
+    await db.insert(recurringDescriptionPatterns).values([
+      {
+        userId: TEST_USER_ID,
+        recurringId: recA,
+        pattern: "UNE",
+        observationCount: 2,
+        patternAmbiguous: true,
+      },
+      {
+        userId: TEST_USER_ID,
+        recurringId: recB,
+        pattern: "UNE",
+        observationCount: 2,
+        patternAmbiguous: true,
+      },
+    ]);
+
+    const tx1 = await seedTx(accountId, {
+      occurredOn: "2026-04-05",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 1",
+    });
+    const tx2 = await seedTx(accountId, {
+      occurredOn: "2026-04-08",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 2",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(2);
+    expect(result.gapsCreated).toBe(0);
+
+    const [row1] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, tx1));
+    const [row2] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, tx2));
+
+    // Both linked, each to a DIFFERENT recurring (bijective, no double-claim).
+    expect(row1.recurringId).not.toBeNull();
+    expect(row2.recurringId).not.toBeNull();
+    expect(row1.recurringId).not.toBe(row2.recurringId);
+    expect(new Set([row1.recurringId, row2.recurringId])).toEqual(new Set([recA, recB]));
+  });
+
+  it("two indistinguishable occurrences but only ONE matching tx → exactly one links, the other becomes a gap", async () => {
+    const accountId = await seedAccount("_tigo_partial");
+    const recA = await seedRecurring(accountId, {
+      label: "__gap_test tigo partial a",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 5,
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__gap_test tigo partial b",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 8,
+    });
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: recA, pattern: "UNE", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: recB, pattern: "UNE", observationCount: 2 },
+    ]);
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-05",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(1);
+    expect(result.gapsCreated).toBe(1);
+
+    // Never double-claimed — only one recurring got the tx.
+    const linkedCount = await db.execute<{ c: string }>(
+      sql`SELECT COUNT(*)::text AS c FROM transactions WHERE id = ${txId} AND recurring_id IS NOT NULL`,
+    );
+    expect(linkedCount[0]?.c).toBe("1");
+  });
+
+  it("a skipped month is never claimed by bijective pairing", async () => {
+    const accountId = await seedAccount("_tigo_skip");
+    const recA = await seedRecurring(accountId, {
+      label: "__gap_test tigo skip a",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 5,
+      skippedMonths: ["2026-04"],
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__gap_test tigo skip b",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 8,
+    });
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: recA, pattern: "UNE", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: recB, pattern: "UNE", observationCount: 2 },
+    ]);
+
+    const tx1 = await seedTx(accountId, {
+      occurredOn: "2026-04-05",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 1",
+    });
+    const tx2 = await seedTx(accountId, {
+      occurredOn: "2026-04-08",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 2",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    // recA is skipped -> excluded before grouping -> only recB is eligible ->
+    // group size 1 -> no bijective pairing -> resolved individually against
+    // BOTH candidate txs -> genuinely ambiguous (2 txs, 1 recurring, same
+    // token+amount+account) -> gap created for recB, recA untouched.
+    expect(result.skippedIntentionally).toBe(1);
+    expect(result.autoLinked).toBe(0);
+    expect(result.gapsCreated).toBe(1);
+
+    const [row1] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, tx1));
+    const [row2] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, tx2));
+    // Neither tx was ever assigned to the SKIPPED recurring — the strongest,
+    // most important guarantee here.
+    expect(row1.recurringId).not.toBe(recA);
+    expect(row2.recurringId).not.toBe(recA);
+    // And since it's genuinely ambiguous (no bijective help for a lone
+    // recurring), neither tx was linked at all yet.
+    expect(row1.recurringId).toBeNull();
+    expect(row2.recurringId).toBeNull();
+  });
 });
 
 describe("closePreviousMonthForAllUsers (integration)", () => {

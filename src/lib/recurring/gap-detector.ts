@@ -1,16 +1,12 @@
 import { and, asc, eq, gte, inArray, isNull, lt } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
-import {
-  recurringDescriptionPatterns,
-  recurringGaps,
-  recurringTransactions,
-  transactions,
-  users,
-} from "@/lib/db/schema";
+import { recurringGaps, recurringTransactions, transactions, users } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import { emitNotification } from "@/lib/notifications/emit";
 import { pickTxForRecurring, type TxCandidate } from "@/lib/recurring/match-score";
+import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
+import { fetchPatterns } from "@/lib/recurring/patterns";
 import { occurrenceWindow } from "@/lib/recurring/slot";
 import type { Currency } from "@/lib/types";
 
@@ -48,23 +44,6 @@ export function previousYearMonth(today: Date): string {
   return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-async function fetchPatternsForOne(
-  userId: number,
-  recurringId: number,
-  database: DB,
-): Promise<string[]> {
-  const rows = await database
-    .select({ pattern: recurringDescriptionPatterns.pattern })
-    .from(recurringDescriptionPatterns)
-    .where(
-      and(
-        eq(recurringDescriptionPatterns.userId, userId),
-        eq(recurringDescriptionPatterns.recurringId, recurringId),
-      ),
-    );
-  return rows.map((r) => r.pattern);
-}
-
 type CandidateTxRow = {
   id: number;
   accountId: number;
@@ -75,11 +54,19 @@ type CandidateTxRow = {
 
 /**
  * Resolve which (if any) of the unlinked candidate transactions is this
- * recurring's payment for the occurrence, using the same classic
- * (account+amount) fast path, then description-fingerprint + amount scorer,
- * as auto-link.ts (#804) — see that file's resolveCandidate() for the
- * detailed rationale. Returns null when there is no signal or the
- * candidates remain ambiguous (both cases fall through to gap creation).
+ * recurring's payment for the occurrence.
+ *
+ * "Classic" (same account + exact amount) is a STRONG SCORING INPUT, never a
+ * bypass around the token guard (#804 CRITICAL fix — a lone classic
+ * candidate whose own extractable token contradicts this recurring's
+ * learned patterns must not be trusted blindly; e.g. a KFC purchase
+ * byte-identical to Apple TV's amount, landing on Apple TV's own account).
+ * A lone classic candidate is trusted directly only when its description has
+ * no extractable token, OR this recurring has no learned patterns yet
+ * (nothing to contradict — first-ever payment bootstrap), OR the token
+ * matches a learned pattern. Otherwise it falls through to the full
+ * description-fingerprint + amount scorer (pickTxForRecurring) over ALL
+ * candidates, matching auto-link.ts's resolveCandidate().
  */
 async function resolveTxWinner(
   userId: number,
@@ -95,10 +82,21 @@ async function resolveTxWinner(
       c.currency === recurring.currency &&
       c.amountCents === recurring.amountCents,
   );
-  if (classic.length === 1) return classic[0]!;
+
+  if (classic.length === 1) {
+    const lone = classic[0]!;
+    const token = tokeniseDescription(lone.descriptionRaw);
+    if (token === null) return lone;
+    const ownPatterns = (await fetchPatterns(userId, [recurring.id], database)).get(recurring.id);
+    if (!ownPatterns || ownPatterns.length === 0 || ownPatterns.includes(token)) {
+      return lone;
+    }
+    // Extractable token contradicts this recurring's own learned patterns —
+    // do not trust the classic shortcut. Fall through to the pool below.
+  }
 
   const pool = classic.length >= 2 ? classic : candidates;
-  const patterns = await fetchPatternsForOne(userId, recurring.id, database);
+  const patterns = (await fetchPatterns(userId, [recurring.id], database)).get(recurring.id) ?? [];
   const txCandidates: TxCandidate[] = pool.map((c) => ({
     txId: c.id,
     accountId: c.accountId,
@@ -121,6 +119,132 @@ async function resolveTxWinner(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Bijective assignment for genuinely indistinguishable recurrings (#804 new
+// requirement). When N recurrings share the exact same (account, currency,
+// amount) AND the exact same set of learned description patterns, no signal
+// can ever separate them — declaring "ambiguous" for every future payment
+// would create permanent manual work for zero benefit, since any pairing
+// between them is equally correct (the obligations are identical).
+//
+// When the number of such indistinguishable, still-open occurrences equals
+// the number of unclaimed matching candidate transactions, pair them up
+// one-to-one (stable order: tx by occurredAt asc, recurring by dayOfMonth
+// then id asc). If the counts differ, link as many pairs as possible and
+// leave the remainder to the normal per-recurring resolution below (which
+// creates a gap for anything still unmatched) — this never double-claims a
+// transaction and never touches a skipped month (skipped recurrings are
+// already excluded from `members` by the caller).
+// ---------------------------------------------------------------------------
+
+type ToProcessRow = {
+  id: number;
+  accountId: number;
+  amountCents: bigint;
+  currency: Currency;
+  dayOfMonth: number;
+  skippedMonths: string[];
+};
+
+function patternSetsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const p of a) if (!b.has(p)) return false;
+  return true;
+}
+
+async function resolveBijectiveGroups(
+  userId: number,
+  year: number,
+  month: number,
+  yearMonth: string,
+  toProcess: ToProcessRow[],
+  database: DB,
+): Promise<{ handled: Set<number>; autoLinked: number }> {
+  const handled = new Set<number>();
+  let autoLinked = 0;
+
+  const groups = new Map<string, ToProcessRow[]>();
+  for (const r of toProcess) {
+    const key = `${r.accountId}:${r.currency}:${r.amountCents}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(r);
+    groups.set(key, arr);
+  }
+
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+
+    const patternMap = await fetchPatterns(
+      userId,
+      members.map((m) => m.id),
+      database,
+    );
+    const patternSets = members.map((m) => new Set(patternMap.get(m.id) ?? []));
+    const sharedPatterns = patternSets[0]!;
+    const allIdentical = patternSets.every((s) => patternSetsEqual(s, sharedPatterns));
+    if (!allIdentical) continue; // a real distinguishing signal exists — resolve individually below
+
+    const windows = members.map((m) => occurrenceWindow(year, month, m.dayOfMonth));
+    const rangeStart = new Date(Math.min(...windows.map((w) => w.start.getTime())));
+    const rangeEnd = new Date(Math.max(...windows.map((w) => w.endExclusive.getTime())));
+
+    const { accountId, currency, amountCents } = members[0]!;
+
+    const candidateTxs = await database
+      .select({
+        id: transactions.id,
+        occurredAt: transactions.occurredAt,
+        descriptionRaw: transactions.descriptionRaw,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          isNull(transactions.recurringId),
+          eq(transactions.accountId, accountId),
+          eq(transactions.currency, currency),
+          eq(transactions.amountCents, amountCents),
+          gte(transactions.occurredAt, rangeStart),
+          lt(transactions.occurredAt, rangeEnd),
+          notDeleted(transactions.deletedAt),
+        ),
+      );
+
+    // Only candidates whose own token doesn't actively contradict the
+    // shared pattern set are eligible — mirrors the KFC guard.
+    const eligibleTxs = candidateTxs.filter((tx) => {
+      const token = tokeniseDescription(tx.descriptionRaw);
+      return token === null || sharedPatterns.has(token);
+    });
+    if (eligibleTxs.length === 0) continue;
+
+    const sortedTxs = [...eligibleTxs].sort(
+      (a, b) => a.occurredAt.getTime() - b.occurredAt.getTime(),
+    );
+    const sortedMembers = [...members].sort((a, b) => a.dayOfMonth - b.dayOfMonth || a.id - b.id);
+
+    const pairCount = Math.min(sortedTxs.length, sortedMembers.length);
+    for (let i = 0; i < pairCount; i++) {
+      const tx = sortedTxs[i]!;
+      const member = sortedMembers[i]!;
+      await database
+        .update(transactions)
+        .set({ recurringId: member.id, recurringYearMonth: yearMonth, updatedAt: new Date() })
+        .where(
+          and(
+            eq(transactions.userId, userId),
+            eq(transactions.id, tx.id),
+            isNull(transactions.recurringId),
+          ),
+        );
+      autoLinked += 1;
+      handled.add(member.id);
+    }
+  }
+
+  return { handled, autoLinked };
+}
+
 /**
  * For a single closed month, reconcile every active recurring against
  * transactions. Three branches per recurring:
@@ -128,6 +252,9 @@ async function resolveTxWinner(
  *   2. Exactly one unlinked tx falls in the occurrence's slot-claim window
  *      (src/lib/recurring/slot.ts) and resolves via the classic
  *      account+amount match or the description-fingerprint scorer — auto-link it.
+ *      Genuinely indistinguishable recurrings (same account+amount+patterns)
+ *      are resolved together via bijective pairing first — see
+ *      resolveBijectiveGroups() above.
  *   3. Otherwise — insert into recurring_gaps for manual resolution.
  *
  * skippedMonths entries on the recurring are respected: those months are not
@@ -194,18 +321,40 @@ export async function detectGapsForMonth(
     );
   const linkedSet = new Set(existingLinks.map((l) => l.recurringId as number));
 
+  const toProcess: ToProcessRow[] = [];
   for (const r of recurrings) {
     if (linkedSet.has(r.id)) {
       result.existingLinks += 1;
       continue;
     }
-
     // #804: explicit skip is the only thing that voids an occurrence — check
     // it before considering any candidate.
     if ((r.skippedMonths ?? []).includes(yearMonth)) {
       result.skippedIntentionally += 1;
       continue;
     }
+    toProcess.push({
+      id: r.id,
+      accountId: r.accountId,
+      amountCents: r.amountCents,
+      currency: r.currency,
+      dayOfMonth: r.dayOfMonth,
+      skippedMonths: r.skippedMonths ?? [],
+    });
+  }
+
+  const { handled, autoLinked: bijectiveAutoLinked } = await resolveBijectiveGroups(
+    userId,
+    year,
+    month,
+    yearMonth,
+    toProcess,
+    database,
+  );
+  result.autoLinked += bijectiveAutoLinked;
+
+  for (const r of toProcess) {
+    if (handled.has(r.id)) continue;
 
     const win = occurrenceWindow(year, month, r.dayOfMonth);
 
