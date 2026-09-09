@@ -107,19 +107,38 @@ describe("classifyAskProcessor", () => {
     expect(mocks.investigateResidueForUser).toHaveBeenCalledTimes(2);
   });
 
-  it("isolates a user failure and continues", async () => {
+  it("asks even when investigation throws", async () => {
+    mocks.investigateResidueForUser.mockRejectedValueOnce(new Error("anthropic timeout"));
+    mocks.processAskForUser.mockResolvedValueOnce({
+      askedTxId: 42,
+      skipped: null,
+      expiredCount: 0,
+      requeuedCount: 0,
+    });
+    const result = await classifyAskProcessor(mockJob({ mode: "single-user", userId: 7 }));
+    expect(mocks.processAskForUser).toHaveBeenCalledWith(7);
+    expect(result.asked).toBe(1);
+    expect(result.usersProcessed).toBe(1);
+    expect(result.failedUserIds).toEqual([]);
+    expect(result.investigated).toBe(0);
+  });
+
+  it("isolates an ask failure and continues", async () => {
     mocks.listActiveAskUserIds.mockResolvedValueOnce([1, 2]);
     mocks.investigateResidueForUser.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce({
       ...emptyInvestigate,
       classified: 1,
     });
-    mocks.processAskForUser.mockResolvedValueOnce({
-      askedTxId: 3,
-      skipped: null,
-      expiredCount: 0,
-      requeuedCount: 0,
-    });
+    mocks.processAskForUser
+      .mockRejectedValueOnce(new Error("telegram down"))
+      .mockResolvedValueOnce({
+        askedTxId: 3,
+        skipped: null,
+        expiredCount: 0,
+        requeuedCount: 0,
+      });
     const result = await classifyAskProcessor(mockJob({ mode: "all" }));
+    expect(mocks.processAskForUser).toHaveBeenCalledTimes(2);
     expect(result.failedUserIds).toEqual([1]);
     expect(result.usersProcessed).toBe(1);
     expect(result.asked).toBe(1);

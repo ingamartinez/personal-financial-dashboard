@@ -9,7 +9,11 @@ import { createLogger } from "@/lib/logger";
 import { createWorker } from "@/lib/queue";
 import type { ClassifyAskJobData } from "@/lib/classification/enqueue";
 import { listActiveAskUserIds, processAskForUser } from "@/lib/classification/ask-user";
-import { investigateResidueForUser, listResidueUserIds } from "@/lib/classification/investigate";
+import {
+  investigateResidueForUser,
+  listResidueUserIds,
+  type InvestigateResidueForUserResult,
+} from "@/lib/classification/investigate";
 
 const log = createLogger({ module: "worker/classify-ask" });
 
@@ -45,9 +49,28 @@ export async function classifyAskProcessor(
   };
 
   for (const userId of userIds) {
+    let investigated: InvestigateResidueForUserResult = {
+      considered: 0,
+      classified: 0,
+      inconclusive: 0,
+      capped: 0,
+      overBudget: 0,
+      skippedIneligible: 0,
+    };
+    // Investigation and ask are separate doors. A timeout on a residue row
+    // must not swallow the Telegram question — that is how this feature
+    // goes silent while every check stays green.
     try {
-      const investigated = await investigateResidueForUser(userId);
+      investigated = await investigateResidueForUser(userId);
       result.investigated += investigated.classified;
+    } catch (err) {
+      log.error(
+        { err, userId, event: "classify_ask_investigate_failed" },
+        "classify-ask: investigation failed — still asking",
+      );
+    }
+
+    try {
       const userResult = await processAskForUser(userId);
       result.usersProcessed++;
       if (userResult.askedTxId != null) result.asked++;

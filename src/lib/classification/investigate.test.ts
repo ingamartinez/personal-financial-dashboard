@@ -813,6 +813,43 @@ describe("investigateResidueRow", () => {
     expect((row?.classificationReason as { investigatedAt?: string }).investigatedAt).toBeTruthy();
   });
 
+  it("a second row for an already-known merchant costs no model call", async () => {
+    const userId = await createUser(`${TAG}-kb-${Date.now()}@test.local`);
+    const accountId = await createAccount(userId);
+    const merchant = `${TAG} Muebles`;
+    const firstId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: merchant,
+      merchant,
+      occurredAt: new Date("2026-03-26T16:00:00Z"),
+      reason: { action: "swept", run: "2026-09-01T00:00:00Z" },
+    });
+    const secondId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: merchant,
+      merchant,
+      occurredAt: new Date("2026-03-26T15:00:00Z"),
+      reason: { action: "swept", run: "2026-09-01T00:00:00Z" },
+    });
+    const captured: CapturedRequest[] = [];
+    const result = await investigateResidueForUser(userId, {
+      apiKey: "sk-test",
+      fetchImpl: mockFetchSequence([concludeHogar], captured),
+    });
+    expect(result.classified).toBe(2);
+    expect(captured.length).toBe(1);
+    const first = await getTx(firstId);
+    const second = await getTx(secondId);
+    expect(first?.categorySlug).toBe("hogar");
+    expect(second?.categorySlug).toBe("hogar");
+    expect(second?.classificationReason).toMatchObject({
+      action: "investigated",
+      categorySlug: "hogar",
+    });
+  });
+
   it("investigateResidueForUser will not pick a 21st row", async () => {
     const userId = await createUser(`${TAG}-run-${Date.now()}@test.local`);
     const accountId = await createAccount(userId);

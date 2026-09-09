@@ -789,6 +789,45 @@ async function applyConclusion(
   return null;
 }
 
+function isUsableCategoryHint(
+  slug: string | null | undefined,
+  categories: readonly InvestigatorCategory[],
+): slug is string {
+  if (!slug || slug === "otros") return false;
+  if (SYSTEM_OWNED_CATEGORY_SLUGS.has(slug)) return false;
+  return categories.some((c) => c.slug === slug);
+}
+
+/**
+ * Pay-once gate. If this merchant already has a usable per-user category
+ * hint, the model must not run. lookupMerchantKnowledge itself refuses
+ * opaque gateway keys, so two MERCADOPAGO COLOMBIA rows cannot collide here.
+ */
+async function lookupUsableMerchantHint(
+  userId: number,
+  subject: InvestigatorSubject,
+  categories: readonly InvestigatorCategory[],
+  database: DB,
+): Promise<{
+  categorySlug: string;
+  canonicalMerchant: string;
+  businessType: string | null;
+} | null> {
+  const key = canonicalMerchantKey({
+    canonicalMerchant: subject.canonicalMerchant,
+    merchant: subject.merchant,
+    descriptionRaw: subject.descriptionRaw,
+  });
+  if (!key) return null;
+  const entry = await lookupMerchantKnowledge(userId, key, database);
+  if (!entry || !isUsableCategoryHint(entry.categorySlug, categories)) return null;
+  return {
+    categorySlug: entry.categorySlug,
+    canonicalMerchant: entry.canonicalMerchant,
+    businessType: entry.businessType,
+  };
+}
+
 async function loadSubject(
   userId: number,
   txId: number,
@@ -883,6 +922,42 @@ export async function investigateResidueRow(
     })
     .from(categories)
     .where(and(eq(categories.userId, userId), notDeleted(categories.deletedAt)));
+
+  const known = await lookupUsableMerchantHint(userId, subject, cats, database);
+  if (known) {
+    const classified = await applyConclusion(
+      userId,
+      subject,
+      {
+        categorySlug: known.categorySlug,
+        canonicalMerchant: known.canonicalMerchant,
+        receiptId: null,
+        confidence: 90,
+        reason: "merchant_knowledge",
+        businessType: known.businessType,
+      },
+      cats,
+      evidence,
+      database,
+    );
+    log.info(
+      {
+        event: "investigate_kb_short_circuit",
+        userId,
+        txId,
+        categorySlug: classified,
+        canonicalMerchant: known.canonicalMerchant,
+      },
+      "applied merchant knowledge without a model call",
+    );
+    return {
+      txId,
+      outcome: classified ? "classified" : "inconclusive",
+      categorySlug: classified,
+      toolCalls: 0,
+      estimatedCostCents: 0,
+    };
+  }
 
   const client = buildClient(opts);
   const tools = investigatorTools();
