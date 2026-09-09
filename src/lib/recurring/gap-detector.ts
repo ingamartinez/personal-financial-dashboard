@@ -6,18 +6,11 @@ import { createLogger } from "@/lib/logger";
 import { emitNotification } from "@/lib/notifications/emit";
 import { pickTxForRecurring, type TxCandidate } from "@/lib/recurring/match-score";
 import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
-import { fetchPatterns, fetchPatternsForOne } from "@/lib/recurring/patterns";
+import { fetchPatterns, fetchPatternsForOne, patternSetsEqual } from "@/lib/recurring/patterns";
 import { occurrenceWindow } from "@/lib/recurring/slot";
 import type { Currency } from "@/lib/types";
 
 const log = createLogger({ module: "recurring/gap-detector" });
-
-// Kept for backward compatibility — src/lib/recurring/gap-queries.ts (a
-// separate, possibly-dead manual-link-candidate helper, see #804 issue notes)
-// still uses these. detectGapsForMonth itself now uses the slot-claiming
-// window (src/lib/recurring/slot.ts) instead.
-const DEFAULT_WINDOW_BEFORE_DAYS = 10;
-const DEFAULT_WINDOW_AFTER_DAYS = 5;
 
 export type DetectResult = {
   yearMonth: string;
@@ -145,12 +138,6 @@ type ToProcessRow = {
   dayOfMonth: number;
   skippedMonths: string[];
 };
-
-function patternSetsEqual(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const p of a) if (!b.has(p)) return false;
-  return true;
-}
 
 async function resolveBijectiveGroups(
   userId: number,
@@ -490,5 +477,3 @@ export async function closePreviousMonthForAllUsers(
   }
   return out;
 }
-
-export { DEFAULT_WINDOW_BEFORE_DAYS, DEFAULT_WINDOW_AFTER_DAYS };

@@ -229,16 +229,15 @@ describe("autoLinkTransaction (integration)", () => {
     expect(gaps.length).toBe(0);
   });
 
-  it("returns ambiguous when two gaps match the same tx", async () => {
+  it("two indistinguishable gaps: first-come links the lowest recurringId, other gap stays", async () => {
     const accountId = await seedAccount();
-    // Same amount, same account, overlapping windows — ambiguous
-    await seedRecurringWithGap(accountId, {
+    const a = await seedRecurringWithGap(accountId, {
       label: "__autolink amb A",
       amountCents: BigInt(-100000),
       dayOfMonth: 10,
       yearMonth: "2026-04",
     });
-    await seedRecurringWithGap(accountId, {
+    const b = await seedRecurringWithGap(accountId, {
       label: "__autolink amb B",
       amountCents: BigInt(-100000),
       dayOfMonth: 12,
@@ -250,10 +249,17 @@ describe("autoLinkTransaction (integration)", () => {
     });
 
     const result = await autoLinkTransaction(1, txId);
-    expect(result.status).toBe("ambiguous");
-    if (result.status === "ambiguous") {
-      expect(result.candidateCount).toBe(2);
+    const expectedId = Math.min(a.recurringId, b.recurringId);
+    const leftoverGapId = expectedId === a.recurringId ? b.gapId : a.gapId;
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(expectedId);
     }
+    const leftover = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, leftoverGapId));
+    expect(leftover).toHaveLength(1);
   });
 
   it("does not match when amount differs", async () => {
@@ -441,14 +447,14 @@ describe("autoLinkTransaction direct-recurring path", () => {
     }
   });
 
-  it("ambiguity: two active recurrings same account+amount in window → returns ambiguous count=2", async () => {
+  it("two indistinguishable active recurrings: first-come links the lowest recurringId", async () => {
     const accountId = await seedAccount();
-    await seedRecurring(accountId, {
+    const recA = await seedRecurring(accountId, {
       label: "__autolink direct amb A",
       amountCents: BigInt(-100000),
       dayOfMonth: 10,
     });
-    await seedRecurring(accountId, {
+    const recB = await seedRecurring(accountId, {
       label: "__autolink direct amb B",
       amountCents: BigInt(-100000),
       dayOfMonth: 12,
@@ -460,9 +466,9 @@ describe("autoLinkTransaction direct-recurring path", () => {
     });
 
     const result = await autoLinkTransaction(TEST_USER_ID, txId);
-    expect(result.status).toBe("ambiguous");
-    if (result.status === "ambiguous") {
-      expect(result.candidateCount).toBe(2);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(Math.min(recA, recB));
     }
   });
 
@@ -719,18 +725,17 @@ describe("autoLinkTransaction cross-month", () => {
     expect(linked.recurringYearMonth).toBe("2026-01");
   });
 
-  it("multiple matches across months → ambiguous (no link)", async () => {
+  it("multiple indistinguishable matches across months → first-come links the lowest recurringId", async () => {
     const accountId = await seedAccount();
     // Two recurrings: day 30 (evaluates Jan window) and day 1 (evaluates Jan and Feb windows).
     // tx on Feb 1 2026 — day-30 recurring: Dec 30 window [Dec 20, Jan 4] NO. Jan 30 window [Jan 20, Feb 4] YES.
     // day-1 recurring: Jan 1 window [Dec 22, Jan 6] NO. Feb 1 window [Jan 22, Feb 6] YES.
-    // → 2 matches across months → ambiguous.
-    await seedRecurring(accountId, {
+    const recA = await seedRecurring(accountId, {
       label: "__autolink cross-month amb A",
       amountCents: BigInt(-100000),
       dayOfMonth: 30,
     });
-    await seedRecurring(accountId, {
+    const recB = await seedRecurring(accountId, {
       label: "__autolink cross-month amb B",
       amountCents: BigInt(-100000),
       dayOfMonth: 1,
@@ -741,16 +746,10 @@ describe("autoLinkTransaction cross-month", () => {
     });
 
     const result = await autoLinkTransaction(TEST_USER_ID, txId);
-    expect(result.status).toBe("ambiguous");
-    if (result.status === "ambiguous") {
-      expect(result.candidateCount).toBe(2);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(Math.min(recA, recB));
     }
-    // Verify tx not linked
-    const [row] = await db
-      .select({ recurringId: transactions.recurringId })
-      .from(transactions)
-      .where(eq(transactions.id, txId));
-    expect(row.recurringId).toBeNull();
   });
 
   // ---------------------------------------------------------------------------
@@ -897,6 +896,197 @@ describe("autoLinkTransaction cross-month", () => {
     expect(result.status).toBe("linked");
     if (result.status !== "linked") throw new Error("should not reach");
     expect(result.recurringId).toBe(recurringYouTubeId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #807: first-come pairing for genuinely indistinguishable classic ties.
+// Pairing is CONVENTIONAL (lowest recurringId), not an identity claim.
+// ---------------------------------------------------------------------------
+describe("autoLinkTransaction #807 — indistinguishable classic first-come", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function seedUnePattern(recurringId: number, pattern = "UNE") {
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern,
+      observationCount: 2,
+    });
+  }
+
+  it("two same-day charges both link, one each", async () => {
+    const accountId = await seedAccount();
+    const recA = await seedRecurring(accountId, {
+      label: "__autolink_807_tigo_aida__",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 15,
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__autolink_807_tigo_alejo__",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 15,
+    });
+    await seedUnePattern(recA);
+    await seedUnePattern(recB);
+
+    const tx1 = await seedTx(accountId, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 1",
+    });
+    const tx2 = await seedTx(accountId, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 2",
+    });
+
+    const r1 = await autoLinkTransaction(TEST_USER_ID, tx1);
+    const r2 = await autoLinkTransaction(TEST_USER_ID, tx2);
+    expect(r1.status).toBe("linked");
+    expect(r2.status).toBe("linked");
+    if (r1.status !== "linked" || r2.status !== "linked") return;
+    expect(r1.recurringId).not.toBe(r2.recurringId);
+    expect(new Set([r1.recurringId, r2.recurringId])).toEqual(new Set([recA, recB]));
+  });
+
+  it("a single charge links one (lowest recurringId) and leaves the other unlinked", async () => {
+    const accountId = await seedAccount();
+    const recA = await seedRecurring(accountId, {
+      label: "__autolink_807_single_a__",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 15,
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__autolink_807_single_b__",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 15,
+    });
+    await seedUnePattern(recA);
+    await seedUnePattern(recB);
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(Math.min(recA, recB));
+    }
+
+    const leftoverId = recA === Math.min(recA, recB) ? recB : recA;
+    const linkedToLeftover = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.recurringId, leftoverId));
+    expect(linkedToLeftover).toHaveLength(0);
+  });
+
+  it("distinct learned patterns that still tie stay ambiguous", async () => {
+    const accountId = await seedAccount();
+    const recA = await seedRecurring(accountId, {
+      label: "__autolink_807_netflix__",
+      amountCents: BigInt(-4490000),
+      dayOfMonth: 15,
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__autolink_807_spotify__",
+      amountCents: BigInt(-4490000),
+      dayOfMonth: 15,
+    });
+    await seedUnePattern(recA, "NETFLIX");
+    await seedUnePattern(recB, "SPOTIFY");
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-4490000),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("ambiguous");
+    if (result.status === "ambiguous") {
+      expect(result.candidateCount).toBe(2);
+    }
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("cold-start: two new identical recurrings with zero learned patterns still link", async () => {
+    const accountId = await seedAccount();
+    const recA = await seedRecurring(accountId, {
+      label: "__autolink_807_boot_a__",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 15,
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__autolink_807_boot_b__",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 15,
+    });
+
+    const tx1 = await seedTx(accountId, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 1",
+    });
+    const tx2 = await seedTx(accountId, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 2",
+    });
+
+    const r1 = await autoLinkTransaction(TEST_USER_ID, tx1);
+    const r2 = await autoLinkTransaction(TEST_USER_ID, tx2);
+    expect(r1.status).toBe("linked");
+    expect(r2.status).toBe("linked");
+    if (r1.status !== "linked" || r2.status !== "linked") return;
+    expect(r1.recurringId).not.toBe(r2.recurringId);
+    expect(new Set([r1.recurringId, r2.recurringId])).toEqual(new Set([recA, recB]));
+  });
+
+  it("concurrent charges: both link even if they race the same lowest recurringId", async () => {
+    const accountId = await seedAccount();
+    const recA = await seedRecurring(accountId, {
+      label: "__autolink_807_race_a__",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 15,
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__autolink_807_race_b__",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 15,
+    });
+    await seedUnePattern(recA);
+    await seedUnePattern(recB);
+
+    const tx1 = await seedTx(accountId, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 1",
+    });
+    const tx2 = await seedTx(accountId, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-4790000),
+      description: "UNE*TIGO PAGO 2",
+    });
+
+    const [r1, r2] = await Promise.all([
+      autoLinkTransaction(TEST_USER_ID, tx1),
+      autoLinkTransaction(TEST_USER_ID, tx2),
+    ]);
+    expect(r1.status).toBe("linked");
+    expect(r2.status).toBe("linked");
+    if (r1.status !== "linked" || r2.status !== "linked") return;
+    expect(r1.recurringId).not.toBe(r2.recurringId);
+    expect(new Set([r1.recurringId, r2.recurringId])).toEqual(new Set([recA, recB]));
   });
 });
 

@@ -49,6 +49,13 @@ export async function fetchPatterns(
   return map;
 }
 
+/** Set equality for learned pattern tokens. Empty sets compare equal (cold-start). */
+export function patternSetsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const p of a) if (!b.has(p)) return false;
+  return true;
+}
+
 /** Convenience wrapper for the single-recurring case (gap-detector.ts). */
 export async function fetchPatternsForOne(
   userId: number,

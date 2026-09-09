@@ -9,7 +9,6 @@ import {
   counterpartyAliases,
   ingestionLogs,
   insightsReports,
-  recurringGaps,
   recurringTransactions,
   transactions,
   users,
@@ -24,7 +23,6 @@ import {
   getTopExpenses,
 } from "@/lib/dashboard/queries";
 import { listAccountsDetailed } from "@/lib/accounts/queries";
-import { getOpenGaps, getLinkCandidates } from "@/lib/recurring/gap-queries";
 import { getUpcomingForMonth } from "@/lib/recurring/upcoming";
 import { getBudgetsOverview } from "@/lib/budgets/queries";
 import { getSmsHealthHistory } from "@/lib/ingestion/sms-health";
@@ -139,14 +137,6 @@ async function createRecurring(userId: number, accountId: number, label: string)
   return row.id;
 }
 
-async function createGap(userId: number, recurringId: number, yearMonth: string): Promise<number> {
-  const [row] = await db
-    .insert(recurringGaps)
-    .values({ userId, recurringId, yearMonth })
-    .returning({ id: recurringGaps.id });
-  return row.id;
-}
-
 async function createBudget(userId: number): Promise<void> {
   await db.insert(budgets).values({
     userId,
@@ -189,8 +179,6 @@ let accountA: number;
 let accountB: number;
 let cpA: number;
 let cpB: number;
-let recurringA: number;
-let recurringB: number;
 
 async function cleanup() {
   // ON DELETE CASCADE on user_id handles downstream rows in tenant tables.
@@ -229,11 +217,8 @@ describe("#183 tenant isolation", () => {
     await createRule(userA, `%${TAG}-A pattern%`);
     await createRule(userB, `%${TAG}-B pattern%`);
 
-    recurringA = await createRecurring(userA, accountA, `${TAG}-A recurring`);
-    recurringB = await createRecurring(userB, accountB, `${TAG}-B recurring`);
-
-    await createGap(userA, recurringA, "2026-04");
-    await createGap(userB, recurringB, "2026-04");
+    await createRecurring(userA, accountA, `${TAG}-A recurring`);
+    await createRecurring(userB, accountB, `${TAG}-B recurring`);
 
     await createBudget(userA);
     await createBudget(userB);
@@ -367,19 +352,6 @@ describe("#183 tenant isolation", () => {
 
     const hitB = await classifyByRule(userB, { descriptionRaw: `${TAG}-B pattern match` });
     expect(hitB).not.toBeNull();
-  });
-
-  it("getOpenGaps + getLinkCandidates are scoped per user", async () => {
-    const gapsA = await getOpenGaps(userA);
-    const gapsB = await getOpenGaps(userB);
-    expect(gapsA.every((g) => g.label.includes(`${TAG}-A`))).toBe(true);
-    expect(gapsB.every((g) => g.label.includes(`${TAG}-B`))).toBe(true);
-
-    // Cross-tenant gapId lookup must return empty (even though the gap row
-    // exists for userB, userA's scope hides it).
-    const gapBId = gapsB[0]!.gapId;
-    const crossCandidates = await getLinkCandidates(userA, gapBId);
-    expect(crossCandidates).toEqual([]);
   });
 
   // #338: /budgets page-level queries had no user_id filter on either the
