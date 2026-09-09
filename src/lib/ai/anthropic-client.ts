@@ -148,6 +148,7 @@ export function inspectCacheablePrefix(
  * rejects hallucinated shapes before we touch the payload.
  */
 export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<CallClaudeResult<T>> {
+  assertNoTools(opts, "callClaude");
   const client = buildClient(opts);
   const model = opts.model ?? DEFAULT_MODEL;
   warnIfCachePrefixBelowMin(model, opts.system);
@@ -190,6 +191,7 @@ export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<CallClaude
  * is responsible for any downstream validation.
  */
 export async function callClaudeText(opts: BaseCallOpts): Promise<CallClaudeTextResult> {
+  assertNoTools(opts, "callClaudeText");
   const client = buildClient(opts);
   const model = opts.model ?? DEFAULT_MODEL;
   warnIfCachePrefixBelowMin(model, opts.system);
@@ -227,6 +229,12 @@ export async function callClaudeText(opts: BaseCallOpts): Promise<CallClaudeText
       usage,
     };
   });
+}
+
+function assertNoTools(opts: object, fnName: "callClaude" | "callClaudeText"): void {
+  if (Object.hasOwn(opts, "tools")) {
+    throw new Error(`${fnName} refuses tools — web search belongs on the merchant-lookup client`);
+  }
 }
 
 function buildClient(opts: {
