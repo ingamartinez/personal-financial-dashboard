@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -1473,5 +1473,112 @@ describe("price-hike notification emit", () => {
     await expect(autoLinkTransaction(TEST_USER_ID, txId)).resolves.toMatchObject({
       status: "linked",
     });
+  });
+});
+
+describe("autoLinkTransaction #844 — payment before its own gap exists", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("day-8 APORTES twin: exact amount picks the right recurring, not the shared fingerprint", async () => {
+    // Prod shape of tx 2651 vs recurrings 9/10. Aida is inserted first so it
+    // has the lower id — fingerprint-FIFO / lowest-id would therefore pick
+    // Aida. The single tx carries only Alejo's amount. If the matcher is not
+    // actually discriminating by amount, this assertion fails.
+    // Pre-#804 the match window ended day 6; day 8 is the slot-claiming
+    // boundary. gapId null = direct path, not a stolen July gap.
+    const accountId = await seedAccount();
+    const aida = await seedRecurring(accountId, {
+      label: "__autolink_844_aida__",
+      amountCents: BigInt(-49_910_000),
+      dayOfMonth: 1,
+    });
+    const alejo = await seedRecurring(accountId, {
+      label: "__autolink_844_alejo__",
+      amountCents: BigInt(-50_830_000),
+      dayOfMonth: 1,
+    });
+    expect(aida).toBeLessThan(alejo);
+    await db.insert(recurringDescriptionPatterns).values([
+      {
+        userId: TEST_USER_ID,
+        recurringId: aida,
+        pattern: "APORTES",
+        observationCount: 3,
+      },
+      {
+        userId: TEST_USER_ID,
+        recurringId: alejo,
+        pattern: "APORTES",
+        observationCount: 3,
+      },
+    ]);
+    await db.insert(recurringGaps).values([
+      { userId: TEST_USER_ID, recurringId: aida, yearMonth: "2026-07" },
+      { userId: TEST_USER_ID, recurringId: aida, yearMonth: "2026-08" },
+      { userId: TEST_USER_ID, recurringId: alejo, yearMonth: "2026-07" },
+      { userId: TEST_USER_ID, recurringId: alejo, yearMonth: "2026-08" },
+    ]);
+
+    const txAlejo = await seedTx(accountId, {
+      occurredOn: "2026-09-08",
+      amountCents: BigInt(-50_830_000),
+      description: "APORTES EN LINEA",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txAlejo);
+    expect(result).toMatchObject({
+      status: "linked",
+      recurringId: alejo,
+      yearMonth: "2026-09",
+      gapId: null,
+    });
+
+    const linkedToAida = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.recurringId, aida));
+    expect(linkedToAida).toHaveLength(0);
+
+    const leftover = await db
+      .select({ recurringId: recurringGaps.recurringId, yearMonth: recurringGaps.yearMonth })
+      .from(recurringGaps)
+      .where(inArray(recurringGaps.recurringId, [aida, alejo]));
+    expect(leftover.map((g) => `${g.recurringId}:${g.yearMonth}`).sort()).toEqual(
+      [`${aida}:2026-07`, `${aida}:2026-08`, `${alejo}:2026-07`, `${alejo}:2026-08`].sort(),
+    );
+  });
+
+  it("unique learned token links a utility bill whose amount differs from the recurring", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_844_epm__",
+      amountCents: BigInt(-490000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern: "EMPRESAS",
+      observationCount: 3,
+    });
+    await db.insert(recurringGaps).values([
+      { userId: TEST_USER_ID, recurringId, yearMonth: "2026-07" },
+      { userId: TEST_USER_ID, recurringId, yearMonth: "2026-08" },
+    ]);
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-09-08",
+      amountCents: BigInt(-594594),
+      description: "EMPRESAS PUBLICAS DE MEDELLIN",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.yearMonth).toBe("2026-09");
+      expect(result.gapId).toBeNull();
+    }
   });
 });
