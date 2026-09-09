@@ -8,6 +8,11 @@ import { transactions } from "@/lib/db/schema";
 // not the AI or rule engine themselves.
 // ---------------------------------------------------------------------------
 
+vi.mock("@/lib/classification/enqueue", () => ({
+  enqueueAskUser: vi.fn().mockResolvedValue(undefined),
+  enqueueClassification: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/classification/ai", () => ({
   classifyBatchWithAi: vi.fn().mockResolvedValue({
     classifications: [],

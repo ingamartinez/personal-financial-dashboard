@@ -15,6 +15,7 @@ import {
   categoriesKeyboard,
   CALLBACK,
   confirmKeyboard,
+  parseAskCallback,
 } from "@/lib/telegram/keyboard";
 import {
   renderAskAccount,
@@ -24,6 +25,10 @@ import {
   renderBatchInserted,
   renderBatchSummary,
   renderCanceled,
+  renderClassificationAnswered,
+  renderClassificationAskError,
+  renderClassificationAskReprompt,
+  renderClassificationSkipped,
   renderConfirmCard,
   renderDisambiguationConfirmed,
   renderDisambiguationError,
@@ -38,6 +43,11 @@ import {
   renderVoiceTooLong,
   renderVoiceTranscription,
 } from "@/lib/telegram/formatter";
+import {
+  applyClassificationAnswerByIndex,
+  processAskForUser,
+  skipClassificationQuestion,
+} from "@/lib/classification/ask-user";
 import { insertBatch, insertFromDraft, isDraftComplete } from "@/lib/telegram/confirm";
 import { parseSmsBancolombia } from "@/lib/ingestion/sms-bancolombia";
 import { buildDraftFromParsedSms } from "@/lib/telegram/sms-draft";
@@ -364,6 +374,92 @@ async function handleVoice(
   await handleText({ ...message, text: transcribed }, client, deps);
 }
 
+async function maybeChainNextAsk(opts: { userId: number }): Promise<void> {
+  // Caller must already have released the conversation (clearSession).
+  try {
+    await processAskForUser(opts.userId);
+  } catch (err) {
+    log.error(
+      { err, userId: opts.userId, event: "classify_ask_chain_failed" },
+      "failed to chain next classification question",
+    );
+  }
+}
+
+async function handleClassificationReply(opts: {
+  text: string;
+  chatId: number;
+  client: TelegramClient;
+  deps: RouterDeps;
+  session: import("@/lib/db/schema").TelegramSessionState;
+}): Promise<void> {
+  const { text, chatId, client, deps, session } = opts;
+  const txId = session.classificationTxId;
+  if (typeof txId !== "number") {
+    await clearSession(chatId);
+    await client.sendMessage({ chat_id: chatId, text: renderClassificationAskError() });
+    return;
+  }
+
+  const trimmed = text.trim();
+  const numChoice = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(numChoice) || numChoice < 1) {
+    await client.sendMessage({ chat_id: chatId, text: renderClassificationAskReprompt() });
+    return;
+  }
+
+  const result = await applyClassificationAnswerByIndex({
+    userId: deps.userId,
+    txId,
+    index: numChoice - 1,
+  });
+  if (!result.ok) {
+    await client.sendMessage({ chat_id: chatId, text: renderClassificationAskReprompt() });
+    return;
+  }
+
+  const categories = await deps.listCategories();
+  const name = categories.find((c) => c.slug === result.categorySlug)?.name ?? result.categorySlug;
+  await clearSession(chatId);
+  await client.sendMessage({ chat_id: chatId, text: renderClassificationAnswered(name) });
+  await maybeChainNextAsk({ userId: deps.userId });
+}
+
+async function handleAskCallback(opts: {
+  ask: NonNullable<ReturnType<typeof parseAskCallback>>;
+  callbackId: string;
+  chatId: number;
+  client: TelegramClient;
+  deps: RouterDeps;
+}): Promise<void> {
+  const { ask, callbackId, chatId, client, deps } = opts;
+  await client.answerCallbackQuery({ callback_query_id: callbackId });
+
+  if (ask.kind === "skip") {
+    await skipClassificationQuestion({ userId: deps.userId, txId: ask.txId });
+    await clearSession(chatId);
+    await client.sendMessage({ chat_id: chatId, text: renderClassificationSkipped() });
+    await maybeChainNextAsk({ userId: deps.userId });
+    return;
+  }
+
+  const result = await applyClassificationAnswerByIndex({
+    userId: deps.userId,
+    txId: ask.txId,
+    index: ask.index,
+  });
+  if (!result.ok) {
+    await client.sendMessage({ chat_id: chatId, text: renderClassificationAskError() });
+    return;
+  }
+
+  const categories = await deps.listCategories();
+  const name = categories.find((c) => c.slug === result.categorySlug)?.name ?? result.categorySlug;
+  await clearSession(chatId);
+  await client.sendMessage({ chat_id: chatId, text: renderClassificationAnswered(name) });
+  await maybeChainNextAsk({ userId: deps.userId });
+}
+
 async function handleDisambiguationReply(opts: {
   text: string;
   chatId: number;
@@ -508,6 +604,17 @@ async function handleText(
     return;
   }
 
+  if (existing?.step === "awaiting_classification") {
+    await handleClassificationReply({
+      text,
+      chatId,
+      client,
+      deps,
+      session: existing,
+    });
+    return;
+  }
+
   // awaiting_amount: treat text as amount first, fall back to full re-parse.
   if (existing?.step === "awaiting_amount") {
     const amountCents = parseAmountFromText(text);
@@ -626,6 +733,18 @@ async function handleCallback(
   const userId = cb.from.id;
   if (typeof chatId !== "number") {
     await client.answerCallbackQuery({ callback_query_id: cb.id });
+    return;
+  }
+
+  const ask = parseAskCallback(data);
+  if (ask) {
+    await handleAskCallback({
+      ask,
+      callbackId: cb.id,
+      chatId,
+      client,
+      deps,
+    });
     return;
   }
 

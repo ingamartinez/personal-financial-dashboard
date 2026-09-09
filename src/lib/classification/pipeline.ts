@@ -12,6 +12,7 @@ import {
 } from "./evidence";
 import { abstainReason } from "./reason";
 import { classifyByRule } from "./rules";
+import { enqueueAskUser } from "./enqueue";
 
 export const AI_BATCH_SIZE = 20;
 
@@ -113,6 +114,7 @@ export async function classifyUnclassifiedBatch(
 
   let ruleClassified = 0;
   let skipped = 0;
+  let opaqueAbstained = 0;
   const classifiedIds: number[] = [];
   const stillPending: { tx: (typeof pending)[number]; evidence: TxEvidence }[] = [];
   for (const tx of pending) {
@@ -133,6 +135,7 @@ export async function classifyUnclassifiedBatch(
         })
         .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
       skipped++;
+      opaqueAbstained++;
       continue;
     }
 
@@ -167,6 +170,10 @@ export async function classifyUnclassifiedBatch(
     } else {
       stillPending.push({ tx, evidence });
     }
+  }
+
+  if (opaqueAbstained > 0) {
+    await enqueueAskUser(userId);
   }
 
   if (stillPending.length === 0) {

@@ -4,6 +4,15 @@ import { telegramSessions, type TelegramSessionState, type TelegramDraft } from 
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
+/**
+ * telegram_sessions holds two things with different lifetimes:
+ *   - Channel: chatId + telegramUserId. How we reach this user. Persists.
+ *   - Conversation: state.step + expiresAt. The live lock. Expires / clears.
+ *
+ * Ending a conversation MUST release step to idle, never DELETE the row.
+ * Deleting drops the channel; the next classify-ask / disambiguation /
+ * re-auth nudge then dies on no_channel with every test still green.
+ */
 export function emptyState(chatId: number, sourceMessageId?: number): TelegramSessionState {
   return {
     step: "idle",
@@ -11,6 +20,20 @@ export function emptyState(chatId: number, sourceMessageId?: number): TelegramSe
     sourceChatId: chatId,
     sourceMessageId,
   };
+}
+
+function isLiveConversation(row: { state: TelegramSessionState; expiresAt: Date }): boolean {
+  return row.state.step !== "idle" && row.expiresAt.getTime() >= Date.now();
+}
+
+async function releaseConversation(chatId: number): Promise<void> {
+  await db
+    .update(telegramSessions)
+    .set({
+      state: emptyState(chatId),
+      updatedAt: new Date(),
+    })
+    .where(eq(telegramSessions.chatId, BigInt(chatId)));
 }
 
 export async function getSession(chatId: number): Promise<TelegramSessionState | null> {
@@ -21,8 +44,10 @@ export async function getSession(chatId: number): Promise<TelegramSessionState |
     .limit(1);
   const row = rows[0];
   if (!row) return null;
-  if (row.expiresAt.getTime() < Date.now()) {
-    await db.delete(telegramSessions).where(eq(telegramSessions.chatId, BigInt(chatId)));
+  if (!isLiveConversation(row)) {
+    if (row.state.step !== "idle") {
+      await releaseConversation(chatId);
+    }
     return null;
   }
   return row.state;
@@ -60,9 +85,10 @@ export async function upsertSession(opts: {
 }
 
 /**
- * Get the most recent active session for a user, across all chats.
- * Used by push triggers that need to know a user's current chatId.
- * Returns null if no active session exists.
+ * Most recent Telegram channel for a user, across all chats.
+ * Used by push triggers that need a chatId. Returns null only when we
+ * have never seen this user on Telegram — an expired or cleared
+ * conversation still returns the channel, with step idle.
  */
 export async function getLatestSessionByUserId(userId: number): Promise<{
   chatId: bigint;
@@ -74,6 +100,7 @@ export async function getLatestSessionByUserId(userId: number): Promise<{
       chatId: telegramSessions.chatId,
       telegramUserId: telegramSessions.telegramUserId,
       state: telegramSessions.state,
+      expiresAt: telegramSessions.expiresAt,
     })
     .from(telegramSessions)
     .where(eq(telegramSessions.userId, userId))
@@ -81,19 +108,38 @@ export async function getLatestSessionByUserId(userId: number): Promise<{
     .limit(1);
   const row = rows[0];
   if (!row) return null;
+  if (!isLiveConversation(row) && row.state.step !== "idle") {
+    const chatId = Number(row.chatId);
+    await releaseConversation(chatId);
+    return {
+      chatId: row.chatId,
+      telegramUserId: row.telegramUserId,
+      state: emptyState(chatId),
+    };
+  }
   return { chatId: row.chatId, telegramUserId: row.telegramUserId, state: row.state };
 }
 
+/** End the live conversation. Keep the channel so the next push can reach the user. */
 export async function clearSession(chatId: number): Promise<void> {
-  await db.delete(telegramSessions).where(eq(telegramSessions.chatId, BigInt(chatId)));
+  await releaseConversation(chatId);
 }
 
 export async function sweepExpiredSessions(): Promise<number> {
-  const result = await db
-    .delete(telegramSessions)
-    .where(lt(telegramSessions.expiresAt, new Date()))
-    .returning({ chatId: telegramSessions.chatId });
-  return result.length;
+  const rows = await db
+    .select({
+      chatId: telegramSessions.chatId,
+      state: telegramSessions.state,
+    })
+    .from(telegramSessions)
+    .where(lt(telegramSessions.expiresAt, new Date()));
+  let released = 0;
+  for (const row of rows) {
+    if (row.state.step === "idle") continue;
+    await releaseConversation(Number(row.chatId));
+    released++;
+  }
+  return released;
 }
 
 export function mergeDraft(

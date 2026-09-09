@@ -10,6 +10,7 @@ import {
   renderBackfillResult,
   renderBackfillStarting,
   renderCanceled,
+  renderClassificationSkipped,
   renderDisambiguationPrompt,
   renderDisambiguationRejected,
   renderEnrichConnectPrompt,
@@ -30,6 +31,7 @@ import {
 } from "@/lib/gmail/backfill";
 import { applyRejection } from "@/lib/gmail/disambiguate";
 import { loadPendingAmbiguousReceipt } from "@/lib/telegram/disambiguation-query";
+import { processAskForUser, skipClassificationQuestion } from "@/lib/classification/ask-user";
 import { emitNotification } from "@/lib/notifications/emit";
 import { createLogger } from "@/lib/logger";
 
@@ -89,8 +91,7 @@ export async function handleCommand(opts: {
       await client.sendMessage({ chat_id: chatId, text: renderHelp(), parse_mode: "Markdown" });
       return;
     case "/cancel":
-      await clearSession(chatId);
-      await client.sendMessage({ chat_id: chatId, text: renderCanceled() });
+      await handleCancel({ chatId, client, userId });
       return;
     case "/enriquecer":
       await handleEnriquecer({ chatId, client, userId });
@@ -108,6 +109,23 @@ export async function handleCommand(opts: {
       await handleOmitir({ chatId, client, userId, telegramUserId });
       return;
   }
+}
+
+async function handleCancel(opts: {
+  chatId: number;
+  client: TelegramClient;
+  userId: number;
+}): Promise<void> {
+  const { chatId, client, userId } = opts;
+  const session = await getSession(chatId);
+  if (
+    session?.step === "awaiting_classification" &&
+    typeof session.classificationTxId === "number"
+  ) {
+    await skipClassificationQuestion({ userId, txId: session.classificationTxId });
+  }
+  await clearSession(chatId);
+  await client.sendMessage({ chat_id: chatId, text: renderCanceled() });
 }
 
 async function handleEnriquecer(opts: {
@@ -247,8 +265,8 @@ async function handleBackfillConfirm(opts: {
   const to = new Date(session.backfill.to);
 
   // Atomic transition: any subsequent /si arrives, reads backfill_running,
-  // and bails. A /cancel deletes the session row so the loop's shouldCancel
-  // poll returns true.
+  // and bails. A /cancel releases the conversation to idle so the loop's
+  // shouldCancel poll sees getSession() === null. The channel row stays.
   await upsertSession({
     chatId,
     userId,
@@ -320,8 +338,9 @@ async function handleBackfillConfirm(opts: {
     log.error({ err, userId, event: "telegram_backfill_failed" }, "backfill threw");
     await client.sendMessage({ chat_id: chatId, text: renderBackfillFailed() });
   } finally {
-    // Always clear the session at the end — successful, errored, or canceled.
-    // A /cancel mid-flight has already deleted it; clearSession is idempotent.
+    // Always release the conversation at the end — successful, errored, or
+    // canceled. A /cancel mid-flight has already idled it; clearSession is
+    // idempotent. The channel row stays either way.
     await clearSession(chatId);
   }
 }
@@ -406,6 +425,24 @@ async function handleOmitir(opts: {
 }): Promise<void> {
   const { chatId, client, userId, telegramUserId } = opts;
   const session = await getSession(chatId);
+
+  if (
+    session?.step === "awaiting_classification" &&
+    typeof session.classificationTxId === "number"
+  ) {
+    await skipClassificationQuestion({ userId, txId: session.classificationTxId });
+    await clearSession(chatId);
+    await client.sendMessage({ chat_id: chatId, text: renderClassificationSkipped() });
+    try {
+      await processAskForUser(userId);
+    } catch (err) {
+      log.error(
+        { err, userId, event: "classify_ask_chain_failed" },
+        "failed to chain next classification question after /omitir",
+      );
+    }
+    return;
+  }
 
   if (!session || session.step !== "awaiting_disambiguation") {
     await client.sendMessage({ chat_id: chatId, text: renderOmitirNada() });
