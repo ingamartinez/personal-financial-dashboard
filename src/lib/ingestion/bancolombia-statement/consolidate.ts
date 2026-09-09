@@ -13,6 +13,7 @@ import {
 import { notDeleted } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { applyInteresesCausadosForCycle } from "@/lib/finance/intereses-causados-job";
+import { isTcAccountingEnabled } from "@/lib/flags/tc-accounting";
 import { createLogger } from "@/lib/logger";
 import { convertCents } from "@/lib/money";
 import { getCurrentFxRate } from "@/lib/fx/repo";
@@ -1234,13 +1235,34 @@ export async function consolidateCycleFromStatement(
     };
   });
 
-  const interesesResult = await applyInteresesCausadosForCycle({
-    userId: opts.userId,
-    accountId: opts.accountId,
-    cycle: opts.cycle,
-    database,
-  });
-  const intereses: InteresesOutcome = interesesToOutcome(interesesResult);
+  // #815 — wrap ONLY this call. Matching / installmentsTotal correction /
+  // statement_imports already committed above; gating the surrounding
+  // consolidate flow would break optional reconciliation.
+  let intereses: InteresesOutcome;
+  if (await isTcAccountingEnabled(opts.userId)) {
+    const interesesResult = await applyInteresesCausadosForCycle({
+      userId: opts.userId,
+      accountId: opts.accountId,
+      cycle: opts.cycle,
+      database,
+    });
+    intereses = interesesToOutcome(interesesResult);
+  } else {
+    log.info(
+      {
+        userId: opts.userId,
+        accountId: opts.accountId,
+        cycle: opts.cycle,
+        event: "tc_accounting_disabled",
+      },
+      "consolidate: skipping intereses causados (tcAccountingEnabled off)",
+    );
+    intereses = {
+      status: "skipped",
+      reason: "tc-accounting-disabled",
+      purchasesNeedingRate: 0,
+    };
+  }
 
   const interesesTotalCents =
     intereses.status === "inserted" ? BigInt(intereses.totalInterestCentsStr) : BigInt(0);

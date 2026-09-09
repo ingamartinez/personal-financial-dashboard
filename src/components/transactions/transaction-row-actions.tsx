@@ -63,6 +63,8 @@ type Props = {
   // #683: counterparty data for the kebab menu dialog.
   counterparty: CounterpartyValue | null;
   allCounterparties: CounterpartyBrief[];
+  // #815: hide "Editar cuotas" when the TC accounting layer is off.
+  tcAccountingEnabled?: boolean;
 };
 
 export function TransactionRowActions({
@@ -78,6 +80,7 @@ export function TransactionRowActions({
   activeRecurrings,
   counterparty,
   allCounterparties,
+  tcAccountingEnabled = false,
 }: Props) {
   const [pending, startTransition] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -145,7 +148,7 @@ export function TransactionRowActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52">
-          {accountType === "credit_card" && !isArchived ? (
+          {tcAccountingEnabled && accountType === "credit_card" && !isArchived ? (
             <DropdownMenuItem
               onSelect={(e) => {
                 e.preventDefault();
@@ -245,7 +248,7 @@ export function TransactionRowActions({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {accountType === "credit_card" ? (
+      {tcAccountingEnabled && accountType === "credit_card" ? (
         <TcInstallmentsDialog
           open={installmentsOpen}
           onOpenChange={setInstallmentsOpen}
