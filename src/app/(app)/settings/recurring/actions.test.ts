@@ -26,6 +26,124 @@ async function getAccountId(): Promise<number> {
   return acc.id;
 }
 
+describe("recurring actions: currency independence (#803)", () => {
+  afterEach(cleanup);
+
+  it("creating a recurring on a USD account with currency COP persists COP, not the account's currency", async () => {
+    const [usdAccount] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND currency = 'USD' LIMIT 1
+    `);
+    if (!usdAccount) throw new Error("No seeded USD account for user 1");
+
+    await upsertRecurring({
+      accountId: usdAccount.id,
+      label: TEST_LABEL,
+      amount: 2_300_000,
+      direction: "expense",
+      currency: "COP",
+      categorySlug: null,
+      dayOfMonth: 5,
+      active: true,
+      notes: null,
+    });
+
+    const [created] = await db
+      .select({
+        currency: recurringTransactions.currency,
+        amountCents: recurringTransactions.amountCents,
+      })
+      .from(recurringTransactions)
+      .where(
+        and(
+          eq(recurringTransactions.userId, TEST_USER_ID),
+          eq(recurringTransactions.label, TEST_LABEL),
+        ),
+      );
+
+    expect(created.currency).toBe("COP");
+    expect(created.amountCents).toBe(BigInt(-230_000_000));
+  });
+
+  it("omitting currency falls back to the linked account's currency (pre-#803 callers)", async () => {
+    const [usdAccount] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE user_id = ${TEST_USER_ID} AND currency = 'USD' LIMIT 1
+    `);
+    if (!usdAccount) throw new Error("No seeded USD account for user 1");
+
+    await upsertRecurring({
+      accountId: usdAccount.id,
+      label: TEST_LABEL,
+      amount: 10,
+      direction: "expense",
+      categorySlug: null,
+      dayOfMonth: 5,
+      active: true,
+      notes: null,
+    });
+
+    const [created] = await db
+      .select({ currency: recurringTransactions.currency })
+      .from(recurringTransactions)
+      .where(
+        and(
+          eq(recurringTransactions.userId, TEST_USER_ID),
+          eq(recurringTransactions.label, TEST_LABEL),
+        ),
+      );
+
+    expect(created.currency).toBe("USD");
+  });
+
+  it("updating an existing recurring changes currency and amount together in one save", async () => {
+    const accountId = await getAccountId();
+    await upsertRecurring({
+      accountId,
+      label: TEST_LABEL,
+      amount: 100,
+      direction: "expense",
+      currency: "USD",
+      categorySlug: null,
+      dayOfMonth: 5,
+      active: true,
+      notes: null,
+    });
+
+    const [created] = await db
+      .select({ id: recurringTransactions.id })
+      .from(recurringTransactions)
+      .where(
+        and(
+          eq(recurringTransactions.userId, TEST_USER_ID),
+          eq(recurringTransactions.label, TEST_LABEL),
+        ),
+      );
+
+    await upsertRecurring({
+      id: created.id,
+      accountId,
+      label: TEST_LABEL,
+      amount: 2_300_000,
+      direction: "expense",
+      currency: "COP",
+      categorySlug: null,
+      dayOfMonth: 5,
+      active: true,
+      notes: null,
+    });
+
+    const [updated] = await db
+      .select({
+        currency: recurringTransactions.currency,
+        amountCents: recurringTransactions.amountCents,
+      })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.id, created.id));
+
+    expect(updated.currency).toBe("COP");
+    expect(updated.amountCents).toBe(BigInt(-230_000_000));
+  });
+});
+
 describe("recurring actions: archive flow", () => {
   afterEach(cleanup);
 

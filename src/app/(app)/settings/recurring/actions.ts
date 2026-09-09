@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import {
   accounts,
   categories,
+  currency as currencyEnum,
   recurringGaps,
   recurringTransactions,
   transactions,
@@ -24,6 +25,10 @@ const upsertSchema = z.object({
   label: z.string().min(1).max(120),
   amount: z.coerce.number().finite(),
   direction: z.enum(["expense", "income"]),
+  // Independent of the linked account's currency (#803) — the account only
+  // supplies a default in the UI. When omitted, falls back to the account's
+  // currency to preserve pre-#803 callers.
+  currency: z.enum(currencyEnum.enumValues).optional(),
   categorySlug: z.string().min(1).max(60).nullable(),
   dayOfMonth: z.coerce.number().int().min(1).max(31),
   active: z.coerce.boolean().default(true),
@@ -78,7 +83,9 @@ export async function upsertRecurring(input: RecurringInput) {
     accountId: parsed.accountId,
     label: parsed.label,
     amountCents: BigInt(signedCents),
-    currency: account.currency,
+    // #803: the user's chosen currency wins; the account is only a fallback
+    // default, never an override of an explicit selection.
+    currency: parsed.currency ?? account.currency,
     categorySlug: parsed.categorySlug,
     dayOfMonth: parsed.dayOfMonth,
     active: parsed.active,
