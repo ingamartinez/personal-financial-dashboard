@@ -15,8 +15,10 @@ import {
 import {
   GATEWAYS,
   buildSenderQuery,
+  resolveRegisteredSenders,
   type GatewayConfig,
   type GatewayId,
+  type SenderPullPlan,
 } from "@/lib/gmail/registry";
 import { parseBancolombiaEmail } from "@/lib/gmail/parsers/bancolombia";
 import { parseReceipt } from "@/lib/gmail/parsers";
@@ -77,6 +79,20 @@ export interface PullOpts {
   // #498 — one-shot since-date override for re-bootstrap. Bypasses the
   // cursor (lastPullAt) for this single run; cursor advances normally after.
   overrideSince?: Date;
+  // Exclusive end of the Gmail search window (`before:<unix>`). Cron pulls
+  // omit this (open-ended). Historical sender fetch (#849) always sets it.
+  until?: Date;
+  // When true, do not write last_pull_at and do not push a disambiguation
+  // prompt. Historical fetch must not disturb the incremental cron cursor.
+  preserveCursor?: boolean;
+  // Restrict the list query to these registered sender domains (e.g.
+  // `jetsmart.com`). Combined with preserveCursor for #849. Unknown senders
+  // throw from resolveRegisteredSenders.
+  senders?: string[];
+  // Override the per-gateway list page cap. Cron keeps the default of 5
+  // (500 msgs). Historical fetch raises this so a year of one sender is not
+  // silently truncated.
+  maxPages?: number;
 }
 
 export interface PullDeps {
@@ -93,6 +109,26 @@ function sinceToQueryFragment(sinceDate: Date): string {
   // Gmail accepts a unix timestamp (seconds) after `after:`.
   const unixSeconds = Math.floor(sinceDate.getTime() / 1000);
   return `after:${unixSeconds}`;
+}
+
+function untilToQueryFragment(untilDate: Date): string {
+  const unixSeconds = Math.floor(untilDate.getTime() / 1000);
+  return `before:${unixSeconds}`;
+}
+
+function selectPullPlans(opts: PullOpts): SenderPullPlan[] {
+  if (opts.senders && opts.senders.length > 0) {
+    const plans = resolveRegisteredSenders(opts.senders);
+    if (!opts.gateways) return plans;
+    const allowed = new Set(opts.gateways);
+    const filtered = plans.filter((p) => allowed.has(p.gateway.id));
+    if (filtered.length === 0) {
+      throw new Error("[gmail/pull] senders did not intersect the requested gateways");
+    }
+    return filtered;
+  }
+  const selected = opts.gateways ? GATEWAYS.filter((g) => opts.gateways!.includes(g.id)) : GATEWAYS;
+  return selected.map((g) => ({ gateway: g, senderQueries: g.senderQueries }));
 }
 
 export function computeSinceDate(opts: {
@@ -219,17 +255,32 @@ async function pullGateway(opts: {
   gmailEmail: string;
   authed: AuthedGmailClient;
   gateway: GatewayConfig;
+  senderQueries: string[];
   since: Date;
+  until?: Date;
+  maxPages: number;
   deps: Required<Pick<PullDeps, "sleep">>;
 }): Promise<{ pulled: number; skipped: number; errors: PullErrorDetail[] }> {
-  const { userId, connectionId, gmailEmail, authed, gateway, since, deps } = opts;
+  const {
+    userId,
+    connectionId,
+    gmailEmail,
+    authed,
+    gateway,
+    senderQueries,
+    since,
+    until,
+    maxPages,
+    deps,
+  } = opts;
   const errors: PullErrorDetail[] = [];
-  const q = `${buildSenderQuery(gateway)} ${sinceToQueryFragment(since)}`;
+  const untilFrag = until ? ` ${untilToQueryFragment(until)}` : "";
+  const q = `${buildSenderQuery({ ...gateway, senderQueries })} ${sinceToQueryFragment(since)}${untilFrag}`;
 
   // 1) List all candidate message ids for this gateway.
   const allIds: string[] = [];
   let pageToken: string | undefined;
-  for (let page = 0; page < MAX_PAGES_PER_GATEWAY; page++) {
+  for (let page = 0; page < maxPages; page++) {
     const res = await withRetry(
       () =>
         authed.gmail.users.messages.list({
@@ -247,6 +298,13 @@ async function pullGateway(opts: {
     }
     pageToken = res.data.nextPageToken ?? undefined;
     if (!pageToken) break;
+  }
+  if (pageToken) {
+    errors.push({
+      gateway: gateway.id,
+      phase: "list",
+      message: `hit page cap (${maxPages}); remaining messages not fetched — narrow the window and rerun`,
+    });
   }
 
   // 2) Filter out msg_ids we already have for THIS user.
@@ -1057,24 +1115,26 @@ export async function pullForUser(
     overrideSince: opts.overrideSince,
   });
 
-  const selectedGateways = opts.gateways
-    ? GATEWAYS.filter((g) => opts.gateways!.includes(g.id))
-    : GATEWAYS;
+  const plans = selectPullPlans(opts);
+  const maxPages = opts.maxPages ?? (opts.preserveCursor ? 100 : MAX_PAGES_PER_GATEWAY);
 
   let totalPulled = 0;
   let totalSkipped = 0;
   try {
-    for (const gateway of selectedGateways) {
+    for (const plan of plans) {
       const res = await pullGateway({
         userId,
         connectionId: authed.connection.id,
         gmailEmail: authed.connection.gmailEmail,
         authed,
-        gateway,
+        gateway: plan.gateway,
+        senderQueries: plan.senderQueries,
         since,
+        until: opts.until,
+        maxPages,
         deps: { sleep },
       });
-      byGateway[gateway.id] = { pulled: res.pulled, skipped: res.skipped };
+      byGateway[plan.gateway.id] = { pulled: res.pulled, skipped: res.skipped };
       totalPulled += res.pulled;
       totalSkipped += res.skipped;
       errors.push(...res.errors);
@@ -1131,25 +1191,28 @@ export async function pullForUser(
   // fourth mode cannot be added to the registry and silently skipped.
   // Run even if `errors` is non-empty — per-message list/get failures
   // from the Google side shouldn't block already-persisted receipts.
-  for (const g of selectedGateways) {
-    await processGatewayAfterPull(userId, g);
+  for (const plan of plans) {
+    await processGatewayAfterPull(userId, plan.gateway);
   }
 
-  // Only advance the watermark on fully successful pulls — partial failures
-  // leave last_pull_at alone so the next run retries the same window. The
-  // DB unique index on (user_id, gmail_msg_id) keeps that safe.
-  if (errors.length === 0) {
+  // Only advance the watermark on fully successful incremental pulls —
+  // partial failures leave last_pull_at alone so the next run retries the
+  // same window. Historical fetch (#849) passes preserveCursor so a
+  // sender-scoped window cannot jump the cron cursor past other gateways.
+  // The DB unique index on (user_id, gmail_msg_id) keeps retries safe.
+  if (errors.length === 0 && !opts.preserveCursor) {
     await db
       .update(gmailConnections)
       .set({ lastPullAt: now, updatedAt: now })
       .where(eq(gmailConnections.id, authed.connection.id));
   }
 
-  // Only push a disambiguation prompt on fully clean pulls. If there were
-  // errors the watermark stayed put, so the same receipts get retried next
-  // cycle — we want to defer the push until a successful run to avoid
-  // duplicate prompts on back-to-back cron ticks.
-  if (errors.length === 0) {
+  // Only push a disambiguation prompt on fully clean incremental pulls.
+  // Historical fetch must not Telegram-nudge the user. If there were errors
+  // the watermark stayed put, so the same receipts get retried next cycle
+  // — we want to defer the push until a successful run to avoid duplicate
+  // prompts on back-to-back cron ticks.
+  if (errors.length === 0 && !opts.preserveCursor) {
     await maybePushDisambiguationPrompt(userId).catch((pushErr: unknown) => {
       log.error(
         { err: pushErr, userId, event: "disambiguation_push_failed" },

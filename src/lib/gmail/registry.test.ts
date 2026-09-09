@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { emailReceiptGateway } from "@/lib/db/schema";
-import { GATEWAYS, buildSenderQuery, getGatewayById } from "./registry";
+import {
+  GATEWAYS,
+  buildSenderQuery,
+  getGatewayById,
+  normalizeSenderDomain,
+  resolveRegisteredSenders,
+} from "./registry";
 
 describe("gmail/registry", () => {
   it("covers every enum value in email_receipt_gateway", () => {
@@ -92,6 +98,54 @@ describe("gmail/registry", () => {
     const cfg = getGatewayById("jetsmart");
     expect(cfg.senderQueries).toEqual(["from:(@jetsmart.com)"]);
     expect(cfg.senderQueries[0].startsWith("from:(@")).toBe(true);
+  });
+
+  it("normalizeSenderDomain accepts domain, @domain, and from:(@domain)", () => {
+    expect(normalizeSenderDomain("jetsmart.com")).toBe("jetsmart.com");
+    expect(normalizeSenderDomain("@jetsmart.com")).toBe("jetsmart.com");
+    expect(normalizeSenderDomain("from:(@jetsmart.com)")).toBe("jetsmart.com");
+    expect(normalizeSenderDomain("  MercadoLibre.COM  ")).toBe("mercadolibre.com");
+  });
+
+  it("resolveRegisteredSenders maps mercadolibre.com without pulling mercadopago or .com.co", () => {
+    const plans = resolveRegisteredSenders(["mercadolibre.com"]);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].gateway.id).toBe("mercado_pago");
+    expect(plans[0].senderQueries).toEqual(["from:(@mercadolibre.com)"]);
+  });
+
+  it("resolveRegisteredSenders maps mercadolibre.com.co independently of .com", () => {
+    const plans = resolveRegisteredSenders(["mercadolibre.com.co"]);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].senderQueries).toEqual(["from:(@mercadolibre.com.co)"]);
+  });
+
+  it("resolveRegisteredSenders groups both mercadolibre domains onto mercado_pago", () => {
+    const plans = resolveRegisteredSenders(["mercadolibre.com", "mercadolibre.com.co"]);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].gateway.id).toBe("mercado_pago");
+    expect(plans[0].senderQueries).toEqual([
+      "from:(@mercadolibre.com)",
+      "from:(@mercadolibre.com.co)",
+    ]);
+  });
+
+  it("resolveRegisteredSenders maps jetsmart.com onto the evidence gateway", () => {
+    const plans = resolveRegisteredSenders(["jetsmart.com"]);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].gateway.id).toBe("jetsmart");
+    expect(plans[0].gateway.mode).toBe("evidence");
+    expect(plans[0].senderQueries).toEqual(["from:(@jetsmart.com)"]);
+  });
+
+  it("resolveRegisteredSenders throws for an unregistered sender", () => {
+    expect(() => resolveRegisteredSenders(["not-a-gateway.example"])).toThrow(
+      /sender\(s\) not registered: not-a-gateway.example/,
+    );
+  });
+
+  it("resolveRegisteredSenders throws on an empty list", () => {
+    expect(() => resolveRegisteredSenders([])).toThrow(/at least one sender/);
   });
 
   it("getGatewayById throws for an unknown id", () => {

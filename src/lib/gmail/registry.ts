@@ -159,3 +159,74 @@ export function buildSenderQuery(cfg: GatewayConfig): string {
   if (cfg.senderQueries.length === 1) return cfg.senderQueries[0];
   return `(${cfg.senderQueries.join(" OR ")})`;
 }
+
+const SENDER_QUERY_RE = /^from:\(@([^)]+)\)$/;
+
+export function senderQueryDomain(query: string): string | null {
+  const m = SENDER_QUERY_RE.exec(query);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Accept `jetsmart.com`, `@jetsmart.com`, or `from:(@jetsmart.com)`. */
+export function normalizeSenderDomain(raw: string): string {
+  const s = raw.trim().toLowerCase();
+  const fromMatch = SENDER_QUERY_RE.exec(s);
+  if (fromMatch) return fromMatch[1];
+  return s.startsWith("@") ? s.slice(1) : s;
+}
+
+function domainMatchesRequested(registered: string, requested: string): boolean {
+  return registered === requested || registered.endsWith("." + requested);
+}
+
+export type SenderPullPlan = {
+  gateway: GatewayConfig;
+  senderQueries: string[];
+};
+
+/**
+ * Map operator-facing sender domains onto the registered senderQueries they
+ * cover, grouped by gateway. `mercadolibre.com` does NOT match
+ * `@mercadolibre.com.co` (`.com.co` is not a subdomain of `.com`).
+ *
+ * Used by the historical fetch (#849) so a newly registered sender can be
+ * pulled without re-listing every other sender on the same gateway.
+ */
+export function resolveRegisteredSenders(senders: string[]): SenderPullPlan[] {
+  if (senders.length === 0) {
+    throw new Error("[gmail/registry] resolveRegisteredSenders requires at least one sender");
+  }
+  const unmatched: string[] = [];
+  const byGateway = new Map<GatewayId, SenderPullPlan>();
+
+  for (const raw of senders) {
+    const requested = normalizeSenderDomain(raw);
+    if (requested.length === 0) {
+      unmatched.push(raw);
+      continue;
+    }
+    let matched = false;
+    for (const g of GATEWAYS) {
+      const hits = g.senderQueries.filter((q) => {
+        const d = senderQueryDomain(q);
+        return d !== null && domainMatchesRequested(d, requested);
+      });
+      if (hits.length === 0) continue;
+      matched = true;
+      const existing = byGateway.get(g.id);
+      if (existing) {
+        for (const h of hits) {
+          if (!existing.senderQueries.includes(h)) existing.senderQueries.push(h);
+        }
+      } else {
+        byGateway.set(g.id, { gateway: g, senderQueries: [...hits] });
+      }
+    }
+    if (!matched) unmatched.push(requested);
+  }
+
+  if (unmatched.length > 0) {
+    throw new Error(`[gmail/registry] sender(s) not registered: ${unmatched.join(", ")}`);
+  }
+  return [...byGateway.values()];
+}
