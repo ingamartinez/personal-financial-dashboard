@@ -341,3 +341,66 @@ export async function backfillMerchantKnowledge(
 
   return result;
 }
+
+/**
+ * Persist a merchant the residue investigator identified. Opaque gateway
+ * strings are refused — two MERCADOPAGO COLOMBIA charges are not the same
+ * merchant. Existing facts/hints are left alone (pay once).
+ */
+export async function rememberMerchantKnowledge(
+  opts: {
+    userId: number;
+    merchant: string;
+    categorySlug?: string | null;
+    businessType?: string | null;
+    aliases?: string[];
+  },
+  database: DB = defaultDb,
+): Promise<MerchantKnowledgeEntry | null> {
+  const key = canonicalMerchantKey({
+    canonicalMerchant: null,
+    merchant: opts.merchant,
+    descriptionRaw: opts.merchant,
+  });
+  if (!key || isOpaqueMerchantKey(key)) return null;
+
+  const businessType =
+    opts.businessType && opts.businessType.trim() !== "" ? opts.businessType.trim() : null;
+  const aliases: string[] = [];
+  const seen = new Set<string>();
+  for (const alias of [opts.merchant, ...(opts.aliases ?? [])]) {
+    const trimmed = alias.trim();
+    if (!trimmed) continue;
+    const folded = trimmed.toLowerCase();
+    if (seen.has(folded)) continue;
+    seen.add(folded);
+    aliases.push(trimmed);
+    if (aliases.length >= 10) break;
+  }
+
+  await database
+    .insert(merchantKnowledge)
+    .values({
+      canonicalMerchant: key,
+      businessType,
+      aliases,
+      isGateway: false,
+    })
+    .onConflictDoNothing({ target: merchantKnowledge.canonicalMerchant });
+
+  const slug = opts.categorySlug ?? null;
+  if (slug && slug !== "otros" && !SYSTEM_OWNED_CATEGORY_SLUGS.has(slug)) {
+    await database
+      .insert(merchantKnowledgeHints)
+      .values({
+        userId: opts.userId,
+        canonicalMerchant: key,
+        categorySlug: slug,
+      })
+      .onConflictDoNothing({
+        target: [merchantKnowledgeHints.userId, merchantKnowledgeHints.canonicalMerchant],
+      });
+  }
+
+  return lookupMerchantKnowledge(opts.userId, key, database);
+}

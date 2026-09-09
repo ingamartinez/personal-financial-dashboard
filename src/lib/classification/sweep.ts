@@ -964,7 +964,7 @@ export async function sweepUserOtrosBucket(
     }
   }
 
-  await maybeEnqueueAsk(userId, abstainedGateway, dryRun);
+  await maybeEnqueueAsk(userId, abstainedGateway, settledToOtros, dryRun);
 
   return {
     userId,
@@ -982,8 +982,16 @@ export async function sweepUserOtrosBucket(
   };
 }
 
-async function maybeEnqueueAsk(userId: number, abstainedGateway: number, dryRun: boolean) {
-  if (dryRun || abstainedGateway === 0) return;
+async function maybeEnqueueAsk(
+  userId: number,
+  abstainedGateway: number,
+  settledToOtros: number,
+  dryRun: boolean,
+) {
+  // classify-ask is the residue path: investigator first, then Phase 4 ask.
+  // Swept non-opaque rows are population B (OEM SAS and friends) and must
+  // reach the investigator without running on this bulk loop.
+  if (dryRun || (abstainedGateway === 0 && settledToOtros === 0)) return;
   await enqueueAskUser(userId);
 }
 
