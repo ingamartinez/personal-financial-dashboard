@@ -197,7 +197,17 @@ const roster = only.length ? MODELS.filter((m) => only.some((o) => m.key.include
 
 for (const spec of roster) {
   const outFile = path.join(OUT, `${spec.key.replace(/\//g, "__")}.json`);
-  if (fs.existsSync(outFile)) {
+  // Try the read rather than existsSync-then-write: the check-then-use pair is
+  // a file-system race (CodeQL js/file-system-race), and handling ENOENT is the
+  // idiomatic way to ask "is this model already done?".
+  let alreadyDone = false;
+  try {
+    fs.readFileSync(outFile);
+    alreadyDone = true;
+  } catch {
+    alreadyDone = false;
+  }
+  if (alreadyDone) {
     console.log(`= ${spec.key} — already done, skipping`);
     continue;
   }
