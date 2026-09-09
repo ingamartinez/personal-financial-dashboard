@@ -1,7 +1,8 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { fxRates } from "@/lib/db/schema";
 import { FALLBACK_COP_PER_USD } from "@/lib/money";
+import { fetchTrmHistory } from "@/lib/fx/trm";
 
 export type FxRate = {
   base: "USD";
@@ -47,6 +48,54 @@ export async function getCurrentFxRate(db: DB = defaultDb): Promise<FxRate> {
     source: row.source,
     fetchedAt: row.fetchedAt,
   };
+}
+
+/**
+ * Covering-rate lookup: the latest published TRM with `asOf <= date`.
+ * Weekends and holidays share the previous business day's row. Returns null
+ * when nothing covers `asOf` — callers must not fall back to
+ * FALLBACK_COP_PER_USD; a missing historical rate is a missing match, not 4000.
+ */
+export async function getFxRateAsOf(asOf: string, db: DB = defaultDb): Promise<FxRate | null> {
+  const rows = await db
+    .select()
+    .from(fxRates)
+    .where(and(eq(fxRates.base, "USD"), eq(fxRates.quote, "COP"), lte(fxRates.asOf, asOf)))
+    .orderBy(desc(fxRates.asOf), desc(fxRates.fetchedAt))
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    base: row.base as "USD",
+    quote: row.quote as "COP",
+    rate: microsToRate(row.rateMicros),
+    asOf: row.asOf,
+    source: row.source,
+    fetchedAt: row.fetchedAt,
+  };
+}
+
+export async function backfillTrmHistory(
+  fromInclusive: string,
+  toInclusive: string,
+  opts?: { fetchImpl?: typeof fetch; db?: DB },
+): Promise<{ upserted: number }> {
+  const rows = await fetchTrmHistory(fromInclusive, toInclusive, opts?.fetchImpl ?? fetch);
+  const database = opts?.db ?? defaultDb;
+  for (const row of rows) {
+    await upsertFxRate(
+      {
+        base: "USD",
+        quote: "COP",
+        rate: row.rate,
+        asOf: row.asOf,
+        source: row.source,
+      },
+      database,
+    );
+  }
+  return { upserted: rows.length };
 }
 
 export async function upsertFxRate(
