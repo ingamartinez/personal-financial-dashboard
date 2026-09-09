@@ -1576,3 +1576,151 @@ describe("consolidateCycleFromStatement — tcAccountingEnabled seam (#815)", ()
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #769 — re-import after archiving the SMS-captured leg must not INSERT again
+// ---------------------------------------------------------------------------
+describe("consolidateCycleFromStatement — archived SMS does not re-insert (#769)", () => {
+  const TAG_ARCHIVED = "STMT_ARCHIVED_DUP_TEST";
+  const CYCLE = "2026-03";
+
+  async function seedArchivedSms(opts?: { smsDate?: Date; statementDate?: Date }) {
+    const userId = await createUser(
+      `${TAG_ARCHIVED.toLowerCase()}.${crypto.randomUUID()}@test.local`,
+      {
+        tcAccountingEnabled: false,
+      },
+    );
+    const accountId = await createTCAccount(userId);
+    const smsDate = opts?.smsDate ?? utcDate(2026, 3, 12);
+    const statementDate = opts?.statementDate ?? utcDate(2026, 3, 12);
+    const smsTxId = await insertTx({
+      userId,
+      accountId,
+      occurredAt: smsDate,
+      amountCents: BigInt(-8_500_000),
+      merchant: "ARCHIVED SMS MERCHANT",
+    });
+    await db
+      .update(transactions)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(transactions.id, smsTxId), eq(transactions.userId, userId)));
+
+    const parsed = buildParsed([
+      row({
+        authorizationNumber: "ARCH769",
+        merchant: "ARCHIVED SMS MERCHANT",
+        occurredAt: statementDate,
+        amountCents: BigInt(8_500_000),
+      }),
+      row({
+        authorizationNumber: "NEW76901",
+        merchant: "TRULY NEW MERCHANT",
+        occurredAt: utcDate(2026, 3, 20),
+        amountCents: BigInt(1_200_000),
+      }),
+    ]);
+    return { userId, accountId, smsTxId, parsed };
+  }
+
+  async function livingMerchantCount(
+    userId: number,
+    accountId: number,
+    merchant: string,
+  ): Promise<number> {
+    const rows = await db
+      .select({ id: transactions.id, deletedAt: transactions.deletedAt })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          eq(transactions.accountId, accountId),
+          eq(transactions.merchant, merchant),
+        ),
+      );
+    return rows.filter((r) => r.deletedAt === null).length;
+  }
+
+  it("does not insert a fresh duplicate of an archived SMS match", async () => {
+    const { userId, accountId, smsTxId, parsed } = await seedArchivedSms();
+    try {
+      const dry = await consolidateCycleFromStatement({
+        userId,
+        accountId,
+        cycle: CYCLE,
+        parsed,
+        fileHash: "arch769a".repeat(8),
+        dryRun: true,
+      });
+      expect(dry.status).toBe("dry-run");
+      expect(dry.matchStats.insertedMissing).toBe(1);
+      expect(dry.insertedTxIds).toHaveLength(0);
+      expect(dry.missingInLedger.map((r) => r.merchant)).toEqual(["TRULY NEW MERCHANT"]);
+
+      const report = await consolidateCycleFromStatement({
+        userId,
+        accountId,
+        cycle: CYCLE,
+        parsed,
+        fileHash: "arch769b".repeat(8),
+        dryRun: false,
+      });
+      expect(report.status).toBe("consolidated");
+      expect(report.insertedTxIds).toHaveLength(1);
+      expect(report.matchStats.insertedMissing).toBe(1);
+
+      const [inserted] = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, report.insertedTxIds[0]));
+      expect(inserted.merchant).toBe("TRULY NEW MERCHANT");
+
+      expect(await livingMerchantCount(userId, accountId, "ARCHIVED SMS MERCHANT")).toBe(0);
+      expect(await livingMerchantCount(userId, accountId, "TRULY NEW MERCHANT")).toBe(1);
+
+      const [archived] = await db.select().from(transactions).where(eq(transactions.id, smsTxId));
+      expect(archived.deletedAt).not.toBeNull();
+
+      const forced = await consolidateCycleFromStatement({
+        userId,
+        accountId,
+        cycle: CYCLE,
+        parsed,
+        fileHash: "arch769c".repeat(8),
+        dryRun: false,
+        force: true,
+      });
+      expect(forced.status).toBe("consolidated");
+      expect(forced.insertedTxIds).toHaveLength(0);
+      expect(await livingMerchantCount(userId, accountId, "ARCHIVED SMS MERCHANT")).toBe(0);
+      expect(await livingMerchantCount(userId, accountId, "TRULY NEW MERCHANT")).toBe(1);
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("still skips when SMS and extracto disagree on value-date within TC tolerance", async () => {
+    const { userId, accountId, smsTxId, parsed } = await seedArchivedSms({
+      smsDate: utcDate(2026, 3, 10),
+      statementDate: utcDate(2026, 3, 12),
+    });
+    try {
+      const report = await consolidateCycleFromStatement({
+        userId,
+        accountId,
+        cycle: CYCLE,
+        parsed,
+        fileHash: "arch769d".repeat(8),
+        dryRun: false,
+      });
+      expect(report.status).toBe("consolidated");
+      expect(report.insertedTxIds).toHaveLength(1);
+      expect(await livingMerchantCount(userId, accountId, "ARCHIVED SMS MERCHANT")).toBe(0);
+
+      const [archived] = await db.select().from(transactions).where(eq(transactions.id, smsTxId));
+      expect(archived.deletedAt).not.toBeNull();
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+});

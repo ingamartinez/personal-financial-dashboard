@@ -707,13 +707,13 @@ async function insertSaldoRealPlug(
   };
 }
 
-async function loadExistingTxs(
+async function loadTxsForMatch(
   database: DB,
   userId: number,
   accountId: number,
   fromDate: Date,
   toDate: Date,
-): Promise<TxRowForMatch[]> {
+): Promise<{ live: TxRowForMatch[]; archived: TxRowForMatch[] }> {
   const rows = await database
     .select({
       id: transactions.id,
@@ -724,6 +724,7 @@ async function loadExistingTxs(
       installmentsTotal: transactions.installmentsTotal,
       installmentRateEmX10k: transactions.installmentRateEmX10k,
       externalId: transactions.externalId,
+      deletedAt: transactions.deletedAt,
     })
     .from(transactions)
     .where(
@@ -732,10 +733,64 @@ async function loadExistingTxs(
         eq(transactions.accountId, accountId),
         gte(transactions.occurredAt, fromDate),
         lte(transactions.occurredAt, toDate),
-        notDeleted(transactions.deletedAt),
       ),
     );
-  return rows;
+  const live: TxRowForMatch[] = [];
+  const archived: TxRowForMatch[] = [];
+  for (const row of rows) {
+    const { deletedAt, ...tx } = row;
+    if (deletedAt) archived.push(tx);
+    else live.push(tx);
+  }
+  return { live, archived };
+}
+
+// #769 — Option A: skip INSERT when a soft-deleted ledger tx would have
+// matched the statement row.
+//
+// Why not B (un-archive): archived means the user wanted that row gone.
+// Resurrecting it on a later safety-net re-import (#815) fights that intent.
+// Why not C (insert + flag): that IS the bug — a silent duplicate that can
+// sit unnoticed for months on a path touched only occasionally.
+//
+// Live txs still win: archived rows are consulted only for leftover
+// missingInLedger after the live match, so a living extracto row continues
+// to match normally.
+function suppressArchivedDuplicateInserts(
+  match: MatchResult,
+  archivedTxs: TxRowForMatch[],
+  parsed: ParsedStatement,
+  dateToleranceDays: number,
+  ctx: { userId: number; accountId: number; cycle: string },
+): MatchResult {
+  if (archivedTxs.length === 0 || match.missingInLedger.length === 0) return match;
+
+  const archivedMatch = matchStatementAgainstLedger(
+    { ...parsed, rows: match.missingInLedger },
+    archivedTxs,
+    { dateToleranceDays },
+  );
+  if (archivedMatch.matched.length === 0) return match;
+
+  const skipped = new Set(archivedMatch.matched.map((m) => m.statementRow));
+  for (const m of archivedMatch.matched) {
+    log.warn(
+      {
+        userId: ctx.userId,
+        accountId: ctx.accountId,
+        cycle: ctx.cycle,
+        archivedTxId: m.txId,
+        merchant: m.statementRow.merchant,
+        occurredAt: m.statementRow.occurredAt,
+        event: "already_archived_as_duplicate",
+      },
+      "consolidate: skipping insert; matching ledger row was already archived",
+    );
+  }
+  return {
+    ...match,
+    missingInLedger: match.missingInLedger.filter((r) => !skipped.has(r)),
+  };
 }
 
 function buildMatchStats(
@@ -874,11 +929,23 @@ export async function consolidateCycleFromStatement(
     ? addDays(earliest, -CROSS_TWIN_DAYS)
     : addDays(opts.parsed.period.startDate, -CROSS_TWIN_DAYS);
   const toDate = addDays(opts.parsed.period.endDate, CROSS_TWIN_DAYS);
-  const txs = await loadExistingTxs(database, opts.userId, opts.accountId, fromDate, toDate);
+  const { live: txs, archived: archivedTxs } = await loadTxsForMatch(
+    database,
+    opts.userId,
+    opts.accountId,
+    fromDate,
+    toDate,
+  );
   const matchTolerance = account.type === "credit_card" ? TC_STATEMENT_DATE_TOLERANCE_DAYS : 1;
-  const match = matchStatementAgainstLedger(opts.parsed, txs, {
-    dateToleranceDays: matchTolerance,
-  });
+  const match = suppressArchivedDuplicateInserts(
+    matchStatementAgainstLedger(opts.parsed, txs, {
+      dateToleranceDays: matchTolerance,
+    }),
+    archivedTxs,
+    opts.parsed,
+    matchTolerance,
+    { userId: opts.userId, accountId: opts.accountId, cycle: opts.cycle },
+  );
 
   // #555 — load sibling twin account + its ledger txs for cross-twin pass.
   // Both are null when the account has no physicalCardId (single-currency TC).
