@@ -1,16 +1,19 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import {
   recurringGaps,
   recurringLinkObservations,
   recurringTransactions,
-  recurringDescriptionPatterns,
   transactions,
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { emit } from "@/lib/events/bus";
-import { recordRecurringLinkObservation } from "@/lib/recurring/observation-recorder";
+import {
+  recordRecurringLinkObservation,
+  tokeniseDescription,
+} from "@/lib/recurring/observation-recorder";
 import { scoreMatchCandidates, type MatchCandidate } from "@/lib/recurring/match-score";
+import { fetchPatterns } from "@/lib/recurring/patterns";
 import { claimSlotForTx, occurrenceWindow } from "@/lib/recurring/slot";
 import { detectPriceHike } from "@/lib/recurring/price-hike-detector";
 import { emitNotification } from "@/lib/notifications/emit";
@@ -121,23 +124,25 @@ export type AutoLinkResult =
 // ---------------------------------------------------------------------------
 // Candidate resolution (#804) — shared by the gap path and the direct path.
 //
-// Two tiers, in order:
-//   1. "Classic" — same account AND exact amount. This is the pre-#804 fast
-//      path, kept as-is for backward compatibility: it is the strongest
-//      possible signal and needs no learned description pattern to trust.
-//      Exactly one classic candidate wins immediately. Two+ classic
-//      candidates are a genuine, strong-signal collision (both look equally
-//      right) — the description-fingerprint scorer is given a chance to
-//      break the tie, but if it can't, this is real ambiguity (not "no
-//      signal"), so it is reported as `ambiguous`, matching the pre-#804
-//      behaviour for e.g. two recurrings sharing account + amount.
-//   2. "Cross-account fallback" — used only when NO classic candidate
-//      exists (different account, and/or the amount only matches via a
-//      learned fingerprint). Delegates entirely to scoreMatchCandidates,
-//      which blocks amount-only guessing whenever the description has an
-//      extractable-but-unmatched token (the KFC/SmartFit false-positive
-//      guard) — appropriate here because none of these candidates have the
-//      strong classic signal to fall back on.
+// "Classic" candidates share the tx's account AND exact amount — the
+// pre-#804 signal. It is a STRONG SCORING INPUT, never a bypass around the
+// scorer (#804 CRITICAL fix — a KFC purchase byte-identical to Apple TV's
+// amount, landing on Apple TV's own account, must still be blocked by the
+// token guard). A lone classic candidate is trusted WITHOUT running the
+// scorer only when doing so is provably safe:
+//   - its amount does not also collide with any other candidate in the pool
+//     (no competing recurring shares the exact amount), AND
+//   - the tx's description has no extractable token, OR that candidate has
+//     no learned patterns yet (nothing to contradict — first-ever payment
+//     bootstrap), OR the token matches the candidate's own learned patterns.
+// Any other case — including a lone classic candidate whose amount collides,
+// or whose own learned patterns contradict the tx's token — falls through to
+// the full description-fingerprint + amount scorer over the WHOLE candidate
+// pool (cross-account matches included), which itself blocks amount-only
+// guessing whenever the description has an extractable-but-unmatched token.
+// Two+ classic candidates are a genuine, strong-signal collision; the scorer
+// gets a chance to break the tie, but if it can't, that is real ambiguity
+// (not "no signal"), reported as `ambiguous`.
 // ---------------------------------------------------------------------------
 
 type Candidate = {
@@ -152,41 +157,6 @@ type Candidate = {
 type ResolveResult =
   | { winner: Candidate; ambiguousCount: null }
   | { winner: null; ambiguousCount: number | null };
-
-async function fetchPatternsFor(
-  userId: number,
-  recurringIds: number[],
-  database: DB,
-): Promise<Map<number, string[]>> {
-  const map = new Map<number, string[]>();
-  if (recurringIds.length === 0) return map;
-
-  const rows = await database
-    .select({
-      recurringId: recurringDescriptionPatterns.recurringId,
-      pattern: recurringDescriptionPatterns.pattern,
-    })
-    .from(recurringDescriptionPatterns)
-    .where(
-      and(
-        eq(recurringDescriptionPatterns.userId, userId),
-        inArray(recurringDescriptionPatterns.recurringId, recurringIds),
-        // Require at least 2 observations before trusting a pattern — a
-        // single manual link isn't enough signal yet. NOTE: patternAmbiguous
-        // is intentionally NOT filtered here (#804) — ambiguity across
-        // recurrings now means "requires a second signal", not "disabled".
-        sql`${recurringDescriptionPatterns.observationCount} >= 2`,
-      ),
-    );
-
-  for (const r of rows) {
-    if (r.pattern === null) continue;
-    const arr = map.get(r.recurringId) ?? [];
-    arr.push(r.pattern);
-    map.set(r.recurringId, arr);
-  }
-  return map;
-}
 
 async function resolveCandidate(
   userId: number,
@@ -203,10 +173,34 @@ async function resolveCandidate(
       c.amountCents === tx.amountCents,
   );
 
-  if (classic.length === 1) return { winner: classic[0]!, ambiguousCount: null };
+  if (classic.length === 1) {
+    const lone = classic[0]!;
+    const amountCollides = candidates.some(
+      (c) =>
+        c.recurringId !== lone.recurringId &&
+        c.currency === tx.currency &&
+        c.amountCents === tx.amountCents,
+    );
+    if (!amountCollides) {
+      const token = tokeniseDescription(tx.descriptionRaw);
+      if (token === null) {
+        return { winner: lone, ambiguousCount: null };
+      }
+      const ownPatterns = (await fetchPatterns(userId, [lone.recurringId], database)).get(
+        lone.recurringId,
+      );
+      if (!ownPatterns || ownPatterns.length === 0 || ownPatterns.includes(token)) {
+        return { winner: lone, ambiguousCount: null };
+      }
+      // Extractable token contradicts this candidate's own learned
+      // patterns — do not trust the classic shortcut. Fall through to the
+      // full scorer pool below.
+    }
+    // Amount also collides with another candidate — fall through too.
+  }
 
   const pool = classic.length >= 2 ? classic : candidates;
-  const patternMap = await fetchPatternsFor(
+  const patternMap = await fetchPatterns(
     userId,
     pool.map((c) => c.recurringId),
     database,

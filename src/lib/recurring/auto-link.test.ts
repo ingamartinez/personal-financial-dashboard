@@ -1019,6 +1019,93 @@ describe("autoLinkTransaction #804 — cross-account, late payment, skip veto", 
       .where(eq(transactions.id, txId));
     expect(row.recurringId).toBeNull();
   });
+
+  it("CRITICAL fix: KFC purchase byte-identical to Apple TV's amount does NOT auto-link even on Apple TV's OWN account", async () => {
+    // Reviewer-flagged regression: the classic (same-account + exact-amount)
+    // fast path must never bypass the token guard. Apple TV already has a
+    // learned fingerprint ("APPLE") — a KFC purchase landing on the exact
+    // same account, at the exact same amount, must still be blocked.
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_804_appletv_sameacct__",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern: "APPLE",
+      observationCount: 2,
+      patternAmbiguous: false,
+    });
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-2990000),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("bootstrap preserved: first-ever payment, own account, exact amount, unfamiliar token, zero learned patterns → still links", async () => {
+    // The classic shortcut is still allowed to fire without a learned
+    // fingerprint when the candidate has NEVER learned anything yet (nothing
+    // to contradict) and no other candidate collides on amount.
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_804_bootstrap__",
+      amountCents: BigInt(-3050000),
+      dayOfMonth: 15,
+    });
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-3050000),
+      description: "SPOTIFY P 12345",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+    }
+  });
+
+  it("classic shortcut declines when amount ALSO collides with another active recurring, falls through to scorer", async () => {
+    // Even though the tx's own account+amount uniquely matches recurring A
+    // (classic), recurring B ALSO shares this exact amount elsewhere — the
+    // amount is not unique in the pool, so the classic shortcut must not
+    // fire blindly. Since neither has a matching token, the scorer blocks.
+    const accountA = await seedAccount(TEST_USER_ID, "_collideA");
+    const accountB = await seedAccount(TEST_USER_ID, "_collideB");
+    await seedRecurring(accountA, {
+      label: "__autolink_804_collide_a__",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+    await seedRecurring(accountB, {
+      label: "__autolink_804_collide_b__",
+      amountCents: BigInt(-2990000),
+      dayOfMonth: 15,
+    });
+
+    const txId = await seedTx(accountA, {
+      occurredOn: "2026-04-15",
+      amountCents: BigInt(-2990000),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+  });
 });
 
 // ---------------------------------------------------------------------------
