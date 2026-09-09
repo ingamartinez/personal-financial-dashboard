@@ -80,7 +80,7 @@ NEVER add `Co-Authored-By` or AI attribution lines.
 | `ui`                                       | Pages, components, layout                                                                                                                                                                                                                                                                                                                                                          |
 | `ai`                                       | Claude API integration (Haiku, Sonnet, Vision)                                                                                                                                                                                                                                                                                                                                     |
 | `bug`                                      | Something broken                                                                                                                                                                                                                                                                                                                                                                   |
-| `docs`                                     | Documentation only                                                                                                                                                                                                                                                                                                                                                                 |
+| `documentation`                            | Documentation only                                                                                                                                                                                                                                                                                                                                                                 |
 | `good-first-task`                          | Small, well-scoped, easy entry point                                                                                                                                                                                                                                                                                                                                               |
 | `blocked`                                  | Cannot proceed until an external condition is met (missing data, pending decision, dependency on another issue). Orthogonal to `phase-N` and to the Project board `Status` column — use it as a flag, not a status. When applying, leave a comment on the issue explaining WHAT it's blocked on. Filter it out with `-label:blocked` when looking for work you can actually start. |
 
@@ -234,13 +234,20 @@ are gitignored; treat them as ephemeral artifacts. Functional E2E tests
 with assertions are out of scope until needed; when added, follow the
 same conventions cc uses (`cc/docs/E2E_TESTING.md`).
 
-## Sub-agent orchestration (Claude Code)
+## Agent orchestration
+
+Work reaches `main` through one of **two sanctioned routes**. Both obey the
+same contract — issue-first, branch naming, commit format, PR/CI gate, gh
+identity, test database. Pick by what you have available, not by preference.
+
+**The orchestrator does not write code directly.** It delegates, then reviews
+what came back. That rule is route-independent.
+
+### Route A — Claude Code sub-agents
 
 Claude Code on this repo runs project-scoped sub-agents in `.claude/agents/`.
 Each one knows the conventions, reads engram (50+ documented gotchas) at
-start, and follows `AGENTS.md`. **The main orchestrator MUST delegate to
-them** instead of writing code directly — bypassing them re-introduces
-bugs that have already been documented.
+start, and follows `AGENTS.md`.
 
 | Agent                 | Role                                               | When to invoke                                                                                                                                                                        |
 | --------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -249,7 +256,7 @@ bugs that have already been documented.
 | `findash-reviewer`    | Read-only review (CRITICAL / WARNING / SUGGESTION) | BETWEEN implementer and shipper for non-trivial changes: db schema, queries, server actions, money logic, tenant-scoped data. Skip for docs-only, test-only, or mechanical refactors. |
 | `findash-shipper`     | Push + PR + CI watch + auto-merge                  | AFTER implementer (and reviewer if applicable). Mechanical only — no new logic. Auto-merge per § "PR convention" rules.                                                               |
 
-### Standard flow
+#### Standard flow
 
 ```
 gh issue (claim) → findash-explorer  (if 4+ files or scope unclear)
@@ -258,12 +265,110 @@ gh issue (claim) → findash-explorer  (if 4+ files or scope unclear)
                  → findash-shipper      (ALWAYS — push + PR + merge)
 ```
 
-### Why this flow
+#### Why this flow
 
 - **The orchestrator does not know the 50+ gotchas** documented in engram for this repo. The sub-agents do — they `mem_search` first thing. Bypassing them = re-introducing bugs already paid for.
 - **Role separation** keeps implementer out of architectural design (use `/sdd-new` for that) and keeps shipper out of logic changes.
 - **Reviewer between implementer and shipper** catches semantic bugs that lint/typecheck/tests miss: tenant safety on JOINs, soft-delete pattern, money as bigint cents, Next.js 16 server-action quirks.
 
-This applies to Claude Code specifically. Other agents (Codex, etc.) can
-ignore this section — the rules above (issue-first, branch naming,
-commits, PRs, gh identity, testing) still apply to all agents equally.
+### Route B — delegated agents over Herdr
+
+Claude Code runs inside a Herdr pane (`HERDR_ENV=1`) and
+can spawn sibling agents of other models — opencode, codex, gemini and others —
+each in its own tab, its own worktree, and its own database. On 2026-09-09
+eleven issues went from claim to merged `main` this way, with opencode running
+the Grok 4.6 profile doing the implementing and shipping.
+
+Use this route when you want lanes running in parallel, or a second model's
+judgement on a design. Route A remains valid and is simpler for a single lane.
+
+#### One lane, end to end
+
+```bash
+# 1. Worktree off current main
+git worktree add -b claude/phase-4/<issue>-<slug> \
+  ~/projects/personal-financial-dashboard-worktrees/<lane> main
+
+# 2. Its own database — the timezone step is NOT optional (see § Test database)
+createdb findash_test_<lane>
+psql -d postgres -c "ALTER DATABASE findash_test_<lane> SET timezone TO 'UTC';"
+FINDASH_TEST_DB=findash_test_<lane> bun run db:migrate:test
+FINDASH_TEST_DB=findash_test_<lane> bun run db:seed:test
+
+# 3. node_modules is NOT shared between worktrees
+cd ~/projects/personal-financial-dashboard-worktrees/<lane> && bun install
+
+# 4. One tab per agent — never a pane split of the orchestrator's tab
+herdr tab create --cwd "$PWD" --label <lane> --no-focus     # -> pane_id
+herdr agent start <lane> --kind opencode --pane <pane_id> --timeout 240000
+herdr agent prompt <lane> "<objective>" --wait --until idle --until done
+
+# 5. Teardown the moment it merges — tab, worktree, branch, database
+herdr tab close <tab_id>
+git worktree remove ~/projects/personal-financial-dashboard-worktrees/<lane> --force
+git branch -D claude/phase-4/<issue>-<slug>
+dropdb findash_test_<lane>
+
+# 6. If the lane shipped a migration, re-migrate the SHARED test database.
+#    The lane's own database had it; you just dropped that one.
+bun run db:migrate:test
+```
+
+> **Step 6 is the easy one to forget.** Skipping it leaves `findash_test`
+> running the pre-merge schema, and the next full-suite run fails on tests that
+> are green in CI. The symptom looks like a regression on `main` and is not one —
+> check `drizzle.__drizzle_migrations` against `drizzle/meta/_journal.json`
+> before debugging any code.
+
+#### Prompt design: give the objective, not the route
+
+Do **not** hand a delegated agent the repo's conventions. Measured on this repo:
+an agent asked only _"what are this repo's conventions?"_, with no pointers,
+independently read `AGENTS.md`, `PLAN.md`, `CLAUDE.md` and `docs/`, **queried
+engram on its own**, and surfaced tenant safety, the money convention and the
+gotchas — plus caught that `PLAN.md` is stale on auth and cron. The same agent
+given a map produced a worse answer.
+
+Pass only what cannot be derived from the repo:
+
+1. The issue number.
+2. `FINDASH_TEST_DB=findash_test_<lane>`, and that other agents are running so
+   a bare `bun run test` would corrupt someone else's fixtures.
+3. The stop condition — commit only, or all the way to merge.
+4. Any decision the issue does not contain, **with its reasoning**.
+
+Invite disagreement explicitly ("if this looks wrong, say so before
+implementing"). That invitation has paid for itself: a delegated agent caught
+that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
+2-second budget, and that issue #816's stated cache minimum was out of date.
+
+#### Operating parallel lanes
+
+- **Cap at ~3 concurrent lanes on a dev Mac.** Lanes are RAM-bound, not
+  isolation-bound. Isolation works — worktrees and per-lane databases produced
+  zero conflicts across five lanes — but five simultaneous Vitest suites
+  exhausted memory and the OS started killing processes.
+- **A killed watcher is not a dead agent.** Delegated agents live in their own
+  panes and keep working when the orchestrator's waiting process dies.
+  `herdr agent prompt --wait` is fire-and-forget once the prompt lands; the wait
+  is an observation channel, not a lifeline. Check `herdr agent list` and the
+  lane's real git/PR state before re-prompting, or you duplicate the work.
+- **Register every lane with your watcher when it starts**, not when you
+  remember it. One lane merged completely unobserved because its watcher was
+  never rebuilt after being killed.
+- **Poll external state, never the agent's own status.** Some agent kinds report
+  `idle`/`done` while still working. The signals that do not lie: a new commit on
+  the branch, and `gh pr view <n> --json state`.
+
+#### Which route for what
+
+| Situation                                 | Route                                  |
+| ----------------------------------------- | -------------------------------------- |
+| Single lane, ordinary issue               | A or B — A is less setup               |
+| Several independent issues at once        | B, one lane each                       |
+| Want a second model to challenge a design | B — ask for the proposal, not the code |
+| Architectural design from scratch         | `/sdd-new`, either route after         |
+
+Other agents (Codex, etc.) driving this repo directly can ignore the routing
+above — the rules elsewhere in this file (issue-first, branch naming, commits,
+PRs, gh identity, testing) still apply to all agents equally.
