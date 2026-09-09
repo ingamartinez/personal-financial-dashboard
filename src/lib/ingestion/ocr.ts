@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { callClaude, HAIKU_MODEL } from "@/lib/ai/anthropic-client";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "ingestion/ocr" });
@@ -38,8 +39,6 @@ const responseSchema = z.object({
     }),
   ),
 });
-
-const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 
 const PROMPT = `You extract transactions from a bank or fintech app screenshot.
 
@@ -109,13 +108,6 @@ function buildExternalId(
   return `ocr:${accountId}:${hash}`;
 }
 
-function extractJson(text: string): unknown {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : trimmed;
-  return JSON.parse(candidate);
-}
-
 export async function extractTransactionsFromImage(opts: {
   imageBase64: string;
   mediaType: OcrMediaType;
@@ -124,60 +116,24 @@ export async function extractTransactionsFromImage(opts: {
   apiKey?: string;
   fetchImpl?: typeof fetch;
 }): Promise<OcrResult> {
-  const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  // Extraction only — categorization happens downstream on the classify-tx
+  // queue. Stay on Haiku; paying Sonnet to read rows would double-charge
+  // once classification also runs.
+  const model = opts.model ?? HAIKU_MODEL;
 
-  const model = opts.model ?? DEFAULT_MODEL;
-  const doFetch = opts.fetchImpl ?? fetch;
-
-  const res = await doFetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 2048,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: opts.mediaType,
-                data: opts.imageBase64,
-              },
-            },
-            { type: "text", text: PROMPT },
-          ],
-        },
-      ],
-    }),
+  const result = await callClaude({
+    feature: "ocr",
+    system: [{ text: PROMPT, cacheControl: true }],
+    userPrompt: "Extract every transaction visible in this screenshot.",
+    images: [{ mediaType: opts.mediaType, data: opts.imageBase64 }],
+    schema: responseSchema,
+    maxTokens: 2048,
+    model,
+    apiKey: opts.apiKey,
+    fetchImpl: opts.fetchImpl,
   });
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Anthropic API error ${res.status}: ${body.slice(0, 300)}`);
-  }
-
-  const payload = (await res.json()) as {
-    content: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens: number; output_tokens: number };
-  };
-
-  const textBlock = payload.content?.find((c) => c.type === "text")?.text ?? "";
-  let parsedJson: unknown;
-  try {
-    parsedJson = extractJson(textBlock);
-  } catch {
-    throw new Error("Model returned invalid JSON");
-  }
-
-  const parsed = responseSchema.parse(parsedJson);
+  const parsed = result.data;
 
   const rows: OcrParsedRow[] = [];
   const skipped: { rowIndex: number; reason: string }[] = [];
@@ -222,10 +178,10 @@ export async function extractTransactionsFromImage(opts: {
   return {
     rows,
     skipped,
-    model,
+    model: result.model,
     usage: {
-      inputTokens: payload.usage?.input_tokens ?? 0,
-      outputTokens: payload.usage?.output_tokens ?? 0,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
     },
   };
 }

@@ -218,6 +218,7 @@ export async function classifyBatchWithAi(opts: {
   // to reject slugs outside the user's current category set (edge case:
   // categories deleted between requests).
   const result = await callClaude({
+    feature: "classification",
     system: [{ text: buildSystemPrompt(promptCategories), cacheControl: true }],
     userPrompt: buildUserPrompt(opts.transactions, opts.userHints ?? []),
     schema: responseSchema,

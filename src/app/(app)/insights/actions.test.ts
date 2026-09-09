@@ -37,7 +37,7 @@ vi.mock("@/lib/ai/insights", () => ({
   buildInsightsSummary: vi.fn().mockResolvedValue({ summary: "mock" }),
   generateInsightsReport: vi.fn().mockResolvedValue({
     markdown: "# Insights\n...",
-    model: "claude-haiku-4",
+    model: "claude-sonnet-5",
     usage: { inputTokens: 100, outputTokens: 200 },
   }),
   hashSummary: vi.fn().mockReturnValue("abc123"),

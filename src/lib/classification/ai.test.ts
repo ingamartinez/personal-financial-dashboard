@@ -10,7 +10,7 @@ function fakeMessageResponse(payload: unknown): Record<string, unknown> {
     id: "msg_test",
     type: "message",
     role: "assistant",
-    model: "claude-haiku-4-5-20251001",
+    model: "claude-sonnet-5",
     content: [{ type: "text", text: JSON.stringify(payload) }],
     stop_reason: "end_turn",
     stop_sequence: null,

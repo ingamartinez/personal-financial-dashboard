@@ -288,7 +288,7 @@ describe("parseTransactionMessage", () => {
           id: "msg_test",
           type: "message",
           role: "assistant",
-          model: "claude-haiku-4-5",
+          model: "claude-sonnet-5",
           content: [{ type: "text", text: "not-json-at-all" }],
           stop_reason: "end_turn",
           stop_sequence: null,

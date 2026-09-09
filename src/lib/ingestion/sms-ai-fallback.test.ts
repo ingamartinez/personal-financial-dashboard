@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { parserEvents, users } from "@/lib/db/schema";
+import { HAIKU_MODEL } from "@/lib/ai/anthropic-client";
 import { aiFallbackParseSms, isAiFallbackEnabled, recordParserEvent } from "./sms-ai-fallback";
 
 // ---------------------------------------------------------------------------
@@ -13,7 +15,7 @@ function fakeMessageResponse(payload: unknown): Record<string, unknown> {
     id: "msg_test",
     type: "message",
     role: "assistant",
-    model: "claude-haiku-4-5-20251001",
+    model: "claude-haiku-4-5",
     content: [{ type: "text", text: JSON.stringify(payload) }],
     stop_reason: "end_turn",
     stop_sequence: null,
@@ -28,9 +30,12 @@ function fakeMessageResponse(payload: unknown): Record<string, unknown> {
 
 function mockFetch(
   responseBody: unknown,
-  init?: { status?: number; errorBody?: unknown },
+  init?: { status?: number; errorBody?: unknown; captured?: Record<string, unknown>[] },
 ): typeof fetch {
-  return (async () => {
+  return (async (_input: Request | URL | string, reqInit?: RequestInit) => {
+    if (init?.captured && reqInit?.body) {
+      init.captured.push(JSON.parse(String(reqInit.body)) as Record<string, unknown>);
+    }
     const status = init?.status ?? 200;
     const body = status === 200 ? responseBody : (init?.errorBody ?? { error: "oops" });
     return new Response(JSON.stringify(body), {
@@ -77,8 +82,23 @@ describe("aiFallbackParseSms", () => {
       expect(result.parsed.cardLast4).toBe("2575");
     }
     expect(result.confidence).toBe(0.95);
-    expect(result.ai.model).toBe("claude-haiku-4-5-20251001");
+    expect(result.ai.model).toBe("claude-haiku-4-5");
     expect(result.ai.tokensIn).toBe(120);
+  });
+
+  it("pins the request to Haiku instead of inheriting DEFAULT_MODEL", async () => {
+    const captured: Record<string, unknown>[] = [];
+    await aiFallbackParseSms("Bancolombia: weird format ... RAPPI 45.000 2575 15/04/2026 19:30", {
+      apiKey: "sk-test",
+      fetchImpl: mockFetch(fakeMessageResponse(validHighConfidence), { captured }),
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].model).toBe(HAIKU_MODEL);
+    // Latch: the pin must stay explicit. If DEFAULT_MODEL ever moves back to
+    // Haiku, inheriting it would still satisfy the request assertion above.
+    const src = readFileSync(new URL("./sms-ai-fallback.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/model:\s*HAIKU_MODEL/);
   });
 
   it("returns low_confidence (not success) when confidence < 0.8", async () => {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import Anthropic from "@anthropic-ai/sdk";
-import { callClaude } from "@/lib/ai/anthropic-client";
+import { callClaude, HAIKU_MODEL } from "@/lib/ai/anthropic-client";
 import { db } from "@/lib/db";
 import { parserEvents, users } from "@/lib/db/schema";
 import type { ParsedSms } from "./sms-bancolombia";
@@ -120,11 +120,15 @@ export async function aiFallbackParseSms(
 ): Promise<AiFallbackOutcome> {
   try {
     const result = await callClaude({
+      feature: "sms-fallback",
       system: [{ text: AI_FALLBACK_SYSTEM, cacheControl: true }],
       userPrompt: smsBody,
       schema: aiPurchaseSchema,
       maxTokens: 512,
       timeoutMs: opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      // Pinned to Haiku: this path has a 2s wall-clock budget. Inheriting
+      // DEFAULT_MODEL (Sonnet 5) times out and the fallback disables itself.
+      model: HAIKU_MODEL,
       apiKey: opts?.apiKey,
       fetchImpl: opts?.fetchImpl,
     });

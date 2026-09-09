@@ -12,7 +12,7 @@ import {
 import { notAdjustment, notDeleted, notInternalMovement } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import type { Currency } from "@/lib/types";
-import { callClaudeText } from "@/lib/ai/anthropic-client";
+import { callClaudeText, DEFAULT_MODEL } from "@/lib/ai/anthropic-client";
 import { createLogger } from "@/lib/logger";
 import {
   sumByDisplayCurrency,
@@ -23,7 +23,6 @@ import { convertCents } from "@/lib/money";
 
 const log = createLogger({ module: "insights-aggregator" });
 
-const DEFAULT_MODEL = "claude-sonnet-4-6";
 export const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type InsightsSummary = {
@@ -548,8 +547,8 @@ export function hashSummary(summary: InsightsSummary): string {
 }
 
 // Stable across all users and months — task framing, output structure, and
-// the formatting rules. Gets cache_control so Sonnet 4.6 can amortize it
-// across requests (cache threshold is 2048 tokens; this + the stable
+// the formatting rules. Gets cache_control so Sonnet 5 can amortize it
+// across requests (cache threshold is 1024 tokens; this + the stable
 // investment advisory block combine to comfortably exceed that).
 const INSIGHTS_SYSTEM_PROMPT = `Sos un asesor financiero personal para un usuario colombiano. Analizás sus finanzas mensuales y das recomendaciones PRÁCTICAS y LOCALES.
 
@@ -608,6 +607,7 @@ export async function generateInsightsReport(opts: {
   usage: { inputTokens: number; outputTokens: number };
 }> {
   const result = await callClaudeText({
+    feature: "insights",
     system: [{ text: INSIGHTS_SYSTEM_PROMPT, cacheControl: true }],
     userPrompt: buildUserPrompt(opts.summary),
     model: opts.model ?? DEFAULT_MODEL,

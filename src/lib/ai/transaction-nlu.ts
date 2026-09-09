@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callClaude, type SystemPromptBlock } from "@/lib/ai/anthropic-client";
+import { callClaude, DEFAULT_MODEL, type SystemPromptBlock } from "@/lib/ai/anthropic-client";
 
 export type NluAccountOption = {
   id: number;
@@ -39,8 +39,6 @@ export type NluResult = {
   model: string;
   usage: { inputTokens: number; outputTokens: number };
 };
-
-const DEFAULT_MODEL = "claude-haiku-4-5";
 
 // All optional fields use `.nullish()` (accepts null OR undefined) because
 // Claude routinely returns explicit `"field": null` for absent values instead
@@ -129,6 +127,7 @@ export async function parseTransactionMessage(opts: {
   ];
 
   const result = await callClaude({
+    feature: "nlu",
     system,
     userPrompt: opts.text,
     schema: nluResponseSchema,
