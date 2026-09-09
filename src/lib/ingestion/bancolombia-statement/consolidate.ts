@@ -707,13 +707,13 @@ async function insertSaldoRealPlug(
   };
 }
 
-async function loadExistingTxs(
+async function loadTxsForMatch(
   database: DB,
   userId: number,
   accountId: number,
   fromDate: Date,
   toDate: Date,
-): Promise<TxRowForMatch[]> {
+): Promise<{ live: TxRowForMatch[]; archived: TxRowForMatch[] }> {
   const rows = await database
     .select({
       id: transactions.id,
@@ -724,6 +724,7 @@ async function loadExistingTxs(
       installmentsTotal: transactions.installmentsTotal,
       installmentRateEmX10k: transactions.installmentRateEmX10k,
       externalId: transactions.externalId,
+      deletedAt: transactions.deletedAt,
     })
     .from(transactions)
     .where(
@@ -732,24 +733,82 @@ async function loadExistingTxs(
         eq(transactions.accountId, accountId),
         gte(transactions.occurredAt, fromDate),
         lte(transactions.occurredAt, toDate),
-        notDeleted(transactions.deletedAt),
       ),
     );
-  return rows;
+  const live: TxRowForMatch[] = [];
+  const archived: TxRowForMatch[] = [];
+  for (const row of rows) {
+    const { deletedAt, ...tx } = row;
+    if (deletedAt) archived.push(tx);
+    else live.push(tx);
+  }
+  return { live, archived };
+}
+
+// #769 — Option A: skip INSERT when a soft-deleted ledger tx would have
+// matched the statement row.
+//
+// Why not B (un-archive): archived means the user wanted that row gone.
+// Resurrecting it on a later safety-net re-import (#815) fights that intent.
+// Why not C (insert + flag): that IS the bug — a silent duplicate that can
+// sit unnoticed for months on a path touched only occasionally.
+//
+// Live txs still win: archived rows are consulted only for leftover
+// missingInLedger after the live match, so a living extracto row continues
+// to match normally.
+//
+// Do NOT drop the row from missingInLedger before the #555 cross-twin pass.
+// An archived USD SMS that amount-matches the extracto would otherwise hide
+// the row from sibling reassignment, leaving the purchase on COP and nothing
+// live on USD. Cross-twin still iterates the full leftover list; the insert
+// loop is what consults this map.
+function findArchivedDuplicateRows(
+  missingInLedger: StatementRow[],
+  archivedTxs: TxRowForMatch[],
+  parsed: ParsedStatement,
+  dateToleranceDays: number,
+): Map<StatementRow, number> {
+  const archivedByRow = new Map<StatementRow, number>();
+  if (archivedTxs.length === 0 || missingInLedger.length === 0) return archivedByRow;
+
+  const archivedMatch = matchStatementAgainstLedger(
+    { ...parsed, rows: missingInLedger },
+    archivedTxs,
+    { dateToleranceDays },
+  );
+  for (const m of archivedMatch.matched) {
+    archivedByRow.set(m.statementRow, m.txId);
+  }
+  return archivedByRow;
+}
+
+function excludeArchivedSkips(
+  match: MatchResult,
+  archivedByRow: Map<StatementRow, number>,
+): MatchResult {
+  if (archivedByRow.size === 0) return match;
+  return {
+    ...match,
+    missingInLedger: match.missingInLedger.filter((r) => !archivedByRow.has(r)),
+  };
 }
 
 function buildMatchStats(
   match: MatchResult,
   insertedBeforePeriodCount = 0,
   crossTwinReassigned = 0,
+  archivedSkippedInserts = 0,
 ): MatchStats {
   const matchedWillChange = match.matched.filter((m) => m.willChange).length;
   // `insertedMissing` counts during-period inserts + before-period installment
   // inserts (added in #557) so the UI "Nuevas" stat reflects everything landed.
   // Cross-twin reassigned rows are NOT counted here — they are moves, not inserts.
+  // #769 archived skips are also excluded: they stay in missingInLedger so
+  // cross-twin can still see them, but they must not inflate "Nuevas".
   const insertedMissing =
     match.missingInLedger.filter((r) => r.kind === "during-period").length -
-    crossTwinReassigned +
+    crossTwinReassigned -
+    archivedSkippedInserts +
     insertedBeforePeriodCount;
   // `skippedMissingBefore` = before-period rows that did NOT qualify for insert
   // (1-cuota, missing rate, credit/abono, or no authCode).
@@ -874,11 +933,26 @@ export async function consolidateCycleFromStatement(
     ? addDays(earliest, -CROSS_TWIN_DAYS)
     : addDays(opts.parsed.period.startDate, -CROSS_TWIN_DAYS);
   const toDate = addDays(opts.parsed.period.endDate, CROSS_TWIN_DAYS);
-  const txs = await loadExistingTxs(database, opts.userId, opts.accountId, fromDate, toDate);
+  const { live: txs, archived: archivedTxs } = await loadTxsForMatch(
+    database,
+    opts.userId,
+    opts.accountId,
+    fromDate,
+    toDate,
+  );
   const matchTolerance = account.type === "credit_card" ? TC_STATEMENT_DATE_TOLERANCE_DAYS : 1;
   const match = matchStatementAgainstLedger(opts.parsed, txs, {
     dateToleranceDays: matchTolerance,
   });
+  const archivedByRow = findArchivedDuplicateRows(
+    match.missingInLedger,
+    archivedTxs,
+    opts.parsed,
+    matchTolerance,
+  );
+  // Dry-run / projection hide archived matches so we do not promise an INSERT.
+  // The working `match.missingInLedger` stays intact for the #555 pass.
+  const matchForDisplay = excludeArchivedSkips(match, archivedByRow);
 
   // #555 — load sibling twin account + its ledger txs for cross-twin pass.
   // Both are null when the account has no physicalCardId (single-currency TC).
@@ -902,11 +976,16 @@ export async function consolidateCycleFromStatement(
   );
 
   if (opts.dryRun) {
-    const dryProjection = buildBalanceProjection(projectionInputs, match, account.currency, null);
+    const dryProjection = buildBalanceProjection(
+      projectionInputs,
+      matchForDisplay,
+      account.currency,
+      null,
+    );
     return emptyReport(
       opts,
       account,
-      match,
+      matchForDisplay,
       "dry-run",
       null,
       { status: "not-run", reason: "dry-run" },
@@ -941,6 +1020,7 @@ export async function consolidateCycleFromStatement(
     insertedTxIds,
     insertedBeforePeriodCount,
     crossTwinReassignedIds,
+    archivedSkippedInserts,
   } = await database.transaction(async (txDb) => {
     // #760 — when force=true and a previous row already exists, UPDATE it in
     // place (upsert) so we never accumulate duplicate rows per (user, account,
@@ -1160,10 +1240,31 @@ export async function consolidateCycleFromStatement(
 
     const insertedTxIds: number[] = [];
     let insertedBeforePeriodCount = 0;
+    let archivedSkippedInserts = 0;
     for (let rowIdx = 0; rowIdx < match.missingInLedger.length; rowIdx++) {
       const row = match.missingInLedger[rowIdx];
       // #555 — skip rows already handled by the cross-twin pass above.
       if (crossTwinReassignedRowIndices.has(rowIdx)) continue;
+      // #769 — Option A: skip INSERT only. Cross-twin already had its chance.
+      const archivedTxId = archivedByRow.get(row);
+      if (archivedTxId !== undefined) {
+        if (row.kind === "during-period") {
+          archivedSkippedInserts += 1;
+          log.warn(
+            {
+              userId: opts.userId,
+              accountId: opts.accountId,
+              cycle: opts.cycle,
+              archivedTxId,
+              merchant: row.merchant,
+              occurredAt: row.occurredAt,
+              event: "already_archived_as_duplicate",
+            },
+            "consolidate: skipping insert; matching ledger row was already archived",
+          );
+        }
+        continue;
+      }
 
       if (row.kind === "before-period") {
         // #557: insert missing before-period multi-cuota purchases so the
@@ -1232,6 +1333,7 @@ export async function consolidateCycleFromStatement(
       insertedTxIds,
       insertedBeforePeriodCount,
       crossTwinReassignedIds,
+      archivedSkippedInserts,
     };
   });
 
@@ -1304,7 +1406,7 @@ export async function consolidateCycleFromStatement(
   // txn commits.
   const projection = buildBalanceProjection(
     projectionInputs,
-    match,
+    matchForDisplay,
     account.currency,
     interesesTotalCents,
     balanceAdjustment === null ? null : BigInt(balanceAdjustment.amountCentsStr),
@@ -1317,11 +1419,16 @@ export async function consolidateCycleFromStatement(
     cycle: opts.cycle,
     dryRun: false,
     status: "consolidated",
-    matchStats: buildMatchStats(match, insertedBeforePeriodCount, crossTwinReassignedIds.length),
+    matchStats: buildMatchStats(
+      match,
+      insertedBeforePeriodCount,
+      crossTwinReassignedIds.length,
+      archivedSkippedInserts,
+    ),
     matchedTxIds: matchedIdsToUpdate,
     insertedTxIds,
     matchedDiffs: serializeMatchedDiffs(match),
-    missingInLedger: serializeMissing(match),
+    missingInLedger: serializeMissing(matchForDisplay),
     unmatchedInLedgerIds: match.unmatchedInLedger.map((t) => t.id),
     statementImportId: imp.id,
     intereses,
