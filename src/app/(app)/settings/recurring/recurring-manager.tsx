@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Money } from "@/components/display/money";
 import { formatAccountLabel } from "@/lib/accounts/format";
+import { currency as currencyEnum } from "@/lib/db/schema";
 import type { Currency } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { archiveRecurring, toggleRecurringActive, upsertRecurring } from "./actions";
@@ -271,7 +272,43 @@ function RecurringEditor({
   const [notes, setNotes] = useState(initial?.notes ?? "");
 
   const selectedAccount = accounts.find((a) => a.id.toString() === accountId);
-  const currency = selectedAccount?.currency ?? "COP";
+  // #803: currency is independent of the linked account. It defaults to the
+  // selected account's currency (or the stored row's currency when editing)
+  // but the user can override it — and once they do (or when editing an
+  // existing row), changing the account must not silently clobber it.
+  const [currencyCode, setCurrencyCode] = useState<Currency>(
+    initial?.currency ?? selectedAccount?.currency ?? "COP",
+  );
+  const [currencyTouched, setCurrencyTouched] = useState(Boolean(initial));
+
+  // #803 follow-up (CRITICAL): a stale amount typed/stored in the OLD
+  // currency must never survive a currency change — there is no FX
+  // conversion here, so leaving it in place lets e.g. "632.7 USD" become
+  // "632.7 COP" (or a rounded "633 COP") with only a step-mismatch tooltip
+  // standing in the way, which the user can trivially get past. Clear the
+  // amount and let the required+empty check below block submit until the
+  // user re-enters it in the new currency.
+  const [amountResetFor, setAmountResetFor] = useState<Currency | null>(null);
+
+  function onAccountChange(nextAccountId: string) {
+    setAccountId(nextAccountId);
+    if (currencyTouched) return;
+    const nextAccount = accounts.find((a) => a.id.toString() === nextAccountId);
+    if (nextAccount && nextAccount.currency !== currencyCode) {
+      setCurrencyCode(nextAccount.currency);
+      setAmount("");
+      setAmountResetFor(nextAccount.currency);
+    }
+  }
+
+  function onCurrencyChange(next: Currency) {
+    setCurrencyTouched(true);
+    if (next !== currencyCode) {
+      setAmount("");
+      setAmountResetFor(next);
+    }
+    setCurrencyCode(next);
+  }
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -293,6 +330,7 @@ function RecurringEditor({
           label: label.trim(),
           amount: amtNum,
           direction,
+          currency: currencyCode,
           categorySlug: categorySlug || null,
           dayOfMonth: dayNum,
           active: initial?.active ?? true,
@@ -333,19 +371,47 @@ function RecurringEditor({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="rec-amount">Amount ({currency})</Label>
+              <Label htmlFor="rec-amount">Amount ({currencyCode})</Label>
               <Input
                 id="rec-amount"
                 type="number"
                 inputMode="decimal"
-                step={currency === "USD" ? "0.01" : "1"}
+                step={currencyCode === "USD" ? "0.01" : "1"}
                 min="0"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={(e) => {
+                  setAmount(e.target.value);
+                  setAmountResetFor(null);
+                }}
                 required
+                aria-describedby={amountResetFor ? "rec-amount-reset-hint" : undefined}
                 className="tabular-nums"
               />
+              {amountResetFor ? (
+                <p id="rec-amount-reset-hint" className="text-xs text-amber-600">
+                  Currency changed to {amountResetFor} — re-enter the amount in {amountResetFor}.
+                </p>
+              ) : null}
             </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="rec-currency">Currency</Label>
+              <select
+                id="rec-currency"
+                value={currencyCode}
+                onChange={(e) => onCurrencyChange(e.target.value as Currency)}
+                className="bg-background h-9 rounded-md border px-2 text-sm"
+                required
+              >
+                {currencyEnum.enumValues.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="rec-day">Day of month</Label>
               <Input
@@ -359,9 +425,6 @@ function RecurringEditor({
                 className="tabular-nums"
               />
             </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="rec-dir">Direction</Label>
               <select
@@ -374,22 +437,28 @@ function RecurringEditor({
                 <option value="income">Income (+)</option>
               </select>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="rec-account">Account</Label>
-              <select
-                id="rec-account"
-                value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
-                className="bg-background h-9 rounded-md border px-2 text-sm"
-                required
-              >
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {formatAccountLabel(a)}
-                  </option>
-                ))}
-              </select>
-            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="rec-account">Account</Label>
+            <select
+              id="rec-account"
+              value={accountId}
+              onChange={(e) => onAccountChange(e.target.value)}
+              className="bg-background h-9 rounded-md border px-2 text-sm"
+              required
+            >
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {formatAccountLabel(a)}
+                </option>
+              ))}
+            </select>
+            {currencyTouched ? (
+              <p className="text-muted-foreground text-xs">
+                Currency won&apos;t change automatically — update it above if needed.
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-1.5">
