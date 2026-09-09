@@ -28,6 +28,7 @@ export const SNAPSHOT_TABLES = [
   "account_snapshots",
   "skipped_consolidation_cycles",
   "recurring_gaps",
+  "merchant_knowledge_hints",
   // The core.
   "transactions",
   // Independent logs / reports / observability (per-user).

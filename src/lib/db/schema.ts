@@ -871,6 +871,48 @@ export const ruleProposals = pgTable(
   ],
 );
 
+// #814 Phase 5c: global merchant facts (business type, aliases, gateway flag)
+// with a per-user category hint. A single global likely_category either
+// FK-fails or mis-files for a tenant who renamed their taxonomy — what kind
+// of business a merchant is is global; where it belongs in a particular
+// user's chart of accounts is not. Key is canonical_merchant, never the bank
+// description or an opaque gateway string.
+export const merchantKnowledge = pgTable("merchant_knowledge", {
+  canonicalMerchant: varchar("canonical_merchant", { length: 200 }).primaryKey(),
+  businessType: text("business_type"),
+  aliases: jsonb("aliases")
+    .$type<string[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
+  isGateway: boolean("is_gateway").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const merchantKnowledgeHints = pgTable(
+  "merchant_knowledge_hints",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    canonicalMerchant: varchar("canonical_merchant", { length: 200 })
+      .notNull()
+      .references(() => merchantKnowledge.canonicalMerchant, { onDelete: "cascade" }),
+    categorySlug: varchar("category_slug", { length: 60 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("merchant_knowledge_hints_user_merchant_unique").on(t.userId, t.canonicalMerchant),
+    foreignKey({
+      columns: [t.userId, t.categorySlug],
+      foreignColumns: [categories.userId, categories.slug],
+      name: "merchant_knowledge_hints_user_category_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
 // Audit trail for every manual re-categorization. Feeds the learning loop:
 // a daily cron groups by (user_id, merchant, new_category_slug) and proposes
 // a rule when a user has corrected the same merchant → same category 3+ times

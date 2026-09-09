@@ -11,6 +11,8 @@ import {
   categories,
   emailReceipts,
   gmailConnections,
+  merchantKnowledge,
+  merchantKnowledgeHints,
   transactions,
   users,
 } from "@/lib/db/schema";
@@ -112,8 +114,9 @@ async function getTx(id: number) {
 }
 
 async function cleanup() {
-  // ON DELETE CASCADE handles accounts, categories, transactions.
+  // ON DELETE CASCADE handles accounts, categories, transactions, hints.
   await db.delete(users).where(sql`email LIKE ${"%" + TAG + "%"}`);
+  await db.delete(merchantKnowledge).where(sql`canonical_merchant LIKE ${TAG.toLowerCase() + "%"}`);
 }
 
 describe("sweepUserOtrosBucket", () => {
@@ -1379,5 +1382,123 @@ describe("runClassifySweep — per-user failure isolation", () => {
     expect(result.failedUserIds).toHaveLength(1);
     expect([userA, userB]).toContain(result.failedUserIds[0]);
     expect(result.perUser).toHaveLength(1);
+  });
+});
+
+describe("sweepUserOtrosBucket — merchant knowledge", () => {
+  let userId: number;
+  let accountId: number;
+
+  afterEach(async () => {
+    mockClassifyBatch.mockClear();
+    mockClassifyBatch.mockResolvedValue({
+      classifications: [],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+    mockClassifyByRule.mockClear();
+    mockClassifyByRule.mockResolvedValue(null);
+    mockFindMatchingRule.mockClear();
+    mockFindMatchingRule.mockResolvedValue(null);
+    await cleanup();
+  });
+
+  async function setup() {
+    userId = await createUser(`${TAG}-kb-${Date.now()}-${Math.random()}@test.local`);
+    accountId = await createAccount(userId);
+  }
+
+  async function seedHint(canonicalMerchant: string, categorySlug: string) {
+    await db
+      .insert(merchantKnowledge)
+      .values({ canonicalMerchant })
+      .onConflictDoNothing({ target: merchantKnowledge.canonicalMerchant });
+    await db.insert(merchantKnowledgeHints).values({
+      userId,
+      canonicalMerchant,
+      categorySlug,
+    });
+  }
+
+  it("classifies from a KB hint when prior art has nothing — no AI, no rule", async () => {
+    await setup();
+    const merchant = `${TAG} KB OXXO ${Date.now()}`;
+    const key = merchant.toLowerCase();
+    await seedHint(key, "mercado");
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: merchant,
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    mockClassifyByRule.mockResolvedValue({
+      categorySlug: "gasolina",
+      ruleId: 1,
+      confidence: 100,
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.merchantKnowledgeClassified).toBe(1);
+    expect(result.priorArtClassified).toBe(0);
+    expect(mockClassifyByRule).not.toHaveBeenCalled();
+    expect(mockClassifyBatch).not.toHaveBeenCalled();
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("mercado");
+    expect(row?.classificationMethod).toBe("rule_retroactive");
+    expect(row?.classificationReason).toMatchObject({
+      action: "merchant_knowledge",
+      categorySlug: "mercado",
+    });
+  });
+
+  it("prior art still wins over a conflicting KB hint", async () => {
+    await setup();
+    const merchant = `${TAG} KB Conflict ${Date.now()}`;
+    const key = merchant.toLowerCase();
+    await seedHint(key, "mercado");
+    await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: merchant,
+      categorySlug: "vivienda",
+      classificationMethod: "manual",
+    });
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: merchant,
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.priorArtClassified).toBe(1);
+    expect(result.merchantKnowledgeClassified).toBe(0);
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("vivienda");
+    expect(row?.classificationReason).toMatchObject({ action: "prior_art" });
+  });
+
+  it("does not apply a KB row keyed on an opaque gateway string", async () => {
+    await setup();
+    await seedHint("mercadopago colombia", "hogar");
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.merchantKnowledgeClassified).toBe(0);
+    expect(result.abstainedGateway).toBe(1);
+    const row = await getTx(txId);
+    expect(row?.classificationReason).toMatchObject({ action: "abstained" });
   });
 });
