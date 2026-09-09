@@ -772,7 +772,6 @@ describe("autoLinkTransaction cross-month", () => {
       recurringId,
       pattern: "NETFLIX",
       observationCount: 2,
-      patternAmbiguous: false,
     });
 
     // Tx on day 15 of the month, amount -44900 (doesn't match exact -42000).
@@ -803,7 +802,6 @@ describe("autoLinkTransaction cross-month", () => {
       recurringId,
       pattern: "SPOTIFY",
       observationCount: 1,
-      patternAmbiguous: false,
     });
 
     const txId = await seedTx(accountId, {
@@ -841,14 +839,12 @@ describe("autoLinkTransaction cross-month", () => {
         recurringId: recurringYouTubeId,
         pattern: "GOOGLE",
         observationCount: 3,
-        patternAmbiguous: true, // already flagged as ambiguous
       },
       {
         userId: TEST_USER_ID,
         recurringId: recurringGOneId,
         pattern: "GOOGLE",
         observationCount: 2,
-        patternAmbiguous: true,
       },
     ]);
 
@@ -887,7 +883,6 @@ describe("autoLinkTransaction cross-month", () => {
       recurringId: recurringYouTubeId,
       pattern: "GOOGLE",
       observationCount: 3,
-      patternAmbiguous: true,
     });
 
     // Tx with EXACT amount match — should link via amount path.
@@ -928,7 +923,6 @@ describe("autoLinkTransaction #804 — cross-account, late payment, skip veto", 
       recurringId,
       pattern: "NETFLIX",
       observationCount: 2,
-      patternAmbiguous: false,
     });
 
     // Paid from a DIFFERENT account than the recurring's configured account.
@@ -1036,7 +1030,6 @@ describe("autoLinkTransaction #804 — cross-account, late payment, skip veto", 
       recurringId,
       pattern: "APPLE",
       observationCount: 2,
-      patternAmbiguous: false,
     });
 
     const txId = await seedTx(accountId, {

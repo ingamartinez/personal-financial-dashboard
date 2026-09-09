@@ -243,42 +243,6 @@ describe("recordRecurringLinkObservation", () => {
     expect(pattern?.observationCount).toBe(2);
   });
 
-  it("marks pattern_ambiguous when two different recurrings share the same token (Google Play caveat)", async () => {
-    const recurringBId = await seedRecurring(userAId, accountAId);
-
-    const txId1 = await seedTx(userAId, accountAId, "GOOGLE *PLAY YOUTUBE");
-    await recordRecurringLinkObservation({
-      userId: userAId,
-      recurringId: recurringAId,
-      txId: txId1,
-      yearMonth: "2026-04",
-      manual: true,
-    });
-
-    const txId2 = await seedTx(userAId, accountAId, "GOOGLE *PLAY SPOTIFY");
-    await recordRecurringLinkObservation({
-      userId: userAId,
-      recurringId: recurringBId,
-      txId: txId2,
-      yearMonth: "2026-04",
-      manual: true,
-    });
-
-    // Both patterns tokenise to "GOOGLE" — both should now be marked ambiguous.
-    const patterns = await db
-      .select({ patternAmbiguous: recurringDescriptionPatterns.patternAmbiguous })
-      .from(recurringDescriptionPatterns)
-      .where(
-        and(
-          eq(recurringDescriptionPatterns.userId, userAId),
-          eq(recurringDescriptionPatterns.pattern, "GOOGLE"),
-        ),
-      );
-
-    expect(patterns).toHaveLength(2);
-    expect(patterns.every((p) => p.patternAmbiguous)).toBe(true);
-  });
-
   it("does nothing (no error) when tx not found", async () => {
     // txId = 999999999 (non-existent)
     await expect(

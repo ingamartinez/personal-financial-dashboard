@@ -77,20 +77,11 @@ describe("fetchPatterns / fetchPatternsForOne", () => {
     expect(patterns).toEqual(["NETFLIX"]);
   });
 
-  it("includes patterns regardless of pattern_ambiguous flag (#804 redefinition)", async () => {
-    const accountId = await seedAccount();
-    const recurringId = await seedRecurring(accountId, "__patterns_test ambiguous");
-    await db.insert(recurringDescriptionPatterns).values({
-      userId: TEST_USER_ID,
-      recurringId,
-      pattern: "GOOGLE",
-      observationCount: 3,
-      patternAmbiguous: true,
-    });
-
-    const patterns = await fetchPatternsForOne(TEST_USER_ID, recurringId);
-    expect(patterns).toEqual(["GOOGLE"]);
-  });
+  // #804 redefined shared-token ambiguity as "requires a second signal"
+  // (resolved by the token+amount scorer) instead of a filtered-out flag.
+  // #807 dropped the pattern_ambiguous column entirely — there is no longer
+  // a flag to set, so the "includes regardless of ambiguity" case above is
+  // now just the ordinary observation_count >= 2 case covered above.
 
   it("batches multiple recurrings in one call, keyed correctly", async () => {
     const accountId = await seedAccount();

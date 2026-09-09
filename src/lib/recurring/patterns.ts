@@ -12,9 +12,11 @@ import { recurringDescriptionPatterns } from "@/lib/db/schema";
 /**
  * Fetch learned description-fingerprint patterns for the given recurrings,
  * keyed by recurringId. Requires observation_count >= 2 before trusting a
- * pattern — a single manual/auto link isn't enough signal yet. Note:
- * pattern_ambiguous is intentionally NOT filtered — #804 redefines ambiguity
- * across recurrings as "requires a second signal", not "disabled forever".
+ * pattern — a single manual/auto link isn't enough signal yet. A token
+ * shared by 2+ recurrings is NOT filtered out here — #804 redefines
+ * ambiguity across recurrings as "requires a second signal" (resolved by
+ * the token+amount scorer), not "disabled forever" (the old
+ * pattern_ambiguous latch, dropped in #807).
  */
 export async function fetchPatterns(
   userId: number,

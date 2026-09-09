@@ -60,8 +60,6 @@ export function tokeniseDescription(raw: string | null | undefined): string | nu
  * 1. Looks up the tx to get amountCents, currency, descriptionRaw, accountId.
  * 2. Inserts into recurring_link_observations (idempotent via ON CONFLICT DO NOTHING).
  * 3. Upserts into recurring_description_patterns if the tx has a description token.
- * 4. After the upsert, checks across all patterns with the same token for this user
- *    — if 2+ recurrings share it, marks all as pattern_ambiguous=true.
  *
  * Does NOT throw on insert conflicts — always resolves cleanly.
  */
@@ -137,37 +135,14 @@ export async function recordRecurringLinkObservation(
       },
     });
 
-  // 3. Check for ambiguity: count distinct recurring_ids for this (user, pattern).
-  const patternOwners = await database
-    .selectDistinct({ recurringId: recurringDescriptionPatterns.recurringId })
-    .from(recurringDescriptionPatterns)
-    .where(
-      and(
-        eq(recurringDescriptionPatterns.userId, userId),
-        eq(recurringDescriptionPatterns.pattern, pattern),
-      ),
-    );
-
-  if (patternOwners.length >= 2) {
-    // Mark all matching rows as ambiguous.
-    await database
-      .update(recurringDescriptionPatterns)
-      .set({ patternAmbiguous: true })
-      .where(
-        and(
-          eq(recurringDescriptionPatterns.userId, userId),
-          eq(recurringDescriptionPatterns.pattern, pattern),
-        ),
-      );
-
-    log.info(
-      {
-        event: "observation_pattern_ambiguous",
-        userId,
-        pattern,
-        recurringCount: patternOwners.length,
-      },
-      "description pattern marked ambiguous (shared by multiple recurrings)",
-    );
-  }
+  // #807: a stored "pattern_ambiguous" latch used to be written here and
+  // checked by auto-link.ts. #804 replaced that read path with the shared
+  // helper in src/lib/recurring/patterns.ts, which deliberately does NOT
+  // filter on shared-token ambiguity — it's resolved by the token+amount
+  // scorer instead. The flag became write-only dead state (and a one-way
+  // latch that never cleared), so it was dropped rather than repaired. If a
+  // shared-token signal is ever needed again (e.g. for UI: "this token is
+  // shared with N recurrings"), derive it at read time with
+  // count(distinct recurring_id) over (user_id, pattern) — do not
+  // reintroduce a stored flag.
 }

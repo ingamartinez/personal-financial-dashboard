@@ -1032,8 +1032,12 @@ export const recurringLinkObservations = pgTable(
 
 // #633: Description fingerprint table — upserted after every link.
 // observation_count is incremented each time the same pattern is observed.
-// pattern_ambiguous=true when this pattern matches 2+ active recurrings for
-// the same user (Google Play caveat) — excluded from auto-link via description.
+// A token shared by 2+ recurrings for the same user (Google Play caveat) is
+// NOT flagged in storage — #804's auto-link scorer disambiguates by
+// token+amount at read time, so a stored ambiguity flag would only be
+// write-only, derivable state. Dropped in #807 (former pattern_ambiguous
+// column); if a shared-token signal is ever needed for UI, derive it at
+// read time instead of reintroducing a stored flag.
 export const recurringDescriptionPatterns = pgTable(
   "recurring_description_patterns",
   {
@@ -1046,7 +1050,6 @@ export const recurringDescriptionPatterns = pgTable(
       .references(() => recurringTransactions.id, { onDelete: "cascade" }),
     pattern: text("pattern").notNull(),
     observationCount: integer("observation_count").notNull().default(1),
-    patternAmbiguous: boolean("pattern_ambiguous").notNull().default(false),
     lastObservedAt: timestamp("last_observed_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
