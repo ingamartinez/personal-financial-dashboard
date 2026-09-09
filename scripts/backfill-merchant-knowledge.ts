@@ -4,8 +4,13 @@
  * model call. Keyed on canonical_merchant; opaque gateway strings are skipped
  * unless a correlated receipt.merchant can stand in.
  *
- * Deliberately NOT added to deploy.yml's overlay list — same precedent as
- * every other one-shot backfill-*.ts script. Run from a full source checkout.
+ * NOT wired into deploy.yml's automatic step list — it is a manual one-off,
+ * run by hand when needed, not on every deploy. It IS present on prod
+ * though: since #848/#850 the whole scripts/ and src/ trees are overlaid
+ * onto the release wholesale and the release gets a real
+ * `bun install --production`, so `bun scripts/backfill-merchant-knowledge.ts`
+ * runs fine from the release directory — there is no full source checkout on
+ * prod to run it from instead.
  *
  * Idempotent: existing merchant_knowledge / hints rows are left alone.
  *

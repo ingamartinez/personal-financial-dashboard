@@ -8,17 +8,17 @@
  * so they fall outside classify-sweep's own `otros`/null selection and need
  * a dedicated one-time fix.
  *
- * Deliberately NOT added to deploy.yml's overlay list: unlike
- * migrate-prod.ts's dependencies (db, logger, seed-reference-data, signup),
- * this script pulls in the full classification module (ai.ts, rules.ts) and
- * the Anthropic client — a dependency graph the minimal standalone-release
- * overlay isn't designed for. Every other one-shot backfill-*.ts script in
- * this repo (backfill-cartera-tc-categories, backfill-canonical-merchant,
- * backfill-fx-metadata, etc.) follows the same precedent: run from a full
- * source checkout against the target database, not from the release
- * tarball. See engram `deploy-overlay-must-track-script-imports` — that
- * gotcha is about scripts migrate-prod.ts calls automatically, not manual
- * one-offs like this one.
+ * NOT wired into deploy.yml's automatic step list — it is a manual one-off,
+ * run by hand against a target database when needed, not on every deploy
+ * like migrate-prod.ts. That said, it (and every file in scripts/ and src/)
+ * IS present on prod: since #848/#850 the whole scripts/ and src/ trees are
+ * overlaid onto the release wholesale, and the release's node_modules gets a
+ * real `bun install --production` against the repo's own bun.lock, so this
+ * script's full classification module + Anthropic client imports resolve
+ * fine run as `bun scripts/backfill-classify-sweep.ts` from the release
+ * directory — there is no "full source checkout" on prod to run it from
+ * instead. See engram `deploy-overlay-must-track-script-imports` for the
+ * history of why that used to matter.
  *
  * Also performs a one-time manual assignment (#812) of 16 user-confirmed
  * MercadoPago-gateway transactions (identified from the user's own

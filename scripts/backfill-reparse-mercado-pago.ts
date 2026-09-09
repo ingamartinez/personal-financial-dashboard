@@ -8,9 +8,14 @@
  * Does NOT touch matched/ambiguous receipts. Does NOT invent a match for
  * the EMI COP receipts whose bank legs are USD on ARQ — that is Phase 2.
  *
- * Deliberately NOT on the deploy overlay (same reason as
- * backfill-classify-sweep.ts): it imports the Gmail pull/enrich graph.
- * Run from a full checkout against the target database.
+ * NOT wired into deploy.yml's automatic step list — it is a manual one-off,
+ * run by hand against a target database when needed, not on every deploy.
+ * It IS present on prod though: since #848/#850 the whole scripts/ and src/
+ * trees are overlaid onto the release wholesale and the release gets a real
+ * `bun install --production`, so this script's Gmail pull/enrich graph
+ * imports (googleapis included) resolve fine run as
+ * `bun scripts/backfill-reparse-mercado-pago.ts` from the release
+ * directory — there is no full checkout on prod to run it from instead.
  *
  * CLI flags:
  *   --dry-run       Print how many rows would be reset, write nothing.
