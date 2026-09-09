@@ -95,6 +95,22 @@ export function ClassificationReasonDialog({ txId, method }: Props) {
 
 function DetailPanel({ data }: { data: ClassificationReasonResponse }) {
   if (data.method === "rule" || data.method === "rule_retroactive") {
+    const priorArt = data.detail.priorArt;
+    if (priorArt) {
+      return (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm">
+          <dt className="text-muted-foreground">Categoría</dt>
+          <dd>{priorArt.categorySlug}</dd>
+          <dt className="text-muted-foreground">Evidencia</dt>
+          <dd>
+            {priorArt.manualCount >= 1
+              ? "Una decisión manual tuya en este mismo comercio"
+              : `${priorArt.totalCount} transacciones previas de este comercio`}
+          </dd>
+        </dl>
+      );
+    }
+
     const rule = data.detail.rule;
     if (!rule) {
       return (
