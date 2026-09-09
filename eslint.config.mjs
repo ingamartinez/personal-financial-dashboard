@@ -38,6 +38,13 @@ const eslintConfig = defineConfig([
     // Claude Code tooling directory — agent worktrees, settings, transcripts.
     // Not source code; lint here would re-walk every isolated agent worktree.
     ".claude/**",
+    // Classification eval harness — an offline research tool that runs under
+    // bare Node, outside Next, and prints comparison tables for a human to read
+    // in a terminal. Same reasoning as the Scriptable widgets above: different
+    // runtime, different purpose. This is NOT a "scripts are special" carveout
+    // on no-console — everything under src/ and scripts/ still logs through
+    // Pino. See eval/README.md.
+    "eval/**",
   ]),
 ]);
 
