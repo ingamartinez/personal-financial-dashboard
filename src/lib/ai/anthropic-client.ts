@@ -5,25 +5,46 @@ import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "ai/anthropic-client" });
 
-// Haiku 4.5 is the cost-effective default for Findash's two primary AI
-// workloads today: transaction classification and SMS parse fallback. Per
-// AI Strategy (see engram memory): Haiku for hot-path-ish and bulk work,
-// Sonnet reserved for conversational / multi-step reasoning.
-// Callsites needing a different model must pass `model` explicitly.
-export const DEFAULT_MODEL = "claude-haiku-4-5";
+// Sonnet 5 is the shared default after the #816 provider eval: better
+// classification quality than Haiku at still-reasonable cost, and cheaper
+// than the previous insights model (Sonnet 4.6). Call sites that must stay
+// on Haiku (OCR extraction) pass `model` explicitly.
+export const DEFAULT_MODEL = "claude-sonnet-5";
+export const HAIKU_MODEL = "claude-haiku-4-5";
 
 // Parse/classify responses are tiny structured JSON blobs — not long prose.
 // Keep the default small to bound latency; callers override when they need
 // room (batch classification with many items).
 export const DEFAULT_MAX_TOKENS = 1024;
 
+// Prompt-caching minima from Anthropic docs (Claude API). Below the minimum
+// the cache_control marker is accepted and silently ignored — no error.
+// https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+const CACHE_MIN_TOKENS_HAIKU = 4096;
+const CACHE_MIN_TOKENS_SONNET = 1024;
+const CACHE_MIN_TOKENS_UNKNOWN = 4096;
+
+export type ClaudeFeature =
+  | "classification"
+  | "insights"
+  | "nlu"
+  | "ocr"
+  | "sms-fallback"
+  | "canary"
+  | "pdf-vision";
+
+export type ClaudeImage = {
+  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  data: string;
+};
+
 export type SystemPromptBlock = {
   text: string;
   // When true, adds cache_control: { type: "ephemeral" } to this block. Use
   // for stable content (category list, few-shots, task instructions). Cache
   // only takes effect once the prefix exceeds the model minimum (Haiku 4.5:
-  // 4096 tokens, Sonnet 4.6: 2048 tokens); shorter prefixes silently won't
-  // cache but the marker is harmless. See shared/prompt-caching.md.
+  // 4096 tokens, Sonnet 5: 1024 tokens); shorter prefixes silently won't
+  // cache. We warn when the estimated prefix is below the active minimum.
   cacheControl?: boolean;
 };
 
@@ -35,8 +56,13 @@ export type ClaudeUsage = {
 };
 
 type BaseCallOpts = {
+  // Who made the call — required so usage logs can answer "how much does
+  // classification cost?" even when two features share a model.
+  feature: ClaudeFeature;
   system?: string | SystemPromptBlock[];
   userPrompt: string;
+  // Optional vision parts prepended to the user message. Used by OCR.
+  images?: ClaudeImage[];
   model?: string;
   maxTokens?: number;
   apiKey?: string;
@@ -65,6 +91,57 @@ export type CallClaudeTextResult = {
   usage: ClaudeUsage;
 };
 
+export type CachePrefixInspection = {
+  cacheRequested: boolean;
+  estimatedTokens: number;
+  minTokens: number;
+  belowMin: boolean;
+};
+
+/**
+ * Documented minimum cacheable prefix for the active model. Unknown /
+ * unrecognized IDs fail closed at the Haiku threshold so we warn rather
+ * than assume caching works.
+ */
+export function cacheMinimumTokens(model: string): number {
+  const id = model.toLowerCase();
+  if (id.includes("haiku")) return CACHE_MIN_TOKENS_HAIKU;
+  if (id.includes("sonnet")) return CACHE_MIN_TOKENS_SONNET;
+  return CACHE_MIN_TOKENS_UNKNOWN;
+}
+
+/**
+ * Estimate the cacheable prefix (system blocks up to and including the last
+ * cache_control breakpoint) with a chars/4 heuristic. Used only to decide
+ * whether to warn — not a substitute for countTokens, and we do not pad.
+ */
+export function inspectCacheablePrefix(
+  model: string,
+  system: BaseCallOpts["system"],
+): CachePrefixInspection {
+  const minTokens = cacheMinimumTokens(model);
+  if (!system || typeof system === "string") {
+    return { cacheRequested: false, estimatedTokens: 0, minTokens, belowMin: false };
+  }
+  let lastBreakpoint = -1;
+  for (let i = 0; i < system.length; i++) {
+    if (system[i].cacheControl) lastBreakpoint = i;
+  }
+  if (lastBreakpoint < 0) {
+    return { cacheRequested: false, estimatedTokens: 0, minTokens, belowMin: false };
+  }
+  const prefixChars = system
+    .slice(0, lastBreakpoint + 1)
+    .reduce((n, block) => n + block.text.length, 0);
+  const estimatedTokens = Math.ceil(prefixChars / 4);
+  return {
+    cacheRequested: true,
+    estimatedTokens,
+    minTokens,
+    belowMin: estimatedTokens < minTokens,
+  };
+}
+
 /**
  * Structured call — use for any response that should be validated against a
  * Zod schema. Uses messages.parse() + output_config.format so the server
@@ -73,13 +150,15 @@ export type CallClaudeTextResult = {
 export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<CallClaudeResult<T>> {
   const client = buildClient(opts);
   const model = opts.model ?? DEFAULT_MODEL;
+  warnIfCachePrefixBelowMin(model, opts.system);
+  const started = performance.now();
 
   return runWithErrorHandling(model, async () => {
     const response = await client.messages.parse({
       model,
       max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
       ...systemField(opts.system),
-      messages: [{ role: "user", content: opts.userPrompt }],
+      messages: [buildUserMessage(opts.userPrompt, opts.images)],
       output_config: { format: zodOutputFormat(opts.schema) },
     });
 
@@ -89,10 +168,18 @@ export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<CallClaude
       );
     }
 
+    const usage = extractUsage(response.usage);
+    logUsage({
+      feature: opts.feature,
+      model,
+      usage,
+      durationMs: Math.round(performance.now() - started),
+    });
+
     return {
       data: response.parsed_output,
       model: response.model,
-      usage: extractUsage(response.usage),
+      usage,
     };
   });
 }
@@ -105,13 +192,15 @@ export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<CallClaude
 export async function callClaudeText(opts: BaseCallOpts): Promise<CallClaudeTextResult> {
   const client = buildClient(opts);
   const model = opts.model ?? DEFAULT_MODEL;
+  warnIfCachePrefixBelowMin(model, opts.system);
+  const started = performance.now();
 
   return runWithErrorHandling(model, async () => {
     const response = await client.messages.create({
       model,
       max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
       ...systemField(opts.system),
-      messages: [{ role: "user", content: opts.userPrompt }],
+      messages: [buildUserMessage(opts.userPrompt, opts.images)],
     });
 
     const text = response.content
@@ -124,10 +213,18 @@ export async function callClaudeText(opts: BaseCallOpts): Promise<CallClaudeText
       );
     }
 
+    const usage = extractUsage(response.usage);
+    logUsage({
+      feature: opts.feature,
+      model,
+      usage,
+      durationMs: Math.round(performance.now() - started),
+    });
+
     return {
       text,
       model: response.model,
-      usage: extractUsage(response.usage),
+      usage,
     };
   });
 }
@@ -165,6 +262,26 @@ function buildSystemBlocks(system: BaseCallOpts["system"]): Anthropic.TextBlockP
   );
 }
 
+function buildUserMessage(userPrompt: string, images?: ClaudeImage[]): Anthropic.MessageParam {
+  if (!images || images.length === 0) {
+    return { role: "user", content: userPrompt };
+  }
+  return {
+    role: "user",
+    content: [
+      ...images.map((img) => ({
+        type: "image" as const,
+        source: {
+          type: "base64" as const,
+          media_type: img.mediaType,
+          data: img.data,
+        },
+      })),
+      { type: "text" as const, text: userPrompt },
+    ],
+  };
+}
+
 function extractUsage(usage: Anthropic.Usage): ClaudeUsage {
   return {
     inputTokens: usage.input_tokens,
@@ -172,6 +289,42 @@ function extractUsage(usage: Anthropic.Usage): ClaudeUsage {
     cacheReadTokens: usage.cache_read_input_tokens ?? 0,
     cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
   };
+}
+
+function warnIfCachePrefixBelowMin(model: string, system: BaseCallOpts["system"]): void {
+  const inspection = inspectCacheablePrefix(model, system);
+  if (!inspection.belowMin) return;
+  log.warn(
+    {
+      event: "ai_cache_prefix_below_min",
+      model,
+      estimatedPrefixTokens: inspection.estimatedTokens,
+      minCacheTokens: inspection.minTokens,
+    },
+    "cache_control prefix below model minimum; cache will be a silent no-op",
+  );
+}
+
+function logUsage(opts: {
+  feature: ClaudeFeature;
+  model: string;
+  usage: ClaudeUsage;
+  durationMs: number;
+}): void {
+  log.info(
+    {
+      event: "ai_usage",
+      feature: opts.feature,
+      model: opts.model,
+      inputTokens: opts.usage.inputTokens,
+      outputTokens: opts.usage.outputTokens,
+      cacheReadTokens: opts.usage.cacheReadTokens,
+      cacheCreationTokens: opts.usage.cacheCreationTokens,
+      durationMs: opts.durationMs,
+      cacheHit: opts.usage.cacheReadTokens > 0,
+    },
+    "anthropic usage",
+  );
 }
 
 async function runWithErrorHandling<T>(model: string, fn: () => Promise<T>): Promise<T> {

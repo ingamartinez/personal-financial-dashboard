@@ -11,7 +11,7 @@ import { transactions } from "@/lib/db/schema";
 vi.mock("@/lib/classification/ai", () => ({
   classifyBatchWithAi: vi.fn().mockResolvedValue({
     classifications: [],
-    model: "claude-haiku-4-5-20251001",
+    model: "claude-sonnet-5",
     usage: { inputTokens: 0, outputTokens: 0 },
   }),
 }));
@@ -105,7 +105,7 @@ describe("classifyUnclassifiedBatch — opts.txIds", () => {
     // Only pass txA's id
     mockClassifyBatch.mockResolvedValueOnce({
       classifications: [{ id: txA, categorySlug: "alimentacion", confidence: 80 }],
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       usage: { inputTokens: 100, outputTokens: 20 },
     });
 
@@ -179,7 +179,7 @@ describe("classifyUnclassifiedBatch — opts.txIds", () => {
 
     mockClassifyBatch.mockResolvedValueOnce({
       classifications: [],
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       usage: { inputTokens: 0, outputTokens: 0 },
     });
 
@@ -225,7 +225,7 @@ describe("classifyUnclassifiedBatch — default (no opts)", () => {
 
     mockClassifyBatch.mockResolvedValueOnce({
       classifications: [],
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       usage: { inputTokens: 0, outputTokens: 0 },
     });
 

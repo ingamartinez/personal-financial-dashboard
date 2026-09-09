@@ -45,7 +45,7 @@ const defaultPipelineResult = {
   aiClassified: 15,
   ruleClassified: 3,
   skipped: 2,
-  model: "claude-haiku-4-5-20251001",
+  model: "claude-sonnet-5",
   usage: { inputTokens: 1000, outputTokens: 200 },
 };
 

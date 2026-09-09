@@ -1,19 +1,35 @@
 import { describe, expect, it } from "vitest";
 import { extractTransactionsFromImage } from "./ocr";
 
+type CapturedRequest = { body: Record<string, unknown> };
+
 function anthropicResponse(transactions: unknown[]): unknown {
   return {
+    id: "msg_test",
+    type: "message",
+    role: "assistant",
+    model: "claude-haiku-4-5",
     content: [{ type: "text", text: JSON.stringify({ transactions }) }],
-    usage: { input_tokens: 10, output_tokens: 20 },
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: 10,
+      output_tokens: 20,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    },
   };
 }
 
-function mockFetch(responseJson: unknown): typeof fetch {
-  const impl: typeof fetch = async () =>
-    new Response(JSON.stringify(responseJson), {
+function mockFetch(responseJson: unknown, captured: CapturedRequest[] = []): typeof fetch {
+  const impl: typeof fetch = async (_input, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    captured.push({ body });
+    return new Response(JSON.stringify(responseJson), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
+  };
   return impl;
 }
 
@@ -23,6 +39,31 @@ const commonOpts = {
   accountId: 42,
   apiKey: "test-key",
 };
+
+describe("extractTransactionsFromImage — shared client", () => {
+  it("sends Haiku (no date suffix), cache_control, and the image on the shared client", async () => {
+    const captured: CapturedRequest[] = [];
+    await extractTransactionsFromImage({
+      ...commonOpts,
+      fetchImpl: mockFetch(
+        anthropicResponse([
+          { date: "2026-04-16", description: "PAGO QR", amount: -28000, sign_token: "-$" },
+        ]),
+        captured,
+      ),
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].body.model).toBe("claude-haiku-4-5");
+    const system = captured[0].body.system as Array<Record<string, unknown>>;
+    expect(system[0].cache_control).toEqual({ type: "ephemeral" });
+    const messages = captured[0].body.messages as Array<{ content: unknown[] }>;
+    expect(messages[0].content[0]).toEqual({
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "ZmFrZQ==" },
+    });
+  });
+});
 
 describe("extractTransactionsFromImage — sign_token post-processing", () => {
   it("uses sign_token as source of truth even when amount sign agrees", async () => {

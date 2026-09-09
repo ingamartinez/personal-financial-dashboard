@@ -119,6 +119,7 @@ export async function shadowParseSms(
   outputTokens: number;
 }> {
   const result = await callClaude({
+    feature: "canary",
     system: [{ text: AI_PROMPT_SYSTEM, cacheControl: true }],
     userPrompt: smsBody,
     schema: canaryProjectionSchema,

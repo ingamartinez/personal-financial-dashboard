@@ -678,7 +678,7 @@ async function extractViaVision(buffer: Buffer | Uint8Array): Promise<RawStateme
   //   serves as the wiring scaffold.
   const base64 = Buffer.from(buffer).toString("base64");
   const response = await callClaudeText({
-    model: "claude-sonnet-4-5",
+    feature: "pdf-vision",
     maxTokens: 4096,
     userPrompt: `The following is a base64-encoded ARQ/DolarApp statement PDF.
 Extract ALL transactions as JSON matching this schema:

@@ -109,7 +109,7 @@ export type AiFallbackOutcome =
     };
 
 /**
- * Calls Haiku to extract a purchase from an SMS the regex parser couldn't
+ * Calls Claude to extract a purchase from an SMS the regex parser couldn't
  * match. Returns a status union — callers persist both the transaction
  * (success) and the telemetry row (all outcomes) so dashboards can measure
  * fallback win rate and cost.
@@ -120,6 +120,7 @@ export async function aiFallbackParseSms(
 ): Promise<AiFallbackOutcome> {
   try {
     const result = await callClaude({
+      feature: "sms-fallback",
       system: [{ text: AI_FALLBACK_SYSTEM, cacheControl: true }],
       userPrompt: smsBody,
       schema: aiPurchaseSchema,

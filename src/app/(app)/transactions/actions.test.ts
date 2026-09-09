@@ -1441,7 +1441,7 @@ describe("classifySingleWithAi", () => {
         confidence: 92,
         reason: "NETFLIX",
       },
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       usage: { inputTokens: 100, outputTokens: 20 },
     });
 
@@ -1502,7 +1502,7 @@ describe("classifySingleWithAi", () => {
         categorySlug: null,
         confidence: 10,
       },
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       usage: { inputTokens: 50, outputTokens: 10 },
     });
 
@@ -1530,7 +1530,7 @@ describe("classifySingleWithAi", () => {
         categorySlug: "not-a-real-slug",
         confidence: 80,
       },
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       usage: { inputTokens: 50, outputTokens: 10 },
     });
 
