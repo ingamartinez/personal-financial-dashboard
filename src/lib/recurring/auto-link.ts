@@ -355,7 +355,15 @@ async function autoLinkTransactionOnce(
         eq(recurringTransactions.userId, recurringGaps.userId),
       ),
     )
-    .where(and(eq(recurringGaps.userId, userId), eq(recurringTransactions.userId, userId)));
+    .where(
+      and(
+        eq(recurringGaps.userId, userId),
+        eq(recurringTransactions.userId, userId),
+        // Manual link closes gaps by setting resolution; auto-link deletes.
+        // Either way, a resolved row must not be a candidate.
+        isNull(recurringGaps.resolution),
+      ),
+    );
 
   const t = tx.occurredAt.getTime();
   const gapCandidates: Candidate[] = openGapRows

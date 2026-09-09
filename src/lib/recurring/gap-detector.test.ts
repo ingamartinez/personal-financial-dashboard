@@ -10,9 +10,11 @@ import {
   users,
 } from "@/lib/db/schema";
 import {
+  closePreviousMonth,
   closePreviousMonthForAllUsers,
   detectGapsForMonth,
   previousYearMonth,
+  reconcileOpenGaps,
 } from "./gap-detector";
 
 // ---------------------------------------------------------------------------
@@ -883,6 +885,175 @@ describe("recurring_gap_detected notification emit", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(mocks.emitNotification).not.toHaveBeenCalled();
+  });
+});
+
+describe("detectGapsForMonth / reconcileOpenGaps #844", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function seedOpenGap(recurringId: number, yearMonth: string) {
+    const [g] = await db
+      .insert(recurringGaps)
+      .values({ userId: TEST_USER_ID, recurringId, yearMonth })
+      .returning({ id: recurringGaps.id });
+    return g.id;
+  }
+
+  it("when a gap already exists for a month that contains a matching tx, links the tx and deletes the gap", async () => {
+    const accountId = await seedAccount();
+    const recId = await seedRecurring(accountId, {
+      label: "__gap_test 844 preexisting",
+      amountCents: BigInt(-508300),
+      dayOfMonth: 1,
+    });
+    await seedOpenGap(recId, "2026-07");
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: BigInt(-508300),
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBeGreaterThanOrEqual(1);
+
+    const [linked] = await db
+      .select({
+        recurringId: transactions.recurringId,
+        recurringYearMonth: transactions.recurringYearMonth,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringId).toBe(recId);
+    expect(linked.recurringYearMonth).toBe("2026-07");
+
+    const leftover = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(and(eq(recurringGaps.recurringId, recId), eq(recurringGaps.yearMonth, "2026-07")));
+    expect(leftover).toHaveLength(0);
+  });
+
+  it("deletes a leftover open gap when the occurrence is already linked", async () => {
+    const accountId = await seedAccount();
+    const recId = await seedRecurring(accountId, {
+      label: "__gap_test 844 stale",
+      amountCents: BigInt(-499100),
+      dayOfMonth: 1,
+    });
+    await seedTx(accountId, {
+      occurredOn: "2026-07-03",
+      amountCents: BigInt(-499100),
+      recurringId: recId,
+      recurringYearMonth: "2026-07",
+    });
+    await seedOpenGap(recId, "2026-07");
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.existingLinks).toBeGreaterThanOrEqual(1);
+
+    const leftover = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(and(eq(recurringGaps.recurringId, recId), eq(recurringGaps.yearMonth, "2026-07")));
+    expect(leftover).toHaveLength(0);
+  });
+
+  it("reconcileOpenGaps links an orphaned tx against an older open gap without creating new gaps", async () => {
+    const accountId = await seedAccount();
+    const recId = await seedRecurring(accountId, {
+      label: "__gap_test 844 reconcile",
+      amountCents: BigInt(-508300),
+      dayOfMonth: 1,
+    });
+    await seedOpenGap(recId, "2026-07");
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: BigInt(-508300),
+    });
+
+    const result = await reconcileOpenGaps(TEST_USER_ID);
+    expect(result.gapsExamined).toBeGreaterThanOrEqual(1);
+    expect(result.autoLinked).toBeGreaterThanOrEqual(1);
+
+    const [linked] = await db
+      .select({
+        recurringId: transactions.recurringId,
+        recurringYearMonth: transactions.recurringYearMonth,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringId).toBe(recId);
+    expect(linked.recurringYearMonth).toBe("2026-07");
+
+    const leftover = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.recurringId, recId));
+    expect(leftover).toHaveLength(0);
+  });
+
+  it("closePreviousMonth also reconciles older open gaps, not just M-1", async () => {
+    const accountId = await seedAccount();
+    const recId = await seedRecurring(accountId, {
+      label: "__gap_test 844 cron sweep",
+      amountCents: BigInt(-499100),
+      dayOfMonth: 1,
+    });
+    await seedOpenGap(recId, "2026-07");
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: BigInt(-499100),
+    });
+
+    // today = 2026-09-05 → detectGapsForMonth closes 2026-08, then
+    // reconcileOpenGaps must still pick up the July orphan.
+    const closed = await closePreviousMonth(TEST_USER_ID, new Date("2026-09-05T12:00:00Z"));
+    expect(closed.yearMonth).toBe("2026-08");
+
+    const [linked] = await db
+      .select({
+        recurringId: transactions.recurringId,
+        recurringYearMonth: transactions.recurringYearMonth,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringId).toBe(recId);
+    expect(linked.recurringYearMonth).toBe("2026-07");
+
+    const julyGap = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(and(eq(recurringGaps.recurringId, recId), eq(recurringGaps.yearMonth, "2026-07")));
+    expect(julyGap).toHaveLength(0);
+  });
+
+  it("unique learned token links a utility bill whose amount differs every month", async () => {
+    const accountId = await seedAccount();
+    const recId = await seedRecurring(accountId, {
+      label: "__gap_test 844 epm",
+      amountCents: BigInt(-490000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: recId,
+      pattern: "EMPRESAS",
+      observationCount: 3,
+    });
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-08-20",
+      amountCents: BigInt(-594594),
+      description: "EMPRESAS PUBLICAS DE MEDELLIN",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-08");
+    expect(result.autoLinked).toBeGreaterThanOrEqual(1);
+
+    const [linked] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(linked.recurringId).toBe(recId);
   });
 });
 

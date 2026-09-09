@@ -1475,3 +1475,107 @@ describe("price-hike notification emit", () => {
     });
   });
 });
+
+describe("autoLinkTransaction #844 — payment before its own gap exists", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("day-1 payment in month M links to M even when only M-1 and M-2 have open gaps", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_844_before_gap__",
+      amountCents: BigInt(-499100),
+      dayOfMonth: 1,
+    });
+    await db.insert(recurringGaps).values([
+      { userId: TEST_USER_ID, recurringId, yearMonth: "2026-07" },
+      { userId: TEST_USER_ID, recurringId, yearMonth: "2026-08" },
+    ]);
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-09-08",
+      amountCents: BigInt(-499100),
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.yearMonth).toBe("2026-09");
+      expect(result.gapId).toBeNull();
+    }
+
+    const leftover = await db
+      .select({ yearMonth: recurringGaps.yearMonth })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.recurringId, recurringId));
+    expect(leftover.map((g) => g.yearMonth).sort()).toEqual(["2026-07", "2026-08"]);
+  });
+
+  it("two day-1 recurrings at different amounts each claim their September payment despite older open gaps", async () => {
+    const accountId = await seedAccount();
+    const aida = await seedRecurring(accountId, {
+      label: "__autolink_844_aida__",
+      amountCents: BigInt(-499100),
+      dayOfMonth: 1,
+    });
+    const alejo = await seedRecurring(accountId, {
+      label: "__autolink_844_alejo__",
+      amountCents: BigInt(-508300),
+      dayOfMonth: 1,
+    });
+    await db.insert(recurringGaps).values([
+      { userId: TEST_USER_ID, recurringId: aida, yearMonth: "2026-07" },
+      { userId: TEST_USER_ID, recurringId: aida, yearMonth: "2026-08" },
+      { userId: TEST_USER_ID, recurringId: alejo, yearMonth: "2026-07" },
+      { userId: TEST_USER_ID, recurringId: alejo, yearMonth: "2026-08" },
+    ]);
+
+    const txAida = await seedTx(accountId, {
+      occurredOn: "2026-09-08",
+      amountCents: BigInt(-499100),
+    });
+    const txAlejo = await seedTx(accountId, {
+      occurredOn: "2026-09-08",
+      amountCents: BigInt(-508300),
+    });
+
+    const r1 = await autoLinkTransaction(TEST_USER_ID, txAida);
+    const r2 = await autoLinkTransaction(TEST_USER_ID, txAlejo);
+    expect(r1).toMatchObject({ status: "linked", recurringId: aida, yearMonth: "2026-09" });
+    expect(r2).toMatchObject({ status: "linked", recurringId: alejo, yearMonth: "2026-09" });
+  });
+
+  it("unique learned token links a utility bill whose amount differs from the recurring", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: "__autolink_844_epm__",
+      amountCents: BigInt(-490000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      pattern: "EMPRESAS",
+      observationCount: 3,
+    });
+    await db.insert(recurringGaps).values([
+      { userId: TEST_USER_ID, recurringId, yearMonth: "2026-07" },
+      { userId: TEST_USER_ID, recurringId, yearMonth: "2026-08" },
+    ]);
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-09-08",
+      amountCents: BigInt(-594594),
+      description: "EMPRESAS PUBLICAS DE MEDELLIN",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.yearMonth).toBe("2026-09");
+      expect(result.gapId).toBeNull();
+    }
+  });
+});
