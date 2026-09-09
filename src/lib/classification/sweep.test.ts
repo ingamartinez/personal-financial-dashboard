@@ -20,6 +20,9 @@ vi.mock("@/lib/classification/ai", () => ({
     model: "claude-haiku-4-5",
     usage: { inputTokens: 0, outputTokens: 0 },
   }),
+  // #812: sweep.ts imports this real (unmocked) constant for its own
+  // system-category prior-art exclusion — keep it in sync with ai.ts.
+  SYSTEM_OWNED_CATEGORY_SLUGS: new Set(["adjustments"]),
 }));
 
 const {
@@ -59,6 +62,9 @@ async function insertTx(args: {
   classificationMethod: string;
   channel?: "bank" | "manual" | "transfer" | "cash_withdrawal";
   classificationConfidence?: number;
+  amountCents?: number;
+  currency?: "COP" | "USD";
+  occurredAt?: Date;
 }): Promise<number> {
   seq++;
   const [row] = await db.execute<{ id: number }>(sql`
@@ -67,7 +73,8 @@ async function insertTx(args: {
       description_raw, category_slug, classification_method,
       classification_confidence, source, external_id, channel
     ) VALUES (
-      ${args.userId}, ${args.accountId}, now(), -10000, 'COP',
+      ${args.userId}, ${args.accountId}, ${(args.occurredAt ?? new Date()).toISOString()},
+      ${args.amountCents ?? -10000}, ${args.currency ?? "COP"},
       ${args.descriptionRaw}, ${args.categorySlug},
       ${args.classificationMethod}::classification_method,
       ${args.classificationConfidence ?? null},
@@ -631,6 +638,42 @@ describe("sweepUserOtrosBucket — prior art", () => {
     expect(row?.classificationMethod).toBe("rule");
   });
 
+  it("excludes system-owned categories (adjustments) from prior-art evidence (#812)", async () => {
+    await setup();
+    // A manual row filed under the system-owned "adjustments" category would
+    // normally win prior art outright (a single manual row is enough) — but
+    // "adjustments" is a reconciliation plug, not a classification decision,
+    // and must never resurface as evidence for an unrelated merchant.
+    await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "PLUG AJUSTE MERCHANT",
+      categorySlug: "adjustments",
+      classificationMethod: "manual",
+    });
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "PLUG AJUSTE MERCHANT",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    mockClassifyByRule.mockResolvedValue({
+      categorySlug: "otros",
+      ruleId: 1,
+      confidence: 100,
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.priorArtClassified).toBe(0);
+    expect(mockClassifyByRule).toHaveBeenCalled();
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    expect(row?.classificationMethod).toBe("rule");
+  });
+
   it("tenant scoping: another user's history never leaks in (#336/#338)", async () => {
     // User A has a confident manual decision for this merchant...
     const userA = await createUser(`${TAG}-pa-tenant-a-${Date.now()}-${Math.random()}@test.local`);
@@ -667,6 +710,342 @@ describe("sweepUserOtrosBucket — prior art", () => {
     expect(row?.classificationMethod).toBe("rule");
 
     await db.delete(users).where(eq(users.id, userA));
+  });
+});
+
+describe("sweepUserOtrosBucket — abstain (#812)", () => {
+  let userId: number;
+  let accountId: number;
+
+  beforeAll(async () => {
+    await cleanup();
+  });
+
+  afterEach(async () => {
+    mockClassifyBatch.mockClear();
+    mockClassifyBatch.mockResolvedValue({
+      classifications: [],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+    mockClassifyByRule.mockClear();
+    mockClassifyByRule.mockResolvedValue(null);
+    mockFindMatchingRule.mockClear();
+    mockFindMatchingRule.mockResolvedValue(null);
+    await cleanup();
+  });
+
+  afterAll(async () => {
+    await cleanup();
+  });
+
+  async function setup() {
+    userId = await createUser(`${TAG}-abstain-${Date.now()}-${Math.random()}@test.local`);
+    accountId = await createAccount(userId);
+  }
+
+  it("abstains an opaque gateway row — never calls rule engine or AI", async () => {
+    await setup();
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedGateway).toBe(1);
+    expect(result.priorArtClassified).toBe(0);
+    expect(result.ruleClassified).toBe(0);
+    expect(result.aiClassified).toBe(0);
+    expect(mockFindMatchingRule).not.toHaveBeenCalled();
+    expect(mockClassifyByRule).not.toHaveBeenCalled();
+    expect(mockClassifyBatch).not.toHaveBeenCalled();
+
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    expect(row?.classificationMethod).toBe("user_uncategorized");
+    expect(row?.classificationConfidence).toBe(0);
+    const reason = JSON.parse(row!.classificationReason!);
+    expect(reason).toMatchObject({
+      action: "abstained",
+      reason: "opaque_gateway",
+      gateway: "mercado_pago",
+    });
+  });
+
+  it("does NOT abstain a real merchant that merely transacts through a gateway (#812 negative case)", async () => {
+    await setup();
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "AMAZON MKTPLACE PMTS",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    mockClassifyBatch.mockResolvedValueOnce({
+      classifications: [{ id: txId, categorySlug: "vivienda", confidence: 90, reason: "amazon" }],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedGateway).toBe(0);
+    expect(result.aiClassified).toBe(1);
+    expect(mockClassifyBatch).toHaveBeenCalled();
+  });
+
+  it("gateway abstain OUTRANKS prior art — a poisoned prior decision must not resurface", async () => {
+    await setup();
+    // Two prior AI-classified rows agreeing on "tecnologia" for the exact
+    // same opaque description — enough to win prior art (>= 2 agreeing rows)
+    // if the abstain check did not run first.
+    for (let i = 0; i < 2; i++) {
+      await insertTx({
+        userId,
+        accountId,
+        descriptionRaw: "MERCADOPAGO COLOMBIA",
+        categorySlug: "tecnologia",
+        classificationMethod: "ai",
+      });
+    }
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedGateway).toBe(1);
+    expect(result.priorArtClassified).toBe(0);
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    expect(row?.classificationMethod).toBe("user_uncategorized");
+  });
+
+  it("abstains both legs of a probable same-account unpaired transfer pair", async () => {
+    await setup();
+    const sameDate = new Date("2026-01-28T12:00:00Z");
+    const txA = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "ABONO AMPLIACION DE PLAZO",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: 217_937_00,
+      currency: "USD",
+      occurredAt: sameDate,
+    });
+    const txB = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "AMPLIACION DE PLAZO",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -217_937_00,
+      currency: "USD",
+      occurredAt: sameDate,
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedTransferPair).toBe(2);
+    expect(mockClassifyBatch).not.toHaveBeenCalled();
+
+    for (const id of [txA, txB]) {
+      const row = await getTx(id);
+      expect(row?.categorySlug).toBe("otros");
+      expect(row?.classificationMethod).toBe("user_uncategorized");
+      const reason = JSON.parse(row!.classificationReason!);
+      expect(reason).toMatchObject({ action: "abstained", reason: "probable_transfer_pair" });
+    }
+  });
+
+  it("does NOT flag a different-account opposite-amount pair as a transfer candidate", async () => {
+    await setup();
+    const otherAccountId = await createAccount(userId);
+    const sameDate = new Date("2026-02-05T12:00:00Z");
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SOME BANK LINE",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -50000,
+      occurredAt: sameDate,
+    });
+    await insertTx({
+      userId,
+      accountId: otherAccountId,
+      descriptionRaw: "OTHER ACCOUNT OPPOSITE AMOUNT",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: 50000,
+      occurredAt: sameDate,
+    });
+
+    mockClassifyBatch.mockResolvedValue({
+      classifications: [],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedTransferPair).toBe(0);
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    expect(row?.classificationMethod).toBe("user_uncategorized");
+    const reason = JSON.parse(row!.classificationReason!);
+    expect(reason).toMatchObject({ action: "swept" });
+  });
+
+  it("does NOT treat a soft-deleted opposite-amount same-account same-date row as a transfer partner (reviewer SUGGESTION)", async () => {
+    await setup();
+    const sameDate = new Date("2026-03-10T12:00:00Z");
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SOME BANK LINE",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -50000,
+      occurredAt: sameDate,
+    });
+    const deletedPartnerId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SOFT DELETED OPPOSITE LEG",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: 50000,
+      occurredAt: sameDate,
+    });
+    await db
+      .update(transactions)
+      .set({ deletedAt: new Date() })
+      .where(eq(transactions.id, deletedPartnerId));
+
+    mockClassifyBatch.mockResolvedValue({
+      classifications: [],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedTransferPair).toBe(0);
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    const reason = JSON.parse(row!.classificationReason!);
+    expect(reason).toMatchObject({ action: "swept" });
+  });
+
+  it("does NOT treat an opposite-amount same-account same-date row already assigned to another transfer group as a partner (reviewer SUGGESTION)", async () => {
+    await setup();
+    const sameDate = new Date("2026-03-11T12:00:00Z");
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SOME BANK LINE",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -50000,
+      occurredAt: sameDate,
+    });
+    const alreadyPairedId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "ALREADY PAIRED OPPOSITE LEG",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: 50000,
+      occurredAt: sameDate,
+    });
+    await db
+      .update(transactions)
+      .set({ transferGroupId: sql`gen_random_uuid()` })
+      .where(eq(transactions.id, alreadyPairedId));
+
+    mockClassifyBatch.mockResolvedValue({
+      classifications: [],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedTransferPair).toBe(0);
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    const reason = JSON.parse(row!.classificationReason!);
+    expect(reason).toMatchObject({ action: "swept" });
+  });
+
+  it("abstained rows are excluded from fetchPriorArtIndex for a LATER run (never become prior-art evidence)", async () => {
+    await setup();
+    // First run: abstain the gateway row.
+    await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+    const firstRun = await sweepUserOtrosBucket(userId);
+    expect(firstRun.abstainedGateway).toBe(1);
+
+    // A second, unrelated MercadoPago row arrives later — if the abstained
+    // row above had leaked into prior art (it settled to category_slug=
+    // 'otros', which fetchPriorArtIndex already excludes), this would
+    // wrongly resolve via prior art instead of abstaining again.
+    const txId2 = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    const secondRun = await sweepUserOtrosBucket(userId);
+
+    expect(secondRun.priorArtClassified).toBe(0);
+    expect(secondRun.abstainedGateway).toBe(1);
+    const row = await getTx(txId2);
+    expect(row?.categorySlug).toBe("otros");
+    const reason = JSON.parse(row!.classificationReason!);
+    expect(reason).toMatchObject({ action: "abstained", reason: "opaque_gateway" });
+  });
+
+  it("is idempotent: a second run does not re-touch an already-abstained row", async () => {
+    await setup();
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "WOMPI*TIENDA123",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+    });
+
+    const first = await sweepUserOtrosBucket(userId);
+    expect(first.abstainedGateway).toBe(1);
+
+    mockClassifyBatch.mockClear();
+    const second = await sweepUserOtrosBucket(userId);
+
+    expect(second.picked).toBe(0);
+    expect(second.abstainedGateway).toBe(0);
+    expect(mockClassifyBatch).not.toHaveBeenCalled();
+
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
   });
 });
 

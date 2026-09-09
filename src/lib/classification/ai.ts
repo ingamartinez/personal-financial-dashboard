@@ -16,6 +16,18 @@ export type AiCategoryOption = {
   parentSlug?: string | null;
 };
 
+// #812: category slugs owned by another feature — never valid AI classification
+// targets, no matter what the caller passes in `categories`. Two-layer defense,
+// same pattern as the top-level-parent guard below: (1) excluded from the
+// prompt entirely via buildSystemPrompt's input, so the model is never even
+// offered it; (2) rejected again during sanitization, independent of whether
+// it was offered — the prompt is never the only guard. Audited against
+// src/lib/db/seed-reference-data.ts: "adjustments" is the only slug written
+// exclusively by non-classification code (reconciliation balance-adjustment
+// plugs — see ADJUSTMENT_CATEGORY_SLUG in settings/accounts/actions.ts and
+// ADJUSTMENTS_CATEGORY_SLUG in bancolombia-statement/consolidate.ts).
+export const SYSTEM_OWNED_CATEGORY_SLUGS: ReadonlySet<string> = new Set(["adjustments"]);
+
 export type AiUserHint = UserClassificationContextHint;
 
 // #809: when no existing category fits, the AI may propose a brand-new one
@@ -193,13 +205,17 @@ export async function classifyBatchWithAi(opts: {
     };
   }
 
+  // #812 layer 1: system-owned categories are never offered to the model —
+  // see SYSTEM_OWNED_CATEGORY_SLUGS above.
+  const promptCategories = opts.categories.filter((c) => !SYSTEM_OWNED_CATEGORY_SLUGS.has(c.slug));
+
   // cache_control on the system prompt — the categoryList + instructions are
   // stable across every batch for this user. With output_config.format the
   // model can't hallucinate a shape, so the slug-validation below only needs
   // to reject slugs outside the user's current category set (edge case:
   // categories deleted between requests).
   const result = await callClaude({
-    system: [{ text: buildSystemPrompt(opts.categories), cacheControl: true }],
+    system: [{ text: buildSystemPrompt(promptCategories), cacheControl: true }],
     userPrompt: buildUserPrompt(opts.transactions, opts.userHints ?? []),
     schema: responseSchema,
     maxTokens: 2048,
@@ -216,7 +232,16 @@ export async function classifyBatchWithAi(opts: {
   const topLevelSlugs = new Set(opts.categories.filter((c) => !c.parentSlug).map((c) => c.slug));
   const classifications = result.data.classifications.map((c) => ({
     ...c,
-    categorySlug: c.categorySlug && validSlugs.has(c.categorySlug) ? c.categorySlug : null,
+    // #812 layer 2: reject a system-owned slug even if it somehow made it
+    // into `validSlugs` (e.g. a future caller forgets to keep its own
+    // category list clean) — never let the prompt exclusion above be the
+    // only guard.
+    categorySlug:
+      c.categorySlug &&
+      validSlugs.has(c.categorySlug) &&
+      !SYSTEM_OWNED_CATEGORY_SLUGS.has(c.categorySlug)
+        ? c.categorySlug
+        : null,
     // A proposedCategory naming a subcategory (or a slug that no longer
     // exists) as its parent is invalid — the model may have picked a
     // slightly-off parent, or ignored the top-level-only instruction. Rather
@@ -224,11 +249,16 @@ export async function classifyBatchWithAi(opts: {
     // caller's fallback logic then correctly treats it as "no valid parent"
     // and settles the tx instead of attempting to create a category (the
     // sweep guardrail requires a real top-level parent to auto-create).
+    // Same system-owned rejection applies here (#812): a proposal parented
+    // under "adjustments" must fall back to "no valid parent", not create a
+    // subcategory of the balance-adjustment bucket.
     proposedCategory: c.proposedCategory
       ? {
           name: c.proposedCategory.name,
           parentSlug:
-            c.proposedCategory.parentSlug && topLevelSlugs.has(c.proposedCategory.parentSlug)
+            c.proposedCategory.parentSlug &&
+            topLevelSlugs.has(c.proposedCategory.parentSlug) &&
+            !SYSTEM_OWNED_CATEGORY_SLUGS.has(c.proposedCategory.parentSlug)
               ? c.proposedCategory.parentSlug
               : null,
         }
