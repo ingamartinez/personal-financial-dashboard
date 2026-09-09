@@ -18,11 +18,28 @@ export type AiCategoryOption = {
 
 export type AiUserHint = UserClassificationContextHint;
 
+// #809: when no existing category fits, the AI may propose a brand-new one
+// instead of defaulting to "otros". `parentSlug: null` means a new top-level
+// category; a non-null value MUST reference an existing TOP-LEVEL slug (not
+// just any live slug) — enforced below in classifyBatchWithAi. The category
+// schema only supports 2 levels (see the `categories_enforce_two_levels`
+// Postgres trigger); nesting a new category under an existing subcategory
+// would violate that trigger and abort the whole sweep run for a user. The
+// caller (the weekly classify-sweep) decides whether a proposal actually gets
+// auto-created — this module only sanitizes what the model returned. Sweep.ts
+// re-validates independently against its own top-level set before ever
+// inserting — this sanitization is defense-in-depth, not the only guard.
+export type AiProposedCategory = {
+  name: string;
+  parentSlug: string | null;
+};
+
 export type AiClassification = {
   id: number;
   categorySlug: string | null;
   confidence: number;
   reason?: string;
+  proposedCategory?: AiProposedCategory | null;
 };
 
 export type AiClassifyResult = {
@@ -38,6 +55,13 @@ const responseSchema = z.object({
       categorySlug: z.string().min(1).max(60).nullable(),
       confidence: z.number().int().min(0).max(100),
       reason: z.string().max(200).optional(),
+      proposedCategory: z
+        .object({
+          name: z.string().min(1).max(80),
+          parentSlug: z.string().min(1).max(60).nullable(),
+        })
+        .nullable()
+        .optional(),
     }),
   ),
 });
@@ -77,12 +101,24 @@ function buildSystemPrompt(cats: AiCategoryOption[]): string {
     )
     .join("\n");
 
+  const topLevelList = cats
+    .filter((c) => !c.parentSlug)
+    .map((c) => `- ${c.slug} (${c.name})`)
+    .join("\n");
+
   return `You classify personal finance transactions for a Colombian user.
 
 Available categories (use the slug, exactly as written):
 ${categoryList}
 
-For each transaction, pick the MOST specific category slug that fits. Prefer subcategories (e.g. "restaurantes" over "alimentacion"). If you genuinely cannot tell, return null.
+For each transaction, pick the MOST specific category slug that fits. Prefer subcategories (e.g. "restaurantes" over "alimentacion").
+
+If NO existing category is a good fit, but the transaction is a clearly recurring, specific type of merchant/expense that deserves its own home (e.g. a veterinary clinic, a barbershop), set "categorySlug" to null and instead fill "proposedCategory": { "name": "<short Spanish name>", "parentSlug": "<parentSlug>" }. The taxonomy only supports 2 levels, so "parentSlug" MUST be either null (a new top-level category) or exactly one of these TOP-LEVEL slugs — never a subcategory:
+${topLevelList}
+
+Do NOT propose a category for a one-off or ambiguous merchant — only for a specific, nameable kind of transaction.
+
+"otros" is a LAST RESORT. Only use it when the transaction is genuinely unclassifiable AND no specific new category applies either — never as a default when you are simply unsure between two options (pick the closer one instead).
 
 Confidence scale:
 - 90-100: obvious match (e.g. "NETFLIX" → "suscripciones")
@@ -91,7 +127,8 @@ Confidence scale:
 - 0-49: unsure — consider null
 
 Rules:
-- "categorySlug" MUST be one of the slugs above, or null if truly unclassifiable.
+- "categorySlug" MUST be one of the slugs above, or null (optionally with "proposedCategory" set) if truly unclassifiable.
+- "proposedCategory.parentSlug" MUST be null or one of the top-level slugs listed above — never a subcategory slug.
 - Include one entry per input transaction, same "id".
 - Keep "reason" under 80 chars.`;
 }
@@ -172,9 +209,30 @@ export async function classifyBatchWithAi(opts: {
   });
 
   const validSlugs = new Set(opts.categories.map((c) => c.slug));
+  // Only TOP-LEVEL slugs are valid parents for a proposed category — the
+  // schema supports exactly 2 levels, and nesting under an existing
+  // subcategory would violate the `categories_enforce_two_levels` Postgres
+  // trigger. Intentionally stricter than `validSlugs` above.
+  const topLevelSlugs = new Set(opts.categories.filter((c) => !c.parentSlug).map((c) => c.slug));
   const classifications = result.data.classifications.map((c) => ({
     ...c,
     categorySlug: c.categorySlug && validSlugs.has(c.categorySlug) ? c.categorySlug : null,
+    // A proposedCategory naming a subcategory (or a slug that no longer
+    // exists) as its parent is invalid — the model may have picked a
+    // slightly-off parent, or ignored the top-level-only instruction. Rather
+    // than dropping the whole proposal, null the parentSlug out — the
+    // caller's fallback logic then correctly treats it as "no valid parent"
+    // and settles the tx instead of attempting to create a category (the
+    // sweep guardrail requires a real top-level parent to auto-create).
+    proposedCategory: c.proposedCategory
+      ? {
+          name: c.proposedCategory.name,
+          parentSlug:
+            c.proposedCategory.parentSlug && topLevelSlugs.has(c.proposedCategory.parentSlug)
+              ? c.proposedCategory.parentSlug
+              : null,
+        }
+      : null,
   }));
 
   return {

@@ -129,7 +129,27 @@ export const categorySeedRows: CategorySeed[] = [
     icon: "gift",
   },
   { slug: "otros-ingresos", name: "Otros ingresos", parentSlug: "ingresos", icon: "coins" },
+  // #809: savings-account interest payouts (`ABONO INTERESES AHORROS`) were
+  // previously landing under `otros-ingresos` for lack of a more specific
+  // home. This is real investment yield, not generic income.
+  { slug: "rendimientos", name: "Rendimientos", parentSlug: "ingresos", icon: "trending-up" },
   { slug: "otros", name: "Otros", icon: "ellipsis", color: "#6b7280", sortOrder: 999 },
+  // #809: taxonomy gaps identified from the `otros` backlog audit. Only the
+  // slugs the merchant evidence actually maps to were added — `impuestos` was
+  // considered but dropped: the one impuesto-shaped merchant found
+  // (`IMPTO GOBIERNO 4X1000`) groups with the bank-fee merchants in the same
+  // evidence table, so it routes to `comisiones-bancarias` instead. Adding an
+  // empty `impuestos` category nothing maps to would violate the issue's own
+  // "do not add categories nothing maps to" instruction.
+  { slug: "mascotas", name: "Mascotas", icon: "dog", color: "#c084fc", sortOrder: 160 },
+  {
+    slug: "cuidado-personal",
+    name: "Cuidado Personal",
+    icon: "scissors",
+    color: "#14b8a6",
+    sortOrder: 170,
+  },
+  { slug: "comisiones-bancarias", name: "Comisiones Bancarias", parentSlug: "deudas" },
   // Reserved for reconciliation balance adjustments — excluded from spend/insights
   // queries via transactions.is_adjustment. Sort-ordered last so it sinks to the
   // bottom of the category picker.
@@ -188,6 +208,18 @@ export const classificationRuleSeedRows: ClassificationRuleSeed[] = [
   { pattern: "%CRUZ VERDE%", categorySlug: "medicamentos", priority: 10 },
   { pattern: "%LA REBAJA%", categorySlug: "medicamentos", priority: 10 },
   { pattern: "%Pago QR a llave%", categorySlug: "transferencias", priority: 50 },
+  // #809: taxonomy gaps found in the `otros` backlog audit.
+  { pattern: "%VETERINARI%", categorySlug: "mascotas", priority: 10 },
+  { pattern: "%DOGGER%", categorySlug: "mascotas", priority: 10 },
+  { pattern: "%BARBER%", categorySlug: "cuidado-personal", priority: 10 },
+  { pattern: "%PELUQUERIA%", categorySlug: "cuidado-personal", priority: 10 },
+  { pattern: "%MANEJO TARJETA DEB%", categorySlug: "comisiones-bancarias", priority: 10 },
+  { pattern: "%CUOTA DE MANEJO%", categorySlug: "comisiones-bancarias", priority: 10 },
+  { pattern: "%MANEJO TARJ DEB%", categorySlug: "comisiones-bancarias", priority: 10 },
+  { pattern: "%IVA COBRO TRANSF%", categorySlug: "comisiones-bancarias", priority: 10 },
+  { pattern: "%IMPTO GOBIERNO%", categorySlug: "comisiones-bancarias", priority: 10 },
+  // #809: savings-account interest — was landing under `otros-ingresos`.
+  { pattern: "%ABONO INTERESES AHORROS%", categorySlug: "rendimientos", priority: 10 },
 ];
 
 export async function seedReferenceData(database: DB = defaultDb): Promise<{

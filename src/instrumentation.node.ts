@@ -46,6 +46,7 @@ export async function registerNode() {
   const { createRuleProposalsWorker } = await import("@/lib/queue/workers/rule-proposals");
   const { createTcHealthCheckWorker } = await import("@/lib/queue/workers/tc-health-check");
   const { createCashFlowDailyWorker } = await import("@/lib/queue/workers/cash-flow-daily");
+  const { createClassifySweepWorker } = await import("@/lib/queue/workers/classify-sweep");
   const log = createLogger({ module: "instrumentation" });
 
   // -------------------------------------------------------------------------
@@ -110,6 +111,11 @@ export async function registerNode() {
   // cash-flow-daily: daily 08:00 COT — D.3 salary-gap + D.4 30d forecast (#715)
   const cashFlowDailyQueue = createQueue("cash-flow-daily");
   createCashFlowDailyWorker();
+
+  // classify-sweep: weekly Monday 05:00 COT — revisit the `otros` bucket per
+  // user (rule engine → AI batch → proposal/auto-create → settle) (#809)
+  const classifySweepQueue = createQueue("classify-sweep");
+  createClassifySweepWorker();
 
   // Graceful shutdown is idempotent — safe to call once after all workers are
   // registered.
@@ -263,9 +269,19 @@ export async function registerNode() {
     },
   );
 
+  // classify-sweep: weekly, Monday 05:00 COT (#809)
+  await classifySweepQueue.add(
+    "classify-sweep",
+    {},
+    {
+      repeat: { pattern: "0 5 * * 1", tz: "America/Bogota" },
+      jobId: "classify-sweep-recurring",
+    },
+  );
+
   log.info(
     { event: "workers_registered" },
-    "BullMQ workers registered: fx-refresh (15 6,18 * * *), recurring-gap (0 6 5 * *), health-snapshots (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *), classification-auto-uncategorize (0 4 * * *), recurring-learning (0 4 * * *), budget-check (0 4 * * *), sms-drift-check (30 22 * * *), rule-proposals (0 5 * * *), tc-health-check (0 8 * * *), cash-flow-daily (0 8 * * *) America/Bogota; classify-tx on-demand",
+    "BullMQ workers registered: fx-refresh (15 6,18 * * *), recurring-gap (0 6 5 * *), health-snapshots (0 3 * * *), slo-alerts (*/30 * * * *), gmail-pull (*/5 * * * *), classification-auto-uncategorize (0 4 * * *), recurring-learning (0 4 * * *), budget-check (0 4 * * *), sms-drift-check (30 22 * * *), rule-proposals (0 5 * * *), tc-health-check (0 8 * * *), cash-flow-daily (0 8 * * *), classify-sweep (0 5 * * 1) America/Bogota; classify-tx on-demand",
   );
 
   // -------------------------------------------------------------------------

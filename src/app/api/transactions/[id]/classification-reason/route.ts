@@ -19,11 +19,23 @@ type RuleDetail = {
   generatedFromCorrections: number[] | null;
 };
 
+// #809: classify-sweep's prior-art pass writes `method = 'rule_retroactive'`
+// WITHOUT a `retroactive_rule_id` — no `classification_rules` row was ever
+// involved, so there is nothing to point that FK at. Detected via the
+// `classification_reason` marker instead. Must be checked BEFORE the
+// rule-lookup branch below, or a prior-art row falls through to "no rule
+// matched" and renders a factually wrong explanation.
+type PriorArtDetail = {
+  categorySlug: string;
+  manualCount: number;
+  totalCount: number;
+};
+
 export type ClassificationReasonResponse =
   | {
       method: "rule" | "rule_retroactive";
       summary: string;
-      detail: { rule: RuleDetail | null };
+      detail: { rule: RuleDetail | null; priorArt: PriorArtDetail | null };
     }
   | {
       method: "ai";
@@ -51,6 +63,26 @@ export type ClassificationReasonResponse =
       summary: string;
       detail: null;
     };
+
+function parsePriorArtReason(raw: string | null): PriorArtDetail | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      action?: unknown;
+      categorySlug?: unknown;
+      manualCount?: unknown;
+      totalCount?: unknown;
+    };
+    if (parsed.action !== "prior_art" || typeof parsed.categorySlug !== "string") return null;
+    return {
+      categorySlug: parsed.categorySlug,
+      manualCount: typeof parsed.manualCount === "number" ? parsed.manualCount : 0,
+      totalCount: typeof parsed.totalCount === "number" ? parsed.totalCount : 0,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function parseConfirmedReason(raw: string | null): {
   originalMethod: ClassificationMethod | null;
@@ -116,6 +148,19 @@ export async function GET(
   switch (txn.classificationMethod) {
     case "rule":
     case "rule_retroactive": {
+      const priorArt = parsePriorArtReason(txn.classificationReason);
+      if (priorArt) {
+        const summary =
+          priorArt.manualCount >= 1
+            ? `Basado en una decisión manual tuya para este mismo comercio → ${priorArt.categorySlug}`
+            : `Basado en ${priorArt.totalCount} transacciones previas de este comercio clasificadas como ${priorArt.categorySlug}`;
+        return NextResponse.json({
+          method: txn.classificationMethod,
+          summary,
+          detail: { rule: null, priorArt },
+        });
+      }
+
       const ruleId = txn.retroactiveRuleId;
       let rule: RuleDetail | null = null;
       if (ruleId) {
@@ -183,7 +228,7 @@ export async function GET(
       return NextResponse.json({
         method: txn.classificationMethod,
         summary,
-        detail: { rule },
+        detail: { rule, priorArt: null },
       });
     }
 

@@ -136,6 +136,63 @@ describe("GET /api/transactions/[id]/classification-reason", () => {
     expect(body.detail.rule.id).toBe(ruleId);
   });
 
+  it("rule_retroactive with a prior_art marker returns the dedicated summary, not the stale-rule fallback (#809)", async () => {
+    const txId = await seedTxn({
+      externalId: `${EXTERNAL_PREFIX}prior-art`,
+      merchant: `${RULE_PATTERN_PREFIX}PRIOR-ART-MERCHANT`,
+      categorySlug: "vivienda",
+      method: "rule_retroactive",
+      reason: JSON.stringify({
+        action: "prior_art",
+        categorySlug: "vivienda",
+        manualCount: 1,
+        totalCount: 1,
+      }),
+      retroactiveRuleId: null,
+    });
+
+    const res = await GET(makeRequest(txId), makeContext(txId));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.method).toBe("rule_retroactive");
+    expect(body.detail.rule).toBeNull();
+    expect(body.detail.priorArt).toEqual({
+      categorySlug: "vivienda",
+      manualCount: 1,
+      totalCount: 1,
+    });
+    // Must NOT render the "no rule matched" fallback — no rule was ever involved.
+    expect(body.summary).not.toContain("ya no coincide");
+    expect(body.summary).toContain("decisión manual");
+    expect(body.summary).toContain("vivienda");
+  });
+
+  it("rule_retroactive with a prior_art marker (weak evidence) mentions the row count, not 'manual'", async () => {
+    const txId = await seedTxn({
+      externalId: `${EXTERNAL_PREFIX}prior-art-weak`,
+      merchant: `${RULE_PATTERN_PREFIX}PRIOR-ART-WEAK`,
+      categorySlug: "gasolina",
+      method: "rule_retroactive",
+      reason: JSON.stringify({
+        action: "prior_art",
+        categorySlug: "gasolina",
+        manualCount: 0,
+        totalCount: 2,
+      }),
+      retroactiveRuleId: null,
+    });
+
+    const res = await GET(makeRequest(txId), makeContext(txId));
+    const body = await res.json();
+    expect(body.detail.priorArt).toEqual({
+      categorySlug: "gasolina",
+      manualCount: 0,
+      totalCount: 2,
+    });
+    expect(body.summary).not.toContain("decisión manual");
+    expect(body.summary).toContain("2 transacciones previas");
+  });
+
   it("returns ai branch with reason + confidence", async () => {
     const txId = await seedTxn({
       externalId: `${EXTERNAL_PREFIX}ai`,
