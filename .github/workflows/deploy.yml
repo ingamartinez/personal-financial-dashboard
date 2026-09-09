@@ -52,6 +52,14 @@ jobs:
         id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # Mirror ci.yml. Deploy itself runs bun, not Vitest, but ubuntu-latest
+      # still defaults to Node 20.x. Pin 24 so any transitive Node worker
+      # (unpdf / Promise.try) sees a modern runtime. #539
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -101,7 +109,7 @@ jobs:
           # Overlay migrate-prod + backfill scripts under scripts/ preserving
           # dev layout so their relative `../src/...` imports resolve the same
           # way on prod as in local runs.
-          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/lib/auth"
+          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/lib/auth" "$STAGE/src/lib/insights"
           cp scripts/migrate-prod.ts "$STAGE/scripts/migrate-prod.ts"
           cp scripts/backfill-users-reference.ts "$STAGE/scripts/backfill-users-reference.ts"
           # #405: migrate-prod also calls the pago-tc → transfer-group backfill.
@@ -111,6 +119,14 @@ jobs:
           # same drizzle batch as the ALTER TYPE — Postgres rejects "unsafe use of
           # new value" in the same transaction. See scripts/backfill-atm-channel.ts.
           cp scripts/backfill-atm-channel.ts "$STAGE/scripts/backfill-atm-channel.ts"
+          # #712: canonical-merchant backfill is a prod-runnable script. Its
+          # relative imports (`../src/lib/db`, `../src/lib/logger`,
+          # `../src/lib/insights/merchant-canonical`) must be in this overlay
+          # or bun cannot resolve them on the droplet. db + logger are already
+          # copied below; merchant-canonical is a pure module with no further
+          # imports of its own.
+          cp scripts/backfill-canonical-merchant.ts "$STAGE/scripts/backfill-canonical-merchant.ts"
+          cp src/lib/insights/merchant-canonical.ts "$STAGE/src/lib/insights/merchant-canonical.ts"
           # migrate-prod imports these for reference-data seeding + per-user
           # backfill; they live under src/ and are NOT traced by Next
           # standalone, so overlay them explicitly.
