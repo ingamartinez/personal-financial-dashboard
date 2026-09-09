@@ -172,10 +172,10 @@ secret rotation, R2 off-site backup setup, and the threat model.
 ## Test database (findash_test)
 
 Integration tests DELETE rows during cleanup, so they MUST run against a
-separate database. `vitest.setup.ts` forces `PGDATABASE=findash_test`
-before any test imports — this cannot be overridden by `.env.local` or
-shell env. If the setup ever fails to apply, tests abort loudly instead
-of silently writing to the dev DB.
+separate database. `vitest.setup.ts` forces `PGDATABASE` to a `findash_test*`
+name before any test imports — this cannot be overridden by `.env.local` or
+a shell env var outside that prefix. If the setup ever fails to apply, tests
+abort loudly instead of silently writing to the dev DB.
 
 First-time setup on a fresh clone:
 
@@ -187,6 +187,27 @@ bun run db:seed:test      # seed accounts/categories/rules
 
 After changing the schema, re-run `db:migrate:test` so the test DB stays
 in sync with `findash`.
+
+### Per-lane test database (parallel worktrees)
+
+Git worktrees isolate the checkout and `node_modules`, but NOT the
+database — two agents running `bun run test` concurrently against
+`findash_test` corrupt each other's fixtures. Set `FINDASH_TEST_DB` to give
+each lane its own database. The name MUST start with `findash_test` — any
+other value aborts the run immediately.
+
+```bash
+createdb findash_test_x
+# Mandatory — a freshly created DB defaults to the server timezone; without
+# this ~2 consolidate tests fail on a date boundary.
+psql -d findash_test_x -c "ALTER DATABASE findash_test_x SET timezone TO 'UTC';"
+
+FINDASH_TEST_DB=findash_test_x bun run db:migrate:test
+FINDASH_TEST_DB=findash_test_x bun run db:seed:test
+FINDASH_TEST_DB=findash_test_x bun run test
+```
+
+Unset, `FINDASH_TEST_DB` defaults to `findash_test` exactly as before.
 
 ## Visual verification (Playwright)
 
