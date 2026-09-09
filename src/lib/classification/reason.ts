@@ -7,6 +7,7 @@ export const SWEPT_ACTION = "swept";
 export const ABSTAINED_ACTION = "abstained";
 export const AWAITING_USER_ACTION = "awaiting_user";
 export const MANUAL_ACTION = "manual";
+export const INVESTIGATED_ACTION = "investigated";
 
 export function asReason(value: unknown): ClassificationReasonJson | null {
   if (value == null) return null;
@@ -116,4 +117,34 @@ export function isAwaitingUser(reason: ClassificationReasonJson | null): boolean
 
 export function isOpaqueAbstained(reason: ClassificationReasonJson | null): boolean {
   return reason?.action === ABSTAINED_ACTION && reason.reason === "opaque_gateway";
+}
+
+export function investigatedReason(opts: {
+  categorySlug: string;
+  receiptId?: number | null;
+  canonicalMerchant?: string | null;
+  matchKind?: ClassificationReasonJson["matchKind"];
+}): ClassificationReasonJson {
+  return {
+    action: INVESTIGATED_ACTION,
+    categorySlug: opts.categorySlug,
+    investigatedAt: new Date().toISOString(),
+    ...(opts.receiptId != null ? { receiptId: opts.receiptId } : {}),
+    ...(opts.canonicalMerchant ? { canonicalMerchant: opts.canonicalMerchant } : {}),
+    ...(opts.matchKind ? { matchKind: opts.matchKind } : {}),
+  };
+}
+
+/** Stamp a failed/capped investigation without changing abstained/swept action. */
+export function markInvestigated(
+  previous: ClassificationReasonJson | null,
+): ClassificationReasonJson {
+  return {
+    ...(previous ?? {}),
+    investigatedAt: new Date().toISOString(),
+  };
+}
+
+export function hasInvestigated(reason: ClassificationReasonJson | null): boolean {
+  return typeof reason?.investigatedAt === "string" && reason.investigatedAt.length > 0;
 }

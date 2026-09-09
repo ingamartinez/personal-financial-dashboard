@@ -129,6 +129,12 @@ export type ClassificationReasonJson = {
   // disambiguation push will clobber telegram_sessions. Filter on `action`.
   askedAt?: string;
   offered?: string[];
+  // #814 Phase 5a: residue investigator ran on this row. Presence means
+  // do not pay for another investigation, even if the row stayed abstained
+  // or swept. Not an action of its own when investigation fails — Phase 4
+  // still needs action=abstained to ask.
+  investigatedAt?: string;
+  canonicalMerchant?: string;
 };
 
 export const users = pgTable(
