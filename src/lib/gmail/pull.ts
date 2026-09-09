@@ -106,6 +106,39 @@ export type HistoricalPullOpts = PullCommonOpts & {
 
 export type PullOpts = IncrementalPullOpts | HistoricalPullOpts;
 
+function coercePullDate(value: unknown, field: "overrideSince" | "until"): Date {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      throw new Error(`[gmail/pull] opts.${field} is an invalid Date`);
+    }
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    if (value.trim() === "" || Number.isNaN(parsed.getTime())) {
+      throw new Error(`[gmail/pull] opts.${field} is not a valid date: ${JSON.stringify(value)}`);
+    }
+    return parsed;
+  }
+  throw new Error(`[gmail/pull] opts.${field} must be a Date or ISO string, got ${typeof value}`);
+}
+
+/**
+ * BullMQ JSON-serializes job payloads, so Date fields arrive as ISO strings.
+ * Coerce them back (or throw) before any consumer calls `.getTime()`.
+ */
+export function hydratePullOpts(opts: PullOpts | undefined): PullOpts {
+  if (opts == null) return {};
+  const overrideSince =
+    opts.overrideSince == null ? undefined : coercePullDate(opts.overrideSince, "overrideSince");
+  const until = opts.until == null ? undefined : coercePullDate(opts.until, "until");
+  return {
+    ...opts,
+    ...(overrideSince !== undefined ? { overrideSince } : {}),
+    ...(until !== undefined ? { until } : {}),
+  } as PullOpts;
+}
+
 export function assertCursorSafePullOpts(opts: {
   senders?: string[];
   until?: Date;
@@ -1060,6 +1093,7 @@ export async function pullForUser(
   opts: PullOpts = {},
   deps: PullDeps = {},
 ): Promise<PullResult> {
+  opts = hydratePullOpts(opts);
   assertCursorSafePullOpts(opts);
   const getClient = deps.getClient ?? getAuthedClient;
   const sleep = deps.sleep ?? defaultSleep;

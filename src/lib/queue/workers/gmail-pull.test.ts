@@ -12,16 +12,21 @@ const mocks = vi.hoisted(() => ({
   emit: vi.fn(),
 }));
 
-vi.mock("@/lib/gmail/pull", () => ({
-  pullForUser: mocks.pullForUser,
-  pullAllActiveConnections: mocks.pullAllActiveConnections,
-}));
+vi.mock("@/lib/gmail/pull", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/gmail/pull")>();
+  return {
+    ...actual,
+    pullForUser: mocks.pullForUser,
+    pullAllActiveConnections: mocks.pullAllActiveConnections,
+  };
+});
 
 vi.mock("@/lib/events/bus", () => ({
   emit: mocks.emit,
 }));
 
 import type { Job } from "bullmq";
+import { hydratePullOpts } from "@/lib/gmail/pull";
 import { gmailPullProcessor, type GmailPullJobData } from "./gmail-pull";
 
 // ---------------------------------------------------------------------------
@@ -31,7 +36,8 @@ import { gmailPullProcessor, type GmailPullJobData } from "./gmail-pull";
 function makeJob(data: GmailPullJobData): Job<GmailPullJobData> {
   return {
     id: "test-job-gmail-pull",
-    data,
+    // BullMQ JSON-serializes payloads: Date becomes an ISO string.
+    data: JSON.parse(JSON.stringify(data)) as GmailPullJobData,
     updateProgress: vi.fn().mockResolvedValue(undefined),
     log: vi.fn().mockResolvedValue(undefined),
   } as unknown as Job<GmailPullJobData>;
@@ -133,6 +139,83 @@ describe("gmailPullProcessor — mode: single-user", () => {
     expect(mocks.pullForUser).toHaveBeenCalledWith(7, { overrideSince: new Date("2026-01-01") });
   });
 
+  it("rehydrates JSON-serialized Date opts before pullForUser", async () => {
+    mocks.pullForUser.mockResolvedValueOnce({ ...emptyResult, userId: 7 });
+    const overrideSince = new Date("2026-01-01T00:00:00.000Z");
+    const until = new Date("2026-02-01T00:00:00.000Z");
+
+    await gmailPullProcessor(
+      makeJob({
+        mode: "single-user",
+        userId: 7,
+        opts: {
+          preserveCursor: true,
+          senders: ["jetsmart.com"],
+          overrideSince,
+          until,
+        },
+      }),
+    );
+
+    expect(mocks.pullForUser).toHaveBeenCalledOnce();
+    const passed = mocks.pullForUser.mock.calls[0]?.[1] as {
+      overrideSince: unknown;
+      until: unknown;
+      preserveCursor: boolean;
+      senders: string[];
+    };
+    expect(passed.overrideSince).toBeInstanceOf(Date);
+    expect(passed.until).toBeInstanceOf(Date);
+    expect((passed.overrideSince as Date).getTime()).toBe(overrideSince.getTime());
+    expect((passed.until as Date).getTime()).toBe(until.getTime());
+    expect(passed.preserveCursor).toBe(true);
+    expect(passed.senders).toEqual(["jetsmart.com"]);
+  });
+
+  it("rejects an unparseable overrideSince at the worker boundary", async () => {
+    await expect(
+      gmailPullProcessor(
+        makeJob({
+          mode: "single-user",
+          userId: 1,
+          opts: { overrideSince: "not-a-date" as unknown as Date },
+        }),
+      ),
+    ).rejects.toThrow(/opts\.overrideSince is not a valid date: "not-a-date"/);
+
+    expect(mocks.pullForUser).not.toHaveBeenCalled();
+    expect(mocks.emit).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unparseable until at the worker boundary", async () => {
+    await expect(
+      gmailPullProcessor(
+        makeJob({
+          mode: "single-user",
+          userId: 1,
+          opts: { preserveCursor: true, until: "nope" as unknown as Date },
+        }),
+      ),
+    ).rejects.toThrow(/opts\.until is not a valid date: "nope"/);
+
+    expect(mocks.pullForUser).not.toHaveBeenCalled();
+    expect(mocks.emit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-string overrideSince with the received type", async () => {
+    await expect(
+      gmailPullProcessor(
+        makeJob({
+          mode: "single-user",
+          userId: 1,
+          opts: { overrideSince: 1735689600000 as unknown as Date },
+        }),
+      ),
+    ).rejects.toThrow(/opts\.overrideSince must be a Date or ISO string, got number/);
+
+    expect(mocks.pullForUser).not.toHaveBeenCalled();
+  });
+
   it("propagates pullForUser errors for BullMQ retry", async () => {
     mocks.pullForUser.mockRejectedValueOnce(new Error("Gmail API timeout"));
 
@@ -222,6 +305,34 @@ describe("bus emit — single-user mode", () => {
       newTxCount: 7,
       processedCount: 10, // pulled(7) + skipped(3)
     });
+  });
+});
+
+describe("hydratePullOpts", () => {
+  it("passes a real Date through unchanged", () => {
+    const overrideSince = new Date("2026-01-01T00:00:00.000Z");
+    const hydrated = hydratePullOpts({ overrideSince });
+    expect(hydrated.overrideSince).toBe(overrideSince);
+  });
+
+  it("coerces an ISO string to a Date", () => {
+    const hydrated = hydratePullOpts({
+      overrideSince: "2026-01-01T00:00:00.000Z" as unknown as Date,
+    });
+    expect(hydrated.overrideSince).toBeInstanceOf(Date);
+    expect(hydrated.overrideSince?.getTime()).toBe(Date.parse("2026-01-01T00:00:00.000Z"));
+  });
+
+  it("rejects an Invalid Date instance", () => {
+    expect(() => hydratePullOpts({ overrideSince: new Date("not-a-date") })).toThrow(
+      /opts\.overrideSince is an invalid Date/,
+    );
+  });
+
+  it("rejects an empty string", () => {
+    expect(() => hydratePullOpts({ overrideSince: "   " as unknown as Date })).toThrow(
+      /opts\.overrideSince is not a valid date: "   "/,
+    );
   });
 });
 
