@@ -5,7 +5,7 @@ import { emailReceipts, gmailConnections, users } from "@/lib/db/schema";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 import type { AuthedGmailClient } from "./client";
 import { GmailConnectionUnusableError, GmailNotConnectedError } from "./client";
-import { pullForUser, computeSinceDate } from "./pull";
+import { pullForUser, computeSinceDate, type PullOpts } from "./pull";
 
 const TAG = "GMAIL_PULL_TEST";
 
@@ -598,7 +598,7 @@ describe("gmail/pull", () => {
       },
     });
 
-    const opts = {
+    const opts: PullOpts = {
       senders: ["jetsmart.com"],
       overrideSince: new Date("2026-01-01T00:00:00Z"),
       until: new Date("2026-02-01T00:00:00Z"),
@@ -649,6 +649,39 @@ describe("gmail/pull", () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].phase).toBe("list");
     expect(result.errors[0].message).toMatch(/hit page cap/);
+  });
+
+  it("refuses senders/until without preserveCursor and does not advance last_pull_at", async () => {
+    const frozen = new Date("2026-09-01T12:00:00Z");
+    const connId = await seedActiveConnection(userA, { lastPullAt: frozen });
+    let getClientCalls = 0;
+
+    await expect(
+      pullForUser(
+        userA,
+        // Intentional bypass: this is the shape a future JSON/BullMQ caller
+        // would pass if they forgot the flag. The type system rejects the
+        // object literal; runtime must still refuse.
+        {
+          senders: ["jetsmart.com"],
+          overrideSince: new Date("2026-01-01T00:00:00Z"),
+          until: new Date("2026-02-01T00:00:00Z"),
+        } as PullOpts,
+        {
+          getClient: async () => {
+            getClientCalls += 1;
+            throw new Error("getClient must not run when senders/until lack preserveCursor");
+          },
+        },
+      ),
+    ).rejects.toThrow(/preserveCursor: true/);
+    expect(getClientCalls).toBe(0);
+
+    const [conn] = await db
+      .select({ lastPullAt: gmailConnections.lastPullAt })
+      .from(gmailConnections)
+      .where(eq(gmailConnections.id, connId));
+    expect(conn.lastPullAt?.getTime()).toBe(frozen.getTime());
   });
 });
 

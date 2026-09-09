@@ -70,7 +70,7 @@ export type PullResult = {
   connectionId: number | null;
 };
 
-export interface PullOpts {
+type PullCommonOpts = {
   // When set, overrides the last-pull watermark with now-<sinceDays>.
   // Used by the manual backfill (#458) and tests.
   sinceDays?: number;
@@ -79,20 +79,44 @@ export interface PullOpts {
   // #498 — one-shot since-date override for re-bootstrap. Bypasses the
   // cursor (lastPullAt) for this single run; cursor advances normally after.
   overrideSince?: Date;
-  // Exclusive end of the Gmail search window (`before:<unix>`). Cron pulls
-  // omit this (open-ended). Historical sender fetch (#849) always sets it.
-  until?: Date;
-  // When true, do not write last_pull_at and do not push a disambiguation
-  // prompt. Historical fetch must not disturb the incremental cron cursor.
-  preserveCursor?: boolean;
-  // Restrict the list query to these registered sender domains (e.g.
-  // `jetsmart.com`). Combined with preserveCursor for #849. Unknown senders
-  // throw from resolveRegisteredSenders.
-  senders?: string[];
   // Override the per-gateway list page cap. Cron keeps the default of 5
   // (500 msgs). Historical fetch raises this so a year of one sender is not
   // silently truncated.
   maxPages?: number;
+};
+
+/** Incremental / cron / re-bootstrap. Must not carry senders or until. */
+export type IncrementalPullOpts = PullCommonOpts & {
+  preserveCursor?: false;
+  senders?: never;
+  until?: never;
+};
+
+/**
+ * Historical sender fetch (#849). `preserveCursor` is mandatory so a
+ * sender-scoped or bounded window cannot jump last_pull_at and skip other
+ * gateways' unread mail. Types refuse the unsafe combo; assertCursorSafePullOpts
+ * refuses it at runtime too (JSON / BullMQ / `as PullOpts` bypasses).
+ */
+export type HistoricalPullOpts = PullCommonOpts & {
+  preserveCursor: true;
+  senders?: string[];
+  until?: Date;
+};
+
+export type PullOpts = IncrementalPullOpts | HistoricalPullOpts;
+
+export function assertCursorSafePullOpts(opts: {
+  senders?: string[];
+  until?: Date;
+  preserveCursor?: boolean;
+}): void {
+  const historical = (opts.senders != null && opts.senders.length > 0) || opts.until != null;
+  if (historical && opts.preserveCursor !== true) {
+    throw new Error(
+      "[gmail/pull] senders/until require preserveCursor: true — otherwise last_pull_at jumps and other gateways' mail is skipped",
+    );
+  }
 }
 
 export interface PullDeps {
@@ -1036,6 +1060,7 @@ export async function pullForUser(
   opts: PullOpts = {},
   deps: PullDeps = {},
 ): Promise<PullResult> {
+  assertCursorSafePullOpts(opts);
   const getClient = deps.getClient ?? getAuthedClient;
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ? deps.now() : new Date();
