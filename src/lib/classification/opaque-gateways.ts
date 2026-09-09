@@ -24,6 +24,7 @@
 //     PayPal lines arrive merchant-less the way MercadoPago/PayU/Wompi do.
 //     Revisit if prod evidence shows otherwise.
 //   - arq: the user's own account/card provider, not a third-party gateway.
+//   - jetsmart: a merchant (airline). Evidence-mode mail, not a pass-through.
 //
 // A real merchant that merely transacts through one of these gateways but
 // still NAMES itself in the description (e.g. "AMAZON MKTPLACE PMTS", #812's

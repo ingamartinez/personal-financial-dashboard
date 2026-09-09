@@ -7,7 +7,8 @@ import { emailReceiptGateway } from "@/lib/db/schema";
 type EnumValues<T> = T extends PgEnum<infer V> ? V[number] : never;
 export type GatewayId = EnumValues<typeof emailReceiptGateway>;
 
-export type GatewayMode = "enrich" | "ingest";
+export const GATEWAY_MODES = ["enrich", "ingest", "evidence"] as const;
+export type GatewayMode = (typeof GATEWAY_MODES)[number];
 
 export interface GatewayConfig {
   id: GatewayId;
@@ -17,7 +18,7 @@ export interface GatewayConfig {
   senderQueries: string[];
   // Matcher (#454) uses this to check whether a bank tx description
   // plausibly corresponds to a receipt from this gateway. `null` for
-  // `ingest` gateways (bancolombia): the matcher never tries to pair their
+  // `ingest` and `evidence` gateways: the matcher never tries to pair their
   // receipts with a bank tx, so no regex is needed. Values sourced from
   // PLAN.md §Gateway opacity table. Word boundaries on each pattern so
   // they only match whole tokens in the bank's description line.
@@ -26,6 +27,9 @@ export interface GatewayConfig {
   // overwrite merchant/category when the bank description is opaque.
   // `ingest`: receipts are ingested as transactions themselves (Bancolombia
   // email is a parallel ingestion source to SMS — #457).
+  // `evidence`: persist the receipt for the tx-first correlator; never
+  // insert a transaction and never overwrite the bank merchant. JetSmart
+  // itineraries are the exemplar (#814 Phase 1 design).
   mode: GatewayMode;
 }
 
@@ -116,6 +120,16 @@ export const GATEWAYS: readonly GatewayConfig[] = [
     bankDescriptionRegex: null,
     mode: "ingest",
   },
+  // JetSmart itineraries identify a bank charge (tx 1443) without being
+  // the charge. Persist for correlation; never insert a tx; never overwrite
+  // the bank merchant. Domain-anchored so spoofed From: headers miss.
+  // `@jetsmart.com` covers jetsmart@mg.jetsmart.com (the observed sender).
+  {
+    id: "jetsmart",
+    senderQueries: ["from:(@jetsmart.com)"],
+    bankDescriptionRegex: null,
+    mode: "evidence",
+  },
 ] as const;
 
 // Tuple of all gateway IDs — used by the cron route for Zod enum validation.
@@ -126,6 +140,14 @@ export function getGatewayById(id: GatewayId): GatewayConfig {
   const cfg = GATEWAYS.find((g) => g.id === id);
   if (!cfg) throw new Error(`[gmail/registry] unknown gateway id: ${id}`);
   return cfg;
+}
+
+export function isEvidenceGateway(id: GatewayId): boolean {
+  return getGatewayById(id).mode === "evidence";
+}
+
+export function evidenceGatewayIds(): GatewayId[] {
+  return GATEWAYS.filter((g) => g.mode === "evidence").map((g) => g.id);
 }
 
 // Compose the `from:(...) OR from:(...)` portion of the Gmail query for one

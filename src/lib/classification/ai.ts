@@ -11,8 +11,8 @@ export type AiReceiptEvidence = {
   currency: string | null;
   referenceId: string | null;
   extra?: Record<string, unknown>;
-  matchKind: "exact_amount" | "cross_currency";
-  deltaCents: string;
+  matchKind: "exact_amount" | "cross_currency" | "time_only";
+  deltaCents: string | null;
   deltaMs: number;
   rank: number;
   rateAsOf?: string;

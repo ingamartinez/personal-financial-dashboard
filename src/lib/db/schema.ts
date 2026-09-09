@@ -87,10 +87,12 @@ export type SourceMismatchDetails = {
 // fields under `extra`.
 export type ParsedReceiptPayload = {
   merchant: string;
-  amountCents: string; // bigint serialized for JSON
-  currency: string;
-  occurredAt: string; // ISO timestamp
-  referenceId: string | null;
+  // Omitted for evidence-mode receipts (JetSmart itinerary, etc.) — those
+  // have no card-leg amount. Enrich/ingest parsers still always write this.
+  amountCents?: string; // bigint serialized for JSON
+  currency?: string;
+  occurredAt?: string; // ISO timestamp
+  referenceId?: string | null;
   extra?: Record<string, unknown>;
 };
 
@@ -120,7 +122,7 @@ export type ClassificationReasonJson = {
   text?: string;
   receiptId?: number;
   receiptIds?: number[];
-  matchKind?: "exact_amount" | "cross_currency";
+  matchKind?: "exact_amount" | "cross_currency" | "time_only";
   aiReason?: string;
   ruleId?: number;
   run?: string;
@@ -312,6 +314,7 @@ export const emailReceiptGateway = pgEnum("email_receipt_gateway", [
   "paypal",
   "bancolombia",
   "arq",
+  "jetsmart",
 ]);
 
 // #454 (Epic G): matcher outcome between an email receipt and existing

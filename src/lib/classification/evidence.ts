@@ -7,7 +7,12 @@ import {
   type ParsedReceiptPayload,
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
-import { correlateTransaction, type RankedCandidate } from "@/lib/correlation/correlate";
+import {
+  correlateTransaction,
+  isDeterministicReason,
+  type CorrelationReason,
+  type RankedCandidate,
+} from "@/lib/correlation/correlate";
 import { matchOpaqueGateway, type OpaqueGateway } from "./opaque-gateways";
 import type { AiClassifiable, AiReceiptEvidence } from "./ai";
 import type { ClassifiableTx } from "./rules";
@@ -100,9 +105,26 @@ export async function loadTxEvidence(
 
 export function uniqueReceipt(evidence: TxEvidence): EvidenceReceipt | null {
   if (!evidence.unique) return null;
-  const id = evidence.candidates[0]?.receiptId;
-  if (id == null) return null;
-  return evidence.receipts.get(id) ?? null;
+  const candidate = evidence.candidates[0];
+  if (candidate == null) return null;
+  // Time-only is never a silent resolve — prior art / rules must not key
+  // on a unique-to-the-minute guess. The AI bundle still sees the candidate.
+  if (!isDeterministicReason(candidate.reason)) return null;
+  return evidence.receipts.get(candidate.receiptId) ?? null;
+}
+
+function deltaCentsForPrompt(reason: CorrelationReason): string | null {
+  switch (reason.kind) {
+    case "exact_amount":
+    case "cross_currency":
+      return reason.deltaCents.toString();
+    case "time_only":
+      return null;
+    default: {
+      const _never: never = reason;
+      throw new Error(`[classification/evidence] unhandled reason kind: ${JSON.stringify(_never)}`);
+    }
+  }
 }
 
 /**
@@ -170,7 +192,7 @@ export function toAiEvidence(evidence: TxEvidence): AiReceiptEvidence[] {
       currency: receipt.currency,
       referenceId: receipt.referenceId,
       matchKind: candidate.reason.kind,
-      deltaCents: candidate.reason.deltaCents.toString(),
+      deltaCents: deltaCentsForPrompt(candidate.reason),
       deltaMs: candidate.reason.deltaMs,
       rank: candidate.rank,
     };

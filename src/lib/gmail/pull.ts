@@ -457,89 +457,124 @@ export async function processPendingEnrichReceipts(
           receivedAt: receipt.emailReceivedAt ?? receipt.createdAt,
         });
 
-        if (parseResult.kind === "parsed") {
-          const { merchant, amountCents, currency, occurredAt, referenceId, extra } =
-            parseResult.data;
-          const parsedPayload = {
-            merchant,
-            amountCents: amountCents.toString(),
-            currency,
-            occurredAt: occurredAt.toISOString(),
-            referenceId,
-            ...(extra ? { extra } : {}),
-          };
-          await db
-            .update(emailReceipts)
-            .set({
+        switch (parseResult.kind) {
+          case "parsed": {
+            const { merchant, amountCents, currency, occurredAt, referenceId, extra } =
+              parseResult.data;
+            const parsedPayload = {
               merchant,
-              amountCents,
+              amountCents: amountCents.toString(),
               currency,
-              occurredAt,
+              occurredAt: occurredAt.toISOString(),
               referenceId,
-              parsedPayload,
-              parsedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
-          log.info(
-            {
-              userId,
-              receiptId: receipt.id,
-              gateway: receipt.gateway,
-              event: "gmail_receipt_parsed",
-            },
-            "receipt parsed successfully",
-          );
-        } else if (parseResult.kind === "skipped") {
-          // Persist the skip reason. A silent all-NULL row with parsedAt set
-          // and no payload is how 8 Mercado Libre layouts vanished (#814).
-          await db
-            .update(emailReceipts)
-            .set({
-              matchStatus: "unmatched",
-              parsedAt: new Date(),
-              parsedPayload: { error: { reason: parseResult.reason, kind: "skipped" } },
-              updatedAt: new Date(),
-            })
-            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
-          log.info(
-            {
-              userId,
-              receiptId: receipt.id,
-              gateway: receipt.gateway,
-              gmailMsgId: receipt.gmailMsgId,
-              reason: parseResult.reason,
-              event: "receipt_skipped",
-            },
-            "receipt skipped by parser; marked unmatched",
-          );
-          continue; // skip matcher — this receipt is intentionally non-transactional
-        } else {
-          // needs_review: persist observably and break the retry loop (ARQ
-          // #641 pattern). Re-parse after a parser fix via the backfill,
-          // which clears parsed_at. Leaving these pending forever hid
-          // failures as "still working on it".
-          await db
-            .update(emailReceipts)
-            .set({
-              matchStatus: "unmatched",
-              parsedAt: new Date(),
-              parsedPayload: { error: { reason: parseResult.reason, kind: "needs_review" } },
-              updatedAt: new Date(),
-            })
-            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
-          log.warn(
-            {
-              userId,
-              receiptId: receipt.id,
-              gateway: receipt.gateway,
-              gmailMsgId: receipt.gmailMsgId,
-              reason: parseResult.reason,
-              event: "receipt_needs_review",
-            },
-            "receipt parse needs review; marked unmatched with error payload",
-          );
-          continue;
+              ...(extra ? { extra } : {}),
+            };
+            await db
+              .update(emailReceipts)
+              .set({
+                merchant,
+                amountCents,
+                currency,
+                occurredAt,
+                referenceId,
+                parsedPayload,
+                parsedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+            log.info(
+              {
+                userId,
+                receiptId: receipt.id,
+                gateway: receipt.gateway,
+                event: "gmail_receipt_parsed",
+              },
+              "receipt parsed successfully",
+            );
+            break;
+          }
+          case "skipped": {
+            // Persist the skip reason. A silent all-NULL row with parsedAt set
+            // and no payload is how 8 Mercado Libre layouts vanished (#814).
+            await db
+              .update(emailReceipts)
+              .set({
+                matchStatus: "unmatched",
+                parsedAt: new Date(),
+                parsedPayload: { error: { reason: parseResult.reason, kind: "skipped" } },
+                updatedAt: new Date(),
+              })
+              .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+            log.info(
+              {
+                userId,
+                receiptId: receipt.id,
+                gateway: receipt.gateway,
+                gmailMsgId: receipt.gmailMsgId,
+                reason: parseResult.reason,
+                event: "receipt_skipped",
+              },
+              "receipt skipped by parser; marked unmatched",
+            );
+            continue; // skip matcher — this receipt is intentionally non-transactional
+          }
+          case "needs_review": {
+            // Persist observably and break the retry loop (ARQ #641 pattern).
+            // Re-parse after a parser fix via the backfill, which clears
+            // parsed_at. Leaving these pending forever hid failures as
+            // "still working on it".
+            await db
+              .update(emailReceipts)
+              .set({
+                matchStatus: "unmatched",
+                parsedAt: new Date(),
+                parsedPayload: { error: { reason: parseResult.reason, kind: "needs_review" } },
+                updatedAt: new Date(),
+              })
+              .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+            log.warn(
+              {
+                userId,
+                receiptId: receipt.id,
+                gateway: receipt.gateway,
+                gmailMsgId: receipt.gmailMsgId,
+                reason: parseResult.reason,
+                event: "receipt_needs_review",
+              },
+              "receipt parse needs review; marked unmatched with error payload",
+            );
+            continue;
+          }
+          case "evidence": {
+            // An enrich gateway must not persist a no-amount evidence parse
+            // and then matchReceipt it. That would be the silent all-NULL
+            // path in a new costume.
+            await db
+              .update(emailReceipts)
+              .set({
+                matchStatus: "unmatched",
+                parsedAt: new Date(),
+                parsedPayload: {
+                  error: { reason: "evidence_kind_on_enrich_gateway", kind: "needs_review" },
+                },
+                updatedAt: new Date(),
+              })
+              .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+            log.warn(
+              {
+                userId,
+                receiptId: receipt.id,
+                gateway: receipt.gateway,
+                event: "evidence_kind_on_enrich_gateway",
+              },
+              "enrich parser returned evidence kind; marked unmatched",
+            );
+            continue;
+          }
+          default: {
+            const _never: never = parseResult;
+            throw new Error(`[gmail/pull] unhandled parse kind: ${JSON.stringify(_never)}`);
+          }
         }
       }
 
@@ -608,6 +643,196 @@ export async function processPendingEnrichReceipts(
         },
         "failed to match/enrich receipt; leaving as pending for retry",
       );
+    }
+  }
+}
+
+/**
+ * Parse every pending evidence-mode receipt. Persist merchant (and amount
+ * only if the parser actually produced one). Never matchReceipt, never
+ * applyEnrichment, never ingest a transaction — those are the three
+ * things evidence mode exists to refuse.
+ *
+ * Unmatched after parse so we do not re-parse every hourly tick. A later
+ * parser fix clears parsed_at via backfill, same as enrich.
+ */
+export async function processPendingEvidenceReceipts(
+  userId: number,
+  gatewayId: GatewayId,
+): Promise<void> {
+  const pending = await db
+    .select({
+      id: emailReceipts.id,
+      rawHtml: emailReceipts.rawHtml,
+      gateway: emailReceipts.gateway,
+      gmailMsgId: emailReceipts.gmailMsgId,
+      parsedAt: emailReceipts.parsedAt,
+      createdAt: emailReceipts.createdAt,
+      emailReceivedAt: emailReceipts.emailReceivedAt,
+    })
+    .from(emailReceipts)
+    .where(
+      and(
+        eq(emailReceipts.userId, userId),
+        eq(emailReceipts.gateway, gatewayId),
+        eq(emailReceipts.matchStatus, "pending"),
+        notDeleted(emailReceipts.deletedAt),
+      ),
+    );
+
+  for (const receipt of pending) {
+    try {
+      if (receipt.parsedAt) {
+        await db
+          .update(emailReceipts)
+          .set({ matchStatus: "unmatched", updatedAt: new Date() })
+          .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+        continue;
+      }
+
+      const parseResult = parseReceipt(receipt.gateway, receipt.rawHtml, {
+        receivedAt: receipt.emailReceivedAt ?? receipt.createdAt,
+      });
+
+      switch (parseResult.kind) {
+        case "evidence": {
+          const { merchant, occurredAt, referenceId, extra } = parseResult.data;
+          await db
+            .update(emailReceipts)
+            .set({
+              merchant,
+              occurredAt,
+              referenceId,
+              parsedPayload: {
+                merchant,
+                ...(occurredAt ? { occurredAt: occurredAt.toISOString() } : {}),
+                referenceId,
+                ...(extra ? { extra } : {}),
+              },
+              parsedAt: new Date(),
+              matchStatus: "unmatched",
+              updatedAt: new Date(),
+            })
+            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+          log.info(
+            {
+              userId,
+              receiptId: receipt.id,
+              gateway: receipt.gateway,
+              event: "gmail_evidence_parsed",
+            },
+            "evidence receipt parsed; not matched to a bank merchant",
+          );
+          break;
+        }
+        case "parsed": {
+          // Amount-bearing evidence still does not overwrite the bank
+          // merchant. Persist the amount so the correlator can use the
+          // existing amount-match path; never call applyEnrichment.
+          const { merchant, amountCents, currency, occurredAt, referenceId, extra } =
+            parseResult.data;
+          await db
+            .update(emailReceipts)
+            .set({
+              merchant,
+              amountCents,
+              currency,
+              occurredAt,
+              referenceId,
+              parsedPayload: {
+                merchant,
+                amountCents: amountCents.toString(),
+                currency,
+                occurredAt: occurredAt.toISOString(),
+                referenceId,
+                ...(extra ? { extra } : {}),
+              },
+              parsedAt: new Date(),
+              matchStatus: "unmatched",
+              updatedAt: new Date(),
+            })
+            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+          log.info(
+            {
+              userId,
+              receiptId: receipt.id,
+              gateway: receipt.gateway,
+              event: "gmail_evidence_parsed_with_amount",
+            },
+            "evidence receipt parsed with amount; not matched to a bank merchant",
+          );
+          break;
+        }
+        case "skipped": {
+          await db
+            .update(emailReceipts)
+            .set({
+              matchStatus: "unmatched",
+              parsedAt: new Date(),
+              parsedPayload: { error: { reason: parseResult.reason, kind: "skipped" } },
+              updatedAt: new Date(),
+            })
+            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+          break;
+        }
+        case "needs_review": {
+          await db
+            .update(emailReceipts)
+            .set({
+              matchStatus: "unmatched",
+              parsedAt: new Date(),
+              parsedPayload: { error: { reason: parseResult.reason, kind: "needs_review" } },
+              updatedAt: new Date(),
+            })
+            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+          log.warn(
+            {
+              userId,
+              receiptId: receipt.id,
+              gateway: receipt.gateway,
+              gmailMsgId: receipt.gmailMsgId,
+              reason: parseResult.reason,
+              event: "evidence_needs_review",
+            },
+            "evidence receipt parse needs review",
+          );
+          break;
+        }
+        default: {
+          const _never: never = parseResult;
+          throw new Error(`[gmail/pull] unhandled parse kind: ${JSON.stringify(_never)}`);
+        }
+      }
+    } catch (err) {
+      log.error(
+        {
+          err,
+          userId,
+          receiptId: receipt.id,
+          gateway: gatewayId,
+          event: "gmail_evidence_receipt_failed",
+        },
+        "failed to parse evidence receipt; leaving as pending for retry",
+      );
+    }
+  }
+}
+
+async function processGatewayAfterPull(userId: number, g: GatewayConfig): Promise<void> {
+  switch (g.mode) {
+    case "ingest":
+      if (g.id === "bancolombia") await processPendingBancolombiaReceipts(userId);
+      else if (g.id === "arq") await processPendingArqReceipts(userId);
+      return;
+    case "enrich":
+      await processPendingEnrichReceipts(userId, g.id);
+      return;
+    case "evidence":
+      await processPendingEvidenceReceipts(userId, g.id);
+      return;
+    default: {
+      const _never: never = g.mode;
+      throw new Error(`[gmail/pull] unhandled gateway mode: ${String(_never)}`);
     }
   }
 }
@@ -902,26 +1127,12 @@ export async function pullForUser(
     throw err;
   }
 
-  // Process ingest-mode receipts (#457 — bancolombia). This ALSO picks up
-  // stale receipts from previous pulls whose ingestion errored mid-way, so a
-  // transient DB hiccup doesn't lock a receipt into `pending` forever. Run
-  // even if `errors` is non-empty — per-message list/get failures from the
-  // Google side shouldn't block already-persisted receipts from being parsed.
-  const ingestGatewaysSelected = selectedGateways.filter((g) => g.mode === "ingest");
-  for (const g of ingestGatewaysSelected) {
-    if (g.id === "bancolombia") {
-      await processPendingBancolombiaReceipts(userId);
-    } else if (g.id === "arq") {
-      await processPendingArqReceipts(userId);
-    }
-  }
-
-  // Process enrich-mode receipts (#454 — mercado_pago, payu, wompi, apple,
-  // paypal). Stale pending receipts are retried on every pull — the bank tx
-  // may not have arrived via SMS yet on the first attempt.
-  const enrichGatewaysSelected = selectedGateways.filter((g) => g.mode === "enrich");
-  for (const g of enrichGatewaysSelected) {
-    await processPendingEnrichReceipts(userId, g.id);
+  // Process persisted receipts per mode. Exhaustive on GatewayMode so a
+  // fourth mode cannot be added to the registry and silently skipped.
+  // Run even if `errors` is non-empty — per-message list/get failures
+  // from the Google side shouldn't block already-persisted receipts.
+  for (const g of selectedGateways) {
+    await processGatewayAfterPull(userId, g);
   }
 
   // Only advance the watermark on fully successful pulls — partial failures
