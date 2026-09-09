@@ -10,10 +10,14 @@ export const dynamic = "force-dynamic";
 export default async function RecurringPage({
   searchParams,
 }: {
-  searchParams: Promise<{ category?: string }>;
+  searchParams: Promise<{ category?: string; account?: string; activeOnly?: string }>;
 }) {
   const session = await getSessionUser();
-  const { category: rawCategory } = await searchParams;
+  const {
+    category: rawCategory,
+    account: rawAccount,
+    activeOnly: rawActiveOnly,
+  } = await searchParams;
 
   const [accs, cats] = await Promise.all([
     db
@@ -42,14 +46,26 @@ export default async function RecurringPage({
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
   ]);
 
-  // Validate the category param against the user's own categories (tenant safety).
+  // Validate filter params against the user's own rows (tenant safety). Never
+  // put a raw searchParam into the where clause.
   const validSlugs = new Set(cats.map((c) => c.slug));
   const activeCategory = rawCategory && validSlugs.has(rawCategory) ? rawCategory : null;
+
+  const parsedAccountId = Number(rawAccount);
+  const validAccountIds = new Set(accs.map((a) => a.id));
+  const activeAccount =
+    Number.isInteger(parsedAccountId) && validAccountIds.has(parsedAccountId)
+      ? parsedAccountId
+      : null;
+
+  const activeOnly = rawActiveOnly === "true";
 
   const recurringWhere = and(
     eq(recurringTransactions.userId, session.id),
     notDeleted(recurringTransactions.deletedAt),
     activeCategory ? eq(recurringTransactions.categorySlug, activeCategory) : undefined,
+    activeAccount !== null ? eq(recurringTransactions.accountId, activeAccount) : undefined,
+    activeOnly ? eq(recurringTransactions.active, true) : undefined,
   );
 
   const items = await db
@@ -90,6 +106,8 @@ export default async function RecurringPage({
         categories={cats}
         items={rows}
         activeCategory={activeCategory}
+        activeAccount={activeAccount}
+        activeOnly={activeOnly}
       />
     </main>
   );

@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Money } from "@/components/display/money";
@@ -51,11 +52,15 @@ export function RecurringManager({
   categories,
   items,
   activeCategory,
+  activeAccount = null,
+  activeOnly = false,
 }: {
   accounts: AccountOption[];
   categories: CategoryOption[];
   items: RecurringRow[];
   activeCategory: string | null;
+  activeAccount?: number | null;
+  activeOnly?: boolean;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -65,10 +70,10 @@ export function RecurringManager({
   });
   const [pending, startTransition] = useTransition();
 
-  function onCategoryChange(slug: string) {
+  function updateFilter(key: string, value: string) {
     const next = new URLSearchParams(searchParams.toString());
-    if (slug) next.set("category", slug);
-    else next.delete("category");
+    if (value) next.set(key, value);
+    else next.delete(key);
     const qs = next.toString();
     router.push(qs ? `/settings/recurring?${qs}` : "/settings/recurring");
   }
@@ -108,20 +113,47 @@ export function RecurringManager({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <select
-          value={activeCategory ?? ""}
-          onChange={(e) => onCategoryChange(e.target.value)}
-          className="bg-background chevron-select h-9 rounded-md border text-sm"
-          aria-label="Filtrar por categoría"
-        >
-          <option value="">Todas las categorías</option>
-          {categories.map((c) => (
-            <option key={c.slug} value={c.slug}>
-              {c.parentSlug ? `↳ ${c.name}` : c.name}
-            </option>
-          ))}
-        </select>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            value={activeCategory ?? ""}
+            onChange={(e) => updateFilter("category", e.target.value)}
+            className="bg-background chevron-select h-9 rounded-md border text-sm"
+            aria-label="Filtrar por categoría"
+          >
+            <option value="">Todas las categorías</option>
+            {categories.map((c) => (
+              <option key={c.slug} value={c.slug}>
+                {c.parentSlug ? `↳ ${c.name}` : c.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={activeAccount?.toString() ?? ""}
+            onChange={(e) => updateFilter("account", e.target.value)}
+            className="bg-background chevron-select h-9 rounded-md border text-sm"
+            aria-label="Filtrar por cuenta"
+          >
+            <option value="">Todas las cuentas</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {formatAccountLabel(a)}
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="rec-active-only"
+              checked={activeOnly}
+              onCheckedChange={(checked) =>
+                updateFilter("activeOnly", checked === true ? "true" : "")
+              }
+            />
+            <Label htmlFor="rec-active-only" className="cursor-pointer text-sm font-normal">
+              Solo activas
+            </Label>
+          </div>
+        </div>
         <Button onClick={openCreate}>
           <PlusIcon className="size-4" />
           New recurring
