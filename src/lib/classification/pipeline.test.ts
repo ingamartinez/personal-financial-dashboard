@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { transactions } from "@/lib/db/schema";
+import { merchantKnowledge, merchantKnowledgeHints, transactions, users } from "@/lib/db/schema";
+import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 
 // ---------------------------------------------------------------------------
 // Mock external dependencies — we test the pipeline's DB filtering logic,
@@ -49,14 +50,19 @@ async function seedUnclassifiedTx(args: {
   accountId: number;
   externalId: string;
   descriptionRaw?: string;
+  merchant?: string | null;
+  canonicalMerchant?: string | null;
 }): Promise<number> {
   const [row] = await db.execute<{ id: number }>(sql`
     INSERT INTO transactions (
       user_id, account_id, occurred_at, amount_cents, currency,
-      description_raw, classification_method, source, external_id
+      description_raw, merchant, canonical_merchant,
+      classification_method, source, external_id
     ) VALUES (
       ${args.userId}, ${args.accountId}, now(), -10000, 'COP',
-      ${args.descriptionRaw ?? "pipeline-test"}, 'unclassified'::classification_method,
+      ${args.descriptionRaw ?? "pipeline-test"}, ${args.merchant ?? null},
+      ${args.canonicalMerchant ?? null},
+      'unclassified'::classification_method,
       'sms', ${args.externalId}
     )
     RETURNING id
@@ -265,5 +271,102 @@ describe("classifyUnclassifiedBatch — default (no opts)", () => {
     expect(row?.categorySlug).toBe("otros");
     expect(row?.method).toBe("user_uncategorized");
     expect(row?.reason).toMatchObject({ action: "abstained", reason: "opaque_gateway" });
+  });
+});
+
+describe("classifyUnclassifiedBatch — merchant knowledge", () => {
+  let accountA: number;
+  const KB_PREFIX = "pipeline-kb-";
+
+  async function seedHint(userId: number, canonicalMerchant: string, categorySlug: string) {
+    await db
+      .insert(merchantKnowledge)
+      .values({ canonicalMerchant })
+      .onConflictDoNothing({ target: merchantKnowledge.canonicalMerchant });
+    await db.insert(merchantKnowledgeHints).values({ userId, canonicalMerchant, categorySlug });
+  }
+
+  async function cleanupKb() {
+    await db.delete(users).where(sql`email LIKE ${KB_PREFIX + "%"}`);
+    await db.execute(sql`
+      DELETE FROM merchant_knowledge_hints
+      WHERE canonical_merchant LIKE ${KB_PREFIX + "%"}
+    `);
+    await db.delete(merchantKnowledge).where(sql`canonical_merchant LIKE ${KB_PREFIX + "%"}`);
+    await cleanupTestTxs();
+  }
+
+  beforeEach(async () => {
+    await cleanupKb();
+    accountA = await defaultAccountId(TEST_USER_A);
+    mockClassifyBatch.mockClear();
+  });
+
+  afterEach(cleanupKb);
+
+  it("classifies from a KB hint before rules and AI", async () => {
+    const merchant = `${KB_PREFIX}${Date.now()}`;
+    await seedHint(TEST_USER_A, merchant, "mercado");
+    const txId = await seedUnclassifiedTx({
+      userId: TEST_USER_A,
+      accountId: accountA,
+      externalId: `pipeline-test:kb-hit`,
+      descriptionRaw: merchant,
+      merchant,
+      canonicalMerchant: merchant,
+    });
+
+    const result = await classifyUnclassifiedBatch(TEST_USER_A, { txIds: [txId] });
+
+    expect(result.merchantKnowledgeClassified).toBe(1);
+    expect(result.ruleClassified).toBe(0);
+    expect(result.aiClassified).toBe(0);
+    expect(mockClassifyBatch).not.toHaveBeenCalled();
+
+    const [row] = await db
+      .select({
+        categorySlug: transactions.categorySlug,
+        method: transactions.classificationMethod,
+        reason: transactions.classificationReason,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row?.categorySlug).toBe("mercado");
+    expect(row?.method).toBe("rule_retroactive");
+    expect(row?.reason).toMatchObject({ action: "merchant_knowledge", categorySlug: "mercado" });
+  });
+
+  it("does not apply another user's hint", async () => {
+    const merchant = `${KB_PREFIX}tenant-${Date.now()}`;
+    const [other] = await db
+      .insert(users)
+      .values({ email: `${KB_PREFIX}${Date.now()}@test.local`, name: "kb-other" })
+      .returning({ id: users.id });
+    await copyCategorySeedsToUser(other.id);
+    await seedHint(other.id, merchant, "mercado");
+    const txId = await seedUnclassifiedTx({
+      userId: TEST_USER_A,
+      accountId: accountA,
+      externalId: `pipeline-test:kb-tenant`,
+      descriptionRaw: merchant,
+      merchant,
+      canonicalMerchant: merchant,
+    });
+
+    mockClassifyBatch.mockResolvedValueOnce({
+      classifications: [],
+      model: "claude-sonnet-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await classifyUnclassifiedBatch(TEST_USER_A, { txIds: [txId] });
+    expect(result.merchantKnowledgeClassified).toBe(0);
+    expect(mockClassifyBatch).toHaveBeenCalledTimes(1);
+
+    const [row] = await db
+      .select({ method: transactions.classificationMethod })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row?.method).toBe("unclassified");
   });
 });

@@ -44,6 +44,7 @@ const defaultPipelineResult = {
   picked: 20,
   aiClassified: 15,
   ruleClassified: 3,
+  merchantKnowledgeClassified: 0,
   skipped: 2,
   model: "claude-sonnet-5",
   usage: { inputTokens: 1000, outputTokens: 200 },

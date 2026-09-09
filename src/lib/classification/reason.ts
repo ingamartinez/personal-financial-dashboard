@@ -50,6 +50,10 @@ export function priorArtReason(
   };
 }
 
+export function merchantKnowledgeReason(categorySlug: string): ClassificationReasonJson {
+  return { action: "merchant_knowledge", categorySlug };
+}
+
 export function aiReasonText(reason: ClassificationReasonJson | null): string | null {
   if (!reason) return null;
   if (typeof reason.aiReason === "string" && reason.aiReason.length > 0) return reason.aiReason;

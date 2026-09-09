@@ -6,8 +6,8 @@
 // low-confidence rows INTO `otros`. Nothing ever revisited them, so `otros`
 // only ever grew. This module is the weekly job that revisits it.
 //
-// Precedence per candidate transaction: ABSTAIN checks → PRIOR ART → rule
-// engine → AI batch → settle.
+// Precedence per candidate transaction: ABSTAIN checks → PRIOR ART →
+// merchant knowledge lookup → rule engine → AI batch → settle.
 //
 // - Abstain (#812, evidence-aware in #814): before anything else, check
 //   whether the row is structurally unclassifiable. Transfer-pair abstain
@@ -105,11 +105,13 @@ import {
   AWAITING_USER_ACTION,
   abstainReason,
   asReason,
+  merchantKnowledgeReason,
   priorArtReason,
   receiptIdFromReason,
   sweptReason,
 } from "./reason";
 import { enqueueAskUser } from "./enqueue";
+import { canonicalMerchantKey, fetchMerchantKnowledgeIndex } from "./merchant-knowledge";
 import { classifyByRule, findMatchingRule } from "./rules";
 
 const log = createLogger({ module: "classification/sweep" });
@@ -165,6 +167,7 @@ export type SweepUserResult = {
   userId: number;
   picked: number;
   priorArtClassified: number;
+  merchantKnowledgeClassified: number;
   ruleClassified: number;
   aiClassified: number;
   settledToOtros: number;
@@ -216,34 +219,6 @@ function slugify(input: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
-}
-
-/**
- * Merchant identity used to look up prior art. Reuses `canonicalizeMerchant`
- * (the same function `withCanonical`/the canonical_merchant backfill use at
- * ingest time) rather than inventing a new normalizer:
- *   1. `canonical_merchant` column, if already populated — it's already the
- *      canonical form.
- *   2. Else canonicalize the raw `merchant` field on the fly.
- *   3. Else canonicalize `description_raw` as a last resort (still strips
- *      gateway prefixes / internal-transfer skip patterns; imperfect for a
- *      full description but the best available signal when there's no
- *      merchant at all).
- * Lower-cased for case-insensitive matching — canonicalizeMerchant preserves
- * original casing. Returns null when there's nothing usable to key on (e.g.
- * descriptionRaw itself matches a skip pattern) — the caller falls through
- * to rule/AI in that case, same as "no prior art found".
- */
-function merchantIdentityKey(row: {
-  canonicalMerchant: string | null;
-  merchant: string | null;
-  descriptionRaw: string;
-}): string | null {
-  const key =
-    row.canonicalMerchant ??
-    canonicalizeMerchant(row.merchant) ??
-    canonicalizeMerchant(row.descriptionRaw);
-  return key ? key.toLowerCase() : null;
 }
 
 type PriorArtEvidence = { manualCount: number; totalCount: number };
@@ -311,7 +286,7 @@ async function fetchPriorArtIndex(db: DB, userId: number): Promise<PriorArtIndex
         ? (canonicalizeMerchant(receiptMerchant)?.toLowerCase() ?? receiptMerchant.toLowerCase())
         : null;
     } else {
-      key = merchantIdentityKey(row);
+      key = canonicalMerchantKey(row);
     }
     if (!key || !row.categorySlug) continue;
 
@@ -579,6 +554,7 @@ export async function sweepUserOtrosBucket(
 
   let picked = 0;
   let priorArtClassified = 0;
+  let merchantKnowledgeClassified = 0;
   let ruleClassified = 0;
   let aiClassified = 0;
   let settledToOtros = 0;
@@ -612,6 +588,7 @@ export async function sweepUserOtrosBucket(
   const userHints: AiUserHint[] = userRow?.context?.merchant_hints ?? [];
 
   const priorArtIndex = await fetchPriorArtIndex(db, userId);
+  const merchantKnowledgeIndex = await fetchMerchantKnowledgeIndex(userId, db);
 
   const proposals = new Map<string, ProposalBucket>();
   // Every transaction id pulled so far in this run, regardless of outcome —
@@ -715,7 +692,7 @@ export async function sweepUserOtrosBucket(
       // merchant outranks any seed rule (see the module doc comment and
       // resolvePriorArt for why). Opaque rows key on receipt.merchant, never
       // the bank gateway string (#814 prior-art poisoning).
-      const identityKey = merchantIdentityKey(priorArtLookupRow(tx, evidence));
+      const identityKey = canonicalMerchantKey(priorArtLookupRow(tx, evidence));
       const priorArtByCategory = identityKey ? priorArtIndex.get(identityKey) : undefined;
       const priorArtCategory = resolvePriorArt(priorArtByCategory);
       if (priorArtCategory && priorArtByCategory) {
@@ -732,6 +709,26 @@ export async function sweepUserOtrosBucket(
           dryRun,
         );
         priorArtClassified++;
+        continue;
+      }
+
+      // Merchant KB next — a persisted read, not a re-derivation. Prior art
+      // still wins when the user's own history has a signal; this pass is
+      // for knowledge already paid for (backfill, later the web filler).
+      const kbCategory = identityKey ? merchantKnowledgeIndex.get(identityKey) : undefined;
+      if (kbCategory && existingSlugs.has(kbCategory)) {
+        await applyCategory(
+          db,
+          userId,
+          tx,
+          kbCategory,
+          "rule_retroactive",
+          90,
+          citationFromEvidence(evidence, merchantKnowledgeReason(kbCategory)),
+          changes,
+          dryRun,
+        );
+        merchantKnowledgeClassified++;
         continue;
       }
 
@@ -973,6 +970,7 @@ export async function sweepUserOtrosBucket(
     userId,
     picked,
     priorArtClassified,
+    merchantKnowledgeClassified,
     ruleClassified,
     aiClassified,
     settledToOtros,
@@ -993,6 +991,7 @@ export type ClassifySweepResult = {
   usersProcessed: number;
   totalPicked: number;
   totalPriorArtClassified: number;
+  totalMerchantKnowledgeClassified: number;
   totalRuleClassified: number;
   totalAiClassified: number;
   totalSettledToOtros: number;
@@ -1035,6 +1034,7 @@ export async function runClassifySweep(
     usersProcessed: 0,
     totalPicked: 0,
     totalPriorArtClassified: 0,
+    totalMerchantKnowledgeClassified: 0,
     totalRuleClassified: 0,
     totalAiClassified: 0,
     totalSettledToOtros: 0,
@@ -1055,6 +1055,7 @@ export async function runClassifySweep(
       result.usersProcessed++;
       result.totalPicked += userResult.picked;
       result.totalPriorArtClassified += userResult.priorArtClassified;
+      result.totalMerchantKnowledgeClassified += userResult.merchantKnowledgeClassified;
       result.totalRuleClassified += userResult.ruleClassified;
       result.totalAiClassified += userResult.aiClassified;
       result.totalSettledToOtros += userResult.settledToOtros;

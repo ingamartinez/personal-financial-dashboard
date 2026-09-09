@@ -45,7 +45,7 @@ export type SnapshotPayload = {
 // to ISO strings, arrays stay arrays. `jsonb_populate_recordset` on the way
 // back inflates into the target table, coercing types the same way. That's
 // why we reach for raw SQL here rather than hand-rolling a per-column
-// (de)serializer for each of the 14 snapshot tables.
+// (de)serializer for each of the 15 snapshot tables.
 
 export async function dumpUserPayload(
   userId: number,

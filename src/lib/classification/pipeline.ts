@@ -7,10 +7,12 @@ import {
   citationFromEvidence,
   classifiableForRules,
   loadTxEvidence,
+  priorArtLookupRow,
   toAiClassifiable,
   type TxEvidence,
 } from "./evidence";
-import { abstainReason } from "./reason";
+import { canonicalMerchantKey, fetchMerchantKnowledgeIndex } from "./merchant-knowledge";
+import { abstainReason, merchantKnowledgeReason } from "./reason";
 import { classifyByRule } from "./rules";
 import { enqueueAskUser } from "./enqueue";
 
@@ -20,6 +22,7 @@ export type PipelineResult = {
   picked: number;
   aiClassified: number;
   ruleClassified: number;
+  merchantKnowledgeClassified: number;
   skipped: number;
   model: string | null;
   usage: { inputTokens: number; outputTokens: number };
@@ -73,6 +76,7 @@ export async function classifyUnclassifiedBatch(
       id: transactions.id,
       description: transactions.descriptionRaw,
       merchant: transactions.merchant,
+      canonicalMerchant: transactions.canonicalMerchant,
       descriptionClean: transactions.descriptionClean,
       amountCents: transactions.amountCents,
       currency: transactions.currency,
@@ -87,6 +91,7 @@ export async function classifyUnclassifiedBatch(
       picked: 0,
       aiClassified: 0,
       ruleClassified: 0,
+      merchantKnowledgeClassified: 0,
       skipped: 0,
       model: null,
       usage: { inputTokens: 0, outputTokens: 0 },
@@ -110,9 +115,12 @@ export async function classifyUnclassifiedBatch(
       .limit(1),
   ]);
   const catOptions: AiCategoryOption[] = cats;
+  const existingSlugs = new Set(cats.map((c) => c.slug));
   const userHints: AiUserHint[] = userRow[0]?.context?.merchant_hints ?? [];
+  const merchantKnowledgeIndex = await fetchMerchantKnowledgeIndex(userId, db);
 
   let ruleClassified = 0;
+  let merchantKnowledgeClassified = 0;
   let skipped = 0;
   let opaqueAbstained = 0;
   const classifiedIds: number[] = [];
@@ -136,6 +144,33 @@ export async function classifyUnclassifiedBatch(
         .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
       skipped++;
       opaqueAbstained++;
+      continue;
+    }
+
+    const identityKey = canonicalMerchantKey(
+      priorArtLookupRow(
+        {
+          canonicalMerchant: tx.canonicalMerchant,
+          merchant: tx.merchant,
+          descriptionRaw: tx.description,
+        },
+        evidence,
+      ),
+    );
+    const kbCategory = identityKey ? merchantKnowledgeIndex.get(identityKey) : undefined;
+    if (kbCategory && existingSlugs.has(kbCategory)) {
+      await db
+        .update(transactions)
+        .set({
+          categorySlug: kbCategory,
+          classificationMethod: "rule_retroactive",
+          classificationConfidence: 90,
+          classificationReason: citationFromEvidence(evidence, merchantKnowledgeReason(kbCategory)),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
+      merchantKnowledgeClassified++;
+      classifiedIds.push(tx.id);
       continue;
     }
 
@@ -181,6 +216,7 @@ export async function classifyUnclassifiedBatch(
       picked: pending.length,
       aiClassified: 0,
       ruleClassified,
+      merchantKnowledgeClassified,
       skipped,
       model: null,
       usage: { inputTokens: 0, outputTokens: 0 },
@@ -244,7 +280,7 @@ export async function classifyUnclassifiedBatch(
     source: "manual",
     status: skipped === 0 ? "ok" : "partial",
     itemsReceived: pending.length,
-    itemsInserted: aiClassified + ruleClassified,
+    itemsInserted: aiClassified + ruleClassified + merchantKnowledgeClassified,
     itemsDuplicated: 0,
     errorMessage: null,
     payload: {
@@ -253,6 +289,7 @@ export async function classifyUnclassifiedBatch(
       usage: aiResult.usage,
       picked: pending.length,
       ruleClassified,
+      merchantKnowledgeClassified,
       aiClassified,
       skipped,
     },
@@ -264,6 +301,7 @@ export async function classifyUnclassifiedBatch(
     picked: pending.length,
     aiClassified,
     ruleClassified,
+    merchantKnowledgeClassified,
     skipped,
     model: aiResult.model,
     usage: aiResult.usage,
