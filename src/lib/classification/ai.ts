@@ -123,7 +123,10 @@ function buildSystemPrompt(cats: AiCategoryOption[]): string {
 Available categories (use the slug, exactly as written):
 ${categoryList}
 
-For each transaction, pick the MOST specific category slug that fits. Prefer subcategories (e.g. "restaurantes" over "alimentacion").
+For each transaction, pick the category slug that the DESCRIPTION ACTUALLY SUPPORTS — do not guess.
+- If the description names or clearly implies a specific kind of merchant or expense, prefer the matching subcategory over its parent (e.g. "restaurantes" over "alimentacion" when the description names a restaurant).
+- If the description gives NO signal that distinguishes a subcategory from its parent (e.g. a generic "Transferencia QR a cuenta *1234" says nothing about who received the money — it could be a person, a business, a bill), pick the PARENT category instead of guessing which child applies. A generic account/reference number is not evidence.
+- Do not default to the parent out of caution when the description DOES point to a specific subcategory — only fall back to the parent when the description genuinely fails to distinguish between it and its children.
 
 If NO existing category is a good fit, but the transaction is a clearly recurring, specific type of merchant/expense that deserves its own home (e.g. a veterinary clinic, a barbershop), set "categorySlug" to null and instead fill "proposedCategory": { "name": "<short Spanish name>", "parentSlug": "<parentSlug>" }. The taxonomy only supports 2 levels, so "parentSlug" MUST be either null (a new top-level category) or exactly one of these TOP-LEVEL slugs — never a subcategory:
 ${topLevelList}
