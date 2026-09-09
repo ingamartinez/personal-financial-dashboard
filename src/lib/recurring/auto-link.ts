@@ -189,6 +189,21 @@ async function resolveCandidate(
       const ownPatterns = (await fetchPatterns(userId, [lone.recurringId], database)).get(
         lone.recurringId,
       );
+      // #804 ACCEPTED TRADE-OFF (deliberate, not a bug): a recurring with
+      // zero learned patterns yet trusts ANY token on this classic path —
+      // "nothing learned" reads as "nothing to contradict", not "reject".
+      // This means a brand-new recurring's first ~2 occurrences (until
+      // recordRecurringLinkObservation accumulates observationCount >= 2)
+      // will auto-link on account+amount alone, even with an unrelated
+      // merchant description, AS LONG AS the amount doesn't also collide
+      // with another active recurring (amountCollides above still blocks
+      // that). This is intentionally bounded and reversible: same account +
+      // exact amount + in-window is the strongest pre-#804 signal, the
+      // product decision was to be aggressive, and the one-tap "Deshacer
+      // match" undo (recurring-list.tsx / recurring-calendar-grid.tsx)
+      // exists precisely to make a wrong guess cheap. Do NOT "fix" this by
+      // requiring a learned pattern here — that would block every brand-new
+      // recurring's bootstrap entirely (see engram: architecture/804-*).
       if (!ownPatterns || ownPatterns.length === 0 || ownPatterns.includes(token)) {
         return { winner: lone, ambiguousCount: null };
       }
