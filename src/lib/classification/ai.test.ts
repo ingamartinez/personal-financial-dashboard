@@ -196,3 +196,74 @@ describe("classifyBatchWithAi — system-owned category guard (#812)", () => {
     });
   });
 });
+
+// #816 §1: the specificity instruction must be conditional on evidence in the
+// description, not unconditional — an unconditional "prefer subcategories"
+// instruction led the AI to answer "transferencia-persona" for generic QR
+// transfers that carry no signal about the counterparty, contradicting 91
+// manual + 81 rule-engine decisions for the parent "transferencias".
+describe("classifyBatchWithAi — system prompt specificity is conditional on evidence (#816)", () => {
+  function captureSystemPrompt(): { fetchImpl: typeof fetch; getBody: () => string } {
+    let capturedBody = "";
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedBody = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify(
+          fakeMessageResponse({
+            classifications: [{ id: 1, categorySlug: "vivienda", confidence: 90 }],
+          }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    return { fetchImpl, getBody: () => capturedBody };
+  }
+
+  it("tells the model to fall back to the parent when the description doesn't distinguish it from its children", async () => {
+    const { fetchImpl, getBody } = captureSystemPrompt();
+
+    await classifyBatchWithAi({
+      transactions: [
+        {
+          id: 1,
+          description: "Transferencia QR a cuenta *1234",
+          amountCents: BigInt(-5000),
+          currency: "COP",
+        },
+      ],
+      categories: CATEGORIES,
+      apiKey: "test-key",
+      fetchImpl,
+    });
+
+    const body = getBody();
+    expect(body).toContain("NO signal that distinguishes a subcategory from its parent");
+    expect(body).toContain("pick the PARENT category instead of guessing which child applies");
+  });
+
+  it("still tells the model to prefer a specific subcategory when the description does support it", async () => {
+    const { fetchImpl, getBody } = captureSystemPrompt();
+
+    await classifyBatchWithAi({
+      transactions: [
+        {
+          id: 1,
+          description: "Transferencia QR a cuenta *1234",
+          amountCents: BigInt(-5000),
+          currency: "COP",
+        },
+      ],
+      categories: CATEGORIES,
+      apiKey: "test-key",
+      fetchImpl,
+    });
+
+    const body = getBody();
+    expect(body).toContain("prefer the matching subcategory over its parent");
+    expect(body).toContain("restaurantes");
+    expect(body).toContain("alimentacion");
+    expect(body).toContain(
+      "Do not default to the parent out of caution when the description DOES point to a specific subcategory",
+    );
+  });
+});
