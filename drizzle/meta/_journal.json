@@ -561,6 +561,13 @@
       "when": 1788952480023,
       "tag": "0079_categories_enforce_two_levels_tenant",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1788963130885,
+      "tag": "0080_modern_boom_boom",
+      "breakpoints": true
     }
   ]
 }

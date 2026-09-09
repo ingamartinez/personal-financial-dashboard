@@ -3,6 +3,14 @@ import { db as defaultDb } from "@/lib/db";
 import { categories, ingestionLogs, transactions, users } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { classifyBatchWithAi, type AiCategoryOption, type AiUserHint } from "./ai";
+import {
+  citationFromEvidence,
+  classifiableForRules,
+  loadTxEvidence,
+  toAiClassifiable,
+  type TxEvidence,
+} from "./evidence";
+import { abstainReason } from "./reason";
 import { classifyByRule } from "./rules";
 
 export const AI_BATCH_SIZE = 20;
@@ -104,16 +112,40 @@ export async function classifyUnclassifiedBatch(
   const userHints: AiUserHint[] = userRow[0]?.context?.merchant_hints ?? [];
 
   let ruleClassified = 0;
+  let skipped = 0;
   const classifiedIds: number[] = [];
-  const stillPending: typeof pending = [];
+  const stillPending: { tx: (typeof pending)[number]; evidence: TxEvidence }[] = [];
   for (const tx of pending) {
+    const evidence = await loadTxEvidence(userId, {
+      id: tx.id,
+      descriptionRaw: tx.description,
+      merchant: tx.merchant,
+    });
+    if (evidence.opaque && evidence.candidates.length === 0) {
+      await db
+        .update(transactions)
+        .set({
+          categorySlug: "otros",
+          classificationMethod: "user_uncategorized",
+          classificationConfidence: 0,
+          classificationReason: abstainReason("opaque_gateway", { gateway: evidence.opaque }),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
+      skipped++;
+      continue;
+    }
+
     const ruleHit = await classifyByRule(
       userId,
-      {
-        descriptionRaw: tx.description,
-        descriptionClean: tx.descriptionClean,
-        merchant: tx.merchant,
-      },
+      classifiableForRules(
+        {
+          descriptionRaw: tx.description,
+          descriptionClean: tx.descriptionClean,
+          merchant: tx.merchant,
+        },
+        evidence,
+      ),
       db,
     );
     if (ruleHit) {
@@ -123,13 +155,17 @@ export async function classifyUnclassifiedBatch(
           categorySlug: ruleHit.categorySlug,
           classificationMethod: "rule",
           classificationConfidence: ruleHit.confidence,
+          classificationReason: citationFromEvidence(evidence, {
+            action: "rule",
+            ruleId: ruleHit.ruleId,
+          }),
           updatedAt: new Date(),
         })
         .where(and(eq(transactions.userId, userId), eq(transactions.id, tx.id)));
       ruleClassified++;
       classifiedIds.push(tx.id);
     } else {
-      stillPending.push(tx);
+      stillPending.push({ tx, evidence });
     }
   }
 
@@ -138,7 +174,7 @@ export async function classifyUnclassifiedBatch(
       picked: pending.length,
       aiClassified: 0,
       ruleClassified,
-      skipped: 0,
+      skipped,
       model: null,
       usage: { inputTokens: 0, outputTokens: 0 },
       classifiedIds,
@@ -146,22 +182,28 @@ export async function classifyUnclassifiedBatch(
   }
 
   const aiResult = await classifyBatchWithAi({
-    transactions: stillPending.map((t) => ({
-      id: t.id,
-      description: t.descriptionClean ?? t.merchant ?? t.description,
-      amountCents: t.amountCents,
-      currency: t.currency,
-    })),
+    transactions: stillPending.map(({ tx, evidence }) =>
+      toAiClassifiable(
+        {
+          id: tx.id,
+          descriptionRaw: tx.description,
+          descriptionClean: tx.descriptionClean,
+          merchant: tx.merchant,
+          amountCents: tx.amountCents,
+          currency: tx.currency,
+        },
+        evidence,
+      ),
+    ),
     categories: catOptions,
     userHints,
   });
 
   const byId = new Map(aiResult.classifications.map((c) => [c.id, c]));
   let aiClassified = 0;
-  let skipped = 0;
-  const ids = stillPending.map((t) => t.id);
+  const ids = stillPending.map(({ tx }) => tx.id);
 
-  for (const tx of stillPending) {
+  for (const { tx, evidence } of stillPending) {
     const hit = byId.get(tx.id);
     if (!hit || !hit.categorySlug) {
       skipped++;
@@ -173,7 +215,10 @@ export async function classifyUnclassifiedBatch(
         categorySlug: hit.categorySlug,
         classificationMethod: "ai",
         classificationConfidence: hit.confidence,
-        classificationReason: hit.reason?.slice(0, 200) ?? null,
+        classificationReason: citationFromEvidence(
+          evidence,
+          hit.reason ? { aiReason: hit.reason } : {},
+        ),
         updatedAt: new Date(),
       })
       .where(

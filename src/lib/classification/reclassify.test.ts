@@ -131,9 +131,11 @@ describe("reclassifyTransaction", () => {
     expect(after.categorySlug).toBe("delivery");
     expect(after.classificationMethod).toBe("rule_retroactive");
     expect(after.classificationConfidence).toBe(100);
-    expect(after.classificationReason).toBe(
-      `rule_retroactive: matched rule #${ruleId} via enriched_merchant`,
-    );
+    expect(after.classificationReason).toMatchObject({
+      action: "rule_retroactive",
+      ruleId,
+      via: "enriched_merchant",
+    });
   });
 
   it("is idempotent: calling twice produces identical state", async () => {

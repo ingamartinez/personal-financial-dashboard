@@ -45,10 +45,18 @@ async function seedTxn(args: {
   categorySlug: string | null;
   method: "rule" | "rule_retroactive" | "ai" | "manual" | "manual_confirmed" | "unclassified";
   confidence?: number | null;
-  reason?: string | null;
+  reason?: string | Record<string, unknown> | null;
   previousCategorySlug?: string | null;
   retroactiveRuleId?: number | null;
 }): Promise<number> {
+  const reasonJson =
+    args.reason == null
+      ? null
+      : typeof args.reason === "string"
+        ? args.reason.trim().startsWith("{")
+          ? args.reason
+          : JSON.stringify({ text: args.reason })
+        : JSON.stringify(args.reason);
   const [acc] = await db.execute<{ id: number }>(sql`
     SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
   `);
@@ -70,7 +78,7 @@ async function seedTxn(args: {
       ${args.categorySlug},
       ${args.method}::classification_method,
       ${args.confidence ?? null},
-      ${args.reason ?? null},
+      ${reasonJson}::jsonb,
       ${args.previousCategorySlug ?? null},
       ${args.retroactiveRuleId ?? null},
       'sms',
@@ -209,8 +217,31 @@ describe("GET /api/transactions/[id]/classification-reason", () => {
     expect(body.method).toBe("ai");
     expect(body.detail.confidence).toBe(87);
     expect(body.detail.reason).toBe("merchant name matches streaming service pattern");
+    expect(body.detail.receipt).toBeNull();
     expect(body.summary).toContain("Claude");
     expect(body.summary).toContain("87%");
+  });
+
+  it("ai branch unwraps a jsonb citation and does not dump the object as the reason (#814)", async () => {
+    const txId = await seedTxn({
+      externalId: `${EXTERNAL_PREFIX}ai-citation`,
+      merchant: "MERCADOPAGO COLOMBIA",
+      categorySlug: "hogar",
+      method: "ai",
+      confidence: 90,
+      reason: {
+        receiptId: 9_999_999,
+        matchKind: "exact_amount",
+        aiReason: "almohada from receipt",
+      },
+    });
+
+    const res = await GET(makeRequest(txId), makeContext(txId));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.method).toBe("ai");
+    expect(body.detail.reason).toBe("almohada from receipt");
+    expect(body.detail.receipt).toBeNull();
   });
 
   it("returns manual branch with previous_category_slug", async () => {

@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { classificationRules, transactions } from "@/lib/db/schema";
+import { classificationRules, emailReceipts, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUserOrNull } from "@/lib/auth/session";
+import { aiReasonText, asReason, receiptIdFromReason } from "@/lib/classification/reason";
 import { findMatchingRule } from "@/lib/classification/rules";
 import type { ClassificationMethod } from "@/lib/types";
 
@@ -31,16 +32,31 @@ type PriorArtDetail = {
   totalCount: number;
 };
 
+export type ReceiptCitationDetail = {
+  id: number;
+  merchant: string | null;
+  gateway: string;
+  matchKind: string | null;
+};
+
 export type ClassificationReasonResponse =
   | {
       method: "rule" | "rule_retroactive";
       summary: string;
-      detail: { rule: RuleDetail | null; priorArt: PriorArtDetail | null };
+      detail: {
+        rule: RuleDetail | null;
+        priorArt: PriorArtDetail | null;
+        receipt: ReceiptCitationDetail | null;
+      };
     }
   | {
       method: "ai";
       summary: string;
-      detail: { confidence: number | null; reason: string | null };
+      detail: {
+        confidence: number | null;
+        reason: string | null;
+        receipt: ReceiptCitationDetail | null;
+      };
     }
   | {
       method: "manual";
@@ -64,42 +80,61 @@ export type ClassificationReasonResponse =
       detail: null;
     };
 
-function parsePriorArtReason(raw: string | null): PriorArtDetail | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as {
-      action?: unknown;
-      categorySlug?: unknown;
-      manualCount?: unknown;
-      totalCount?: unknown;
-    };
-    if (parsed.action !== "prior_art" || typeof parsed.categorySlug !== "string") return null;
-    return {
-      categorySlug: parsed.categorySlug,
-      manualCount: typeof parsed.manualCount === "number" ? parsed.manualCount : 0,
-      totalCount: typeof parsed.totalCount === "number" ? parsed.totalCount : 0,
-    };
-  } catch {
+function parsePriorArtReason(raw: unknown): PriorArtDetail | null {
+  const parsed = asReason(raw);
+  if (!parsed || parsed.action !== "prior_art" || typeof parsed.categorySlug !== "string") {
     return null;
   }
+  return {
+    categorySlug: parsed.categorySlug,
+    manualCount: typeof parsed.manualCount === "number" ? parsed.manualCount : 0,
+    totalCount: typeof parsed.totalCount === "number" ? parsed.totalCount : 0,
+  };
 }
 
-function parseConfirmedReason(raw: string | null): {
+function parseConfirmedReason(raw: unknown): {
   originalMethod: ClassificationMethod | null;
   originalConfidence: number | null;
 } {
-  if (!raw) return { originalMethod: null, originalConfidence: null };
-  try {
-    const parsed = JSON.parse(raw) as { confirmed_from?: unknown; confidence?: unknown };
-    const from = typeof parsed.confirmed_from === "string" ? parsed.confirmed_from : null;
-    const conf = typeof parsed.confidence === "number" ? parsed.confidence : null;
-    return {
-      originalMethod: from as ClassificationMethod | null,
-      originalConfidence: conf,
-    };
-  } catch {
-    return { originalMethod: null, originalConfidence: null };
-  }
+  const parsed = asReason(raw);
+  if (!parsed) return { originalMethod: null, originalConfidence: null };
+  const from = typeof parsed.confirmed_from === "string" ? parsed.confirmed_from : null;
+  const conf = typeof parsed.confidence === "number" ? parsed.confidence : null;
+  return {
+    originalMethod: from as ClassificationMethod | null,
+    originalConfidence: conf,
+  };
+}
+
+async function loadReceiptCitation(
+  userId: number,
+  raw: unknown,
+): Promise<ReceiptCitationDetail | null> {
+  const reason = asReason(raw);
+  const receiptId = receiptIdFromReason(reason);
+  if (receiptId == null) return null;
+  const [row] = await db
+    .select({
+      id: emailReceipts.id,
+      merchant: emailReceipts.merchant,
+      gateway: emailReceipts.gateway,
+    })
+    .from(emailReceipts)
+    .where(
+      and(
+        eq(emailReceipts.userId, userId),
+        eq(emailReceipts.id, receiptId),
+        notDeleted(emailReceipts.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    merchant: row.merchant,
+    gateway: row.gateway,
+    matchKind: typeof reason?.matchKind === "string" ? reason.matchKind : null,
+  };
 }
 
 export async function GET(
@@ -148,6 +183,7 @@ export async function GET(
   switch (txn.classificationMethod) {
     case "rule":
     case "rule_retroactive": {
+      const receipt = await loadReceiptCitation(session.id, txn.classificationReason);
       const priorArt = parsePriorArtReason(txn.classificationReason);
       if (priorArt) {
         const summary =
@@ -157,7 +193,7 @@ export async function GET(
         return NextResponse.json({
           method: txn.classificationMethod,
           summary,
-          detail: { rule: null, priorArt },
+          detail: { rule: null, priorArt, receipt },
         });
       }
 
@@ -228,20 +264,24 @@ export async function GET(
       return NextResponse.json({
         method: txn.classificationMethod,
         summary,
-        detail: { rule, priorArt: null },
+        detail: { rule, priorArt: null, receipt },
       });
     }
 
     case "ai": {
       const conf = txn.classificationConfidence;
-      const reason = txn.classificationReason;
+      const parsed = asReason(txn.classificationReason);
+      const reason =
+        aiReasonText(parsed) ??
+        (typeof txn.classificationReason === "string" ? txn.classificationReason : null);
+      const receipt = await loadReceiptCitation(session.id, txn.classificationReason);
       const summary = `Claude clasificó como ${txn.categorySlug ?? "—"}${
         conf !== null ? ` (confianza ${conf}%)` : ""
       }`;
       return NextResponse.json({
         method: "ai",
         summary,
-        detail: { confidence: conf, reason },
+        detail: { confidence: conf, reason, receipt },
       });
     }
 
