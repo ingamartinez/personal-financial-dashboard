@@ -8,6 +8,7 @@ import {
   inspectCacheablePrefix,
   DEFAULT_MODEL,
   HAIKU_MODEL,
+  type CallClaudeOpts,
 } from "./anthropic-client";
 
 type CapturedRequest = {
@@ -151,6 +152,28 @@ describe("callClaude", () => {
     expect(captured[0].body.tools).toBeUndefined();
   });
 
+  it("forbids a tools parameter on CallClaudeOpts — an optional field must not compile", () => {
+    type HasTools = "tools" extends keyof CallClaudeOpts<unknown> ? true : false;
+    const hasTools: HasTools = false;
+    expect(hasTools).toBe(false);
+  });
+
+  it("throws when tools is smuggled on the opts object", async () => {
+    const captured: CapturedRequest[] = [];
+    const smuggled = {
+      feature: "classification" as const,
+      userPrompt: "classify this",
+      schema: Schema,
+      apiKey: "sk-test",
+      fetchImpl: mockFetch(fakeMessageResponse({ label: "food", confidence: 0.9 }), captured),
+      tools: [{ name: "web_search" }],
+    };
+    await expect(
+      callClaude(smuggled as CallClaudeOpts<{ label: string; confidence: number }>),
+    ).rejects.toThrow(/refuses tools/);
+    expect(captured).toHaveLength(0);
+  });
+
   it("accepts a bare string system prompt with no cache breakpoint", async () => {
     const captured: CapturedRequest[] = [];
     await callClaude({
@@ -279,6 +302,28 @@ function fakeTextResponse(
 }
 
 describe("callClaudeText", () => {
+  it("forbids a tools parameter on callClaudeText opts — an optional field must not compile", () => {
+    type TextOpts = Parameters<typeof callClaudeText>[0];
+    type HasTools = "tools" extends keyof TextOpts ? true : false;
+    const hasTools: HasTools = false;
+    expect(hasTools).toBe(false);
+  });
+
+  it("throws when tools is smuggled on the opts object", async () => {
+    const captured: CapturedRequest[] = [];
+    const smuggled = {
+      feature: "insights" as const,
+      userPrompt: "ok",
+      apiKey: "sk-test",
+      fetchImpl: mockFetch(fakeTextResponse("reply"), captured),
+      tools: [{ name: "web_search" }],
+    };
+    await expect(callClaudeText(smuggled as Parameters<typeof callClaudeText>[0])).rejects.toThrow(
+      /refuses tools/,
+    );
+    expect(captured).toHaveLength(0);
+  });
+
   it("returns the concatenated text + cache usage", async () => {
     const result = await callClaudeText({
       feature: "insights",

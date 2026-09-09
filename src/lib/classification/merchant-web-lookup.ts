@@ -79,6 +79,8 @@ const TRANSACTION_SHAPED_FIELDS: ReadonlySet<string> = new Set([
 
 // Pinned integers (#814 5b). Epic budget is ~10 cents/row. This is a lookup,
 // not judgment, so Haiku — not the shared Sonnet classification default.
+// LOOKUP_MAX_COST_CENTS aborts the call after persist (money is already
+// spent). A log-only cap would let a bulk job keep paying.
 export const WEB_SEARCH_TOOL_TYPE = "web_search_20260209" as const;
 export const WEB_SEARCH_MAX_USES = 3;
 export const LOOKUP_MAX_TOKENS = 512;
@@ -122,6 +124,24 @@ export type FillMerchantKnowledgeFromWebResult = {
 };
 
 /**
+ * Thrown after a lookup that already ran and was persisted, when the local
+ * cost estimate exceeds LOOKUP_MAX_COST_CENTS. Aborting is the bulk-job
+ * door: a log would let the next merchant pay too. The row is kept because
+ * the money is already spent — skip-persist would rebill the same merchant
+ * on every retry.
+ */
+export class MerchantLookupOverBudgetError extends Error {
+  readonly estimatedCostCents: number;
+  readonly capCents: number;
+  constructor(estimatedCostCents: number, capCents: number) {
+    super("merchant web lookup exceeded the pinned cost cap");
+    this.name = "MerchantLookupOverBudgetError";
+    this.estimatedCostCents = estimatedCostCents;
+    this.capCents = capCents;
+  }
+}
+
+/**
  * Whitelist pick. Reads `merchant` and nothing else. Throws if the value is
  * transaction-shaped so financial fields cannot be "passed through for
  * context" — that collapse is silent if we redact instead of reject.
@@ -131,10 +151,17 @@ export function pickMerchantLookupInput(raw: unknown): MerchantLookupInput {
     throw new Error("merchant lookup input must be an object with a merchant string");
   }
   const rec = raw as Record<string, unknown>;
-  const leaked = Object.keys(rec).filter((key) => TRANSACTION_SHAPED_FIELDS.has(key));
-  if (leaked.length > 0) {
+  const allowed = new Set<string>(MERCHANT_LOOKUP_FIELDS);
+  const extra = Object.keys(rec).filter((key) => !allowed.has(key));
+  if (extra.length > 0) {
+    const leaked = extra.filter((key) => TRANSACTION_SHAPED_FIELDS.has(key));
+    if (leaked.length > 0) {
+      throw new Error(
+        `merchant lookup refuses transaction-shaped input (fields: ${leaked.sort().join(",")})`,
+      );
+    }
     throw new Error(
-      `merchant lookup refuses transaction-shaped input (fields: ${leaked.sort().join(",")})`,
+      `merchant lookup refuses extra input fields (fields: ${extra.sort().join(",")})`,
     );
   }
   const merchant = rec.merchant;
@@ -284,7 +311,6 @@ async function callMerchantWebLookup(opts: {
       outputTokens: response.usage.output_tokens,
       webSearchRequests: response.usage.server_tool_use?.web_search_requests ?? 0,
     };
-    const estimatedCostCents = estimateLookupCostCents(usage);
     log.info(
       {
         event: "ai_usage",
@@ -293,22 +319,11 @@ async function callMerchantWebLookup(opts: {
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         webSearchRequests: usage.webSearchRequests,
-        estimatedCostCents,
+        estimatedCostCents: estimateLookupCostCents(usage),
         durationMs: Math.round(performance.now() - started),
       },
       "anthropic usage",
     );
-    if (estimatedCostCents > LOOKUP_MAX_COST_CENTS) {
-      log.warn(
-        {
-          event: "merchant_web_lookup_cost_high",
-          estimatedCostCents,
-          capCents: LOOKUP_MAX_COST_CENTS,
-          ...usage,
-        },
-        "merchant web lookup exceeded the pinned cost cap",
-      );
-    }
 
     return { data: response.parsed_output, model: response.model, usage };
   } catch (err) {
@@ -454,6 +469,7 @@ export async function fillMerchantKnowledgeFromWeb(
     apiKey: opts.apiKey,
     fetchImpl: opts.fetchImpl,
   });
+  const estimatedCostCents = estimateLookupCostCents(result.usage);
   const entry = await persistLookup({
     key,
     merchant: input.merchant,
@@ -462,7 +478,19 @@ export async function fillMerchantKnowledgeFromWeb(
     categories,
     database,
   });
-  const estimatedCostCents = estimateLookupCostCents(result.usage);
+  if (estimatedCostCents > LOOKUP_MAX_COST_CENTS) {
+    log.warn(
+      {
+        event: "merchant_web_lookup_cost_high",
+        canonicalMerchant: key,
+        estimatedCostCents,
+        capCents: LOOKUP_MAX_COST_CENTS,
+        ...result.usage,
+      },
+      "merchant web lookup exceeded the pinned cost cap",
+    );
+    throw new MerchantLookupOverBudgetError(estimatedCostCents, LOOKUP_MAX_COST_CENTS);
+  }
   log.info(
     {
       canonicalMerchant: key,

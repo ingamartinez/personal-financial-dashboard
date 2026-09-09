@@ -18,6 +18,9 @@ import {
   estimateLookupCostCents,
   fillMerchantKnowledgeFromWeb,
   pickMerchantLookupInput,
+  MerchantLookupOverBudgetError,
+  type FillMerchantKnowledgeFromWebOpts,
+  type MerchantLookupInput,
 } from "./merchant-web-lookup";
 
 const TAG = "MWL_TEST";
@@ -44,7 +47,7 @@ type CapturedRequest = { url: string; body: Record<string, unknown> };
 
 function fakeMessageResponse(
   payload: unknown,
-  extra?: { webSearchRequests?: number },
+  extra?: { webSearchRequests?: number; inputTokens?: number; outputTokens?: number },
 ): Record<string, unknown> {
   return {
     id: "msg_test",
@@ -55,8 +58,8 @@ function fakeMessageResponse(
     stop_reason: "end_turn",
     stop_sequence: null,
     usage: {
-      input_tokens: 80,
-      output_tokens: 40,
+      input_tokens: extra?.inputTokens ?? 80,
+      output_tokens: extra?.outputTokens ?? 40,
       cache_read_input_tokens: 0,
       cache_creation_input_tokens: 0,
       server_tool_use: {
@@ -96,12 +99,31 @@ describe("merchant lookup whitelist", () => {
     expect(MERCHANT_LOOKUP_FIELDS).toEqual(["merchant"]);
   });
 
+  it("MerchantLookupInput cannot grow a field without this test turning red", () => {
+    type Extra = Exclude<keyof MerchantLookupInput, "merchant">;
+    const extra: Extra extends never ? true : Extra = true;
+    expect(extra).toBe(true);
+  });
+
+  it("FillMerchantKnowledgeFromWebOpts cannot grow a field without this test turning red", () => {
+    type Allowed = "userId" | "categories" | "apiKey" | "fetchImpl" | "database";
+    type Extra = Exclude<keyof FillMerchantKnowledgeFromWebOpts, Allowed>;
+    const extra: Extra extends never ? true : Extra = true;
+    expect(extra).toBe(true);
+  });
+
   it("picks merchant and nothing else", () => {
     expect(pickMerchantLookupInput({ merchant: "  OEM SAS  " })).toEqual({ merchant: "OEM SAS" });
   });
 
   it("refuses a transaction-shaped value so financial fields cannot reach the call", () => {
     expect(() => pickMerchantLookupInput(TRANSACTION_SHAPED)).toThrow(/transaction-shaped/);
+  });
+
+  it("refuses any extra input key, not only the known financial ones", () => {
+    expect(() => pickMerchantLookupInput({ merchant: "OEM SAS", note: "for context" })).toThrow(
+      /extra input fields/,
+    );
   });
 
   it("user prompt is exactly the merchant line", () => {
@@ -176,8 +198,9 @@ describe("fillMerchantKnowledgeFromWeb", () => {
   it("sends only the merchant string and the native web_search tool", async () => {
     const captured: CapturedRequest[] = [];
     const userId = await createUser(`${TAG}-iso-${Date.now()}@test.local`);
+    const merchant = "OEM SAS";
     await fillMerchantKnowledgeFromWeb(
-      { merchant: "OEM SAS" },
+      { merchant },
       {
         userId,
         categories: CATEGORIES,
@@ -198,7 +221,12 @@ describe("fillMerchantKnowledgeFromWeb", () => {
     const body = captured[0].body;
     expect(body.model).toBe("claude-haiku-4-5");
     expect(body.max_tokens).toBe(LOOKUP_MAX_TOKENS);
-    expect(body.messages).toEqual([{ role: "user", content: "Merchant name: OEM SAS" }]);
+    expect(body.messages).toEqual([
+      { role: "user", content: buildMerchantLookupUserPrompt({ merchant }) },
+    ]);
+    expect(body.system).toEqual([
+      { type: "text", text: buildMerchantLookupSystemPrompt(CATEGORIES) },
+    ]);
     expect(body.tools).toEqual([
       {
         type: WEB_SEARCH_TOOL_TYPE,
@@ -207,8 +235,35 @@ describe("fillMerchantKnowledgeFromWeb", () => {
         user_location: { type: "approximate", country: "CO", timezone: "America/Bogota" },
       },
     ]);
+  });
 
-    const visible = JSON.stringify({ messages: body.messages, system: body.system });
+  it("does not forward smuggled opts onto the model — adding a field to opts is what turns the lock red", async () => {
+    const captured: CapturedRequest[] = [];
+    const userId = await createUser(`${TAG}-smuggle-${Date.now()}@test.local`);
+    const smuggled = {
+      userId,
+      categories: CATEGORIES,
+      apiKey: "sk-test",
+      fetchImpl: mockFetch(
+        fakeMessageResponse({
+          businessType: "industrial manufacturer",
+          categorySlug: "hogar",
+          aliases: [],
+          isGateway: false,
+        }),
+        captured,
+      ),
+      transaction: TRANSACTION_SHAPED,
+      amountCents: TRANSACTION_SHAPED.amountCents,
+      description: TRANSACTION_SHAPED.descriptionRaw,
+    };
+    await fillMerchantKnowledgeFromWeb(
+      { merchant: "OEM SAS" },
+      smuggled as FillMerchantKnowledgeFromWebOpts,
+    );
+
+    expect(captured).toHaveLength(1);
+    const visible = JSON.stringify(captured[0].body);
     for (const needle of [
       "14150000",
       "14_150_000",
@@ -222,6 +277,47 @@ describe("fillMerchantKnowledgeFromWeb", () => {
     ]) {
       expect(visible).not.toContain(needle);
     }
+  });
+
+  it("aborts when the local cost estimate exceeds the cap, but keeps the row so a retry does not pay again", async () => {
+    const userId = await createUser(`${TAG}-cap-${Date.now()}@test.local`);
+    const merchant = `${TAG} FatPages`;
+    const fetchImpl = mockFetch(
+      fakeMessageResponse(
+        {
+          businessType: "industrial manufacturer",
+          categorySlug: "hogar",
+          aliases: [],
+          isGateway: false,
+        },
+        { webSearchRequests: 3, inputTokens: 80_000, outputTokens: 40 },
+      ),
+      [],
+    );
+
+    const error = await fillMerchantKnowledgeFromWeb(
+      { merchant },
+      { userId, categories: CATEGORIES, apiKey: "sk-test", fetchImpl },
+    ).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(MerchantLookupOverBudgetError);
+    expect((error as MerchantLookupOverBudgetError).estimatedCostCents).toBeGreaterThan(
+      LOOKUP_MAX_COST_CENTS,
+    );
+
+    const [row] = await db
+      .select({ businessType: merchantKnowledge.businessType })
+      .from(merchantKnowledge)
+      .where(sql`canonical_merchant = ${merchant.toLowerCase()}`);
+    expect(row?.businessType).toBe("industrial manufacturer");
+
+    const secondFetch = vi.fn() as unknown as typeof fetch;
+    const second = await fillMerchantKnowledgeFromWeb(
+      { merchant },
+      { userId, categories: CATEGORIES, apiKey: "sk-test", fetchImpl: secondFetch },
+    );
+    expect(second.searched).toBe(false);
+    expect(second.skippedReason).toBe("already_known");
+    expect(secondFetch).not.toHaveBeenCalled();
   });
 
   it("persists global facts and a per-user hint constrained to existing slugs", async () => {
