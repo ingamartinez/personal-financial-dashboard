@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -1480,50 +1480,39 @@ describe("autoLinkTransaction #844 — payment before its own gap exists", () =>
   beforeEach(cleanup);
   afterEach(cleanup);
 
-  it("day-1 payment in month M links to M even when only M-1 and M-2 have open gaps", async () => {
-    const accountId = await seedAccount();
-    const recurringId = await seedRecurring(accountId, {
-      label: "__autolink_844_before_gap__",
-      amountCents: BigInt(-499100),
-      dayOfMonth: 1,
-    });
-    await db.insert(recurringGaps).values([
-      { userId: TEST_USER_ID, recurringId, yearMonth: "2026-07" },
-      { userId: TEST_USER_ID, recurringId, yearMonth: "2026-08" },
-    ]);
-
-    const txId = await seedTx(accountId, {
-      occurredOn: "2026-09-08",
-      amountCents: BigInt(-499100),
-    });
-
-    const result = await autoLinkTransaction(TEST_USER_ID, txId);
-    expect(result.status).toBe("linked");
-    if (result.status === "linked") {
-      expect(result.recurringId).toBe(recurringId);
-      expect(result.yearMonth).toBe("2026-09");
-      expect(result.gapId).toBeNull();
-    }
-
-    const leftover = await db
-      .select({ yearMonth: recurringGaps.yearMonth })
-      .from(recurringGaps)
-      .where(eq(recurringGaps.recurringId, recurringId));
-    expect(leftover.map((g) => g.yearMonth).sort()).toEqual(["2026-07", "2026-08"]);
-  });
-
-  it("two day-1 recurrings at different amounts each claim their September payment despite older open gaps", async () => {
+  it("day-8 APORTES twin: exact amount picks the right recurring, not the shared fingerprint", async () => {
+    // Prod shape of txs 2650/2651 vs recurrings 9/10. Both are day-1, same
+    // account, same learned APORTES token (observation_count >= 2). Amounts
+    // differ by 9,200 COP. Pre-#804 the match window ended day 6
+    // (DEFAULT_WINDOW_AFTER_DAYS = 5), so a day-8 payment returned
+    // no-open-gap. Slot-claiming puts Sept 8 inside September; classic
+    // (account+exact amount) must win even though the fingerprint cannot
+    // tell the twins apart. gapId null = direct path, not a stolen July gap.
     const accountId = await seedAccount();
     const aida = await seedRecurring(accountId, {
       label: "__autolink_844_aida__",
-      amountCents: BigInt(-499100),
+      amountCents: BigInt(-49_910_000),
       dayOfMonth: 1,
     });
     const alejo = await seedRecurring(accountId, {
       label: "__autolink_844_alejo__",
-      amountCents: BigInt(-508300),
+      amountCents: BigInt(-50_830_000),
       dayOfMonth: 1,
     });
+    await db.insert(recurringDescriptionPatterns).values([
+      {
+        userId: TEST_USER_ID,
+        recurringId: aida,
+        pattern: "APORTES",
+        observationCount: 3,
+      },
+      {
+        userId: TEST_USER_ID,
+        recurringId: alejo,
+        pattern: "APORTES",
+        observationCount: 3,
+      },
+    ]);
     await db.insert(recurringGaps).values([
       { userId: TEST_USER_ID, recurringId: aida, yearMonth: "2026-07" },
       { userId: TEST_USER_ID, recurringId: aida, yearMonth: "2026-08" },
@@ -1533,17 +1522,37 @@ describe("autoLinkTransaction #844 — payment before its own gap exists", () =>
 
     const txAida = await seedTx(accountId, {
       occurredOn: "2026-09-08",
-      amountCents: BigInt(-499100),
+      amountCents: BigInt(-49_910_000),
+      description: "APORTES EN LINEA",
     });
     const txAlejo = await seedTx(accountId, {
       occurredOn: "2026-09-08",
-      amountCents: BigInt(-508300),
+      amountCents: BigInt(-50_830_000),
+      description: "APORTES EN LINEA",
     });
 
     const r1 = await autoLinkTransaction(TEST_USER_ID, txAida);
     const r2 = await autoLinkTransaction(TEST_USER_ID, txAlejo);
-    expect(r1).toMatchObject({ status: "linked", recurringId: aida, yearMonth: "2026-09" });
-    expect(r2).toMatchObject({ status: "linked", recurringId: alejo, yearMonth: "2026-09" });
+    expect(r1).toMatchObject({
+      status: "linked",
+      recurringId: aida,
+      yearMonth: "2026-09",
+      gapId: null,
+    });
+    expect(r2).toMatchObject({
+      status: "linked",
+      recurringId: alejo,
+      yearMonth: "2026-09",
+      gapId: null,
+    });
+
+    const leftover = await db
+      .select({ recurringId: recurringGaps.recurringId, yearMonth: recurringGaps.yearMonth })
+      .from(recurringGaps)
+      .where(inArray(recurringGaps.recurringId, [aida, alejo]));
+    expect(leftover.map((g) => `${g.recurringId}:${g.yearMonth}`).sort()).toEqual(
+      [`${aida}:2026-07`, `${aida}:2026-08`, `${alejo}:2026-07`, `${alejo}:2026-08`].sort(),
+    );
   });
 
   it("unique learned token links a utility bill whose amount differs from the recurring", async () => {
