@@ -72,9 +72,13 @@ const CLOSED_RETROACTIVE_MODAL: RetroactiveModalState = {
 type ProposalRow = {
   id: number;
   merchant: string;
+  pattern: string;
   categorySlug: string;
   correctionTxnIds: number[];
+  source: "corrections" | "synthesized";
   createdAt: string;
+  matchCount: number;
+  sample: Array<{ id: number; merchant: string | null; descriptionClean: string | null }>;
 };
 
 type EditorState = {
@@ -176,7 +180,7 @@ export function RulesManager({
         result.ruleId,
         result.preview,
         p.categorySlug,
-        `Regla creada: %${p.merchant}% → ${categoryName(p.categorySlug)}`,
+        `Regla creada: ${p.pattern} → ${categoryName(p.categorySlug)}`,
       );
     });
   }
@@ -233,12 +237,21 @@ export function RulesManager({
                 data-testid={`proposal-row-${p.id}`}
               >
                 <div className="flex-1">
-                  <span className="font-mono">%{p.merchant}%</span>{" "}
+                  <span className="font-mono">{p.pattern}</span>{" "}
                   <span className="text-muted-foreground">→</span>{" "}
                   <span className="font-medium">{categoryName(p.categorySlug)}</span>
-                  <span className="text-muted-foreground ml-2 text-xs">
-                    ({p.correctionTxnIds.length} correcciones en 30 d)
-                  </span>
+                  <div className="text-muted-foreground mt-1 text-xs">
+                    {p.source === "synthesized"
+                      ? "IA sintetizada"
+                      : `${p.correctionTxnIds.length} correcciones en 30 d`}
+                    {" · "}
+                    {p.matchCount} transacci{p.matchCount === 1 ? "ón" : "ones"}
+                    {p.sample.length > 0
+                      ? ` · ${p.sample
+                          .map((s) => s.merchant ?? s.descriptionClean ?? `#${s.id}`)
+                          .join(", ")}`
+                      : ""}
+                  </div>
                 </div>
                 <Button
                   variant="default"
