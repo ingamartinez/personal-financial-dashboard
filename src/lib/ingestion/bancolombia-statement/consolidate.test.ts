@@ -1724,3 +1724,137 @@ describe("consolidateCycleFromStatement — archived SMS does not re-insert (#76
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #769 × #555 — archived USD SMS must not block cross-twin reassignment
+// ---------------------------------------------------------------------------
+describe("consolidateCycleFromStatement — archived USD SMS still cross-twin reassigns (#769)", () => {
+  it("reassigns the live COP twin when the USD SMS leg is archived", async () => {
+    const userId = await createUser(`stmt_arch_twin.${crypto.randomUUID()}@test.local`, {
+      tcAccountingEnabled: false,
+    });
+    const physicalCardId = crypto.randomUUID();
+    try {
+      await db.insert(physicalCards).values({
+        id: physicalCardId,
+        userId,
+        institution: "Bancolombia",
+        network: "mastercard",
+        last4: "7291",
+        creditLimitCents: BigInt(15_000_000_00),
+      });
+      const [copRow] = await db
+        .insert(accounts)
+        .values({
+          userId,
+          name: "ARCH TWIN MC COP",
+          institution: "Bancolombia",
+          institutionSlug: "bancolombia",
+          type: "credit_card",
+          currency: "COP",
+          physicalCardId,
+          metadata: { last4s: ["7291"], cutoffDay: 15 },
+        })
+        .returning({ id: accounts.id });
+      const [usdRow] = await db
+        .insert(accounts)
+        .values({
+          userId,
+          name: "ARCH TWIN MC USD",
+          institution: "Bancolombia",
+          institutionSlug: "bancolombia",
+          type: "credit_card",
+          currency: "USD",
+          physicalCardId,
+          metadata: { last4s: ["7291"], cutoffDay: 15 },
+        })
+        .returning({ id: accounts.id });
+
+      const [usdSms] = await db
+        .insert(transactions)
+        .values({
+          userId,
+          accountId: usdRow.id,
+          occurredAt: utcDate(2026, 3, 10),
+          amountCents: BigInt(-48455),
+          currency: "USD",
+          descriptionRaw: "AIRBNB",
+          merchant: "AIRBNB",
+          source: "sms",
+          channel: "bank",
+          deletedAt: new Date(),
+        })
+        .returning({ id: transactions.id });
+      const [copGmail] = await db
+        .insert(transactions)
+        .values({
+          userId,
+          accountId: copRow.id,
+          occurredAt: utcDate(2026, 3, 10),
+          amountCents: BigInt(-181479701),
+          currency: "COP",
+          descriptionRaw: "AIRBNB * HMA245HENE",
+          merchant: "AIRBNB * HMA245HENE",
+          source: "gmail_bancolombia",
+          channel: "bank",
+        })
+        .returning({ id: transactions.id });
+
+      const report = await consolidateCycleFromStatement({
+        userId,
+        accountId: usdRow.id,
+        cycle: "2026-03",
+        parsed: buildParsed(
+          [
+            row({
+              authorizationNumber: "123456",
+              merchant: "AIRBNB",
+              occurredAt: utcDate(2026, 3, 10),
+              amountCents: BigInt(48455),
+            }),
+          ],
+          {
+            account: { last4: "7291", currency: "USD" },
+            period: {
+              startDate: utcDate(2026, 2, 28),
+              endDate: utcDate(2026, 3, 31),
+              dueDate: utcDate(2026, 4, 16),
+            },
+          },
+        ),
+        fileHash: "arch769twin".repeat(6).slice(0, 64),
+        dryRun: false,
+      });
+
+      expect(report.status).toBe("consolidated");
+      expect(report.matchStats.crossTwinReassigned).toBe(1);
+      expect(report.matchStats.insertedMissing).toBe(0);
+      expect(report.insertedTxIds).toHaveLength(0);
+
+      const [moved] = await db.select().from(transactions).where(eq(transactions.id, copGmail.id));
+      expect(moved.accountId).toBe(usdRow.id);
+      expect(moved.currency).toBe("USD");
+      expect(moved.amountCents).toBe(BigInt(-48455));
+      expect(moved.deletedAt).toBeNull();
+
+      const [stillArchived] = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, usdSms.id));
+      expect(stillArchived.deletedAt).not.toBeNull();
+      expect(stillArchived.accountId).toBe(usdRow.id);
+
+      const livingUsd = await db
+        .select({ id: transactions.id, deletedAt: transactions.deletedAt })
+        .from(transactions)
+        .where(and(eq(transactions.userId, userId), eq(transactions.accountId, usdRow.id)));
+      expect(livingUsd.filter((t) => t.deletedAt === null)).toHaveLength(1);
+    } finally {
+      await db.delete(transactions).where(eq(transactions.userId, userId));
+      await db.delete(statementImports).where(eq(statementImports.userId, userId));
+      await db.delete(accounts).where(eq(accounts.userId, userId));
+      await db.delete(physicalCards).where(eq(physicalCards.id, physicalCardId));
+      await db.delete(users).where(eq(users.id, userId));
+    }
+  });
+});
