@@ -20,6 +20,12 @@ describe("matchOpaqueGateway", () => {
     expect(matchOpaqueGateway(["ACME*PASARELA PAGOS"])).toBe("unknown_pasarela");
   });
 
+  it("does NOT match a real merchant whose name happens to contain the Spanish word 'pasarela' (reviewer WARNING on #812)", () => {
+    expect(matchOpaqueGateway(["LA PASARELA BOUTIQUE"])).toBeNull();
+    expect(matchOpaqueGateway(["PASARELA FASHION SAS"])).toBeNull();
+    expect(matchOpaqueGateway(["SALON PASARELA"])).toBeNull();
+  });
+
   it("does NOT match a real merchant that merely transacts through a gateway (#812 negative case: AMAZON tx 1407)", () => {
     expect(matchOpaqueGateway(["AMAZON MKTPLACE PMTS"])).toBeNull();
   });

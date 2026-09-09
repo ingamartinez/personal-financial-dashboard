@@ -632,10 +632,31 @@ export async function sweepUserOtrosBucket(
       if (gatewayMatch) {
         await abstain(db, userId, tx, "opaque_gateway", { gateway: gatewayMatch }, changes, dryRun);
         abstainedGateway++;
-        log.info(
-          { userId, txId: tx.id, gateway: gatewayMatch, event: "classify_sweep_abstain_gateway" },
-          `classify-sweep: abstained tx ${tx.id} — opaque gateway (${gatewayMatch})`,
-        );
+        // The named gateways (mercado_pago/payu/wompi) are checked against
+        // known enum values, so a mismatch here is essentially impossible.
+        // "unknown_pasarela" is a generic heuristic match instead — a false
+        // positive there is a real merchant silently and permanently
+        // dropped from every future sweep (see candidateWhereClause), so it
+        // gets its own warn-level event distinguishable from the routine
+        // info-level abstains above, instead of blending into the same log
+        // line and vanishing.
+        if (gatewayMatch === "unknown_pasarela") {
+          log.warn(
+            {
+              userId,
+              txId: tx.id,
+              descriptionRaw: tx.descriptionRaw,
+              merchant: tx.merchant,
+              event: "classify_sweep_abstain_unknown_pasarela",
+            },
+            `classify-sweep: abstained tx ${tx.id} — generic PASARELA gateway match, verify this isn't a real merchant`,
+          );
+        } else {
+          log.info(
+            { userId, txId: tx.id, gateway: gatewayMatch, event: "classify_sweep_abstain_gateway" },
+            `classify-sweep: abstained tx ${tx.id} — opaque gateway (${gatewayMatch})`,
+          );
+        }
         continue;
       }
 

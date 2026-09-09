@@ -54,7 +54,17 @@ const OPAQUE_GATEWAY_PATTERNS: { gateway: (typeof OPAQUE_GATEWAYS)[number]; patt
 // "WOMPI*PASARELA..." or "MERCPAGO*PASARELAEMI" — a generic tell that the
 // line names a payment gateway even for a processor not in our named list
 // above. Checked only after the named patterns so a named match always wins.
-const GENERIC_PASARELA_PATTERN = /PASARELA/;
+//
+// Unanchored substring matching would violate this module's own contract
+// (see the "must NOT match" note above): "pasarela" is ordinary Spanish —
+// a boutique, shoe shop or salon can plausibly be named "La Pasarela" or
+// "Pasarela Fashion", and that tx would then abstain and vanish from every
+// future sweep forever (candidateWhereClause excludes abstained rows
+// permanently — see sweep.ts). Every observed real-world instance of this
+// shape has "PASARELA" immediately after the merchant/gateway separator
+// `*` (e.g. "MERCPAGO*PASARELAEMI", "ACME*PASARELA PAGOS`) — that position
+// is required here so a normal merchant name never matches.
+const GENERIC_PASARELA_PATTERN = /\*\s*PASARELA\b/;
 
 /**
  * Check a transaction's description/merchant fields for a known-opaque

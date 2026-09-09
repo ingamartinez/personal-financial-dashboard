@@ -907,6 +907,88 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
     expect(reason).toMatchObject({ action: "swept" });
   });
 
+  it("does NOT treat a soft-deleted opposite-amount same-account same-date row as a transfer partner (reviewer SUGGESTION)", async () => {
+    await setup();
+    const sameDate = new Date("2026-03-10T12:00:00Z");
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SOME BANK LINE",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -50000,
+      occurredAt: sameDate,
+    });
+    const deletedPartnerId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SOFT DELETED OPPOSITE LEG",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: 50000,
+      occurredAt: sameDate,
+    });
+    await db
+      .update(transactions)
+      .set({ deletedAt: new Date() })
+      .where(eq(transactions.id, deletedPartnerId));
+
+    mockClassifyBatch.mockResolvedValue({
+      classifications: [],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedTransferPair).toBe(0);
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    const reason = JSON.parse(row!.classificationReason!);
+    expect(reason).toMatchObject({ action: "swept" });
+  });
+
+  it("does NOT treat an opposite-amount same-account same-date row already assigned to another transfer group as a partner (reviewer SUGGESTION)", async () => {
+    await setup();
+    const sameDate = new Date("2026-03-11T12:00:00Z");
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "SOME BANK LINE",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: -50000,
+      occurredAt: sameDate,
+    });
+    const alreadyPairedId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "ALREADY PAIRED OPPOSITE LEG",
+      categorySlug: null,
+      classificationMethod: "unclassified",
+      amountCents: 50000,
+      occurredAt: sameDate,
+    });
+    await db
+      .update(transactions)
+      .set({ transferGroupId: sql`gen_random_uuid()` })
+      .where(eq(transactions.id, alreadyPairedId));
+
+    mockClassifyBatch.mockResolvedValue({
+      classifications: [],
+      model: "claude-haiku-4-5",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const result = await sweepUserOtrosBucket(userId);
+
+    expect(result.abstainedTransferPair).toBe(0);
+    const row = await getTx(txId);
+    expect(row?.categorySlug).toBe("otros");
+    const reason = JSON.parse(row!.classificationReason!);
+    expect(reason).toMatchObject({ action: "swept" });
+  });
+
   it("abstained rows are excluded from fetchPriorArtIndex for a LATER run (never become prior-art evidence)", async () => {
     await setup();
     // First run: abstain the gateway row.
