@@ -7,14 +7,15 @@
  */
 
 import type { Job } from "bullmq";
+import { eq } from "drizzle-orm";
 
-import { createLogger } from "@/lib/logger";
-import { createWorker } from "@/lib/queue";
+import { db } from "@/lib/db";
+import { users } from "@/lib/db/schema";
+import { getCurrentFxRate } from "@/lib/fx/repo";
 import { runCashFlowForecastForUser, runSalaryGapForUser } from "@/lib/insights/cash-flow";
 import { runSavingsSuggestionForUser } from "@/lib/insights/savings-suggestions";
-import { getCurrentFxRate } from "@/lib/fx/repo";
-import { db } from "@/lib/db";
-import { sql } from "drizzle-orm";
+import { createLogger } from "@/lib/logger";
+import { createWorker } from "@/lib/queue";
 
 const log = createLogger({ module: "worker/cash-flow-daily" });
 
@@ -38,10 +39,9 @@ export async function cashFlowDailyProcessor(job: Job<CashFlowDailyJobData>): Pr
   // Fetch current FX rate once for all users
   const fx = await getCurrentFxRate();
 
-  // Load all active user IDs
-  const userRows = await db.execute<{ id: number }>(sql`
-    SELECT id FROM users WHERE deleted_at IS NULL ORDER BY id
-  `);
+  // Deactivation is `users.active`. Do not copy the notDeleted() predicate
+  // from transactions/accounts — that column does not exist on this table.
+  const userRows = await db.select({ id: users.id }).from(users).where(eq(users.active, true));
 
   const today = new Date();
   let gapsTotal = 0;
