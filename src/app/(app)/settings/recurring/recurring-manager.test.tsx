@@ -7,16 +7,23 @@ import userEvent from "@testing-library/user-event";
 // ---------------------------------------------------------------------------
 // Hoisted mocks — all heavy deps mocked before any import.
 // ---------------------------------------------------------------------------
-const { routerPush, upsertRecurring, archiveRecurring, toggleRecurringActive } = vi.hoisted(() => ({
+const {
+  routerPush,
+  upsertRecurring,
+  archiveRecurring,
+  toggleRecurringActive,
+  currentSearchParams,
+} = vi.hoisted(() => ({
   routerPush: vi.fn(),
   upsertRecurring: vi.fn(),
   archiveRecurring: vi.fn(),
   toggleRecurringActive: vi.fn(),
+  currentSearchParams: { value: new URLSearchParams() },
 }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => currentSearchParams.value,
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("./actions", () => ({
@@ -36,12 +43,17 @@ beforeEach(() => {
   if (!Element.prototype.releasePointerCapture) {
     Element.prototype.releasePointerCapture = () => {};
   }
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = () => {};
+  }
   if (!Element.prototype.scrollIntoView) {
     Element.prototype.scrollIntoView = () => {};
   }
   upsertRecurring.mockReset();
   archiveRecurring.mockReset();
   toggleRecurringActive.mockReset();
+  routerPush.mockReset();
+  currentSearchParams.value = new URLSearchParams();
 });
 
 afterEach(() => {
@@ -197,5 +209,110 @@ describe("RecurringManager — currency independence (#803 follow-up: amount res
         direction: "expense",
       }),
     );
+  });
+});
+
+describe("RecurringManager — account + active-only filters (#733)", () => {
+  const FILTER_CATEGORIES = [
+    { slug: "arriendo", name: "Arriendo", parentSlug: null },
+    { slug: "suscripciones", name: "Suscripciones", parentSlug: null },
+  ];
+
+  it("renders account options with formatAccountLabel, not the raw name", () => {
+    render(
+      <RecurringManager
+        accounts={ACCOUNTS}
+        categories={FILTER_CATEGORIES}
+        items={[]}
+        activeCategory={null}
+      />,
+    );
+
+    const accountSelect = screen.getByLabelText("Filtrar por cuenta");
+    expect(
+      within(accountSelect).getByRole("option", { name: "Todas las cuentas" }),
+    ).toBeInTheDocument();
+    expect(
+      within(accountSelect).getByRole("option", { name: "ARQ Ahorros (USD)" }),
+    ).toBeInTheDocument();
+    expect(
+      within(accountSelect).getByRole("option", { name: "Bancolombia Ahorros (COP)" }),
+    ).toBeInTheDocument();
+    expect(
+      within(accountSelect).queryByRole("option", { name: /^ARQ Ahorros$/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("pushes account into the URL and keeps an existing category param", async () => {
+    const user = userEvent.setup();
+    currentSearchParams.value = new URLSearchParams("category=arriendo");
+
+    render(
+      <RecurringManager
+        accounts={ACCOUNTS}
+        categories={FILTER_CATEGORIES}
+        items={[]}
+        activeCategory="arriendo"
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Filtrar por cuenta"), "1");
+
+    expect(routerPush).toHaveBeenCalledWith("/settings/recurring?category=arriendo&account=1");
+  });
+
+  it("Todas las cuentas removes the account param and keeps category", async () => {
+    const user = userEvent.setup();
+    currentSearchParams.value = new URLSearchParams("category=arriendo&account=1");
+
+    render(
+      <RecurringManager
+        accounts={ACCOUNTS}
+        categories={FILTER_CATEGORIES}
+        items={[]}
+        activeCategory="arriendo"
+        activeAccount={1}
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Filtrar por cuenta"), "");
+
+    expect(routerPush).toHaveBeenCalledWith("/settings/recurring?category=arriendo");
+  });
+
+  it("Solo activas toggle sets and then clears activeOnly without dropping other filters", async () => {
+    const user = userEvent.setup();
+    currentSearchParams.value = new URLSearchParams("category=arriendo&account=1");
+
+    const { rerender } = render(
+      <RecurringManager
+        accounts={ACCOUNTS}
+        categories={FILTER_CATEGORIES}
+        items={[]}
+        activeCategory="arriendo"
+        activeAccount={1}
+        activeOnly={false}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Solo activas" }));
+    expect(routerPush).toHaveBeenCalledWith(
+      "/settings/recurring?category=arriendo&account=1&activeOnly=true",
+    );
+
+    currentSearchParams.value = new URLSearchParams("category=arriendo&account=1&activeOnly=true");
+    rerender(
+      <RecurringManager
+        accounts={ACCOUNTS}
+        categories={FILTER_CATEGORIES}
+        items={[]}
+        activeCategory="arriendo"
+        activeAccount={1}
+        activeOnly={true}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Solo activas" }));
+    expect(routerPush).toHaveBeenLastCalledWith("/settings/recurring?category=arriendo&account=1");
   });
 });
