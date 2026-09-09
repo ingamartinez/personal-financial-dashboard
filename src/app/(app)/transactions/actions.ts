@@ -28,6 +28,8 @@ import {
 } from "@/lib/classification/evidence";
 import { AI_BATCH_SIZE } from "@/lib/classification/pipeline";
 import { classifyByRule } from "@/lib/classification/rules";
+import { matchOpaqueGateway } from "@/lib/classification/opaque-gateways";
+import { asReason, manualReason } from "@/lib/classification/reason";
 import { createQueue, getRedisConnection } from "@/lib/queue";
 import type { ClassifyTxJobData } from "@/lib/queue/workers/classify-tx";
 import type { UserClassificationContext } from "@/lib/db/schema";
@@ -83,6 +85,8 @@ export async function updateTransactionCategory(input: {
       .select({
         categorySlug: transactions.categorySlug,
         merchant: transactions.merchant,
+        descriptionRaw: transactions.descriptionRaw,
+        classificationReason: transactions.classificationReason,
       })
       .from(transactions)
       .where(
@@ -98,6 +102,8 @@ export async function updateTransactionCategory(input: {
 
     const prior = current.categorySlug;
     const isChange = prior !== categorySlug;
+    const opaque = matchOpaqueGateway([current.merchant, current.descriptionRaw]);
+    const previousReason = asReason(current.classificationReason);
 
     await trx
       .update(transactions)
@@ -105,6 +111,7 @@ export async function updateTransactionCategory(input: {
         categorySlug,
         classificationMethod: categorySlug ? "manual" : "unclassified",
         classificationConfidence: categorySlug ? 100 : null,
+        classificationReason: categorySlug ? manualReason(previousReason, { via: "web" }) : null,
         ...(isChange ? { previousCategorySlug: prior } : {}),
         updatedAt: new Date(),
       })
@@ -117,7 +124,9 @@ export async function updateTransactionCategory(input: {
       await trx.insert(classificationCorrections).values({
         userId: session.id,
         transactionId: txId,
-        merchant: current.merchant,
+        // Opaque gateway strings are not a merchant — writing them here would
+        // feed rule synthesis the same poisoning Phase 3 blocked.
+        merchant: opaque ? null : current.merchant,
         previousCategorySlug: prior,
         newCategorySlug: categorySlug,
       });
@@ -126,7 +135,9 @@ export async function updateTransactionCategory(input: {
       // classifications. Rolling FIFO (newest wins). SELECT FOR UPDATE on the
       // users row serializes concurrent corrections so no hint is lost to an
       // interleaved read/modify/write on the same jsonb blob.
-      if (current.merchant) {
+      // Skip opaque gateways: "MERCADOPAGO COLOMBIA" → hogar would poison
+      // every later charge through that aggregator.
+      if (current.merchant && !opaque) {
         const [userRow] = await trx
           .select({ context: users.classificationContext })
           .from(users)

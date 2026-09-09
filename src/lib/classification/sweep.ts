@@ -101,12 +101,15 @@ import {
 } from "./evidence";
 import { matchOpaqueGateway } from "./opaque-gateways";
 import {
+  ABSTAINED_ACTION,
+  AWAITING_USER_ACTION,
   abstainReason,
   asReason,
   priorArtReason,
   receiptIdFromReason,
   sweptReason,
 } from "./reason";
+import { enqueueAskUser } from "./enqueue";
 import { classifyByRule, findMatchingRule } from "./rules";
 
 const log = createLogger({ module: "classification/sweep" });
@@ -129,7 +132,7 @@ const SWEPT_MARKER_ACTION = "swept";
 // category_slug='otros' so both are excluded from fetchPriorArtIndex's
 // `category_slug NOT IN ('otros')` filter — an abstained row can never
 // become prior-art evidence for a future run (see the module doc above).
-const ABSTAINED_MARKER_ACTION = "abstained";
+const ABSTAINED_MARKER_ACTION = ABSTAINED_ACTION;
 
 export type AbstainReason = "opaque_gateway" | "probable_transfer_pair";
 
@@ -398,6 +401,7 @@ function candidateWhereClause(userId: number, excludeIds: number[]) {
     sql`(${transactions.classificationReason} IS NULL OR (
       ${transactions.classificationReason}->>'action' IS DISTINCT FROM ${SWEPT_MARKER_ACTION}
       AND ${transactions.classificationReason}->>'action' IS DISTINCT FROM ${ABSTAINED_MARKER_ACTION}
+      AND ${transactions.classificationReason}->>'action' IS DISTINCT FROM ${AWAITING_USER_ACTION}
     ))`,
     excludeIds.length > 0 ? notInArray(transactions.id, excludeIds) : undefined,
   );
@@ -963,6 +967,8 @@ export async function sweepUserOtrosBucket(
     }
   }
 
+  await maybeEnqueueAsk(userId, abstainedGateway, dryRun);
+
   return {
     userId,
     picked,
@@ -976,6 +982,11 @@ export async function sweepUserOtrosBucket(
     model,
     changes,
   };
+}
+
+async function maybeEnqueueAsk(userId: number, abstainedGateway: number, dryRun: boolean) {
+  if (dryRun || abstainedGateway === 0) return;
+  await enqueueAskUser(userId);
 }
 
 export type ClassifySweepResult = {

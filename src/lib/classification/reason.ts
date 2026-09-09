@@ -3,6 +3,11 @@ import type { ClassificationReasonJson } from "@/lib/db/schema";
 export type { ClassificationReasonJson };
 export type AbstainReasonKind = "opaque_gateway" | "probable_transfer_pair";
 
+export const SWEPT_ACTION = "swept";
+export const ABSTAINED_ACTION = "abstained";
+export const AWAITING_USER_ACTION = "awaiting_user";
+export const MANUAL_ACTION = "manual";
+
 export function asReason(value: unknown): ClassificationReasonJson | null {
   if (value == null) return null;
   if (typeof value === "object" && !Array.isArray(value)) {
@@ -64,4 +69,47 @@ export function receiptIdFromReason(reason: ClassificationReasonJson | null): nu
     return reason.receiptIds[0];
   }
   return null;
+}
+
+export function awaitingUserReason(opts: {
+  gateway: string;
+  offered: string[];
+  askedAt?: string;
+}): ClassificationReasonJson {
+  return {
+    action: AWAITING_USER_ACTION,
+    reason: "opaque_gateway",
+    gateway: opts.gateway,
+    askedAt: opts.askedAt ?? new Date().toISOString(),
+    offered: opts.offered,
+  };
+}
+
+/**
+ * Manual answer. Preserves a receipt citation when one exists so opaque
+ * prior-art (keyed on receipt.merchant) keeps working. Does NOT copy an
+ * abstained/awaiting_user payload — that was the Phase 4 bug: method=manual
+ * with action=abstained left the row out of fetchPriorArtIndex AND out of
+ * any later ask.
+ */
+export function manualReason(
+  previous: ClassificationReasonJson | null,
+  extra: Record<string, unknown> = {},
+): ClassificationReasonJson {
+  const receiptId = receiptIdFromReason(previous);
+  const matchKind = previous?.matchKind;
+  return {
+    action: MANUAL_ACTION,
+    ...(receiptId != null ? { receiptId } : {}),
+    ...(matchKind ? { matchKind } : {}),
+    ...extra,
+  };
+}
+
+export function isAwaitingUser(reason: ClassificationReasonJson | null): boolean {
+  return reason?.action === AWAITING_USER_ACTION;
+}
+
+export function isOpaqueAbstained(reason: ClassificationReasonJson | null): boolean {
+  return reason?.action === ABSTAINED_ACTION && reason.reason === "opaque_gateway";
 }

@@ -102,6 +102,16 @@ describe("pushToUser", () => {
     );
   });
 
+  it("passes reply_markup when provided", async () => {
+    await seedBot(userId);
+    await seedSession(userId, 781);
+    const markup = { inline_keyboard: [[{ text: "Hogar", callback_data: "cq:1:0" }]] };
+    await pushToUser(userId, "pregunta", undefined, markup);
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ reply_markup: markup }),
+    );
+  });
+
   it("returns send_failed when client throws", async () => {
     await seedBot(userId);
     await seedSession(userId, 779);

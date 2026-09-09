@@ -6,6 +6,8 @@ import { createQueue } from "@/lib/queue";
 import type { ClassifyTxJobData } from "@/lib/queue/workers/classify-tx";
 import { createLogger } from "@/lib/logger";
 
+export type ClassifyAskJobData = { mode: "all" } | { mode: "single-user"; userId: number };
+
 const log = createLogger({ module: "classify-enqueue" });
 
 /**
@@ -98,5 +100,23 @@ export async function enqueueClassification(userId: number, txIds: number[]): Pr
       "failed to enqueue classify-tx — txs remain pending (graceful degrade)",
     );
     // Intentionally NOT re-throwing. Import success must not depend on Redis.
+  }
+}
+
+/**
+ * Fire-and-forget: enqueue a classify-ask job for one user.
+ * The worker sends at most one Telegram question; this only schedules it.
+ * Failure is swallowed — the recurring scanner will pick the row up later.
+ */
+export async function enqueueAskUser(userId: number): Promise<void> {
+  try {
+    const queue = createQueue<ClassifyAskJobData>("classify-ask");
+    await queue.add("classify-ask", { mode: "single-user", userId });
+    log.info({ event: "classify_ask_enqueued", userId }, "classify-ask enqueued");
+  } catch (err) {
+    log.error(
+      { err, event: "classify_ask_enqueue_failed", userId },
+      "failed to enqueue classify-ask — will wait for the recurring scanner",
+    );
   }
 }

@@ -1060,6 +1060,61 @@ describe("updateTransactionCategory", () => {
     expect(storedHints[49]?.category).toBe("alimentacion");
   });
 
+  it("rewrites an abstained classification_reason on manual answer (#814)", async () => {
+    const txId = await seedTxWithMerchant({
+      externalId: "test-update-cat:abstained-mp",
+      merchant: "MERCADOPAGO COLOMBIA",
+      categorySlug: "otros",
+      method: "user_uncategorized" as "unclassified",
+    });
+    await db.execute(sql`
+      UPDATE transactions
+      SET classification_method = 'user_uncategorized'::classification_method,
+          classification_reason = ${JSON.stringify({
+            action: "abstained",
+            reason: "opaque_gateway",
+            gateway: "mercado_pago",
+          })}::jsonb
+      WHERE id = ${txId}
+    `);
+
+    await updateTransactionCategory({ txId, categorySlug: "hogar" });
+
+    const [row] = await db.execute<{
+      category_slug: string;
+      classification_method: string;
+      classification_reason: { action?: string; reason?: string };
+    }>(sql`
+      SELECT category_slug, classification_method, classification_reason
+      FROM transactions WHERE id = ${txId}
+    `);
+    expect(row.category_slug).toBe("hogar");
+    expect(row.classification_method).toBe("manual");
+    expect(row.classification_reason).toMatchObject({ action: "manual", via: "web" });
+    expect(row.classification_reason.reason).toBeUndefined();
+  });
+
+  it("does not write a merchant hint for an opaque gateway string (#814)", async () => {
+    const txId = await seedTxWithMerchant({
+      externalId: "test-update-cat:opaque-hint",
+      merchant: "MERCADOPAGO COLOMBIA",
+    });
+
+    await updateTransactionCategory({ txId, categorySlug: "hogar" });
+
+    const [row] = await db.execute<{
+      classification_context: { merchant_hints?: Array<{ merchant: string }> };
+    }>(sql`
+      SELECT classification_context FROM users WHERE id = ${TEST_USER_ID}
+    `);
+    expect(row.classification_context.merchant_hints ?? []).toHaveLength(0);
+
+    const corrections = await db.execute<{ merchant: string | null }>(sql`
+      SELECT merchant FROM classification_corrections WHERE transaction_id = ${txId}
+    `);
+    expect(corrections[0]?.merchant).toBeNull();
+  });
+
   it("skips the merchant hint when merchant is null", async () => {
     const txId = await seedTxWithMerchant({
       externalId: "test-update-cat:nomerchant",

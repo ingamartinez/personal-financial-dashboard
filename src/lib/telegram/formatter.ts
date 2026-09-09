@@ -88,6 +88,46 @@ export function renderDisambiguationError(): string {
   return "⚠️ Algo falló procesando tu respuesta. Probá de nuevo.";
 }
 
+export function renderClassificationQuestion(opts: {
+  descriptionRaw: string;
+  amountCents: bigint;
+  currency: "COP" | "USD";
+  occurredAt: Date;
+}): string {
+  const amount = formatCandidateAmount(opts.amountCents, opts.currency);
+  const date = opts.occurredAt.toLocaleDateString("es-CO", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "America/Bogota",
+  });
+  const merchant = truncate(opts.descriptionRaw, 60);
+  return [
+    "❓ ¿Qué es este cargo?",
+    "",
+    `${amount} · ${date}`,
+    merchant,
+    "",
+    "Elegí una categoría. Si no es ninguno, tocá Ahora no.",
+  ].join("\n");
+}
+
+export function renderClassificationAnswered(categoryName: string): string {
+  return `✅ Listo — lo dejé en ${categoryName}.`;
+}
+
+export function renderClassificationSkipped(): string {
+  return "👌 Lo dejo para después.";
+}
+
+export function renderClassificationAskError(): string {
+  return "⚠️ No pude guardar esa categoría. Probá de nuevo.";
+}
+
+export function renderClassificationAskReprompt(): string {
+  return "No entendí. Tocá una categoría o /omitir para dejarlo para después.";
+}
+
 export function renderReauthNudge(appUrl: string): string {
   return [
     "🔌 Tu conexión Gmail expiró (Google testing mode renueva cada 7 días).",

@@ -22,6 +22,11 @@ vi.mock("@/lib/classification/rules", () => ({
   findMatchingRule: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("@/lib/classification/enqueue", () => ({
+  enqueueAskUser: vi.fn().mockResolvedValue(undefined),
+  enqueueClassification: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/classification/ai", () => ({
   classifyBatchWithAi: vi.fn().mockResolvedValue({
     classifications: [],
@@ -1051,8 +1056,35 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
     expect(second.picked).toBe(0);
     expect(second.abstainedGateway).toBe(0);
     expect(mockClassifyBatch).not.toHaveBeenCalled();
+  });
 
+  it("does not pick an awaiting_user row (#814 Phase 4)", async () => {
+    await setup();
+    const txId = await insertTx({
+      userId,
+      accountId,
+      descriptionRaw: "MERCADOPAGO COLOMBIA",
+      categorySlug: "otros",
+      classificationMethod: "user_uncategorized",
+    });
+    await db
+      .update(transactions)
+      .set({
+        classificationReason: {
+          action: "awaiting_user",
+          reason: "opaque_gateway",
+          gateway: "mercado_pago",
+          askedAt: new Date().toISOString(),
+          offered: ["hogar"],
+        },
+      })
+      .where(eq(transactions.id, txId));
+
+    const result = await sweepUserOtrosBucket(userId);
+    expect(result.picked).toBe(0);
+    expect(result.abstainedGateway).toBe(0);
     const row = await getTx(txId);
+    expect(row?.classificationReason).toMatchObject({ action: "awaiting_user" });
     expect(row?.categorySlug).toBe("otros");
   });
 });

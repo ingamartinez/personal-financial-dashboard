@@ -125,6 +125,10 @@ export type ClassificationReasonJson = {
   ruleId?: number;
   run?: string;
   via?: string;
+  // #814 Phase 4: durable ask-state. Session lock is NOT this — a draft or
+  // disambiguation push will clobber telegram_sessions. Filter on `action`.
+  askedAt?: string;
+  offered?: string[];
 };
 
 export const users = pgTable(
@@ -1215,7 +1219,8 @@ export type TelegramSessionStep =
   | "awaiting_batch_confirm"
   | "awaiting_backfill_confirm"
   | "backfill_running"
-  | "awaiting_disambiguation";
+  | "awaiting_disambiguation"
+  | "awaiting_classification";
 
 export type TelegramBatchItem = {
   draft: TelegramDraft;
@@ -1269,6 +1274,9 @@ export type TelegramSessionState = {
   // receipt being resolved and the candidate transaction ids.
   disambiguationReceiptId?: number;
   disambiguationCandidates?: number[];
+  // #814 Phase 4 — when `step` is `awaiting_classification`, the tx being asked.
+  // Durable asked-state lives on classification_reason, not here.
+  classificationTxId?: number;
 };
 
 export const telegramBots = pgTable("telegram_bots", {

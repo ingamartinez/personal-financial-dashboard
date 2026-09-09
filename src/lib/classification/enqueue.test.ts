@@ -62,7 +62,7 @@ vi.mock("@/lib/logger", () => ({
   }),
 }));
 
-import { enqueueClassification, classifyByRuleThenEnqueue } from "./enqueue";
+import { enqueueClassification, classifyByRuleThenEnqueue, enqueueAskUser } from "./enqueue";
 
 // ---------------------------------------------------------------------------
 // enqueueClassification
@@ -93,6 +93,24 @@ describe("enqueueClassification", () => {
     mockQueueAdd.mockRejectedValueOnce(new Error("Redis down"));
     // Should resolve without throwing.
     await expect(enqueueClassification(1, [1])).resolves.toBeUndefined();
+  });
+});
+
+describe("enqueueAskUser", () => {
+  beforeEach(() => {
+    mockQueueAdd.mockReset();
+  });
+
+  it("calls queue.add with single-user payload", async () => {
+    mockQueueAdd.mockResolvedValueOnce({ id: "job-ask-1" });
+    await enqueueAskUser(42);
+    expect(mockQueueAdd).toHaveBeenCalledOnce();
+    expect(mockQueueAdd).toHaveBeenCalledWith("classify-ask", { mode: "single-user", userId: 42 });
+  });
+
+  it("swallows queue.add errors — does NOT rethrow", async () => {
+    mockQueueAdd.mockRejectedValueOnce(new Error("Redis down"));
+    await expect(enqueueAskUser(1)).resolves.toBeUndefined();
   });
 });
 

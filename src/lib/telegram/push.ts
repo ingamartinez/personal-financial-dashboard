@@ -4,6 +4,7 @@ import { telegramBots, telegramSessions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { telegramCipher } from "@/lib/crypto/telegram-cipher";
 import { createTelegramClient } from "@/lib/telegram/client";
+import type { InlineKeyboardMarkup } from "@/lib/telegram/types";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "telegram/push" });
@@ -25,6 +26,7 @@ export async function pushToUser(
   userId: number,
   text: string,
   parseMode?: "Markdown" | "HTML",
+  replyMarkup?: InlineKeyboardMarkup,
 ): Promise<PushResult> {
   const [bot] = await db
     .select()
@@ -54,6 +56,7 @@ export async function pushToUser(
       chat_id: Number(session.chatId),
       text,
       ...(parseMode ? { parse_mode: parseMode } : {}),
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
     });
     return { ok: true };
   } catch (err) {
