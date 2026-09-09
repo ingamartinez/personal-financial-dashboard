@@ -34,7 +34,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "husky"
+    "prepare": "if [ -e .git ] && command -v husky >/dev/null 2>&1; then husky; else exit 0; fi"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": [
