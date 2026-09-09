@@ -261,6 +261,164 @@ export async function listTransferGroupLegs(opts: {
 }
 
 // ---------------------------------------------------------------------------
+// Shared core: atomically link two existing txs as a transfer pair (#770)
+// ---------------------------------------------------------------------------
+
+export type ApplyExistingTransferPairResult =
+  | { status: "idempotent"; groupId: string }
+  | { status: "adopt"; groupId: string }
+  | { status: "new"; groupId: string }
+  | {
+      status: "conflict";
+      reason: "distinct-groups";
+      existingGroupA: string;
+      existingGroupB: string;
+    }
+  | {
+      status: "conflict";
+      reason: "would-be-3-member";
+      side: "A" | "B";
+      existingGroupId: string;
+      members: number;
+    }
+  | { status: "missing" };
+
+/**
+ * Atomically assign two existing transactions a shared transferGroupId,
+ * forcing channel="transfer" and categorySlug=null.
+ *
+ * Shared core for the auto-pairer and the manual-link flow. Callers wrap this
+ * with their own return shape and logging — this is not a product-facing API.
+ *
+ * Outcomes:
+ *   - Both in the same group → idempotent
+ *   - Both in DIFFERENT groups → conflict (no writes)
+ *   - One already grouped → adopt that groupId iff the group has exactly 1
+ *     live member; otherwise conflict (3-member guard)
+ *   - Neither grouped → new randomUUID
+ *   - Either tx missing for this userId → missing
+ *
+ * Tenant safety: the SELECT FOR UPDATE is scoped by userId. A tx that
+ * belongs to another tenant is indistinguishable from a missing row.
+ */
+export async function applyExistingTransferPair(opts: {
+  userId: number;
+  txIdA: number;
+  txIdB: number;
+  database: DB;
+}): Promise<ApplyExistingTransferPairResult> {
+  const { userId, txIdA, txIdB, database } = opts;
+
+  return database.transaction(async (trx) => {
+    // Re-read both rows WITH FOR UPDATE so concurrent pair/link calls
+    // serialize. Without the lock, a double-arrival race produces two
+    // orphan singletons because each call's isNull(transferGroupId) guard
+    // sees the partner already stamped.
+    const rows = await trx
+      .select({
+        id: transactions.id,
+        transferGroupId: transactions.transferGroupId,
+      })
+      .from(transactions)
+      .where(and(eq(transactions.userId, userId), inArray(transactions.id, [txIdA, txIdB])))
+      .for("update");
+
+    if (rows.length !== 2) {
+      return { status: "missing" as const };
+    }
+
+    const existingA = rows.find((r) => r.id === txIdA)?.transferGroupId ?? null;
+    const existingB = rows.find((r) => r.id === txIdB)?.transferGroupId ?? null;
+
+    // Defense in depth: when adopting an existing groupId, that group must
+    // have exactly 1 live member (the tx we already know about). If it has
+    // more, adopting would create a 3+-member group — an invariant violation
+    // for the 2-leg pairers. insertTransferGroup still allows 1-to-N groups
+    // on the insert path.
+    async function groupMemberCount(groupId: string): Promise<number> {
+      const [row] = await trx
+        .select({ n: count() })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, userId),
+            eq(transactions.transferGroupId, groupId),
+            isNull(transactions.deletedAt),
+          ),
+        );
+      return row?.n ?? 0;
+    }
+
+    let groupId: string;
+    let kind: "adopt" | "new";
+    if (existingA && existingB) {
+      if (existingA === existingB) {
+        return { status: "idempotent" as const, groupId: existingA };
+      }
+      return {
+        status: "conflict" as const,
+        reason: "distinct-groups" as const,
+        existingGroupA: existingA,
+        existingGroupB: existingB,
+      };
+    } else if (existingA) {
+      const membersA = await groupMemberCount(existingA);
+      if (membersA !== 1) {
+        return {
+          status: "conflict" as const,
+          reason: "would-be-3-member" as const,
+          side: "A" as const,
+          existingGroupId: existingA,
+          members: membersA,
+        };
+      }
+      groupId = existingA;
+      kind = "adopt";
+    } else if (existingB) {
+      const membersB = await groupMemberCount(existingB);
+      if (membersB !== 1) {
+        return {
+          status: "conflict" as const,
+          reason: "would-be-3-member" as const,
+          side: "B" as const,
+          existingGroupId: existingB,
+          members: membersB,
+        };
+      }
+      groupId = existingB;
+      kind = "adopt";
+    } else {
+      groupId = randomUUID();
+      kind = "new";
+    }
+
+    // Update only the legs that don't have a group yet. The isNull guard is
+    // belt-and-suspenders — the SELECT FOR UPDATE above already serialized us.
+    for (const txId of [txIdA, txIdB]) {
+      await trx
+        .update(transactions)
+        .set({
+          transferGroupId: groupId,
+          channel: "transfer",
+          categorySlug: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(transactions.id, txId),
+            eq(transactions.userId, userId),
+            isNull(transactions.transferGroupId),
+          ),
+        );
+    }
+
+    return kind === "adopt"
+      ? { status: "adopt" as const, groupId }
+      : { status: "new" as const, groupId };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Link two existing transactions as a manual transfer pair (#762)
 // ---------------------------------------------------------------------------
 
@@ -273,17 +431,12 @@ export type LinkExistingAsTransferResult =
  * Links two already-ingested transactions as a transfer pair by assigning them
  * a shared transferGroupId and setting channel="transfer", categorySlug=null.
  *
- * This is the manual-link equivalent of the auto-pairer's applyGroupId. It
- * uses the SAME atomic SELECT FOR UPDATE + idempotency logic so it can be
- * called safely even if one leg is already grouped:
- *   - Both in same group → idempotent success
- *   - Both in DIFFERENT groups → conflict (bail without writes)
- *   - One already grouped → adopt that groupId for the other leg
- *   - Neither grouped → new randomUUID groupId
+ * Thin adapter over `applyExistingTransferPair` — same atomic core as the
+ * auto-pairer, with a discriminated-union return shape for the UI.
  *
  * Tenant safety: both txIdA and txIdB MUST belong to userId — the caller
  * (server action) verifies this before calling us, and the SELECT FOR UPDATE
- * inside the transaction double-checks via the userId predicate.
+ * inside the shared helper double-checks via the userId predicate.
  */
 export async function linkExistingTransactionsAsTransfer(opts: {
   userId: number;
@@ -294,150 +447,63 @@ export async function linkExistingTransactionsAsTransfer(opts: {
   const { userId, txIdA, txIdB, database = defaultDb } = opts;
 
   try {
-    const result = await database.transaction(async (trx) => {
-      // Re-read both rows inside the transaction WITH FOR UPDATE so concurrent
-      // calls serialize — same pattern as the auto-pairer.
-      const rows = await trx
-        .select({
-          id: transactions.id,
-          transferGroupId: transactions.transferGroupId,
-        })
-        .from(transactions)
-        .where(and(eq(transactions.userId, userId), inArray(transactions.id, [txIdA, txIdB])))
-        .for("update");
+    const result = await applyExistingTransferPair({ userId, txIdA, txIdB, database });
 
-      if (rows.length !== 2) {
+    switch (result.status) {
+      case "idempotent":
+      case "adopt":
+      case "new":
+        log.info(
+          { txIdA, txIdB, userId, transferGroupId: result.groupId, event: "manual_link_ok" },
+          "transactions manually linked as transfer pair",
+        );
+        return { status: "ok", transferGroupId: result.groupId };
+      case "missing":
         return {
-          status: "error" as const,
+          status: "error",
           message: "Una o ambas transacciones no se encontraron para este usuario.",
         };
-      }
-
-      const existingA = rows.find((r) => r.id === txIdA)?.transferGroupId ?? null;
-      const existingB = rows.find((r) => r.id === txIdB)?.transferGroupId ?? null;
-
-      // Defense in depth: when adopting an existing groupId, ensure that group
-      // has exactly 1 active member (the tx we already know about). If it has
-      // more, adopting would create a 3+-member group — an invariant violation.
-      // The UI already prevents this by filtering candidates with
-      // isNull(transferGroupId), but this guard protects callers that bypass
-      // the UI (scripts, tests, future features).
-      async function groupMemberCount(groupId: string): Promise<number> {
-        const [row] = await trx
-          .select({ n: count() })
-          .from(transactions)
-          .where(
-            and(
-              eq(transactions.userId, userId),
-              eq(transactions.transferGroupId, groupId),
-              isNull(transactions.deletedAt),
-            ),
+      case "conflict":
+        if (result.reason === "distinct-groups") {
+          log.error(
+            {
+              txIdA,
+              txIdB,
+              userId,
+              existingGroupA: result.existingGroupA,
+              existingGroupB: result.existingGroupB,
+              event: "manual_link_conflict",
+            },
+            "both legs already paired to different groups — refusing to merge",
           );
-        return row?.n ?? 0;
-      }
-
-      let groupId: string;
-      if (existingA && existingB) {
-        if (existingA === existingB) {
-          // Already paired to the same group — fully idempotent.
-          return { status: "ok" as const, transferGroupId: existingA };
+          return {
+            status: "conflict",
+            message:
+              "Una de las transacciones ya pertenece a otro grupo de transferencia. No se puede fusionar.",
+          };
         }
-        // Both grouped but to DIFFERENT groups — conflict. Bail without writes.
         log.error(
           {
             txIdA,
             txIdB,
             userId,
-            existingGroupA: existingA,
-            existingGroupB: existingB,
-            event: "manual_link_conflict",
+            ...(result.side === "A"
+              ? { existingGroupA: result.existingGroupId, membersA: result.members }
+              : { existingGroupB: result.existingGroupId, membersB: result.members }),
+            event: "manual_link_conflict_3member",
           },
-          "both legs already paired to different groups — refusing to merge",
+          result.side === "A"
+            ? "txA's group already has a partner — refusing to adopt into 3-member group"
+            : "txB's group already has a partner — refusing to adopt into 3-member group",
         );
         return {
-          status: "conflict" as const,
+          status: "conflict",
           message:
-            "Una de las transacciones ya pertenece a otro grupo de transferencia. No se puede fusionar.",
+            result.side === "A"
+              ? "La transacción A ya está emparejada con otra transacción. No se puede agregar una tercera."
+              : "La transacción B ya está emparejada con otra transacción. No se puede agregar una tercera.",
         };
-      } else if (existingA) {
-        // txA is already in a group. Only adopt it if that group has exactly
-        // 1 live member (txA itself). If it already has a partner, adding txB
-        // would produce a 3-member group — conflict.
-        const membersA = await groupMemberCount(existingA);
-        if (membersA !== 1) {
-          log.error(
-            {
-              txIdA,
-              txIdB,
-              userId,
-              existingGroupA: existingA,
-              membersA,
-              event: "manual_link_conflict_3member",
-            },
-            "txA's group already has a partner — refusing to adopt into 3-member group",
-          );
-          return {
-            status: "conflict" as const,
-            message:
-              "La transacción A ya está emparejada con otra transacción. No se puede agregar una tercera.",
-          };
-        }
-        groupId = existingA;
-      } else if (existingB) {
-        // Same guard for the txB path.
-        const membersB = await groupMemberCount(existingB);
-        if (membersB !== 1) {
-          log.error(
-            {
-              txIdA,
-              txIdB,
-              userId,
-              existingGroupB: existingB,
-              membersB,
-              event: "manual_link_conflict_3member",
-            },
-            "txB's group already has a partner — refusing to adopt into 3-member group",
-          );
-          return {
-            status: "conflict" as const,
-            message:
-              "La transacción B ya está emparejada con otra transacción. No se puede agregar una tercera.",
-          };
-        }
-        groupId = existingB;
-      } else {
-        groupId = randomUUID();
-      }
-
-      // Update only the legs that don't have a group yet.
-      for (const txId of [txIdA, txIdB]) {
-        await trx
-          .update(transactions)
-          .set({
-            transferGroupId: groupId,
-            channel: "transfer",
-            categorySlug: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(transactions.id, txId),
-              eq(transactions.userId, userId),
-              isNull(transactions.transferGroupId),
-            ),
-          );
-      }
-
-      return { status: "ok" as const, transferGroupId: groupId };
-    });
-
-    if (result.status === "ok") {
-      log.info(
-        { txIdA, txIdB, userId, transferGroupId: result.transferGroupId, event: "manual_link_ok" },
-        "transactions manually linked as transfer pair",
-      );
     }
-    return result;
   } catch (err) {
     log.error(
       { err, txIdA, txIdB, userId, event: "manual_link_error" },
