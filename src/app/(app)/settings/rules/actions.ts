@@ -280,6 +280,7 @@ export async function approveRuleProposal(
         .select({
           id: ruleProposals.id,
           merchant: ruleProposals.merchant,
+          pattern: ruleProposals.pattern,
           categorySlug: ruleProposals.categorySlug,
           correctionTxnIds: ruleProposals.correctionTxnIds,
           status: ruleProposals.status,
@@ -292,10 +293,10 @@ export async function approveRuleProposal(
       if (!proposal) throw new ProposalNotFoundError();
       if (proposal.status !== "pending") throw new ProposalAlreadyDecidedError();
 
-      // Merchant wrapped in ILIKE wildcards. If merchant contains a literal %
-      // the user can edit the rule after the fact; default keeps the common
-      // case trivial.
-      const pattern = `%${proposal.merchant}%`;
+      // Persist-rather-than-re-derive: the stored pattern is the rule. Do not
+      // wrap merchant — a synthesized proposal's value is a generalizing ILIKE
+      // like %UBER%, not %UBER TRIP%.
+      const pattern = proposal.pattern;
 
       const [inserted] = await trx
         .insert(classificationRules)
