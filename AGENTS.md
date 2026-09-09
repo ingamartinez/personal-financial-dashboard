@@ -438,14 +438,56 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
 - **A killed watcher is not a dead agent.** Delegated agents live in their own
   panes and keep working when the orchestrator's waiting process dies.
   `herdr agent prompt --wait` is fire-and-forget once the prompt lands; the wait
-  is an observation channel, not a lifeline. Check `herdr agent list` and the
-  lane's real git/PR state before re-prompting, or you duplicate the work.
+  is an observation channel, not a lifeline. Before re-prompting, check the
+  lane's git/PR state (reviews, not just comments) — or you duplicate the work.
 - **Register every lane with your watcher when it starts**, not when you
   remember it. One lane merged completely unobserved because its watcher was
   never rebuilt after being killed.
-- **Poll external state, never the agent's own status.** Some agent kinds report
-  `idle`/`done` while still working. The signals that do not lie: a new commit on
-  the branch, and `gh pr view <n> --json state`.
+- **Do not poll Herdr — it pushes.** Two mechanisms, both verified on herdr
+  0.9.0.
+
+  **Single-shot** — `herdr agent wait <target> --until <status> [--timeout MS]`.
+  Blocks server-side (measured 8.06s wall on 0% CPU, so not a hidden poll).
+  Statuses: `idle`, `working`, `blocked`, `done`, `unknown`. One notification,
+  then it exits. Pair it with a background shell for one specific lane.
+
+  **Streaming** — `events.subscribe` over the Unix socket at
+  `~/.config/herdr/herdr.sock` (named sessions:
+  `~/.config/herdr/sessions/<name>/herdr.sock`; `HERDR_SOCKET_PATH` overrides).
+  Newline-delimited JSON. The first response acknowledges the subscription;
+  every later line is a pushed event.
+
+  ```bash
+  REQ='{"id":"sub_1","method":"events.subscribe","params":{"subscriptions":[
+    {"type":"pane.agent_status_changed","pane_id":"w1:pH","agent_status":"blocked"},
+    {"type":"pane.agent_status_changed","pane_id":"w1:pH","agent_status":"done"}]}}'
+  { printf '%s\n' "$REQ"; while :; do sleep 3600; done; } | nc -U ~/.config/herdr/herdr.sock
+  ```
+
+  Three gotchas:
+  - **`pane_id` is required per subscription.** No wildcard. Omitting it fails
+    with `invalid_request: missing field 'pane_id'`. One entry per pane.
+  - **`agent_status` is a server-side filter.** Subscribe for `blocked` and
+    `done` only; `working`/`idle` never hit the wire.
+  - **Hold the connection with a sleep loop, not `cat`.** Under a runner with
+    no stdin, `cat` takes EOF immediately and the subscription dies one line
+    after `subscription_started`.
+
+  `herdr api schema --json` dumps the request/response/event schema.
+
+- **When you poll GitHub, read the right collection.** A reviewer told to
+  "post your review as a comment" posted a **pull request review**.
+  `gh pr view <n> --json comments` returned `[]` while the verdict sat on the
+  PR. The lane looked silent when it was finished.
+
+  ```bash
+  GH_CONFIG_DIR=~/.config/gh-findash gh api repos/<owner>/<repo>/pulls/<n>/reviews \
+    --jq '.[]|{state,user:.user.login,body}'
+  ```
+
+  A review posted without an explicit approve or request-changes shows
+  `state: "COMMENTED"`. Symptom: pane says "posted", herdr says `done`,
+  comments array empty — check the reviews endpoint before re-prompting.
 
 #### Which route for what
 
