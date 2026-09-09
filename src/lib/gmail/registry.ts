@@ -34,7 +34,21 @@ export interface GatewayConfig {
 export const GATEWAYS: readonly GatewayConfig[] = [
   {
     id: "mercado_pago",
-    senderQueries: ["from:(@mercadopago.com.co)", "from:(@mercadopago.com)"],
+    // `.com.co` was the originally documented pair. Prod EMI receipts were
+    // ingested via `@mercadopago.com` (Gmail domain queries match
+    // subdomains: email./a./r.mercadopago.com). A keyword search
+    // `from:mercadopago.com.co` returning zero is not a missing-sender bug
+    // (#814 1e). Mercado Libre "Compraste …" confirmations carry the
+    // product line + voucher block and are the same bank-facing gateway
+    // (MERCADOPAGO COLOMBIA), so they share this enrich entry.
+    // `@mercadolibre.com` / `@mercadolibre.com.co` also cover observed
+    // subdomains (no-responder., a., r.) without listing each one.
+    senderQueries: [
+      "from:(@mercadopago.com.co)",
+      "from:(@mercadopago.com)",
+      "from:(@mercadolibre.com.co)",
+      "from:(@mercadolibre.com)",
+    ],
     bankDescriptionRegex: /\bMERCADOPAGO\b/i,
     mode: "enrich",
   },

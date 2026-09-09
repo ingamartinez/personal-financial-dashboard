@@ -37,6 +37,21 @@ describe("gmail/registry", () => {
     for (const frag of cfg.senderQueries) expect(q).toContain(frag);
   });
 
+  // Sentinel — #814 1e + Phase 1: Mercado Libre purchase confirmations are
+  // the product-line emails; domain-anchored so spoofed From: headers miss.
+  // `@mercadopago.com` is the sender that actually ingested the EMI receipts
+  // (a keyword `from:mercadopago.com.co` search returning zero is not a bug).
+  it("mercado_pago covers mercadopago and mercadolibre root domains (domain-anchored)", () => {
+    const cfg = getGatewayById("mercado_pago");
+    expect(cfg.senderQueries).toContain("from:(@mercadopago.com.co)");
+    expect(cfg.senderQueries).toContain("from:(@mercadopago.com)");
+    expect(cfg.senderQueries).toContain("from:(@mercadolibre.com.co)");
+    expect(cfg.senderQueries).toContain("from:(@mercadolibre.com)");
+    for (const frag of cfg.senderQueries) {
+      expect(frag.startsWith("from:(@")).toBe(true);
+    }
+  });
+
   it("bankDescriptionRegex matches canonical bank descriptions for enrich gateways", () => {
     expect(getGatewayById("mercado_pago").bankDescriptionRegex!.test("MERCADOPAGO COLOMBIA")).toBe(
       true,

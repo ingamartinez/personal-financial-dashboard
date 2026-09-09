@@ -94,12 +94,13 @@ export type ParsedReceiptPayload = {
   extra?: Record<string, unknown>;
 };
 
-// #641: written when a parser returns `needs_review` so the receipt has an
-// audit trail (reason + kind) and can be distinguished from intentional skips
-// (which leave parsedPayload null). Callers reading parsedPayload must
-// type-narrow on the presence of `error` before accessing payload fields.
+// #641/#814: written when a parser returns `needs_review` or `skipped` so the
+// receipt has an audit trail (reason + kind). Intentional skips used to leave
+// parsedPayload null, which made silent all-NULL rows indistinguishable from
+// "not yet parsed". Callers reading parsedPayload must type-narrow on the
+// presence of `error` before accessing payload fields.
 export type ParsedReceiptError = {
-  error: { reason: string; kind: "needs_review" };
+  error: { reason: string; kind: "needs_review" | "skipped" };
 };
 
 export const users = pgTable(

@@ -364,12 +364,16 @@ describe("processPendingEnrichReceipts (via pullForUser)", () => {
       .select({
         matchStatus: emailReceipts.matchStatus,
         parsedAt: emailReceipts.parsedAt,
+        parsedPayload: emailReceipts.parsedPayload,
       })
       .from(emailReceipts)
       .where(eq(emailReceipts.id, receiptId));
 
     expect(afterFirst.matchStatus).toBe("unmatched");
     expect(afterFirst.parsedAt).not.toBeNull();
+    expect(afterFirst.parsedPayload).toEqual({
+      error: { reason: "non_transactional", kind: "skipped" },
+    });
 
     const parsedAtAfterFirst = afterFirst.parsedAt!.getTime();
 
@@ -385,6 +389,49 @@ describe("processPendingEnrichReceipts (via pullForUser)", () => {
 
     // parsedAt must not have been refreshed (i.e. parseReceipt was not called again).
     expect(afterSecond.parsedAt!.getTime()).toBe(parsedAtAfterFirst);
+  });
+
+  it("needs_review parse is recorded observably (unmatched + error payload), not left pending", async () => {
+    // Pagaste present but amount unparseable → mercadoPagoParser needs_review.
+    const html = `<!DOCTYPE html><html><body>
+      <p>Le compraste a TIENDA TEST</p>
+      <p>Tu pago fue aprobado</p>
+      <p>Pagaste un monto no especificado</p>
+      <p>Fecha y hora 10 de enero a las 09:05 hs</p>
+    </body></html>`;
+
+    const [receiptRow] = await db
+      .insert(emailReceipts)
+      .values({
+        userId,
+        gmailConnectionId: connId,
+        gmailMsgId: `${TAG}needs-review-${Date.now()}`,
+        gateway: "mercado_pago",
+        rawHtml: html,
+        matchStatus: "pending",
+      })
+      .returning({ id: emailReceipts.id });
+
+    await pullForUser(userId, {}, { getClient: async () => makeNoopClient() });
+
+    const [row] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        parsedAt: emailReceipts.parsedAt,
+        parsedPayload: emailReceipts.parsedPayload,
+        merchant: emailReceipts.merchant,
+        amountCents: emailReceipts.amountCents,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receiptRow.id));
+
+    expect(row.matchStatus).toBe("unmatched");
+    expect(row.parsedAt).not.toBeNull();
+    expect(row.merchant).toBeNull();
+    expect(row.amountCents).toBeNull();
+    expect(row.parsedPayload).toEqual({
+      error: { reason: "amount_not_found", kind: "needs_review" },
+    });
   });
 
   it("all enrich gateways in GATEWAYS registry have mode=enrich (registry coverage)", () => {

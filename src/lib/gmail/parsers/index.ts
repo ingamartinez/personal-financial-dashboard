@@ -12,14 +12,16 @@ const log = createLogger({ module: "gmail/parsers" });
 // Dispatch table: gateway enum value → parser implementation.
 // Bancolombia is intentionally absent — it has its own ingest path
 // via parseBancolombiaEmail + processPendingBancolombiaReceipts.
-const PARSERS: Record<string, { parse(html: string, opts?: { receivedAt?: Date }): ParseResult }> =
-  {
-    mercado_pago: mercadoPagoParser,
-    payu: payuParser,
-    wompi: wompiParser,
-    apple: appleParser,
-    paypal: paypalParser,
-  };
+const PARSERS: Record<
+  string,
+  { parse(html: string, opts?: { receivedAt?: Date; subject?: string }): ParseResult }
+> = {
+  mercado_pago: mercadoPagoParser,
+  payu: payuParser,
+  wompi: wompiParser,
+  apple: appleParser,
+  paypal: paypalParser,
+};
 
 /**
  * Parse a raw HTML email receipt for the given gateway.
@@ -38,7 +40,7 @@ const PARSERS: Record<string, { parse(html: string, opts?: { receivedAt?: Date }
 export function parseReceipt(
   gateway: GatewayId,
   rawHtml: string,
-  opts?: { receivedAt?: Date },
+  opts?: { receivedAt?: Date; subject?: string },
 ): ParseResult {
   const parser = PARSERS[gateway];
 

@@ -421,7 +421,10 @@ async function processPendingBancolombiaReceipts(userId: number): Promise<void> 
  * re-attempted on future pulls (the corresponding bank tx may not have arrived
  * via SMS yet at the time of the first pull).
  */
-async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId): Promise<void> {
+export async function processPendingEnrichReceipts(
+  userId: number,
+  gatewayId: GatewayId,
+): Promise<void> {
   const pending = await db
     .select({
       id: emailReceipts.id,
@@ -455,13 +458,15 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
         });
 
         if (parseResult.kind === "parsed") {
-          const { merchant, amountCents, currency, occurredAt, referenceId } = parseResult.data;
+          const { merchant, amountCents, currency, occurredAt, referenceId, extra } =
+            parseResult.data;
           const parsedPayload = {
             merchant,
             amountCents: amountCents.toString(),
             currency,
             occurredAt: occurredAt.toISOString(),
             referenceId,
+            ...(extra ? { extra } : {}),
           };
           await db
             .update(emailReceipts)
@@ -486,9 +491,16 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
             "receipt parsed successfully",
           );
         } else if (parseResult.kind === "skipped") {
+          // Persist the skip reason. A silent all-NULL row with parsedAt set
+          // and no payload is how 8 Mercado Libre layouts vanished (#814).
           await db
             .update(emailReceipts)
-            .set({ matchStatus: "unmatched", parsedAt: new Date(), updatedAt: new Date() })
+            .set({
+              matchStatus: "unmatched",
+              parsedAt: new Date(),
+              parsedPayload: { error: { reason: parseResult.reason, kind: "skipped" } },
+              updatedAt: new Date(),
+            })
             .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
           log.info(
             {
@@ -503,7 +515,19 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
           );
           continue; // skip matcher — this receipt is intentionally non-transactional
         } else {
-          // needs_review: leave as pending, do NOT call matcher
+          // needs_review: persist observably and break the retry loop (ARQ
+          // #641 pattern). Re-parse after a parser fix via the backfill,
+          // which clears parsed_at. Leaving these pending forever hid
+          // failures as "still working on it".
+          await db
+            .update(emailReceipts)
+            .set({
+              matchStatus: "unmatched",
+              parsedAt: new Date(),
+              parsedPayload: { error: { reason: parseResult.reason, kind: "needs_review" } },
+              updatedAt: new Date(),
+            })
+            .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
           log.warn(
             {
               userId,
@@ -513,7 +537,7 @@ async function processPendingEnrichReceipts(userId: number, gatewayId: GatewayId
               reason: parseResult.reason,
               event: "receipt_needs_review",
             },
-            "receipt parse needs review; leaving pending for retry",
+            "receipt parse needs review; marked unmatched with error payload",
           );
           continue;
         }

@@ -66,10 +66,141 @@ function parseSpanishDate(
   return new Date(localMs + BOGOTA_OFFSET_MS);
 }
 
+const VOUCHER_NETWORK_RE = /REDEBAN ES SU RED|CREDIBANCO ES SU RED/i;
+const MERCHANT_MAX = 200;
+
+function truncateMerchant(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= MERCHANT_MAX) return trimmed;
+  return trimmed.slice(0, MERCHANT_MAX);
+}
+
+function stripComprastePrefix(value: string): string {
+  return value.replace(/^Compraste\s+/i, "").trim();
+}
+
+function parseVoucherDate(dmy: string, hms: string): Date | null {
+  const dateParts = dmy.split("/");
+  const timeParts = hms.split(":");
+  if (dateParts.length !== 3 || timeParts.length < 2) return null;
+  const day = Number(dateParts[0]);
+  const month = Number(dateParts[1]);
+  const year = Number(dateParts[2]);
+  const hour = Number(timeParts[0]);
+  const minute = Number(timeParts[1]);
+  const second = timeParts[2] !== undefined ? Number(timeParts[2]) : 0;
+  if (![day, month, year, hour, minute, second].every((n) => Number.isFinite(n))) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const localMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  return new Date(localMs + BOGOTA_OFFSET_MS);
+}
+
+function extractVoucherAmount(text: string): bigint | null {
+  // Card-leg amount lives on the voucher, never the "Pagaste" headline
+  // (split payments charge the card less than the order total). Prefer
+  // TOTAL, then COMPRA NETA. Formats observed: "$85211" and "$85.211".
+  const match =
+    text.match(/TOTAL:\s*\$\s*([\d.]+)(?:,(\d{2}))?/i) ??
+    text.match(/COMPRA\s+NETA:\s*\$\s*([\d.]+)(?:,(\d{2}))?/i);
+  if (!match) return null;
+  return parseMpAmount(match[1], match[2]);
+}
+
+function extractMlMerchant(html: string, subject: string | undefined): string {
+  // extractVisibleText keeps <title> contents. Strip it so a default
+  // subject-in-title does not glue onto the body "Compraste …" line.
+  const htmlWithoutTitle = html.replace(/<title[^>]*>[\s\S]*?<\/title[^>]*>/gi, " ");
+  const bodyText = extractVisibleText(htmlWithoutTitle);
+  const compraste = bodyText.match(
+    /Compraste\s+(.+?)(?=\s+(?:Pagaste|REDEBAN|CREDIBANCO|Le\s+compraste)|$)/i,
+  );
+  if (compraste) {
+    const product = compraste[1].trim();
+    if (!/^\d+\s+productos\b/i.test(product)) return truncateMerchant(product);
+  }
+  if (subject) {
+    const fromSubject = stripComprastePrefix(subject);
+    if (fromSubject) return truncateMerchant(fromSubject);
+  }
+  const title = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (title) {
+    const fromTitle = stripComprastePrefix(title[1]);
+    if (fromTitle) return truncateMerchant(fromTitle);
+  }
+  return "MERCADOPAGO COLOMBIA";
+}
+
+function parseVoucherBlock(
+  html: string,
+  text: string,
+  opts?: { receivedAt?: Date; subject?: string },
+): ParseResult {
+  const amountCents = extractVoucherAmount(text);
+  if (amountCents === null) {
+    log.warn({ event: "mp_voucher_amount_not_found" }, "voucher block missing TOTAL/COMPRA NETA");
+    return { kind: "needs_review", reason: "voucher_amount_not_found" };
+  }
+
+  const dateMatch = text.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  let occurredAt: Date;
+  if (dateMatch) {
+    const parsed = parseVoucherDate(dateMatch[1], dateMatch[2]);
+    if (!parsed) {
+      log.warn(
+        { raw: dateMatch[0], event: "mp_voucher_date_parse_failed" },
+        "could not parse voucher date",
+      );
+      return { kind: "needs_review", reason: "date_parse_failed" };
+    }
+    occurredAt = parsed;
+  } else if (opts?.receivedAt) {
+    log.warn({ event: "mp_voucher_date_fallback" }, "voucher missing datetime; using receivedAt");
+    occurredAt = opts.receivedAt;
+  } else {
+    return { kind: "needs_review", reason: "missing_occurred_at" };
+  }
+
+  const autMatch = text.match(/AUT:\s*(\d+)/i);
+  const refMatch = text.match(/REF:\s*(\d+)/i);
+  const last4Match = text.match(/\*{4}\s*(\d{4})/);
+  const cuotasMatch = text.match(/CUOTAS:\s*(\d+)/i);
+  const network = /CREDIBANCO ES SU RED/i.test(text)
+    ? "credibanco"
+    : /REDEBAN ES SU RED/i.test(text)
+      ? "redeban"
+      : null;
+
+  const extra: Record<string, unknown> = {};
+  if (network) extra.network = network;
+  if (last4Match) extra.last4 = last4Match[1];
+  if (cuotasMatch) extra.installments = Number(cuotasMatch[1]);
+  if (refMatch) extra.ref = refMatch[1];
+
+  return {
+    kind: "parsed",
+    data: {
+      merchant: extractMlMerchant(html, opts?.subject),
+      amountCents,
+      currency: "COP",
+      occurredAt,
+      referenceId: autMatch ? autMatch[1] : (refMatch?.[1] ?? null),
+      extra: Object.keys(extra).length > 0 ? extra : undefined,
+    },
+  };
+}
+
 export const mercadoPagoParser: GatewayParser = {
-  parse(html: string, opts?: { receivedAt?: Date }): ParseResult {
+  parse(html: string, opts?: { receivedAt?: Date; subject?: string }): ParseResult {
     try {
       const text = extractVisibleText(html);
+
+      // Voucher-block layout (Mercado Libre "Compraste …" and some MP
+      // checkout mail). Must run BEFORE the Pagaste/Le-compraste path:
+      // split payments put the order total on "Pagaste" and the card leg
+      // on TOTAL:/COMPRA NETA:. findash holds the card leg.
+      if (VOUCHER_NETWORK_RE.test(text)) {
+        return parseVoucherBlock(html, text, opts);
+      }
 
       // Promotional / non-transactional check
       if (!/Pagaste/i.test(text) && !/Le\s+compraste\s+a/i.test(text)) {
