@@ -9,7 +9,10 @@ import {
   bogotaCalendarDay,
   correlateTransaction,
   CORRELATION_WINDOW_MS,
+  EVIDENCE_TIME_ONLY_WINDOW_MS,
   fxToleranceCents,
+  timeOnlyEligible,
+  type CorrelationReason,
 } from "./correlate";
 
 const TAG = "VITEST_CORRELATE_";
@@ -103,13 +106,14 @@ async function createTx(opts: {
 async function createReceipt(opts: {
   userId: number;
   connId: number;
-  amountCents: bigint;
-  currency: "COP" | "USD";
+  amountCents: bigint | null;
+  currency: "COP" | "USD" | null;
   emailReceivedAt: Date | null;
   occurredAt?: Date | null;
   createdAt?: Date;
   merchant?: string;
   msgId?: string;
+  gateway?: "mercado_pago" | "jetsmart";
 }): Promise<number> {
   const [row] = await db
     .insert(emailReceipts)
@@ -117,7 +121,7 @@ async function createReceipt(opts: {
       userId: opts.userId,
       gmailConnectionId: opts.connId,
       gmailMsgId: opts.msgId ?? `${TAG}${Date.now()}-${Math.random()}`,
-      gateway: "mercado_pago",
+      gateway: opts.gateway ?? "mercado_pago",
       amountCents: opts.amountCents,
       currency: opts.currency,
       occurredAt: opts.occurredAt ?? opts.emailReceivedAt,
@@ -378,5 +382,195 @@ describe("correlateTransaction — email_received_at gotchas", () => {
 
     const result = await correlateTransaction(userA, txId);
     expect(result.candidates).toEqual([]);
+  });
+});
+
+describe("timeOnlyEligible — doors, not today's callers", () => {
+  type TimeOnlyHasDeltaCents =
+    Extract<CorrelationReason, { kind: "time_only" }> extends {
+      deltaCents: bigint;
+    }
+      ? true
+      : false;
+  const timeOnlyHasDeltaCents: TimeOnlyHasDeltaCents = false;
+
+  it("type-locks time_only so it cannot grow a deltaCents amount match", () => {
+    expect(timeOnlyHasDeltaCents).toBe(false);
+  });
+
+  it("is true only for evidence-mode receipts with no amount", () => {
+    expect(timeOnlyEligible({ amountCents: null, gateway: "jetsmart" })).toBe(true);
+    expect(timeOnlyEligible({ amountCents: BigInt(100), gateway: "jetsmart" })).toBe(false);
+    expect(timeOnlyEligible({ amountCents: null, gateway: "mercado_pago" })).toBe(false);
+    expect(timeOnlyEligible({ amountCents: null, gateway: "bancolombia" })).toBe(false);
+  });
+});
+
+describe("correlateTransaction — evidence time-only", () => {
+  const occurredAt = new Date("2026-01-05T22:42:00-05:00");
+
+  it("matches an amount-less jetsmart receipt inside the 2-minute window as time_only", async () => {
+    const txId = await createTx({
+      userId: userA,
+      accountId: accountA,
+      amountCents: BigInt(-15_000_000),
+      currency: "COP",
+      occurredAt,
+    });
+    const receiptId = await createReceipt({
+      userId: userA,
+      connId: connA,
+      amountCents: null,
+      currency: null,
+      emailReceivedAt: new Date("2026-01-05T22:42:17-05:00"),
+      gateway: "jetsmart",
+      merchant: "JetSmart",
+    });
+
+    const result = await correlateTransaction(userA, txId);
+    expect(result).not.toHaveProperty("status");
+    expect(result.candidates).toEqual([
+      {
+        receiptId,
+        rank: 1,
+        reason: { kind: "time_only", deltaMs: 17_000 },
+      },
+    ]);
+  });
+
+  it("does not time-only match outside the 2-minute window even inside 36h", async () => {
+    const txId = await createTx({
+      userId: userA,
+      accountId: accountA,
+      amountCents: BigInt(-15_000_000),
+      currency: "COP",
+      occurredAt,
+    });
+    await createReceipt({
+      userId: userA,
+      connId: connA,
+      amountCents: null,
+      currency: null,
+      emailReceivedAt: new Date(occurredAt.getTime() + EVIDENCE_TIME_ONLY_WINDOW_MS + 1_000),
+      gateway: "jetsmart",
+      merchant: "JetSmart",
+    });
+
+    const result = await correlateTransaction(userA, txId);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it("does not time-only match an amount-less enrich receipt at the same minute", async () => {
+    const txId = await createTx({
+      userId: userA,
+      accountId: accountA,
+      amountCents: BigInt(-15_000_000),
+      currency: "COP",
+      occurredAt,
+    });
+    await createReceipt({
+      userId: userA,
+      connId: connA,
+      amountCents: null,
+      currency: null,
+      emailReceivedAt: occurredAt,
+      gateway: "mercado_pago",
+      merchant: "SkippedPromo",
+    });
+
+    const result = await correlateTransaction(userA, txId);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it("does not time-only match an amount-bearing evidence receipt with the wrong amount", async () => {
+    const txId = await createTx({
+      userId: userA,
+      accountId: accountA,
+      amountCents: BigInt(-15_000_000),
+      currency: "COP",
+      occurredAt,
+    });
+    await createReceipt({
+      userId: userA,
+      connId: connA,
+      amountCents: BigInt(8_521_100),
+      currency: "COP",
+      emailReceivedAt: occurredAt,
+      gateway: "jetsmart",
+      merchant: "JetSmart",
+    });
+
+    const result = await correlateTransaction(userA, txId);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it("amount-matches an amount-bearing evidence receipt; never labels it time_only", async () => {
+    const txId = await createTx({
+      userId: userA,
+      accountId: accountA,
+      amountCents: BigInt(-8_521_100),
+      currency: "COP",
+      occurredAt,
+    });
+    const receiptId = await createReceipt({
+      userId: userA,
+      connId: connA,
+      amountCents: BigInt(8_521_100),
+      currency: "COP",
+      emailReceivedAt: new Date("2026-01-05T22:42:10-05:00"),
+      gateway: "jetsmart",
+      merchant: "JetSmart",
+    });
+
+    const result = await correlateTransaction(userA, txId);
+    expect(result.candidates).toEqual([
+      {
+        receiptId,
+        rank: 1,
+        reason: { kind: "exact_amount", deltaCents: BigInt(0), deltaMs: 10_000 },
+      },
+    ]);
+  });
+
+  it("ranks exact_amount above time_only when both exist in the same minute", async () => {
+    const txId = await createTx({
+      userId: userA,
+      accountId: accountA,
+      amountCents: BigInt(-8_521_100),
+      currency: "COP",
+      occurredAt,
+    });
+    const amountId = await createReceipt({
+      userId: userA,
+      connId: connA,
+      amountCents: BigInt(8_521_100),
+      currency: "COP",
+      emailReceivedAt: new Date("2026-01-05T22:42:30-05:00"),
+      gateway: "mercado_pago",
+      msgId: `${TAG}amount`,
+    });
+    const timeId = await createReceipt({
+      userId: userA,
+      connId: connA,
+      amountCents: null,
+      currency: null,
+      emailReceivedAt: occurredAt,
+      gateway: "jetsmart",
+      merchant: "JetSmart",
+      msgId: `${TAG}time`,
+    });
+
+    const result = await correlateTransaction(userA, txId);
+    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates[0]).toMatchObject({
+      receiptId: amountId,
+      rank: 1,
+      reason: { kind: "exact_amount" },
+    });
+    expect(result.candidates[1]).toMatchObject({
+      receiptId: timeId,
+      rank: 2,
+      reason: { kind: "time_only" },
+    });
   });
 });

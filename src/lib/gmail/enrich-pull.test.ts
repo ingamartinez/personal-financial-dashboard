@@ -437,14 +437,19 @@ describe("processPendingEnrichReceipts (via pullForUser)", () => {
   it("all enrich gateways in GATEWAYS registry have mode=enrich (registry coverage)", () => {
     const enrichGateways = GATEWAYS.filter((g) => g.mode === "enrich");
     const ingestGateways = GATEWAYS.filter((g) => g.mode === "ingest");
+    const evidenceGateways = GATEWAYS.filter((g) => g.mode === "evidence");
 
     // All enrich gateways must have a bankDescriptionRegex.
     for (const g of enrichGateways) {
       expect(g.bankDescriptionRegex).not.toBeNull();
     }
-    // All ingest gateways must NOT have a bankDescriptionRegex.
+    // All ingest and evidence gateways must NOT have a bankDescriptionRegex.
     for (const g of ingestGateways) {
       expect(g.bankDescriptionRegex).toBeNull();
     }
+    for (const g of evidenceGateways) {
+      expect(g.bankDescriptionRegex).toBeNull();
+    }
+    expect(evidenceGateways.map((g) => g.id)).toContain("jetsmart");
   });
 });

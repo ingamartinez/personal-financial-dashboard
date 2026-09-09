@@ -345,6 +345,7 @@ const GATEWAY_LABELS: Record<GatewayId, string> = {
   paypal: "PayPal",
   bancolombia: "Bancolombia",
   arq: "ARQ",
+  jetsmart: "JetSmart",
 };
 
 export function renderEnrichProcessing(): string {

@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { emailReceipts, transactions } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
+import { isEvidenceGateway } from "@/lib/gmail/registry";
 import { reclassifyTransaction, type ReclassifyDb } from "@/lib/classification/reclassify";
 
 const log = createLogger({ module: "gmail/enrich" });
@@ -43,12 +44,17 @@ export async function applyEnrichment(
         id: emailReceipts.id,
         userId: emailReceipts.userId,
         merchant: emailReceipts.merchant,
+        gateway: emailReceipts.gateway,
       })
       .from(emailReceipts)
       .where(and(eq(emailReceipts.id, receiptId), eq(emailReceipts.userId, userId)));
 
     if (!receipt) {
       throw new Error("cross-tenant attempt: receipt does not belong to user");
+    }
+
+    if (isEvidenceGateway(receipt.gateway)) {
+      throw new Error("evidence receipts must not overwrite bank merchant");
     }
 
     // Update the transaction with enriched merchant data.

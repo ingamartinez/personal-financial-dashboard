@@ -113,6 +113,7 @@ async function createReceipt(
   connId: number,
   merchant: string,
   msgSuffix?: string,
+  gateway: "mercado_pago" | "jetsmart" = "mercado_pago",
 ): Promise<number> {
   const [row] = await db
     .insert(emailReceipts)
@@ -120,8 +121,8 @@ async function createReceipt(
       userId,
       gmailConnectionId: connId,
       gmailMsgId: `${TAG}receipt-${msgSuffix ?? Date.now()}-${Math.random()}`,
-      gateway: "mercado_pago",
-      amountCents: BigInt(65990),
+      gateway,
+      amountCents: gateway === "jetsmart" ? null : BigInt(65990),
       occurredAt: new Date("2026-04-19T10:00:00Z"),
       merchant,
       rawHtml: "<html>test</html>",
@@ -328,5 +329,25 @@ describe("applyEnrichment — idempotency", () => {
 
     expect(tx1).toEqual(tx2);
     expect(receipt1).toEqual(receipt2);
+  });
+});
+
+describe("applyEnrichment — evidence mode", () => {
+  it("throws and does not overwrite the bank merchant", async () => {
+    const txId = await createTx(userA, accountA, "COMPRA JETSMART");
+    const receiptId = await createReceipt(userA, connA, "JetSmart", "evidence", "jetsmart");
+
+    await expect(applyEnrichment(userA, txId, receiptId)).rejects.toThrow(
+      /evidence receipts must not overwrite bank merchant/,
+    );
+
+    const tx = await getTxState(txId);
+    expect(tx.enrichedMerchant).toBeNull();
+    expect(tx.enrichmentSource).toBeNull();
+    expect(tx.descriptionRaw).toBe("COMPRA JETSMART");
+
+    const receipt = await getReceiptState(receiptId);
+    expect(receipt.matchStatus).toBe("pending");
+    expect(receipt.matchedTransactionId).toBeNull();
   });
 });

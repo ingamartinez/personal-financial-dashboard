@@ -9,7 +9,7 @@ describe("gmail/registry", () => {
     expect(registryIds).toEqual(enumIds);
   });
 
-  it("marks bancolombia and arq as ingest mode, all other gateways as enrich", () => {
+  it("assigns ingest, enrich, and evidence modes without collapsing evidence into enrich", () => {
     const byId = new Map(GATEWAYS.map((g) => [g.id, g] as const));
     expect(byId.get("bancolombia")!.mode).toBe("ingest");
     // ARQ is capture-only (#509 step 0): emails persisted but not processed
@@ -20,6 +20,9 @@ describe("gmail/registry", () => {
     expect(byId.get("wompi")!.mode).toBe("enrich");
     expect(byId.get("apple")!.mode).toBe("enrich");
     expect(byId.get("paypal")!.mode).toBe("enrich");
+    expect(byId.get("jetsmart")!.mode).toBe("evidence");
+    // Mercado Libre stays enrich — voucher TOTAL is the card leg.
+    expect(byId.get("mercado_pago")!.mode).not.toBe("evidence");
   });
 
   it("buildSenderQuery returns a single fragment when only one sender is configured", () => {
@@ -62,7 +65,7 @@ describe("gmail/registry", () => {
     expect(getGatewayById("paypal").bankDescriptionRegex!.test("PAYPAL *TIENDA")).toBe(true);
   });
 
-  it("ingest gateways expose bankDescriptionRegex=null (matcher skips them)", () => {
+  it("ingest and evidence gateways expose bankDescriptionRegex=null (matcher skips them)", () => {
     const bancolombia = getGatewayById("bancolombia");
     expect(bancolombia.mode).toBe("ingest");
     expect(bancolombia.bankDescriptionRegex).toBeNull();
@@ -70,6 +73,10 @@ describe("gmail/registry", () => {
     const arq = getGatewayById("arq");
     expect(arq.mode).toBe("ingest");
     expect(arq.bankDescriptionRegex).toBeNull();
+
+    const jetsmart = getGatewayById("jetsmart");
+    expect(jetsmart.mode).toBe("evidence");
+    expect(jetsmart.bankDescriptionRegex).toBeNull();
   });
 
   // Sentinel — ARQ (#509): capture-only step 0 while #508 designs the real
@@ -79,6 +86,12 @@ describe("gmail/registry", () => {
     const cfg = getGatewayById("arq");
     expect(cfg.senderQueries).toContain("from:(@arqfinance.com)");
     expect(cfg.senderQueries).toContain("from:(@dolarapp.com)");
+  });
+
+  it("jetsmart is domain-anchored at @jetsmart.com", () => {
+    const cfg = getGatewayById("jetsmart");
+    expect(cfg.senderQueries).toEqual(["from:(@jetsmart.com)"]);
+    expect(cfg.senderQueries[0].startsWith("from:(@")).toBe(true);
   });
 
   it("getGatewayById throws for an unknown id", () => {

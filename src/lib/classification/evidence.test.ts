@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RankedCandidate } from "@/lib/correlation/correlate";
+import type { CorrelationReason, RankedCandidate } from "@/lib/correlation/correlate";
 import {
   citationFromEvidence,
   classifiableForRules,
@@ -9,11 +9,11 @@ import {
   type TxEvidence,
 } from "./evidence";
 
-function candidate(id: number, rank: number): RankedCandidate {
+function candidate(id: number, rank: number, reason?: CorrelationReason): RankedCandidate {
   return {
     receiptId: id,
     rank,
-    reason: { kind: "exact_amount", deltaCents: BigInt(0), deltaMs: 0 },
+    reason: reason ?? { kind: "exact_amount", deltaCents: BigInt(0), deltaMs: 0 },
   };
 }
 
@@ -29,8 +29,12 @@ function receipt(id: number, merchant: string): EvidenceReceipt {
   };
 }
 
-function evidence(opts: { opaque: TxEvidence["opaque"]; receipts: EvidenceReceipt[] }): TxEvidence {
-  const candidates = opts.receipts.map((r, i) => candidate(r.id, i + 1));
+function evidence(opts: {
+  opaque: TxEvidence["opaque"];
+  receipts: EvidenceReceipt[];
+  reason?: CorrelationReason;
+}): TxEvidence {
+  const candidates = opts.receipts.map((r, i) => candidate(r.id, i + 1, opts.reason));
   return {
     candidates,
     receipts: new Map(opts.receipts.map((r) => [r.id, r])),
@@ -70,6 +74,18 @@ describe("classifiableForRules", () => {
     expect(ambiguous).toEqual({ descriptionRaw: "", descriptionClean: null, merchant: null });
   });
 
+  it("does not key opaque rows on a unique time-only receipt", () => {
+    const result = classifiableForRules(
+      bankTx,
+      evidence({
+        opaque: "mercado_pago",
+        receipts: [receipt(10, "JetSmart")],
+        reason: { kind: "time_only", deltaMs: 0 },
+      }),
+    );
+    expect(result).toEqual({ descriptionRaw: "", descriptionClean: null, merchant: null });
+  });
+
   it("leaves non-opaque rows on the bank description", () => {
     const tx = {
       descriptionRaw: "NETFLIX",
@@ -101,6 +117,20 @@ describe("priorArtLookupRow", () => {
       canonicalMerchant: null,
       merchant: "Almohada Ortopédica",
       descriptionRaw: "Almohada Ortopédica",
+    });
+    expect(
+      priorArtLookupRow(
+        row,
+        evidence({
+          opaque: "mercado_pago",
+          receipts: [receipt(10, "JetSmart")],
+          reason: { kind: "time_only", deltaMs: 0 },
+        }),
+      ),
+    ).toEqual({
+      canonicalMerchant: null,
+      merchant: null,
+      descriptionRaw: "",
     });
   });
 });
@@ -161,5 +191,35 @@ describe("citationFromEvidence / toAiClassifiable", () => {
     expect(serialized).not.toContain("rawHtml");
     expect(serialized).not.toContain("subject");
     expect(serialized).not.toContain("sender");
+  });
+
+  it("puts a unique time-only candidate on the AI bundle with null deltaCents", () => {
+    const unique = evidence({
+      opaque: "mercado_pago",
+      receipts: [receipt(10, "JetSmart")],
+      reason: { kind: "time_only", deltaMs: 12_000 },
+    });
+    const payload = toAiClassifiable(
+      {
+        id: 1443,
+        descriptionRaw: "MERCADOPAGO COLOMBIA",
+        amountCents: BigInt(-15_000_000),
+        currency: "COP",
+      },
+      unique,
+    );
+    expect(payload.evidence).toEqual([
+      expect.objectContaining({
+        receiptId: 10,
+        merchant: "JetSmart",
+        matchKind: "time_only",
+        deltaCents: null,
+        deltaMs: 12_000,
+      }),
+    ]);
+    expect(citationFromEvidence(unique)).toMatchObject({
+      receiptId: 10,
+      matchKind: "time_only",
+    });
   });
 });

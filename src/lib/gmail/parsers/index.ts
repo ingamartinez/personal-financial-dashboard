@@ -6,6 +6,7 @@ import { payuParser } from "./payu";
 import { wompiParser } from "./wompi";
 import { appleParser } from "./apple";
 import { paypalParser } from "./paypal";
+import { jetsmartParser } from "./jetsmart";
 
 const log = createLogger({ module: "gmail/parsers" });
 
@@ -21,6 +22,7 @@ const PARSERS: Record<
   wompi: wompiParser,
   apple: appleParser,
   paypal: paypalParser,
+  jetsmart: jetsmartParser,
 };
 
 /**
@@ -28,6 +30,7 @@ const PARSERS: Record<
  *
  * Returns:
  *   `parsed`       — fields extracted successfully; caller should persist them.
+ *   `evidence`     — merchant-only (no amount); persist, do not match or ingest.
  *   `skipped`      — email is non-transactional (rejected, promo, etc.);
  *                    caller should set match_status='unmatched'.
  *   `needs_review` — parsing failed or parser is a stub; caller should leave

@@ -1,4 +1,4 @@
-import { and, eq, gte, isNotNull, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lte } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { emailReceipts, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
@@ -6,6 +6,7 @@ import { getFxRateAsOf } from "@/lib/fx/repo";
 import { createLogger } from "@/lib/logger";
 import { convertCents } from "@/lib/money";
 import type { Currency } from "@/lib/types";
+import { evidenceGatewayIds, isEvidenceGateway, type GatewayId } from "@/lib/gmail/registry";
 
 const log = createLogger({ module: "correlation/correlate" });
 
@@ -16,6 +17,15 @@ const log = createLogger({ module: "correlation/correlate" });
  * matcher's 2-day window.
  */
 export const CORRELATION_WINDOW_MS = 36 * 60 * 60 * 1000;
+
+/**
+ * Time-only matches are permitted only for amount-less evidence receipts.
+ * The epic's JetSmart example joins to the minute; a 36h window on time
+ * alone would pair unrelated mail on any busy day. Two minutes covers
+ * minute-truncated bank timestamps without opening the amount-bearing
+ * window.
+ */
+export const EVIDENCE_TIME_ONLY_WINDOW_MS = 2 * 60 * 1000;
 
 /**
  * Card FX vs official TRM on the four EMI pairs was 0.52–1.00% after
@@ -41,7 +51,49 @@ export type CrossCurrencyReason = {
   deltaMs: number;
 };
 
-export type CorrelationReason = ExactAmountReason | CrossCurrencyReason;
+export type TimeOnlyReason = {
+  kind: "time_only";
+  deltaMs: number;
+};
+
+export type CorrelationReason = ExactAmountReason | CrossCurrencyReason | TimeOnlyReason;
+
+export function isDeterministicReason(reason: CorrelationReason): boolean {
+  switch (reason.kind) {
+    case "exact_amount":
+    case "cross_currency":
+      return true;
+    case "time_only":
+      return false;
+    default: {
+      const _never: never = reason;
+      throw new Error(`[correlation] unhandled reason kind: ${JSON.stringify(_never)}`);
+    }
+  }
+}
+
+export function timeOnlyEligible(receipt: {
+  amountCents: bigint | null;
+  gateway: GatewayId;
+}): boolean {
+  if (receipt.amountCents != null) return false;
+  return isEvidenceGateway(receipt.gateway);
+}
+
+function kindRank(kind: CorrelationReason["kind"]): number {
+  switch (kind) {
+    case "exact_amount":
+      return 0;
+    case "cross_currency":
+      return 1;
+    case "time_only":
+      return 2;
+    default: {
+      const _never: never = kind;
+      throw new Error(`[correlation] unhandled reason kind: ${String(_never)}`);
+    }
+  }
+}
 
 export type RankedCandidate = {
   receiptId: number;
@@ -173,12 +225,54 @@ export async function correlateTransaction(
     });
   }
 
+  const evidenceIds = evidenceGatewayIds();
+  if (evidenceIds.length > 0) {
+    const timeOnlyStart = new Date(tx.occurredAt.getTime() - EVIDENCE_TIME_ONLY_WINDOW_MS);
+    const timeOnlyEnd = new Date(tx.occurredAt.getTime() + EVIDENCE_TIME_ONLY_WINDOW_MS);
+    const evidenceReceipts = await db
+      .select({
+        id: emailReceipts.id,
+        amountCents: emailReceipts.amountCents,
+        emailReceivedAt: emailReceipts.emailReceivedAt,
+        gateway: emailReceipts.gateway,
+      })
+      .from(emailReceipts)
+      .where(
+        and(
+          eq(emailReceipts.userId, userId),
+          inArray(emailReceipts.gateway, evidenceIds),
+          isNotNull(emailReceipts.emailReceivedAt),
+          isNull(emailReceipts.amountCents),
+          gte(emailReceipts.emailReceivedAt, timeOnlyStart),
+          lte(emailReceipts.emailReceivedAt, timeOnlyEnd),
+          notDeleted(emailReceipts.deletedAt),
+        ),
+      );
+
+    for (const receipt of evidenceReceipts) {
+      if (receipt.emailReceivedAt == null) continue;
+      if (!timeOnlyEligible({ amountCents: receipt.amountCents, gateway: receipt.gateway })) {
+        throw new Error(
+          `[correlation/correlate] time-only query returned a non-eligible receipt ${receipt.id}`,
+        );
+      }
+      scored.push({
+        receiptId: receipt.id,
+        reason: {
+          kind: "time_only",
+          deltaMs: receipt.emailReceivedAt.getTime() - tx.occurredAt.getTime(),
+        },
+      });
+    }
+  }
+
   scored.sort((a, b) => {
-    const kindRank = (kind: CorrelationReason["kind"]) => (kind === "exact_amount" ? 0 : 1);
     const byKind = kindRank(a.reason.kind) - kindRank(b.reason.kind);
     if (byKind !== 0) return byKind;
-    if (a.reason.deltaCents !== b.reason.deltaCents) {
-      return a.reason.deltaCents < b.reason.deltaCents ? -1 : 1;
+    const aCents = a.reason.kind === "time_only" ? null : a.reason.deltaCents;
+    const bCents = b.reason.kind === "time_only" ? null : b.reason.deltaCents;
+    if (aCents != null && bCents != null && aCents !== bCents) {
+      return aCents < bCents ? -1 : 1;
     }
     const byTime = Math.abs(a.reason.deltaMs) - Math.abs(b.reason.deltaMs);
     if (byTime !== 0) return byTime;
