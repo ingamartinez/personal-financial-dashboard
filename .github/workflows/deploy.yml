@@ -328,6 +328,21 @@ jobs:
             sudo -n -u findash /usr/local/bin/bun scripts/backfill-atm-channel.ts
           "
 
+      # #852: rebuild description fingerprints from description_raw after the
+      # PAGO-prefix tokenizer change, then auto-link orphans (tx 2652).
+      # Idempotent: a second deploy writes nothing; relink is still attempted.
+      - name: Run #852 description-pattern rebuild
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            cd '$RELEASE_DIR'
+            sudo -n -u findash /usr/local/bin/bun scripts/backfill-retokenize-patterns.ts
+          "
+
       # ---------------------------------------------------------------------
       # #799. Everything below this line is rollback-protected.
       #
