@@ -35,7 +35,10 @@ import type { ClassifyTxJobData } from "@/lib/queue/workers/classify-tx";
 import type { UserClassificationContext } from "@/lib/db/schema";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
-import { recordRecurringLinkObservation } from "@/lib/recurring/observation-recorder";
+import {
+  recordRecurringLinkObservation,
+  retractRecurringLinkObservation,
+} from "@/lib/recurring/observation-recorder";
 import { createLogger } from "@/lib/logger";
 import type {
   LinkTxToRecurringInput,
@@ -1946,6 +1949,14 @@ export async function unlinkTxFromRecurring(
             ),
           );
       }
+
+      // #873: a reversed mis-link must retract what it taught. Leaving the
+      // observation (and its fingerprint increment) behind is how COLMEDICA
+      // poisoned Pago de Arriendo after "Deshacer match".
+      await retractRecurringLinkObservation(
+        { userId: session.id, txId, recurringId: priorRecurringId },
+        trx,
+      );
     });
 
     log.info(
