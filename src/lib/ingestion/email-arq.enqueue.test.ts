@@ -6,6 +6,8 @@
  * The default Vitest env (node) is intentional — no DOM needed.
  */
 
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
 // ---------------------------------------------------------------------------
 // Mock hoisting — vi.hoisted() must be called before vi.mock() factories
 // reference shared state.
@@ -31,8 +33,6 @@ const {
   mockResolveCounterparty: vi.fn(),
   mockEmit: vi.fn(),
 }));
-
-import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mocks

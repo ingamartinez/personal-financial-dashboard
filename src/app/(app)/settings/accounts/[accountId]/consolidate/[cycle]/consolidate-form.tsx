@@ -136,7 +136,7 @@ export function ConsolidateForm({ accountId, accountName, cycle, institutionSlug
     // #433 + #443 — derive each account's ledger-signed saldo from the raw
     // input + its creditContext. Empty → skipped. Invalid → block commit with
     // a toast that points at the specific report that failed.
-    const previewReportsList = preview ? toReportList(preview) : [];
+    const previewReportsList = toReportList(preview);
     for (const report of previewReportsList) {
       const raw = saldoRealInputs[report.accountId] ?? "";
       const derived = deriveLedgerFromInput({

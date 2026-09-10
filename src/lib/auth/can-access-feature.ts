@@ -1,8 +1,3 @@
-import { createLogger } from "@/lib/logger";
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const log = createLogger({ module: "auth/can-access-feature" });
-
 export type PremiumFeature =
   | "cdt-suggestion"
   | "fic-suggestion"

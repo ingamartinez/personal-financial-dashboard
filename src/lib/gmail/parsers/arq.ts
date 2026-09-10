@@ -112,8 +112,8 @@ const TITLED_SENT_RE = /^You\s+sent\s+([\d,]+(?:\.\d+)?)\s+(COP|USD|USDc)\s+to\s
 const TITLED_RECEIVED_RE = /^You\s+received\s+([\d,]+(?:\.\d+)?)\s+(COP|USD|USDc)\s+from\s+(.+)$/i;
 
 // Body patterns present in all transfer emails.
-const DEBITED_RE = /[Ww]e[''’]ve\s+debited\s+([\d,]+(?:\.\d+)?)\s+USDc\s+from\s+your\s+balance/i;
-const CREDITED_RE = /[Ww]e[''’]ve\s+credited\s+([\d,]+(?:\.\d+)?)\s+USDc\s+to\s+your\s+balance/i;
+const DEBITED_RE = /[Ww]e['’]ve\s+debited\s+([\d,]+(?:\.\d+)?)\s+USDc\s+from\s+your\s+balance/i;
+const CREDITED_RE = /[Ww]e['’]ve\s+credited\s+([\d,]+(?:\.\d+)?)\s+USDc\s+to\s+your\s+balance/i;
 
 // COP amount in transfer_sent emails.
 const AMOUNT_SENT_RE = /Amount\s+sent\s*:\s*([\d,]+(?:\.\d+)?)\s+(COP|USD|USDc)/i;
@@ -155,7 +155,7 @@ function parseNoTitleSent(visibleText: string, occurredAt: Date): ArqParseResult
 
   // Name ends at first multi-space gap, structural keyword, or digit run.
   const nameEnd = afterMarker.search(
-    /\s{2,}|Amount\s+sent|We[''’]ve\s+(?:debited|credited)|\d{4,}/i,
+    /\s{2,}|Amount\s+sent|We['’]ve\s+(?:debited|credited)|\d{4,}/i,
   );
   const rawName =
     nameEnd > 0 ? afterMarker.slice(0, nameEnd).trim() : afterMarker.slice(0, 80).trim();
