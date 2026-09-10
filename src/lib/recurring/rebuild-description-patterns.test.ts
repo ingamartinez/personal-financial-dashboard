@@ -306,7 +306,9 @@ describe("rebuildDescriptionPatterns", () => {
       accountId,
       amountCents: BigInt(-66777500),
     });
-    await seedStalePattern({ userId, recurringId: recId, pattern: "PAGO", observationCount: 2 });
+    // Stale count MUST disagree with source cardinality. Copying 9 onto
+    // EMPRESAS derived from 2 txs would invent a trusted pattern.
+    await seedStalePattern({ userId, recurringId: recId, pattern: "PAGO", observationCount: 9 });
 
     const first = await rebuildDescriptionPatterns({ userId, relink: false });
     expect(first.changed).toBe(true);
@@ -314,12 +316,23 @@ describe("rebuildDescriptionPatterns", () => {
       { pattern: "EMPRESAS", observationCount: 2 },
     ]);
 
+    // Leave an orphan so the second run must still attempt relink even
+    // though patterns are unchanged. If unchanged skips relink, this is 0
+    // and a crash mid-auto-link would never retry tx 2652.
+    const orphan = await seedTx(userId, accountId, {
+      occurredOn: "2026-09-09",
+      amountCents: BigInt(-59459400),
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+    });
     const second = await rebuildDescriptionPatterns({ userId, relink: true });
     expect(second.changed).toBe(false);
-    expect(second.relinkAttempted).toBe(0);
-    expect(await patternsFor(userId, recId)).toEqual([
-      { pattern: "EMPRESAS", observationCount: 2 },
-    ]);
+    expect(second.relinkAttempted).toBeGreaterThanOrEqual(1);
+    await new Promise((r) => setTimeout(r, 0));
+    const [linked] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, orphan));
+    expect(linked.recurringId).toBe(recId);
   });
 
   it("dry-run does not write", async () => {

@@ -1675,6 +1675,16 @@ describe("autoLinkTransaction #852 — verb-stripped unique token", () => {
 
   it("tx 2652 shape: unique EMPRESAS links EPM with no amount check while APORTES twins sit in the same window", async () => {
     const { accountId, epm, aida, alejo } = await seedEpmAndAportesTwins();
+    const aidaTx = await seedTx(accountId, {
+      occurredOn: "2026-09-09",
+      amountCents: BigInt(-49910000),
+      description: "Pago a APORTES EN LINEA",
+    });
+    const alejoTx = await seedTx(accountId, {
+      occurredOn: "2026-09-09",
+      amountCents: BigInt(-50830000),
+      description: "Pago a APORTES EN LINEA",
+    });
     const txId = await seedTx(accountId, {
       occurredOn: "2026-09-09",
       amountCents: BigInt(-59459400),
@@ -1689,11 +1699,19 @@ describe("autoLinkTransaction #852 — verb-stripped unique token", () => {
       gapId: null,
     });
 
-    const linkedTwins = await db
-      .select({ id: transactions.id })
+    // Twin bills exist in the same window. If unique EMPRESAS stole either,
+    // or if this call wrote aida/alejo onto them, these fail.
+    const twinRows = await db
+      .select({ id: transactions.id, recurringId: transactions.recurringId })
       .from(transactions)
-      .where(inArray(transactions.recurringId, [aida, alejo]));
-    expect(linkedTwins).toHaveLength(0);
+      .where(inArray(transactions.id, [aidaTx, alejoTx]));
+    expect(twinRows).toHaveLength(2);
+    expect(twinRows.every((r) => r.recurringId === null)).toBe(true);
+
+    const aidaResult = await autoLinkTransaction(TEST_USER_ID, aidaTx);
+    const alejoResult = await autoLinkTransaction(TEST_USER_ID, alejoTx);
+    expect(aidaResult).toMatchObject({ status: "linked", recurringId: aida });
+    expect(alejoResult).toMatchObject({ status: "linked", recurringId: alejo });
   });
 
   it("APORTES overlap still abstains when EPM is a unique EMPRESAS candidate in the same pool", async () => {

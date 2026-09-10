@@ -142,8 +142,12 @@ describe("tokeniseDescription", () => {
     expect(tokeniseDescription("Pago a AB")).toBeNull();
   });
 
-  it("does not skip a merchant that merely contains Pago later in the string", () => {
-    expect(tokeniseDescription("MERCADO PAGO*MELIMAS")).toBe("MERCADO");
+  it("does not skip a merchant token that merely contains PAGO", () => {
+    // "MERCADO PAGO*MELIMAS" returns MERCADO even with the skip removed,
+    // because MERCADO is already the first significant token. An over-eager
+    // startsWith("PAGO") / includes("PAGO") skip would drop MERCADOPAGO.
+    expect(tokeniseDescription("MERCADOPAGO COLOMBIA")).toBe("MERCADOPAGO");
+    expect(tokeniseDescription("Pago a MERCADO PAGO")).toBe("MERCADO");
   });
 });
 
