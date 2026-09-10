@@ -124,6 +124,7 @@ export function investigatedReason(opts: {
   receiptId?: number | null;
   canonicalMerchant?: string | null;
   matchKind?: ClassificationReasonJson["matchKind"];
+  text?: string | null;
 }): ClassificationReasonJson {
   return {
     action: INVESTIGATED_ACTION,
@@ -132,6 +133,7 @@ export function investigatedReason(opts: {
     ...(opts.receiptId != null ? { receiptId: opts.receiptId } : {}),
     ...(opts.canonicalMerchant ? { canonicalMerchant: opts.canonicalMerchant } : {}),
     ...(opts.matchKind ? { matchKind: opts.matchKind } : {}),
+    ...(opts.text ? { text: opts.text } : {}),
   };
 }
 

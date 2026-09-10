@@ -41,6 +41,12 @@ import {
   fillMerchantKnowledgeFromWeb,
   pickMerchantLookupInput,
 } from "./merchant-web-lookup";
+import {
+  GmailConnectionUnusableError,
+  GmailNotConnectedError,
+  getAuthedClient,
+  type AuthedGmailClient,
+} from "@/lib/gmail/client";
 import { matchOpaqueGateway } from "./opaque-gateways";
 import {
   ABSTAINED_ACTION,
@@ -87,10 +93,12 @@ export const INVESTIGATOR_MAX_ROWS_PER_RUN = 20;
 export const INVESTIGATOR_MIN_CONFIDENCE = 60;
 export const INVESTIGATOR_TIMEOUT_MS = 45_000;
 export const INVESTIGATOR_MAIL_WINDOW_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+export const INVESTIGATOR_GMAIL_MAX_RETRIES = 3;
 export const MAIL_SNIPPET_MAX_CHARS = 400;
 export const CANONICAL_MERCHANT_MAX_CHARS = 80;
 export const BUSINESS_TYPE_MAX_CHARS = 80;
 export const MAIL_REFERENCE_MAX_CHARS = 120;
+export const MAIL_HEADER_MAX_CHARS = 120;
 export const MAIL_RESULT_LIMIT = 8;
 export const HISTORY_RESULT_LIMIT = 15;
 // Local cost model for the guardrail, not a billing source of truth.
@@ -156,6 +164,10 @@ export type InvestigateResidueRowOpts = {
   apiKey?: string;
   fetchImpl?: typeof fetch;
   database?: DB;
+  /** Tests inject a fake. Production defaults to getAuthedClient, once per row. */
+  getGmailClient?: (userId: number) => Promise<AuthedGmailClient>;
+  /** Sleep between Gmail retries. Tests override to avoid real waits. */
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export type InvestigatorSubject = {
@@ -372,7 +384,7 @@ Available category slugs (use the slug, exactly as written, or null):
 ${categoryList}
 
 Tools:
-- search_mail: the user's own ingested receipts. Prefer time/amount windows over keyword nets.
+- search_mail: the user's mailbox around this transaction, including senders that are not registered gateways, plus already-ingested receipts. Prefer time/amount windows over keyword nets.
 - query_history: the user's own transactions across accounts and currencies.
 - lookup_merchant_kb: already-paid merchant facts. Read this before paying for web lookup.
 - web_lookup_merchant: isolated web search. Input is { "merchant": "<business name>" } and NOTHING else. Never put amounts, dates, accounts, card digits, or the bank description in that field. Never look up an opaque gateway string (MERCADOPAGO, PAYU, WOMPI, PASARELA).
@@ -405,7 +417,7 @@ function investigatorTools(): Anthropic.Tool[] {
     {
       name: "search_mail",
       description:
-        "Search this user's ingested email receipts. Returns parsed fields plus a truncated untrusted snippet. Never returns another user's mail.",
+        "Search this user's mailbox around the transaction, including senders that are not registered payment gateways, plus already-ingested receipts. Returns parsed fields when we have them, otherwise from/subject plus a truncated untrusted snippet. Never returns another user's mail. Query is a substring, not Gmail operator syntax.",
       input_schema: {
         type: "object",
         properties: {
@@ -501,13 +513,259 @@ function parseCents(raw: unknown): bigint | null {
   return null;
 }
 
-function sanitizeQuery(raw: unknown): string | null {
+/**
+ * Strip Gmail/ILIKE metacharacters so the model cannot inject operators.
+ * Colons, quotes, parentheses, and `OR`/`AND` as syntax are removed or
+ * reduced to a phrase. Server-side `buildInvestigatorGmailQuery` is what
+ * actually talks to Gmail — never interpolate `input.query` raw.
+ */
+export function sanitizeInvestigatorMailQuery(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const cleaned = raw
     .replace(/[^\p{L}\p{N}\s*._-]/gu, "")
+    .replace(/\s+/g, " ")
     .trim()
     .slice(0, 80);
   return cleaned.length > 0 ? cleaned : null;
+}
+
+/**
+ * Compose the Gmail `q` entirely on the server. The only operators are
+ * `after:` / `before:` from the clamped window. The optional substring is
+ * a quoted phrase so leftover words cannot become `from:` / `in:` / `has:`.
+ * There is deliberately no `from:(@registry)` filter — that is the #860 gap.
+ */
+export function buildInvestigatorGmailQuery(opts: {
+  start: Date;
+  end: Date;
+  query: string | null;
+}): string {
+  const after = Math.floor(opts.start.getTime() / 1000);
+  const before = Math.floor(opts.end.getTime() / 1000);
+  const parts = [`after:${after}`, `before:${before}`];
+  if (opts.query) {
+    const phrase = opts.query.replace(/"/g, "").trim();
+    if (phrase) parts.push(`"${phrase}"`);
+  }
+  return parts.join(" ");
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+type GmailPart = {
+  mimeType?: string | null;
+  body?: { data?: string | null } | null;
+  parts?: GmailPart[] | null;
+  headers?: Array<{ name?: string | null; value?: string | null }> | null;
+};
+
+type GmailRowCtx = {
+  getClient: () => Promise<AuthedGmailClient | null>;
+  sleep: (ms: number) => Promise<void>;
+};
+
+function createGmailRowCtx(userId: number, opts: InvestigateResidueRowOpts): GmailRowCtx {
+  let cached: AuthedGmailClient | null | undefined;
+  return {
+    sleep: opts.sleep ?? defaultSleep,
+    getClient: async () => {
+      if (cached !== undefined) return cached;
+      try {
+        cached = await (opts.getGmailClient ?? getAuthedClient)(userId);
+      } catch (err) {
+        log.info(
+          { err, userId, event: "investigate_gmail_unavailable" },
+          "live gmail skipped for this row",
+        );
+        cached = null;
+      }
+      return cached;
+    },
+  };
+}
+
+function getHttpStatus(err: unknown): number | null {
+  if (!err || typeof err !== "object") return null;
+  const e = err as { code?: number | string; status?: number; response?: { status?: number } };
+  if (typeof e.code === "number") return e.code;
+  if (typeof e.status === "number") return e.status;
+  if (typeof e.response?.status === "number") return e.response.status;
+  return null;
+}
+
+function getRetryAfterSeconds(err: unknown): number | null {
+  if (!err || typeof err !== "object") return null;
+  const headers = (err as { response?: { headers?: Record<string, unknown> } }).response?.headers;
+  const raw = headers?.["retry-after"];
+  if (typeof raw !== "string") return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Same policy as pull.ts withRetry: 3 attempts, 429/5xx, Retry-After or 500*2^n. */
+async function withGmailRetry<T>(
+  fn: () => Promise<T>,
+  ctx: { phase: "list" | "get"; userId: number },
+  sleep: (ms: number) => Promise<void>,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < INVESTIGATOR_GMAIL_MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const status = getHttpStatus(err);
+      const isRetryable = status === 429 || (status !== null && status >= 500);
+      if (!isRetryable) throw err;
+      const retryAfter = getRetryAfterSeconds(err);
+      const delayMs = retryAfter ? retryAfter * 1000 : 500 * Math.pow(2, attempt);
+      log.warn(
+        {
+          attempt: attempt + 1,
+          maxRetries: INVESTIGATOR_GMAIL_MAX_RETRIES,
+          delayMs,
+          status,
+          retryAfter,
+          phase: ctx.phase,
+          userId: ctx.userId,
+          event: "investigate_gmail_retry",
+        },
+        "retrying Gmail call after transient error",
+      );
+      await sleep(delayMs);
+    }
+  }
+  throw lastErr;
+}
+
+function extractBody(payload: GmailPart | undefined): string {
+  if (!payload) return "";
+  const html = findByMimeType(payload, "text/html");
+  if (html) return html;
+  const plain = findByMimeType(payload, "text/plain");
+  return plain ?? "";
+}
+
+function findByMimeType(part: GmailPart, mimeType: string): string | null {
+  if (part.mimeType === mimeType && part.body?.data) {
+    return Buffer.from(part.body.data, "base64url").toString("utf8");
+  }
+  for (const child of part.parts ?? []) {
+    const found = findByMimeType(child, mimeType);
+    if (found) return found;
+  }
+  return null;
+}
+
+function headerValue(payload: GmailPart | undefined, name: string): string {
+  const needle = name.toLowerCase();
+  return payload?.headers?.find((h) => (h.name ?? "").toLowerCase() === needle)?.value ?? "";
+}
+
+/**
+ * From/Subject are not HTML bodies, but mail clients put display names in
+ * angle brackets. Strip tags, keep a bare email if the brackets ate it, cap.
+ */
+function headerText(raw: string, maxChars: number): string {
+  const email = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? "";
+  const stripped = raw
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const combined =
+    email && !stripped.toLowerCase().includes(email.toLowerCase())
+      ? `${stripped} ${email}`.trim()
+      : stripped;
+  return combined.slice(0, maxChars);
+}
+
+async function searchLiveMail(opts: {
+  userId: number;
+  start: Date;
+  end: Date;
+  query: string | null;
+  excludeMsgIds: ReadonlySet<string>;
+  gmail: GmailRowCtx;
+}) {
+  const authed = await opts.gmail.getClient();
+  if (!authed) return [];
+  const q = buildInvestigatorGmailQuery({
+    start: opts.start,
+    end: opts.end,
+    query: opts.query,
+  });
+  let listRes: { data: { messages?: Array<{ id?: string | null }> | null } };
+  try {
+    listRes = await withGmailRetry(
+      () =>
+        authed.gmail.users.messages.list({
+          userId: "me",
+          q,
+          maxResults: MAIL_RESULT_LIMIT,
+        }),
+      { phase: "list", userId: opts.userId },
+      opts.gmail.sleep,
+    );
+  } catch (err) {
+    if (err instanceof GmailNotConnectedError || err instanceof GmailConnectionUnusableError) {
+      return [];
+    }
+    log.warn(
+      { err, userId: opts.userId, event: "investigate_gmail_list_failed" },
+      "live gmail list failed; returning ingested receipts only",
+    );
+    return [];
+  }
+
+  const ids = (listRes.data.messages ?? [])
+    .map((m) => m.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0)
+    .filter((id) => !opts.excludeMsgIds.has(id))
+    .slice(0, MAIL_RESULT_LIMIT);
+
+  const rows: Array<Record<string, unknown>> = [];
+  for (const id of ids) {
+    try {
+      const res = await withGmailRetry(
+        () =>
+          authed.gmail.users.messages.get({
+            userId: "me",
+            id,
+            format: "full",
+          }),
+        { phase: "get", userId: opts.userId },
+        opts.gmail.sleep,
+      );
+      const payload = (res.data.payload ?? undefined) as GmailPart | undefined;
+      const rawBody = extractBody(payload);
+      if (!rawBody) continue;
+      const internalDate =
+        typeof res.data.internalDate === "string" ? Number(res.data.internalDate) : Number.NaN;
+      rows.push({
+        receiptId: null,
+        source: "live",
+        gmailMsgId: id,
+        gateway: null,
+        from: headerText(headerValue(payload, "from"), MAIL_HEADER_MAX_CHARS),
+        subject: headerText(headerValue(payload, "subject"), MAIL_HEADER_MAX_CHARS),
+        merchant: null,
+        amountCents: null,
+        currency: null,
+        occurredAt: null,
+        emailReceivedAt: Number.isFinite(internalDate)
+          ? new Date(internalDate).toISOString()
+          : null,
+        referenceId: null,
+        snippet: snippetFromHtml(rawBody),
+      });
+    } catch (err) {
+      log.warn(
+        { err, userId: opts.userId, gmailMsgId: id, event: "investigate_gmail_get_failed" },
+        "live gmail get failed for one message",
+      );
+    }
+  }
+  return rows;
 }
 
 function wrapUntrusted(value: unknown): { untrusted: true; data: unknown } {
@@ -519,9 +777,10 @@ async function toolSearchMail(
   subject: InvestigatorSubject,
   input: Record<string, unknown>,
   database: DB,
+  gmail: GmailRowCtx,
 ): Promise<unknown> {
   const amount = parseCents(input.amountCents);
-  const query = sanitizeQuery(input.query);
+  const query = sanitizeInvestigatorMailQuery(input.query);
   const { start, end } = clampWindow(
     subject.occurredAt,
     typeof input.fromOccurredAt === "string" ? input.fromOccurredAt : undefined,
@@ -533,6 +792,7 @@ async function toolSearchMail(
   const rows = await database
     .select({
       id: emailReceipts.id,
+      gmailMsgId: emailReceipts.gmailMsgId,
       gateway: emailReceipts.gateway,
       merchant: emailReceipts.merchant,
       amountCents: emailReceipts.amountCents,
@@ -561,19 +821,28 @@ async function toolSearchMail(
     .orderBy(desc(emailReceipts.emailReceivedAt), asc(emailReceipts.id))
     .limit(MAIL_RESULT_LIMIT);
 
-  return wrapUntrusted(
-    rows.map((row) => ({
-      receiptId: row.id,
-      gateway: row.gateway,
-      merchant: sanitizeInvestigatorMerchant(row.merchant),
-      amountCents: row.amountCents?.toString() ?? null,
-      currency: row.currency,
-      occurredAt: row.occurredAt?.toISOString() ?? null,
-      emailReceivedAt: row.emailReceivedAt?.toISOString() ?? null,
-      referenceId: sanitizeInvestigatorReferenceId(row.referenceId),
-      snippet: snippetFromHtml(row.rawHtml),
-    })),
-  );
+  const receipts = rows.map((row) => ({
+    receiptId: row.id,
+    source: "receipt" as const,
+    gateway: row.gateway,
+    merchant: sanitizeInvestigatorMerchant(row.merchant),
+    amountCents: row.amountCents?.toString() ?? null,
+    currency: row.currency,
+    occurredAt: row.occurredAt?.toISOString() ?? null,
+    emailReceivedAt: row.emailReceivedAt?.toISOString() ?? null,
+    referenceId: sanitizeInvestigatorReferenceId(row.referenceId),
+    snippet: snippetFromHtml(row.rawHtml),
+  }));
+  const live = await searchLiveMail({
+    userId,
+    start,
+    end,
+    query,
+    excludeMsgIds: new Set(rows.map((row) => row.gmailMsgId)),
+    gmail,
+  });
+  // Live first so an unregistered sender is not starved by 8 registry receipts.
+  return wrapUntrusted([...live, ...receipts]);
 }
 
 async function toolQueryHistory(
@@ -858,6 +1127,7 @@ async function applyConclusion(
           categorySlug: clean.categorySlug,
           receiptId: clean.receiptId,
           canonicalMerchant: clean.canonicalMerchant,
+          text: clean.reason,
         }),
         updatedAt: new Date(),
       })
@@ -1041,6 +1311,7 @@ export async function investigateResidueRow(
 
   const client = buildClient(opts);
   const tools = investigatorTools();
+  const gmail = createGmailRowCtx(userId, opts);
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: buildInvestigatorUserPrompt(subject) },
   ];
@@ -1105,7 +1376,7 @@ export async function investigateResidueRow(
         let payload: unknown;
         try {
           if (name === "search_mail") {
-            payload = await toolSearchMail(userId, subject, input, database);
+            payload = await toolSearchMail(userId, subject, input, database, gmail);
           } else if (name === "query_history") {
             payload = await toolQueryHistory(userId, subject, input, database);
           } else if (name === "lookup_merchant_kb") {
