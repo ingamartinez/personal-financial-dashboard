@@ -1220,9 +1220,9 @@ describe("detectGapsForMonth #857 — drifted amount with shared fingerprint", (
   });
 
   it("twins 0.5% apart: a 0.40% drift sits in both 1% balls and still does NOT auto-link", async () => {
-    // Spacing is not the invariant. If blockedTxIds / degree>=2 abstain is
-    // removed, unique-token in the per-recurring loop steals this for the
-    // lower id (closerTwin, seeded first). Unbounded nearest would too.
+    // Spacing is not the invariant. Without blockedTxIds / degree>=2
+    // abstain, detectGapsForMonth links the tx to closerId (lower id,
+    // seeded first) and this test fails.
     const accountId = await seedAccount("_857_close");
     const closerId = await seedRecurring(accountId, {
       label: "__gap_test close twin a",

@@ -307,8 +307,8 @@ describe("scoreMatchCandidates", () => {
     it("a tx within 1% of two still-available recurrings abstains — neither lowest-id nor nearest", () => {
       // -50_350_000 is 0.88% from Aida and 0.94% from Alejo — both inside
       // 1%. Lowest-id and nearest both pick Aida (id 1, slightly closer).
-      // If inTolerance>=2 abstain is removed, unbounded nearest yields 1
-      // and this test stays green for the wrong reason.
+      // Without inTolerance>=2 abstain, scoreMatchCandidates returns Aida
+      // and this test fails.
       const result = scoreMatchCandidates(
         tx({
           descriptionRaw: "Pago a APORTES EN LINEA",
@@ -323,9 +323,8 @@ describe("scoreMatchCandidates", () => {
 
     it("twins 0.5% apart: a 0.40% drift sits in both 1% balls and still abstains", () => {
       // Spacing is not the invariant. Twin B is 0.5% above A; the tx is
-      // 0.40% above A (and 0.10% below B). Unbounded nearest AND lowest-id
-      // both pick B (id 1, closer). Removing inTolerance>=2 abstain leaves
-      // this green. The gate is what makes it red.
+      // 0.40% above A (and 0.10% below B). Without inTolerance>=2 abstain,
+      // scoreMatchCandidates returns twin B as the winner and this test fails.
       const twinA = candidate({
         recurringId: 99,
         accountId: 1,
