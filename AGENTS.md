@@ -467,8 +467,14 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
   Four gotchas:
   - **`pane_id` is required per subscription.** No wildcard. Omitting it fails
     with `invalid_request: missing field 'pane_id'`. One entry per pane.
-  - **`agent_status` is a server-side filter.** Subscribe for `blocked` and
-    `done` only; `working`/`idle` never hit the wire.
+  - **`agent_status` is a server-side filter — and `blocked`+`done` is not
+    enough.** Subscribe to `idle` as well. A finished lane reports `idle` or
+    `done` depending on whether the server already considers that completion
+    seen, and both are delivered when you subscribe to them: verified on
+    herdr 0.9.0 with two lanes finishing minutes apart, one arriving as
+    `idle` and the other as `done`. A `blocked`+`done`-only filter goes
+    permanently deaf to the `idle` half. Leave `working` out — that one is
+    pure noise.
   - **A pushed event is NOT shaped like the request.** The subscription filter
     uses `type` + `pane_id`, but the event the server pushes uses different
     keys entirely:
