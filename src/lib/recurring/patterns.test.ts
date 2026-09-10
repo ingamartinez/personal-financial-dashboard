@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -223,5 +223,119 @@ describe("fetchAmountConsistentTokens #873", () => {
   it("returns an empty map for an empty recurringIds array without querying", async () => {
     const map = await fetchAmountConsistentTokens(TEST_USER_ID, [], BigInt(-1), "COP");
     expect(map.size).toBe(0);
+  });
+});
+
+describe("#876 archived recurring fingerprints", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function archive(recurringId: number) {
+    await db
+      .update(recurringTransactions)
+      .set({ deletedAt: new Date() })
+      .where(eq(recurringTransactions.id, recurringId));
+  }
+
+  async function seedTx(
+    accountId: number,
+    opts: { amountCents: bigint; currency?: "COP" | "USD"; description: string },
+  ) {
+    const [t] = await db
+      .insert(transactions)
+      .values({
+        userId: TEST_USER_ID,
+        accountId,
+        occurredAt: new Date("2026-06-05T12:00:00-05:00"),
+        amountCents: opts.amountCents,
+        currency: opts.currency ?? "COP",
+        descriptionRaw: opts.description,
+        source: "manual",
+      })
+      .returning({ id: transactions.id });
+    return t.id;
+  }
+
+  it("fetchPatterns / fetchPatternsForOne skip an archived recurring even at observation_count >= 2", async () => {
+    const accountId = await seedAccount();
+    const archivedId = await seedRecurring(accountId, "__patterns_test archived termius");
+    const liveId = await seedRecurring(accountId, "__patterns_test live proton");
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: archivedId, pattern: "APPLE", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: liveId, pattern: "PROTON", observationCount: 2 },
+    ]);
+    await archive(archivedId);
+
+    const leftover = await db
+      .select({ pattern: recurringDescriptionPatterns.pattern })
+      .from(recurringDescriptionPatterns)
+      .where(eq(recurringDescriptionPatterns.recurringId, archivedId));
+    expect(leftover).toEqual([{ pattern: "APPLE" }]);
+
+    expect(await fetchPatternsForOne(TEST_USER_ID, archivedId)).toEqual([]);
+    const map = await fetchPatterns(TEST_USER_ID, [archivedId, liveId]);
+    expect(map.has(archivedId)).toBe(false);
+    expect(map.get(liveId)).toEqual(["PROTON"]);
+  });
+
+  it("fetchAmountConsistentTokens skips a count-1 archived fingerprint (prod Termius shape)", async () => {
+    const accountId = await seedAccount();
+    const archivedId = await seedRecurring(accountId, "__patterns_test archived termius");
+    const liveId = await seedRecurring(accountId, "__patterns_test live proton");
+    const amountCents = BigInt(-2490000);
+    const archivedTx = await seedTx(accountId, {
+      amountCents,
+      description: "APPLE.COM/BILL",
+    });
+    const liveTx = await seedTx(accountId, {
+      amountCents,
+      description: "PROTON VPN",
+    });
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: TEST_USER_ID,
+        recurringId: archivedId,
+        txId: archivedTx,
+        yearMonth: "2026-05",
+        realAmountCents: amountCents,
+        realCurrency: "COP",
+        descriptionRaw: "APPLE.COM/BILL",
+        accountId,
+        manual: true,
+      },
+      {
+        userId: TEST_USER_ID,
+        recurringId: liveId,
+        txId: liveTx,
+        yearMonth: "2026-05",
+        realAmountCents: amountCents,
+        realCurrency: "COP",
+        descriptionRaw: "PROTON VPN",
+        accountId,
+        manual: true,
+      },
+    ]);
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: archivedId,
+      pattern: "APPLE",
+      observationCount: 1,
+    });
+    await archive(archivedId);
+
+    const leftover = await db
+      .select({ observationCount: recurringDescriptionPatterns.observationCount })
+      .from(recurringDescriptionPatterns)
+      .where(eq(recurringDescriptionPatterns.recurringId, archivedId));
+    expect(leftover).toEqual([{ observationCount: 1 }]);
+
+    const map = await fetchAmountConsistentTokens(
+      TEST_USER_ID,
+      [archivedId, liveId],
+      amountCents,
+      "COP",
+    );
+    expect(map.has(archivedId)).toBe(false);
+    expect(map.get(liveId)).toEqual(["PROTON"]);
   });
 });
