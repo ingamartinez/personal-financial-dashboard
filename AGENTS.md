@@ -464,11 +464,41 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
   { printf '%s\n' "$REQ"; while :; do sleep 3600; done; } | nc -U ~/.config/herdr/herdr.sock
   ```
 
-  Three gotchas:
+  Four gotchas:
   - **`pane_id` is required per subscription.** No wildcard. Omitting it fails
     with `invalid_request: missing field 'pane_id'`. One entry per pane.
-  - **`agent_status` is a server-side filter.** Subscribe for `blocked` and
-    `done` only; `working`/`idle` never hit the wire.
+  - **`agent_status` is a server-side filter — and `blocked`+`done` is not
+    enough.** Subscribe to `idle` as well. A finished lane reports `idle` or
+    `done` depending on whether the server already considers that completion
+    seen, and both are delivered when you subscribe to them: verified on
+    herdr 0.9.0 with two lanes finishing minutes apart, one arriving as
+    `idle` and the other as `done`. A `blocked`+`done`-only filter goes
+    permanently deaf to the `idle` half. Leave `working` out — that one is
+    pure noise.
+  - **A pushed event is NOT shaped like the request.** The subscription filter
+    uses `type` + `pane_id`, but the event the server pushes uses different
+    keys entirely:
+
+    ```json
+    {
+      "event": "pane.agent_status_changed",
+      "data": {
+        "agent_status": "idle",
+        "pane_id": "w1:p34",
+        "agent": "opencode",
+        "workspace_id": "w1"
+      }
+    }
+    ```
+
+    It is `event` / `data`, not `type` / `params`. A reader that looks for
+    `type` (the name it just subscribed with) silently matches nothing and the
+    watcher stays deaf while looking healthy. Do not trust the underscore
+    names in `herdr api schema --json` either — that `EventKind` enum is the
+    internal serialization (`pane_agent_status_changed`); the wire protocol
+    uses dots, and subscribing with the underscore form is rejected with
+    `invalid_request: unknown variant`.
+
   - **Hold the connection with a sleep loop, not `cat`.** Under a runner with
     no stdin, `cat` takes EOF immediately and the subscription dies one line
     after `subscription_started`.
