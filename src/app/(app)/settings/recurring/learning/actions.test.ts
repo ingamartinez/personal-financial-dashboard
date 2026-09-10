@@ -251,6 +251,66 @@ describe("acceptProposal (amount_update)", () => {
     await db.execute(sql`DELETE FROM accounts WHERE id = ${accountBId}`);
     await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
   });
+
+  // #870: cross-currency + no-op guards.
+
+  it("rejects a proposal whose payload currency no longer matches the recurring's currency", async () => {
+    // recurringAId is COP (seeded default). Proposal was computed while it
+    // was USD and never should be accepted as-is.
+    const proposalId = await seedProposal(userAId, recurringAId, "amount_update", {
+      newAmountCents: "-2000",
+      oldAmountCents: "-20000",
+      currency: "USD",
+      observationCount: 2,
+    });
+
+    const result = await acceptProposal({ proposalId });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("should not reach");
+    expect(result.error).toMatch(/USD.*COP|moneda/i);
+
+    // Recurring untouched.
+    const [rt] = await db
+      .select({ amountCents: recurringTransactions.amountCents })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.id, recurringAId));
+    expect(rt?.amountCents.toString()).toBe("-42000");
+
+    // Proposal stays pending — never silently marked accepted/rejected.
+    const [p] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, proposalId));
+    expect(p?.status).toBe("pending");
+  });
+
+  it("accepts a no-op proposal (newAmountCents already equals the recurring's estimate) without rewriting", async () => {
+    const proposalId = await seedProposal(userAId, recurringAId, "amount_update", {
+      newAmountCents: "-42000",
+      oldAmountCents: "-42000",
+      currency: "COP",
+      observationCount: 2,
+    });
+
+    const result = await acceptProposal({ proposalId });
+
+    expect(result.ok).toBe(true);
+
+    // Amount unchanged (was already -42000).
+    const [rt] = await db
+      .select({ amountCents: recurringTransactions.amountCents })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.id, recurringAId));
+    expect(rt?.amountCents.toString()).toBe("-42000");
+
+    // Proposal marked decided (accepted), not left pending.
+    const [p] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, proposalId));
+    expect(p?.status).toBe("accepted");
+  });
 });
 
 describe("acceptProposal (variable_flag)", () => {

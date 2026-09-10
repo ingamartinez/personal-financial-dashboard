@@ -5,6 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { formatMoney } from "@/lib/money";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks — actions are the only external deps for the client component.
@@ -53,6 +54,24 @@ const amountUpdateProposal = {
     newAmountCents: "-4490000",
     oldAmountCents: "-4200000",
     currency: "COP",
+    observationCount: 2,
+  },
+  createdAt: "2026-04-01T00:00:00Z",
+};
+
+// #870 evidence: this recurring lived in USD on the "ARQ Ahorros" account —
+// its account label still says (USD), but even a COP account label must
+// never make the amounts render in COP when the proposal is USD.
+const usdProposal = {
+  id: 3,
+  recurringId: 12,
+  label: "Claude Code for Work",
+  accountLabel: "ARQ Ahorros (USD)",
+  proposalType: "amount_update" as const,
+  payload: {
+    newAmountCents: "-2000",
+    oldAmountCents: "-20000",
+    currency: "USD",
     observationCount: 2,
   },
   createdAt: "2026-04-01T00:00:00Z",
@@ -148,5 +167,33 @@ describe("RecurringProposalsList", () => {
     expect(screen.getByText("Propuesta no encontrada")).toBeInTheDocument();
     // Card stays visible.
     expect(screen.getByTestId("proposal-card")).toBeInTheDocument();
+  });
+
+  // #870: formatting + currency disclosure.
+
+  it("formats amounts using the proposal's own currency, not a hardcoded COP", () => {
+    render(<RecurringProposalsList proposals={[usdProposal]} />);
+
+    // Real prod bug: -2000 cents USD rendered as if it were COP ($20 COP
+    // instead of $20.00 USD). Assert against formatMoney itself so the test
+    // doesn't hardcode an ICU-specific literal.
+    expect(
+      screen.getByText(formatMoney(BigInt("-2000"), "USD"), { exact: false }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(formatMoney(BigInt("-20000"), "USD"), { exact: false }),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces the proposal's currency even when it disagrees with the account label", () => {
+    render(<RecurringProposalsList proposals={[usdProposal]} />);
+
+    expect(screen.getByTestId("proposal-currency")).toHaveTextContent("USD");
+  });
+
+  it("defaults the currency badge to COP for variable_flag proposals with COP payload", () => {
+    render(<RecurringProposalsList proposals={[variableFlagProposal]} />);
+
+    expect(screen.getByTestId("proposal-currency")).toHaveTextContent("COP");
   });
 });
