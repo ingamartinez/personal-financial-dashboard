@@ -338,7 +338,7 @@ export function detectSeasonality(
   for (const count of txCountByMonthKey.values()) {
     totalTxCount += count;
   }
-  const avgTxPerMonthKey = distinctMonthCount > 0 ? totalTxCount / distinctMonthCount : 0;
+  const avgTxPerMonthKey = totalTxCount / distinctMonthCount;
 
   // Compute per-calendar-month averages, filtering sparse month-years
   const monthAvgs = new Map<number, bigint>(); // monthIndex → avgCop

@@ -155,7 +155,7 @@ export function UpcomingCard({
 
       {dialogSlot ? (
         <ForecastLinkTxDialog
-          open={dialogSlot !== null}
+          open
           onOpenChange={(next) => {
             if (!next) setDialogSlot(null);
           }}

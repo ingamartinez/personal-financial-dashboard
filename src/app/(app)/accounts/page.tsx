@@ -265,7 +265,7 @@ function CreditCardTile({
   // cards use metadata in their native currency.
   let limitCents: bigint | null = null;
   let availableCents: bigint | null = null;
-  let meterCurrency: Currency = "COP";
+  let meterCurrency: Currency;
   if (isShared && pc) {
     limitCents = pc.creditLimitCents;
     let copDebt = BigInt(0);

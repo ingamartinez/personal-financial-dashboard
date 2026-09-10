@@ -1042,7 +1042,7 @@ describe("sweepUserOtrosBucket — abstain (#812)", () => {
 
   it("is idempotent: a second run does not re-touch an already-abstained row", async () => {
     await setup();
-    const txId = await insertTx({
+    await insertTx({
       userId,
       accountId,
       descriptionRaw: "WOMPI*TIENDA123",
