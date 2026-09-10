@@ -88,6 +88,7 @@ export const INVESTIGATOR_MIN_CONFIDENCE = 60;
 export const INVESTIGATOR_TIMEOUT_MS = 45_000;
 export const INVESTIGATOR_MAIL_WINDOW_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAIL_SNIPPET_MAX_CHARS = 400;
+export const CANONICAL_MERCHANT_MAX_CHARS = 80;
 export const MAIL_RESULT_LIMIT = 8;
 export const HISTORY_RESULT_LIMIT = 15;
 // Local cost model for the guardrail, not a billing source of truth.
@@ -266,12 +267,41 @@ export function estimateInvestigatorCostCents(usage: {
   return tokenCents + usage.webLookupCostCents;
 }
 
-export function snippetFromHtml(rawHtml: string, max = MAIL_SNIPPET_MAX_CHARS): string {
+/**
+ * The only function allowed to put a mail body into the model's context.
+ * HTML is stripped and the result is hard-capped at MAIL_SNIPPET_MAX_CHARS —
+ * there is no caller-overridable larger cap. Live Gmail search (#860) must
+ * go through here too; inlining raw HTML or plaintext is a bypass.
+ */
+export function snippetFromHtml(rawHtml: string): string {
   const text = rawHtml
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return text.slice(0, max);
+  return text.slice(0, MAIL_SNIPPET_MAX_CHARS);
+}
+
+const CANONICAL_MERCHANT_ALLOWED = /^[\p{L}\p{N} .&'\-,_]+$/u;
+
+const INSTRUCTION_SHAPED_MERCHANT =
+  /ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions|\bignora(?:r)?\s+(?:todas\s+)?(?:las\s+)?instrucciones\b|\bsystem\s+prompt\b|\bprompt\s+del\s+sistema\b|\byou\s+are\s+now\b|\bcategorySlug\b|\bcanonicalMerchant\b|\bset\s+category\b/i;
+
+/**
+ * Persist-path guard. categorySlug is already a whitelist in sanitizeConclude;
+ * canonicalMerchant was only opaque-gateway-checked. A hostile conclude can
+ * otherwise write instruction-shaped text into merchant_knowledge, which is
+ * shared across all of this user's future transactions.
+ *
+ * Nulls (does not strip-and-keep) so a poisoned string never becomes a KB key.
+ */
+export function sanitizeInvestigatorMerchant(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  if (!trimmed) return null;
+  if (trimmed.length > CANONICAL_MERCHANT_MAX_CHARS) return null;
+  if (!CANONICAL_MERCHANT_ALLOWED.test(trimmed)) return null;
+  if (INSTRUCTION_SHAPED_MERCHANT.test(trimmed)) return null;
+  return trimmed;
 }
 
 /**
@@ -288,6 +318,12 @@ export function pickInvestigatorWebLookupInput(raw: unknown): InvestigatorWebLoo
   return input;
 }
 
+/**
+ * Prompt-level "untrusted DATA" language is defense-in-depth for how the
+ * model reads snippets. It is not the inbound security boundary. Mail reaches
+ * the model only through snippetFromHtml; durable writes go through
+ * sanitizeInvestigatorMerchant. Do not treat the sentence below as the guard.
+ */
 export function buildInvestigatorSystemPrompt(categories: readonly InvestigatorCategory[]): string {
   const offered = categories.filter((c) => !SYSTEM_OWNED_CATEGORY_SLUGS.has(c.slug));
   const categoryList =
@@ -705,7 +741,7 @@ function sanitizeConclude(
   ) {
     categorySlug = null;
   }
-  let canonicalMerchant = raw.canonicalMerchant?.trim() || null;
+  let canonicalMerchant = sanitizeInvestigatorMerchant(raw.canonicalMerchant);
   if (canonicalMerchant && matchOpaqueGateway([canonicalMerchant])) {
     canonicalMerchant = null;
   }
