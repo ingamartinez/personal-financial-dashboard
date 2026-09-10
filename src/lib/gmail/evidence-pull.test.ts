@@ -1,7 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, emailReceipts, gmailConnections, transactions, users } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  emailReceipts,
+  gmailConnections,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 import { processPendingEvidenceReceipts } from "./pull";
 
@@ -49,6 +56,14 @@ beforeAll(async () => {
     })
     .returning({ id: gmailConnections.id });
   connA = conn.id;
+  await db.insert(categories).values({
+    userId: userA,
+    slug: "transporte",
+    name: "Transporte",
+    icon: "bus",
+    color: "#0ea5e9",
+    sortOrder: 1,
+  });
 });
 
 afterEach(cleanup);
@@ -56,14 +71,32 @@ afterEach(cleanup);
 afterAll(async () => {
   await cleanup();
   await db.execute(sql`DELETE FROM gmail_connections WHERE user_id = ${userA}`);
+  await db.execute(sql`DELETE FROM categories WHERE user_id = ${userA}`);
   await db.execute(sql`DELETE FROM accounts WHERE id = ${accountA}`);
   await db.execute(sql`DELETE FROM users WHERE id = ${userA}`);
   if (ORIGINAL_KEY === undefined) delete process.env[GMAIL_KEY_ENV];
   else process.env[GMAIL_KEY_ENV] = ORIGINAL_KEY;
 });
 
+async function txClassification(txId: number) {
+  const [row] = await db
+    .select({
+      categorySlug: transactions.categorySlug,
+      classificationMethod: transactions.classificationMethod,
+      classificationConfidence: transactions.classificationConfidence,
+      classificationReason: transactions.classificationReason,
+      enrichedMerchant: transactions.enrichedMerchant,
+      enrichmentSource: transactions.enrichmentSource,
+      descriptionRaw: transactions.descriptionRaw,
+      updatedAt: transactions.updatedAt,
+    })
+    .from(transactions)
+    .where(eq(transactions.id, txId));
+  return row;
+}
+
 describe("processPendingEvidenceReceipts", () => {
-  it("parses merchant, never matches a bank tx, never writes amount from a fare", async () => {
+  it("parses merchant, links the unique same-time tx, never writes amount or reclassifies", async () => {
     const occurredAt = new Date("2026-01-05T22:42:00-05:00");
     const [tx] = await db
       .insert(transactions)
@@ -73,11 +106,15 @@ describe("processPendingEvidenceReceipts", () => {
         occurredAt,
         amountCents: BigInt(-15_000_000),
         currency: "COP",
-        descriptionRaw: "COMPRA JETSMART",
-        classificationMethod: "unclassified",
+        descriptionRaw: "MERCADOPAGO COLOMBIA",
+        classificationMethod: "manual",
+        classificationConfidence: 100,
+        classificationReason: { text: "user said so" },
+        categorySlug: "transporte",
         source: "sms",
       })
       .returning({ id: transactions.id });
+    const before = await txClassification(tx.id);
 
     const [receipt] = await db
       .insert(emailReceipts)
@@ -108,26 +145,141 @@ describe("processPendingEvidenceReceipts", () => {
 
     expect(row.merchant).toBe("JetSmart");
     expect(row.amountCents).toBeNull();
-    expect(row.matchStatus).toBe("unmatched");
-    expect(row.matchedTransactionId).toBeNull();
+    expect(row.matchStatus).toBe("matched");
+    expect(row.matchedTransactionId).toBe(tx.id);
     expect(row.parsedAt).not.toBeNull();
     expect(row.parsedPayload).toMatchObject({
       merchant: "JetSmart",
       extra: { route: "BOG-MDE" },
     });
     expect(JSON.stringify(row.parsedPayload)).not.toContain("amountCents");
+    expect(await txClassification(tx.id)).toEqual(before);
+  });
 
-    const [txRow] = await db
-      .select({
-        enrichedMerchant: transactions.enrichedMerchant,
-        enrichmentSource: transactions.enrichmentSource,
-        descriptionRaw: transactions.descriptionRaw,
+  it("abstains at ingest when two txs sit inside the window", async () => {
+    const occurredAt = new Date("2026-01-05T22:42:00-05:00");
+    const [closer] = await db
+      .insert(transactions)
+      .values({
+        userId: userA,
+        accountId: accountA,
+        occurredAt: new Date(occurredAt.getTime() + 40_000),
+        amountCents: BigInt(-15_000_000),
+        currency: "COP",
+        descriptionRaw: `${TAG}OPE*JETSMART`,
+        classificationMethod: "rule",
+        source: "sms",
       })
+      .returning({ id: transactions.id });
+    const [farther] = await db
+      .insert(transactions)
+      .values({
+        userId: userA,
+        accountId: accountA,
+        occurredAt: new Date(occurredAt.getTime() + 90_000),
+        amountCents: BigInt(-8_000_000),
+        currency: "COP",
+        descriptionRaw: `${TAG}other`,
+        classificationMethod: "rule",
+        source: "sms",
+      })
+      .returning({ id: transactions.id });
+
+    const [receipt] = await db
+      .insert(emailReceipts)
+      .values({
+        userId: userA,
+        gmailConnectionId: connA,
+        gmailMsgId: `${TAG}abstain`,
+        gateway: "jetsmart",
+        rawHtml: `<html><body><p>Tu itinerario JetSmart</p></body></html>`,
+        emailReceivedAt: occurredAt,
+        matchStatus: "pending",
+      })
+      .returning({ id: emailReceipts.id });
+
+    await processPendingEvidenceReceipts(userA, "jetsmart");
+
+    const [row] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        matchedTransactionId: emailReceipts.matchedTransactionId,
+        parsedAt: emailReceipts.parsedAt,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receipt.id));
+
+    expect(row.parsedAt).not.toBeNull();
+    expect(row.matchStatus).toBe("unmatched");
+    expect(row.matchedTransactionId).toBeNull();
+    expect(row.matchedTransactionId).not.toBe(closer.id);
+    expect(row.matchedTransactionId).not.toBe(farther.id);
+
+    const inWindow = await db
+      .select({ id: transactions.id })
       .from(transactions)
-      .where(eq(transactions.id, tx.id));
-    expect(txRow.enrichedMerchant).toBeNull();
-    expect(txRow.enrichmentSource).toBeNull();
-    expect(txRow.descriptionRaw).toBe("COMPRA JETSMART");
+      .where(eq(transactions.accountId, accountA));
+    expect(inWindow.map((t) => t.id).sort()).toEqual([closer.id, farther.id].sort());
+  });
+
+  it("retries unmatched evidence once the bank tx arrives", async () => {
+    const occurredAt = new Date("2026-01-05T22:42:00-05:00");
+    const [receipt] = await db
+      .insert(emailReceipts)
+      .values({
+        userId: userA,
+        gmailConnectionId: connA,
+        gmailMsgId: `${TAG}late-tx`,
+        gateway: "jetsmart",
+        rawHtml: `<html><body><p>Tu itinerario JetSmart</p></body></html>`,
+        emailReceivedAt: occurredAt,
+        matchStatus: "pending",
+      })
+      .returning({ id: emailReceipts.id });
+
+    await processPendingEvidenceReceipts(userA, "jetsmart");
+    const [afterParse] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        matchedTransactionId: emailReceipts.matchedTransactionId,
+        parsedAt: emailReceipts.parsedAt,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receipt.id));
+    expect(afterParse.parsedAt).not.toBeNull();
+    expect(afterParse.matchStatus).toBe("unmatched");
+    expect(afterParse.matchedTransactionId).toBeNull();
+
+    const [tx] = await db
+      .insert(transactions)
+      .values({
+        userId: userA,
+        accountId: accountA,
+        occurredAt,
+        amountCents: BigInt(-15_000_000),
+        currency: "COP",
+        descriptionRaw: "MERCADOPAGO COLOMBIA",
+        classificationMethod: "ai",
+        classificationConfidence: 70,
+        source: "sms",
+      })
+      .returning({ id: transactions.id });
+    const before = await txClassification(tx.id);
+
+    await processPendingEvidenceReceipts(userA, "jetsmart");
+    const [afterRetry] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        matchedTransactionId: emailReceipts.matchedTransactionId,
+        parsedAt: emailReceipts.parsedAt,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receipt.id));
+
+    expect(afterRetry.parsedAt).toEqual(afterParse.parsedAt);
+    expect(afterRetry.matchStatus).toBe("matched");
+    expect(afterRetry.matchedTransactionId).toBe(tx.id);
+    expect(await txClassification(tx.id)).toEqual(before);
   });
 
   it("does not re-parse unmatched evidence on a second call", async () => {

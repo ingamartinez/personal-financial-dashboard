@@ -27,9 +27,9 @@ export interface GatewayConfig {
   // overwrite merchant/category when the bank description is opaque.
   // `ingest`: receipts are ingested as transactions themselves (Bancolombia
   // email is a parallel ingestion source to SMS — #457).
-  // `evidence`: persist the receipt for the tx-first correlator; never
-  // insert a transaction and never overwrite the bank merchant. JetSmart
-  // itineraries are the exemplar (#814 Phase 1 design).
+  // `evidence`: persist the receipt; ingest-time correlation may set
+  // matched_transaction_id. Never insert a transaction and never overwrite
+  // the bank merchant. JetSmart itineraries are the exemplar (#814 / #863).
   mode: GatewayMode;
 }
 

@@ -26,6 +26,7 @@ import { ingestParsedEmail } from "@/lib/ingestion/email-bancolombia";
 import { processPendingArqReceipts } from "@/lib/ingestion/email-arq";
 import { matchReceipt } from "@/lib/gmail/matcher";
 import { applyEnrichment } from "@/lib/gmail/enrich";
+import { linkEvidenceReceipt } from "@/lib/correlation/link-evidence";
 import { pushToUser } from "@/lib/telegram/push";
 import { renderReauthNudge } from "@/lib/telegram/formatter";
 import { loadPendingAmbiguousReceipt } from "@/lib/telegram/disambiguation-query";
@@ -763,13 +764,16 @@ export async function processPendingEnrichReceipts(
 }
 
 /**
- * Parse every pending evidence-mode receipt. Persist merchant (and amount
- * only if the parser actually produced one). Never matchReceipt, never
- * applyEnrichment, never ingest a transaction — those are the three
- * things evidence mode exists to refuse.
+ * Parse every pending evidence-mode receipt, then correlate amount-less
+ * rows to a unique in-window transaction. Never matchReceipt, never
+ * applyEnrichment, never ingest a transaction, never rewrite the bank
+ * row — evidence mode adds provenance (`matched_transaction_id`), not
+ * authority.
  *
  * Unmatched after parse so we do not re-parse every hourly tick. A later
- * parser fix clears parsed_at via backfill, same as enrich.
+ * parser fix clears parsed_at via backfill, same as enrich. Unmatched
+ * rows are retried so a receipt that arrived before the SMS still links
+ * on a later pull.
  */
 export async function processPendingEvidenceReceipts(
   userId: number,
@@ -790,7 +794,7 @@ export async function processPendingEvidenceReceipts(
       and(
         eq(emailReceipts.userId, userId),
         eq(emailReceipts.gateway, gatewayId),
-        eq(emailReceipts.matchStatus, "pending"),
+        inArray(emailReceipts.matchStatus, ["pending", "unmatched"]),
         notDeleted(emailReceipts.deletedAt),
       ),
     );
@@ -798,10 +802,7 @@ export async function processPendingEvidenceReceipts(
   for (const receipt of pending) {
     try {
       if (receipt.parsedAt) {
-        await db
-          .update(emailReceipts)
-          .set({ matchStatus: "unmatched", updatedAt: new Date() })
-          .where(and(eq(emailReceipts.id, receipt.id), eq(emailReceipts.userId, userId)));
+        await linkEvidenceReceipt(userId, receipt.id);
         continue;
       }
 
@@ -836,8 +837,9 @@ export async function processPendingEvidenceReceipts(
               gateway: receipt.gateway,
               event: "gmail_evidence_parsed",
             },
-            "evidence receipt parsed; not matched to a bank merchant",
+            "evidence receipt parsed; correlating without rewriting the bank merchant",
           );
+          await linkEvidenceReceipt(userId, receipt.id);
           break;
         }
         case "parsed": {
