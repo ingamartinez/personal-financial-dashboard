@@ -209,8 +209,8 @@ describe("RecurringProposalsList", () => {
     payload: {
       observationId: 99,
       outlierAmountCents: "-1200000",
-      bandLoAbsCents: "-518660",
-      bandHiAbsCents: "-667775",
+      bandNearEdgeCents: "-518660",
+      bandFarEdgeCents: "-667775",
       currency: "COP",
       observationCount: 4,
     },
@@ -240,8 +240,8 @@ describe("RecurringProposalsList", () => {
       ...outlierProposal,
       payload: {
         ...outlierProposal.payload,
-        bandLoAbsCents: "-667775",
-        bandHiAbsCents: "-518660",
+        bandNearEdgeCents: "-667775",
+        bandFarEdgeCents: "-518660",
       },
     };
     render(<RecurringProposalsList proposals={[swapped]} />);

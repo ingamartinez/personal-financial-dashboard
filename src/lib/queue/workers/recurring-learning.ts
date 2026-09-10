@@ -67,8 +67,8 @@ export type VariableFlagPayload = {
 export type AmountOutlierPayload = {
   observationId: number;
   outlierAmountCents: string;
-  bandLoAbsCents: string;
-  bandHiAbsCents: string;
+  bandNearEdgeCents: string;
+  bandFarEdgeCents: string;
   currency: string;
   observationCount: number;
 };
@@ -704,8 +704,8 @@ async function detectVariableOutliers(result: LearningResult): Promise<void> {
         const payload: AmountOutlierPayload = {
           observationId: hit.observationId,
           outlierAmountCents: hit.outlierAmountCents.toString(),
-          bandLoAbsCents: hit.bandLoAbsCents.toString(),
-          bandHiAbsCents: hit.bandHiAbsCents.toString(),
+          bandNearEdgeCents: hit.bandNearEdgeCents.toString(),
+          bandFarEdgeCents: hit.bandFarEdgeCents.toString(),
           currency: hit.currency,
           observationCount: hit.observationCount,
         };

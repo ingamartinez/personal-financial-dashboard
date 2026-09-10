@@ -486,8 +486,8 @@ describe("acceptProposal (amount_outlier)", () => {
     const proposalId = await seedProposal(userAId, recurringAId, "amount_outlier", {
       observationId: outlierObsId,
       outlierAmountCents: "-200000",
-      bandLoAbsCents: "50000",
-      bandHiAbsCents: "60000",
+      bandNearEdgeCents: "50000",
+      bandFarEdgeCents: "60000",
       currency: "COP",
       observationCount: 4,
     });
@@ -520,8 +520,8 @@ describe("acceptProposal (amount_outlier)", () => {
     const proposalId = await seedProposal(userAId, recurringAId, "amount_outlier", {
       observationId: outlierObsId,
       outlierAmountCents: "-200000",
-      bandLoAbsCents: "50000",
-      bandHiAbsCents: "60000",
+      bandNearEdgeCents: "50000",
+      bandFarEdgeCents: "60000",
       currency: "COP",
       observationCount: 4,
     });
@@ -548,8 +548,8 @@ describe("acceptProposal (amount_outlier)", () => {
     const proposalId = await seedProposal(userAId, recurringAId, "amount_outlier", {
       observationId: outlierObsId,
       outlierAmountCents: "-200000",
-      bandLoAbsCents: "50000",
-      bandHiAbsCents: "60000",
+      bandNearEdgeCents: "50000",
+      bandFarEdgeCents: "60000",
       currency: "COP",
       observationCount: 4,
     });
@@ -595,8 +595,8 @@ describe("acceptProposal (amount_outlier)", () => {
     const proposalBId = await seedProposal(userBId, recurringBId, "amount_outlier", {
       observationId: obsB.id,
       outlierAmountCents: "-200000",
-      bandLoAbsCents: "-50000",
-      bandHiAbsCents: "-60000",
+      bandNearEdgeCents: "-50000",
+      bandFarEdgeCents: "-60000",
       currency: "COP",
       observationCount: 4,
     });

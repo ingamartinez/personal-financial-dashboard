@@ -40,12 +40,13 @@ function formatCents(cents: string | undefined, currency: Currency): string {
 }
 
 function formatBandRange(
-  loAbs: string | undefined,
-  hiAbs: string | undefined,
+  nearEdge: string | undefined,
+  farEdge: string | undefined,
   currency: Currency,
 ): string {
-  const a = loAbs ? absCents(BigInt(loAbs)) : BigInt(0);
-  const b = hiAbs ? absCents(BigInt(hiAbs)) : BigInt(0);
+  // Strip sign here — do not assume the caller already did.
+  const a = nearEdge ? absCents(BigInt(nearEdge)) : BigInt(0);
+  const b = farEdge ? absCents(BigInt(farEdge)) : BigInt(0);
   const [lo, hi] = a <= b ? [a, b] : [b, a];
   return `${formatMoney(lo, currency)} – ${formatMoney(hi, currency)}`;
 }
@@ -138,8 +139,8 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
               fuera de la banda histórica (
               <span data-testid="outlier-band">
                 {formatBandRange(
-                  p.bandLoAbsCents as string,
-                  p.bandHiAbsCents as string,
+                  p.bandNearEdgeCents as string,
+                  p.bandFarEdgeCents as string,
                   proposalCurrency,
                 )}
               </span>
