@@ -166,7 +166,13 @@ function DetailPanel({ data }: { data: ClassificationReasonResponse }) {
         <dt className="text-muted-foreground">Confianza</dt>
         <dd>{data.detail.confidence !== null ? `${data.detail.confidence}%` : "—"}</dd>
         <dt className="text-muted-foreground">Razón</dt>
-        <dd>{data.detail.reason ?? <span className="text-muted-foreground">(sin razón)</span>}</dd>
+        <dd>
+          {data.detail.reason ? (
+            <EmailQuote text={data.detail.reason} />
+          ) : (
+            <span className="text-muted-foreground">(sin razón)</span>
+          )}
+        </dd>
         <ReceiptRows receipt={data.detail.receipt} />
       </dl>
     );
@@ -201,6 +207,23 @@ function DetailPanel({ data }: { data: ClassificationReasonResponse }) {
   }
 
   return null;
+}
+
+// #866: classification_reason.text is attacker-chosen prose (email →
+// investigator). React text children already escape markup, so there is no
+// sanitizer here. The quote chrome is the containment — this string must
+// not read as the system speaking. The persist denylist is defense in depth.
+function EmailQuote({ text }: { text: string }) {
+  return (
+    <figure data-testid="classification-reason-email-quote" className="m-0">
+      <figcaption className="text-muted-foreground mb-1 text-[11px] font-normal">
+        Citado del correo
+      </figcaption>
+      <blockquote className="border-muted-foreground/40 text-muted-foreground m-0 border-l-2 pl-3 italic">
+        {text}
+      </blockquote>
+    </figure>
+  );
 }
 
 function ReceiptRows({
