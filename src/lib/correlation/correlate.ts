@@ -20,10 +20,17 @@ export const CORRELATION_WINDOW_MS = 36 * 60 * 60 * 1000;
 
 /**
  * Time-only matches are permitted only for amount-less evidence receipts.
- * The epic's JetSmart example joins to the minute; a 36h window on time
- * alone would pair unrelated mail on any busy day. Two minutes covers
- * minute-truncated bank timestamps without opening the amount-bearing
- * window.
+ *
+ * Two minutes, not the investigator's 7-day `search_mail` cap and not the
+ * 36h amount-bearing window. Those jobs have an amount (or a human) as a
+ * second discriminator; evidence receipts do not.
+ *
+ * Prod jetsmart→tx unique gaps are all under a minute (2–52s; receipt 2253
+ * is 2s from tx 1443). Receipt 2220's decoy is 220s away — outside this
+ * bound — so 2220 unique-matches tx 2627 rather than guessing between 40s
+ * and 220s. Two candidates inside the window still abstain (#863 / #857).
+ * Two minutes also covers minute-truncated bank timestamps without pairing
+ * unrelated mail on a busy day.
  */
 export const EVIDENCE_TIME_ONLY_WINDOW_MS = 2 * 60 * 1000;
 
