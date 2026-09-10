@@ -22,6 +22,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { previewIngestion, commitIngestion } from "@/app/(app)/imports/actions";
 import { formatAccountLabel } from "@/lib/accounts/format";
+import { parseTolerantMoney } from "@/lib/money";
 import { FormatBadge } from "./format-badge";
 
 import type {
@@ -83,6 +84,16 @@ function formatCents(centsStr: string): string {
 function periodLabel(start: string, _end: string): string {
   const d = new Date(start + "T12:00:00Z");
   return d.toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+}
+
+function isBancolombiaReconcilePreview(
+  data: ImportPreviewResultV2,
+): data is BancolombiaPreviewResult {
+  return (
+    data.kind === "bancolombia-savings" ||
+    data.kind === "bancolombia-extracto" ||
+    data.kind === "bancolombia-tc-legacy"
+  );
 }
 
 const MANUAL_KIND_OPTIONS: { value: IngestionKind; label: string }[] = [
@@ -536,6 +547,7 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
   const [force] = useState<boolean>(initialHint?.force ?? false);
   const [manualKind, setManualKind] = useState<IngestionKind | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [balanceInput, setBalanceInput] = useState("");
   const [_isPending, startTransition] = useTransition();
 
   const triggerPreview = useCallback(
@@ -591,6 +603,17 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
     const data = phase.data;
     if (data.kind === "format_unknown" || !data.token) return;
 
+    let userBalanceAtEndCents: string | null = null;
+    const canSendBalance = isBancolombiaReconcilePreview(data) && data.multiCurrency === null;
+    if (canSendBalance && balanceInput.trim() !== "") {
+      try {
+        userBalanceAtEndCents = parseTolerantMoney(balanceInput).toString();
+      } catch {
+        toast.error("No se pudo leer el saldo. Probá dígitos, p. ej. 1234567 o -4500000.");
+        return;
+      }
+    }
+
     const token = data.token;
     setPhase({ kind: "confirming" });
 
@@ -599,6 +622,7 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
         const result = await commitIngestion(token, {
           ...(selectedAccountId ? { accountId: selectedAccountId } : {}),
           ...(force ? { force: true } : {}),
+          ...(userBalanceAtEndCents !== null ? { userBalanceAtEndCents } : {}),
         });
 
         if (result.status === "committed") {
@@ -631,17 +655,19 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
         setPhase({ kind: "error", message });
       }
     });
-  }, [phase, selectedAccountId, force]);
+  }, [phase, selectedAccountId, force, balanceInput]);
 
   const handleCancel = useCallback(() => {
     setPhase({ kind: "idle" });
     setPendingFile(null);
+    setBalanceInput("");
   }, []);
 
   const handleReset = useCallback(() => {
     setPhase({ kind: "idle" });
     setPendingFile(null);
     setManualKind(null);
+    setBalanceInput("");
   }, []);
 
   const isDropDisabled = phase.kind === "previewing" || phase.kind === "confirming";
@@ -763,6 +789,32 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
           )}
           {previewData.kind === "bancolombia-tc-detallado" && (
             <TcDetalladoPreviewDetail preview={previewData} />
+          )}
+
+          {isBancolombiaReconcilePreview(previewData) && previewData.multiCurrency === null && (
+            <div className="flex flex-col gap-1 rounded-md border border-dashed p-3">
+              <label htmlFor="uploader-balance" className="text-sm font-medium">
+                Balance al cierre según el banco (opcional)
+              </label>
+              <input
+                id="uploader-balance"
+                name="balanceAtEnd"
+                type="text"
+                inputMode="decimal"
+                placeholder={
+                  accounts.find((a) => a.id === selectedAccountId)?.currency === "USD"
+                    ? "1234.56"
+                    : "1234567"
+                }
+                value={balanceInput}
+                onChange={(e) => setBalanceInput(e.target.value)}
+                className="bg-background focus:ring-ring w-full max-w-xs rounded-md border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
+              />
+              <p className="text-muted-foreground text-xs">
+                Copialo del app del banco. Si lo ingresás, habilitamos la métrica de divergencia en{" "}
+                <code>/admin/health</code>.
+              </p>
+            </div>
           )}
 
           {/* Buttons */}

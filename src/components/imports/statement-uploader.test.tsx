@@ -167,6 +167,29 @@ function makeFormatUnknownResult() {
   };
 }
 
+function makeTcDetalladoPreviewResult() {
+  return {
+    kind: "bancolombia-tc-detallado" as const,
+    token: "tok-tc",
+    accountLabel: "Bancolombia Mastercard (COP)",
+    period: { start: "2026-01-01", end: "2026-01-31" },
+    cycle: "2026-01",
+    reports: [],
+    multiCurrency: null,
+  };
+}
+
+function makeSavingsMultiCurrencyPreview() {
+  return {
+    ...makeSavingsPreviewResult(),
+    multiCurrency: {
+      siblingAccountId: 11,
+      siblingAccountLabel: "Mastercard USD",
+      rowsByCurrency: { COP: 2, USD: 1 },
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -335,6 +358,80 @@ describe("StatementUploader", () => {
     await waitFor(() => {
       expect(screen.getByLabelText(/zona de carga/i)).toBeInTheDocument();
       expect(screen.queryByText("Subir")).not.toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #905 — closing balance input for Bancolombia reconcile kinds
+  // ---------------------------------------------------------------------------
+
+  describe("closing balance input (#905)", () => {
+    it("shows the optional closing-balance field on a Bancolombia savings preview", async () => {
+      mockPreviewIngestion.mockResolvedValueOnce(makeSavingsPreviewResult());
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakeXlsx());
+      await waitFor(() => {
+        expect(screen.getByLabelText(/balance al cierre según el banco/i)).toBeInTheDocument();
+      });
+    });
+
+    it("hides the field on ARQ preview", async () => {
+      mockPreviewIngestion.mockResolvedValueOnce(makeArqPreviewResult());
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakePdf());
+      await waitFor(() => {
+        expect(screen.getByText("ARQ PDF")).toBeInTheDocument();
+      });
+      expect(screen.queryByLabelText(/balance al cierre según el banco/i)).not.toBeInTheDocument();
+    });
+
+    it("hides the field on TC detallado preview", async () => {
+      mockPreviewIngestion.mockResolvedValueOnce(makeTcDetalladoPreviewResult());
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakeXlsx());
+      await waitFor(() => {
+        expect(screen.getByText(/ciclo/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByLabelText(/balance al cierre según el banco/i)).not.toBeInTheDocument();
+    });
+
+    it("hides the field when the preview resolved a multi-currency sibling", async () => {
+      mockPreviewIngestion.mockResolvedValueOnce(makeSavingsMultiCurrencyPreview());
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakeXlsx());
+      await waitFor(() => {
+        expect(screen.getByText(/tarjeta multi-moneda/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByLabelText(/balance al cierre según el banco/i)).not.toBeInTheDocument();
+    });
+
+    it("passes parsed userBalanceAtEndCents into commitIngestion", async () => {
+      const user = userEvent.setup();
+      mockPreviewIngestion.mockResolvedValueOnce(makeSavingsPreviewResult());
+      mockCommitIngestion.mockResolvedValueOnce({
+        kind: "bancolombia-savings",
+        status: "committed",
+        inserted: 2,
+        matched: 8,
+        flagged: 1,
+      });
+
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakeXlsx());
+      await waitFor(() => {
+        expect(screen.getByLabelText(/balance al cierre según el banco/i)).toBeInTheDocument();
+      });
+
+      await user.type(screen.getByLabelText(/balance al cierre según el banco/i), "1234567");
+      await user.click(screen.getByTestId("confirm-import-button"));
+
+      await waitFor(() => {
+        expect(mockCommitIngestion).toHaveBeenCalledTimes(1);
+      });
+      expect(mockCommitIngestion).toHaveBeenCalledWith(
+        "tok-savings",
+        expect.objectContaining({ userBalanceAtEndCents: "123456700" }),
+      );
     });
   });
 

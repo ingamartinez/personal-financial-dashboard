@@ -8,8 +8,6 @@ import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { getSessionUser } from "@/lib/auth/session";
 import { buttonVariants } from "@/components/ui/button";
-// ReconcileForm kept wired for Phase 3 rollback safety — DO NOT delete until soak gate confirmed.
-import { ReconcileForm } from "./reconcile-form";
 import { FlaggedReview, type MergeCandidate } from "./flagged-review";
 import { PlugCleanupSection, type Plug } from "./plug-cleanup";
 
@@ -210,8 +208,8 @@ export default async function ReconcilePage({
         <div>
           <h1 className="text-h1">Reconcile · {formatAccountLabel(account)}</h1>
           <p className="text-body text-muted-foreground">
-            {account.institution}. Upload the Bancolombia XLSX export for this account to reconcile
-            against the bank statement.
+            {account.institution}. Flagged transactions and balance-adjustment plugs for this
+            account. Upload statements from Imports.
           </p>
         </div>
         <Link
@@ -229,25 +227,12 @@ export default async function ReconcilePage({
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {/* Phase 2: CTA deep-links to unified /imports page */}
           <Link
             href={`/imports?hint_account_id=${account.id}`}
             className={buttonVariants({ variant: "default" })}
           >
             Subir extracto →
           </Link>
-          {/* ReconcileForm kept for Phase 3 rollback — hidden, not deleted */}
-          <details className="text-muted-foreground text-xs">
-            <summary className="cursor-pointer">Formulario legacy (reserva)</summary>
-            <div className="mt-2">
-              <ReconcileForm
-                accountId={account.id}
-                accountCurrency={account.currency}
-                accountInstitutionSlug={account.institutionSlug}
-                accountBalanceCents={account.balanceCents.toString()}
-              />
-            </div>
-          </details>
         </div>
       )}
 
