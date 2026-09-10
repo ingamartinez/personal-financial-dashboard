@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AMOUNT_TOLERANCE_BPS,
+  isWithinAmountTolerance,
   pickTxForRecurring,
   scoreMatchCandidates,
   type MatchCandidate,
@@ -279,6 +281,95 @@ describe("scoreMatchCandidates", () => {
       expect(result.winner).toBeNull();
       expect(result.ambiguous).toBe(true);
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // #857: bounded leftover tolerance when a shared token collides.
+  // ---------------------------------------------------------------------
+  describe("#857 bounded amount tolerance when tokens collide", () => {
+    // Prod Aida / Alejo amounts. Token "PAGO" is what tokeniseDescription
+    // extracts from "Pago a APORTES EN LINEA".
+    const aida = (recurringId: number) =>
+      candidate({
+        recurringId,
+        accountId: 1,
+        amountCents: BigInt(-49910000),
+        patterns: ["PAGO"],
+      });
+    const alejo = (recurringId: number) =>
+      candidate({
+        recurringId,
+        accountId: 1,
+        amountCents: BigInt(-50830000),
+        patterns: ["PAGO"],
+      });
+
+    it("a tx within 1% of two still-available recurrings abstains — neither lowest-id nor nearest", () => {
+      // -50_350_000 is 0.88% from Aida and 0.94% from Alejo — both inside
+      // 1%. Lowest-id and nearest both pick Aida (id 1, slightly closer).
+      // Without inTolerance>=2 abstain, scoreMatchCandidates returns Aida
+      // and this test fails.
+      const result = scoreMatchCandidates(
+        tx({
+          descriptionRaw: "Pago a APORTES EN LINEA",
+          amountCents: BigInt(-50350000),
+          accountId: 1,
+        }),
+        [aida(1), alejo(99)],
+      );
+      expect(result.winner).toBeNull();
+      expect(result.ambiguous).toBe(true);
+    });
+
+    it("twins 0.5% apart: a 0.40% drift sits in both 1% balls and still abstains", () => {
+      // Spacing is not the invariant. Twin B is 0.5% above A; the tx is
+      // 0.40% above A (and 0.10% below B). Without inTolerance>=2 abstain,
+      // scoreMatchCandidates returns twin B as the winner and this test fails.
+      const twinA = candidate({
+        recurringId: 99,
+        accountId: 1,
+        amountCents: BigInt(-10000000),
+        patterns: ["PAGO"],
+      });
+      const twinB = candidate({
+        recurringId: 1,
+        accountId: 1,
+        amountCents: BigInt(-10050000),
+        patterns: ["PAGO"],
+      });
+      const result = scoreMatchCandidates(
+        tx({
+          descriptionRaw: "Pago a APORTES EN LINEA",
+          amountCents: BigInt(-10040000),
+          accountId: 1,
+        }),
+        [twinB, twinA],
+      );
+      expect(result.winner).toBeNull();
+      expect(result.ambiguous).toBe(true);
+    });
+  });
+});
+
+describe("isWithinAmountTolerance", () => {
+  it("is 1% (100 bps), inclusive at the boundary", () => {
+    expect(AMOUNT_TOLERANCE_BPS).toBe(BigInt(100));
+    const rec = BigInt(-49910000);
+    const onePct = BigInt(499100);
+    expect(isWithinAmountTolerance(rec, rec - onePct, "COP", "COP")).toBe(true);
+    expect(isWithinAmountTolerance(rec, rec - onePct - BigInt(1), "COP", "COP")).toBe(false);
+  });
+
+  it("covers the 0.40% Aida July drift; Alejo's exact amount is outside Aida's 1% ball", () => {
+    // Fact about these two rows, not a model invariant — twins 0.5% apart
+    // do overlap (see the scorer abstain test). Safety is degree>=2, not gap.
+    const aida = BigInt(-49910000);
+    expect(isWithinAmountTolerance(aida, BigInt(-50110000), "COP", "COP")).toBe(true);
+    expect(isWithinAmountTolerance(aida, BigInt(-50830000), "COP", "COP")).toBe(false);
+  });
+
+  it("rejects a different currency even at distance 0", () => {
+    expect(isWithinAmountTolerance(BigInt(-100), BigInt(-100), "COP", "USD")).toBe(false);
   });
 });
 
