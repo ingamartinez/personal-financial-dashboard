@@ -48,6 +48,8 @@ import { hashFileBuffer } from "@/lib/reconciliation/commit";
 import { commitReconciliation, type CommitResult } from "@/lib/reconciliation/commit";
 import { matchStatement } from "@/lib/reconciliation/engine/match";
 import { applyPagoTcRouting } from "@/lib/reconciliation/pago-tc-router";
+import { resolveReconcileDispatch } from "@/lib/reconciliation/resolve-dispatch";
+import { emitNotification } from "@/lib/notifications/emit";
 import { expandReconcileWindow } from "@/app/(app)/settings/accounts/[accountId]/reconcile/window";
 import {
   consolidateCycleFromStatement,
@@ -428,41 +430,21 @@ export async function previewIngestion(formData: FormData): Promise<ImportPrevie
 
     const accountLabel = formatAccountLabel(account);
 
-    // Resolve multi-currency dispatch
-    let siblingAccountId: number | undefined;
+    // #905 — same #444 throws as applyReconcile. Do not proceed with
+    // multiCurrency: null when a sibling is required; USD rows must never
+    // land on a COP account.
+    const dispatch = await resolveReconcileDispatch(userId, account, parsed);
+    const siblingAccountId = dispatch.sibling?.id;
     let multiCurrency: MultiCurrencyInfo | null = null;
-    const currenciesInFile = new Set(parsed.rows.map((r) => r.currency));
-
-    if (currenciesInFile.size > 1 && account.physicalCardId) {
-      const [sibling] = await db
-        .select({
-          id: accounts.id,
-          name: accounts.name,
-          currency: accounts.currency,
-          institution: accounts.institution,
-          metadata: accounts.metadata,
-        })
-        .from(accounts)
-        .where(
-          and(
-            eq(accounts.userId, userId),
-            eq(accounts.physicalCardId, account.physicalCardId),
-            ne(accounts.id, resolvedAccountId),
-            notDeleted(accounts.deletedAt),
-          ),
-        )
-        .limit(1);
-
-      if (sibling) {
-        siblingAccountId = sibling.id;
-        const rowsByCurrency: Record<"COP" | "USD", number> = { COP: 0, USD: 0 };
-        for (const r of parsed.rows) rowsByCurrency[r.currency] += 1;
-        multiCurrency = {
-          siblingAccountId: sibling.id,
-          siblingAccountLabel: formatAccountLabel(sibling),
-          rowsByCurrency,
-        };
-      }
+    if (dispatch.sibling) {
+      const sibling = await loadAccountOwned(userId, dispatch.sibling.id);
+      const rowsByCurrency: Record<"COP" | "USD", number> = { COP: 0, USD: 0 };
+      for (const r of parsed.rows) rowsByCurrency[r.currency] += 1;
+      multiCurrency = {
+        siblingAccountId: dispatch.sibling.id,
+        siblingAccountLabel: sibling ? formatAccountLabel(sibling) : "",
+        rowsByCurrency,
+      };
     }
 
     // Build matching plan
@@ -681,7 +663,7 @@ export async function previewIngestion(formData: FormData): Promise<ImportPrevie
 
 export async function commitIngestion(
   token: string,
-  overrides?: { accountId?: number; force?: boolean },
+  overrides?: { accountId?: number; force?: boolean; userBalanceAtEndCents?: string | null },
 ): Promise<UnifiedCommitResult> {
   const session = await getSessionUser();
   const userId = session.id;
@@ -761,7 +743,7 @@ export async function commitIngestion(
       v2.kind === "bancolombia-tc-legacy") &&
     v2.bancolombiaData
   ) {
-    return _commitBancolombia(v2, effectiveAccountId!, userId);
+    return _commitBancolombia(v2, effectiveAccountId!, userId, overrides?.userBalanceAtEndCents);
   }
 
   if (v2.kind === "bancolombia-tc-detallado" && v2.tcDetalladoData) {
@@ -834,12 +816,19 @@ function _mapArqRunResult(
   }
 }
 
+function parseUserBalanceAtEndCents(raw: string | null | undefined): bigint | null {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (!/^-?\d+$/.test(raw)) throw new Error("invalid_user_balance");
+  return BigInt(raw);
+}
+
 async function _commitBancolombia(
   entry: CacheEntryV2,
   accountId: number,
   userId: number,
+  userBalanceAtEndCentsRaw?: string | null,
 ): Promise<UnifiedCommitResult> {
-  const { parsed, plan, siblingAccountId } = entry.bancolombiaData!;
+  const { parsed, plan } = entry.bancolombiaData!;
   const kind = entry.kind as
     | "bancolombia-savings"
     | "bancolombia-extracto"
@@ -853,18 +842,19 @@ async function _commitBancolombia(
   const account = await loadAccountOwned(userId, accountId);
   if (!account) return { kind, status: "error", error: "Cuenta no encontrada." };
 
-  let siblingAccount: { id: number; currency: "COP" | "USD" } | undefined;
-  if (siblingAccountId) {
-    const sib = await loadAccountOwned(userId, siblingAccountId);
-    if (!sib) {
-      log.error(
-        { event: "commit_sibling_not_owned", userId, siblingAccountId },
-        "sibling account not owned — aborting commit",
-      );
-      return { kind, status: "error", error: "La cuenta sibling no pertenece a tu usuario." };
-    }
-    siblingAccount = { id: sib.id, currency: sib.currency };
-  }
+  // #905 — re-resolve on commit (don't trust the cached sibling id), same as
+  // applyReconcile. Throws currency_mismatch / missing sibling / no plastic.
+  const dispatch = await resolveReconcileDispatch(userId, account, parsed);
+  const siblingAccount = dispatch.sibling
+    ? { id: dispatch.sibling.id, currency: dispatch.sibling.currency }
+    : undefined;
+
+  // `userBalanceAtEndCents` is a single-account concept — the commit layer
+  // ignores it in multi-currency mode, but we also pass null explicitly
+  // here so the intent is obvious at the call site.
+  const userBalanceAtEndCents = dispatch.sibling
+    ? null
+    : parseUserBalanceAtEndCents(userBalanceAtEndCentsRaw);
 
   const result: CommitResult = await commitReconciliation({
     userId,
@@ -873,9 +863,87 @@ async function _commitBancolombia(
     parsed,
     plan,
     fileHash: entry.fileHash,
+    userBalanceAtEndCents,
   });
 
-  // Pago TC routing for savings formats
+  log.info(
+    {
+      event: "reconciliation_applied",
+      userId,
+      accountId: account.id,
+      siblingAccountId: dispatch.sibling?.id ?? null,
+      statementImportId: result.statementImportId,
+      status: result.status,
+      inserted: result.inserted,
+      matched: result.matched,
+      flagged: result.flagged,
+    },
+    "reconciliation applied",
+  );
+
+  // #662 — notify user when reconciliation is applied successfully.
+  if (result.status === "applied") {
+    await emitNotification(userId, {
+      type: "statement_import_complete",
+      entityId: String(result.statementImportId),
+      priority: "medium",
+      title: "Reconciliación aplicada",
+      body: `Importamos el extracto correctamente. ${result.inserted} movimientos nuevos reconciliados.`,
+      actionUrl: `/transactions?accountId=${accountId}`,
+      metadata: {
+        statementImportId: result.statementImportId,
+        inserted: result.inserted,
+        flagged: result.flagged,
+      },
+    }).catch((emitErr: unknown) => {
+      log.error(
+        {
+          err: emitErr,
+          userId,
+          accountId,
+          statementImportId: result.statementImportId,
+          event: "emit_statement_import_complete_failed",
+        },
+        "failed to emit statement_import_complete notification",
+      );
+    });
+  }
+
+  // #657 — notify user when reconciliation flags transactions.
+  if (result.status === "applied" && result.flagged > 0) {
+    await emitNotification(userId, {
+      type: "reconciliation_flagged_txns",
+      entityId: String(result.statementImportId),
+      audience: "user",
+      title: `Reconciliación: ${result.flagged} movimiento(s) marcados`,
+      body: "Encontramos diferencias entre el extracto y tus transacciones. Revisalos para ajustar.",
+      actionUrl: `/transactions?status=flagged&accountId=${accountId}`,
+      priority: "high",
+      metadata: {
+        statementImportId: result.statementImportId,
+        flagged: result.flagged,
+        accountId,
+      },
+    }).catch((emitErr: unknown) => {
+      log.error(
+        {
+          err: emitErr,
+          userId,
+          accountId,
+          statementImportId: result.statementImportId,
+          event: "emit_reconciliation_flagged_txns_failed",
+        },
+        "failed to emit reconciliation_flagged_txns notification",
+      );
+    });
+  }
+
+  // #591 — classify newly-inserted reconciliation rows.
+  if (result.status === "applied" && result.insertedIds.length > 0) {
+    await classifyByRuleThenEnqueue(userId, result.insertedIds);
+  }
+
+  // #567 — after committing a savings extract, run Pago TC twin routing.
   const isSavingsFormat =
     parsed.format === "bancolombia_savings" || parsed.format === "bancolombia_savings_extracto";
   if (result.status === "applied" && isSavingsFormat) {
@@ -893,11 +961,8 @@ async function _commitBancolombia(
   revalidatePath("/");
   revalidatePath("/transactions");
   revalidatePath(`/settings/accounts/${accountId}/reconcile`);
-  if (siblingAccountId) revalidatePath(`/settings/accounts/${siblingAccountId}/reconcile`);
-
-  // #591: run rule-based classification on newly inserted txs, then enqueue AI for the rest.
-  if (result.status === "applied" && result.insertedIds.length > 0) {
-    await classifyByRuleThenEnqueue(userId, result.insertedIds);
+  if (dispatch.sibling) {
+    revalidatePath(`/settings/accounts/${dispatch.sibling.id}/reconcile`);
   }
 
   return {
