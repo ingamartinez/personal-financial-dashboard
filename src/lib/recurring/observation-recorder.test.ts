@@ -13,7 +13,11 @@ import {
   users,
 } from "@/lib/db/schema";
 import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "@/lib/auth/signup";
-import { recordRecurringLinkObservation, tokeniseDescription } from "./observation-recorder";
+import {
+  recordRecurringLinkObservation,
+  retractRecurringLinkObservation,
+  tokeniseDescription,
+} from "./observation-recorder";
 
 // ---------------------------------------------------------------------------
 // Test data tag and seed helpers
@@ -305,5 +309,238 @@ describe("recordRecurringLinkObservation", () => {
       .where(eq(recurringLinkObservations.txId, txId));
 
     expect(rows).toHaveLength(0);
+  });
+
+  it("#873: does not learn a fingerprint another recurring owns with a materially higher count when amounts differ", async () => {
+    const colmedicaId = await seedRecurring(userAId, accountAId);
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: userAId,
+      recurringId: colmedicaId,
+      pattern: "COLMEDICA",
+      observationCount: 6,
+    });
+
+    const poisonTx = await seedTx(userAId, accountAId, "COLMEDICA PREPAGADA", BigInt(-11702));
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: poisonTx,
+      yearMonth: "2026-05",
+      manual: false,
+    });
+
+    const obs = await db
+      .select({ id: recurringLinkObservations.id })
+      .from(recurringLinkObservations)
+      .where(
+        and(
+          eq(recurringLinkObservations.userId, userAId),
+          eq(recurringLinkObservations.recurringId, recurringAId),
+          eq(recurringLinkObservations.txId, poisonTx),
+        ),
+      );
+    expect(obs).toHaveLength(1);
+
+    const stolen = await db
+      .select({ pattern: recurringDescriptionPatterns.pattern })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "COLMEDICA"),
+        ),
+      );
+    expect(stolen).toHaveLength(0);
+  });
+
+  it("#873: still learns a shared token when the observation amount matches this recurring", async () => {
+    const appleTvId = await seedRecurring(userAId, accountAId);
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: userAId,
+      recurringId: appleTvId,
+      pattern: "APPLE",
+      observationCount: 6,
+    });
+
+    const txId = await seedTx(userAId, accountAId, "APPLE.COM/BILL");
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId,
+      yearMonth: "2026-04",
+      manual: true,
+    });
+
+    const [pattern] = await db
+      .select({ observationCount: recurringDescriptionPatterns.observationCount })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "APPLE"),
+        ),
+      );
+    expect(pattern?.observationCount).toBe(1);
+  });
+});
+
+describe("retractRecurringLinkObservation #873", () => {
+  let userAId: number;
+  let accountAId: number;
+  let recurringAId: number;
+
+  beforeEach(async () => {
+    await cleanup();
+    userAId = await seedUser(`${TAG}-userA@test.local`);
+    accountAId = await seedAccount(userAId);
+    recurringAId = await seedRecurring(userAId, accountAId);
+  });
+
+  afterEach(cleanup);
+
+  it("deletes the observation and drops the fingerprint it taught", async () => {
+    const txId = await seedTx(userAId, accountAId, "COLMEDICA PREPAGADA");
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId,
+      yearMonth: "2026-05",
+      manual: false,
+    });
+
+    await retractRecurringLinkObservation({
+      userId: userAId,
+      txId,
+      recurringId: recurringAId,
+    });
+
+    const obs = await db
+      .select({ id: recurringLinkObservations.id })
+      .from(recurringLinkObservations)
+      .where(
+        and(
+          eq(recurringLinkObservations.userId, userAId),
+          eq(recurringLinkObservations.recurringId, recurringAId),
+        ),
+      );
+    expect(obs).toHaveLength(0);
+
+    const patterns = await db
+      .select({ pattern: recurringDescriptionPatterns.pattern })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+        ),
+      );
+    expect(patterns).toHaveLength(0);
+  });
+
+  it("re-derives remaining fingerprints instead of leaving a stale count", async () => {
+    const tx1 = await seedTx(userAId, accountAId, "NETFLIX*DL");
+    const tx2 = await seedTx(userAId, accountAId, "NETFLIX*HD");
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: tx1,
+      yearMonth: "2026-03",
+      manual: true,
+    });
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: tx2,
+      yearMonth: "2026-04",
+      manual: true,
+    });
+
+    await retractRecurringLinkObservation({
+      userId: userAId,
+      txId: tx2,
+      recurringId: recurringAId,
+    });
+
+    const [pattern] = await db
+      .select({ observationCount: recurringDescriptionPatterns.observationCount })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "NETFLIX"),
+        ),
+      );
+    expect(pattern?.observationCount).toBe(1);
+  });
+
+  it("is idempotent when no observation exists", async () => {
+    const txId = await seedTx(userAId, accountAId);
+    await expect(
+      retractRecurringLinkObservation({
+        userId: userAId,
+        txId,
+        recurringId: recurringAId,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not re-teach a previously blocked foreign-owned token when another observation is retracted", async () => {
+    const colmedicaId = await seedRecurring(userAId, accountAId);
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: userAId,
+      recurringId: colmedicaId,
+      pattern: "COLMEDICA",
+      observationCount: 6,
+    });
+
+    const poisonTx = await seedTx(userAId, accountAId, "COLMEDICA PREPAGADA", BigInt(-11702));
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: poisonTx,
+      yearMonth: "2026-05",
+      manual: false,
+    });
+    const netflixTx = await seedTx(userAId, accountAId, "NETFLIX*DL");
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: netflixTx,
+      yearMonth: "2026-04",
+      manual: true,
+    });
+
+    await retractRecurringLinkObservation({
+      userId: userAId,
+      txId: netflixTx,
+      recurringId: recurringAId,
+    });
+
+    const stolen = await db
+      .select({ pattern: recurringDescriptionPatterns.pattern })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "COLMEDICA"),
+        ),
+      );
+    expect(stolen).toHaveLength(0);
+
+    const poisonObs = await db
+      .select({ id: recurringLinkObservations.id })
+      .from(recurringLinkObservations)
+      .where(
+        and(
+          eq(recurringLinkObservations.userId, userAId),
+          eq(recurringLinkObservations.recurringId, recurringAId),
+          eq(recurringLinkObservations.txId, poisonTx),
+        ),
+      );
+    expect(poisonObs).toHaveLength(1);
   });
 });

@@ -10,7 +10,12 @@ import {
   type TxCandidate,
 } from "@/lib/recurring/match-score";
 import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
-import { fetchPatterns, fetchPatternsForOne, patternSetsEqual } from "@/lib/recurring/patterns";
+import {
+  fetchAmountConsistentTokens,
+  fetchPatterns,
+  fetchPatternsForOne,
+  patternSetsEqual,
+} from "@/lib/recurring/patterns";
 import { occurrenceWindow } from "@/lib/recurring/slot";
 import type { Currency } from "@/lib/types";
 
@@ -74,6 +79,67 @@ type CandidateTxRow = {
   descriptionRaw: string | null;
 };
 
+type SiblingContext = {
+  tokensByRecurring: Map<number, string[]>;
+  /** `${currency}:${amountCents}:${token}` owned by 2+ leftover recurrings. */
+  ambiguousKeys: Set<string>;
+};
+
+function siblingAmbiguousKey(currency: Currency, amountCents: bigint, token: string): string {
+  return `${currency}:${amountCents.toString()}:${token}`;
+}
+
+/**
+ * #873: precompute amount-consistent sibling tokens across ALL leftover
+ * recurrings sharing an amount+currency, so resolveTxWinner can refuse a
+ * hit that is not unique across recurrings. auto-link.ts already does this
+ * (one tx, many recurrings). The per-recurring inverse used to fetch only
+ * `recurring.id`, which silently stole a generic TRANSFERENCIA tx when two
+ * cross-account recurrings shared the amount — bijective/exact-near both
+ * group by accountId and cannot see that collision.
+ */
+async function loadSiblingContext(
+  userId: number,
+  recurrings: { id: number; amountCents: bigint; currency: Currency }[],
+  database: DB,
+): Promise<SiblingContext> {
+  const tokensByRecurring = new Map<number, string[]>();
+  const ownerCount = new Map<string, number>();
+  if (recurrings.length === 0) return { tokensByRecurring, ambiguousKeys: new Set() };
+
+  const groups = new Map<string, { ids: number[]; amountCents: bigint; currency: Currency }>();
+  for (const r of recurrings) {
+    const gk = `${r.currency}:${r.amountCents.toString()}`;
+    const g = groups.get(gk) ?? { ids: [], amountCents: r.amountCents, currency: r.currency };
+    g.ids.push(r.id);
+    groups.set(gk, g);
+  }
+
+  for (const g of groups.values()) {
+    const map = await fetchAmountConsistentTokens(
+      userId,
+      g.ids,
+      g.amountCents,
+      g.currency,
+      database,
+    );
+    for (const id of g.ids) {
+      const tokens = map.get(id) ?? [];
+      tokensByRecurring.set(id, tokens);
+      for (const token of tokens) {
+        const k = siblingAmbiguousKey(g.currency, g.amountCents, token);
+        ownerCount.set(k, (ownerCount.get(k) ?? 0) + 1);
+      }
+    }
+  }
+
+  const ambiguousKeys = new Set<string>();
+  for (const [k, n] of ownerCount) {
+    if (n >= 2) ambiguousKeys.add(k);
+  }
+  return { tokensByRecurring, ambiguousKeys };
+}
+
 /**
  * Resolve which (if any) of the unlinked candidate transactions is this
  * recurring's payment for the occurrence.
@@ -95,6 +161,7 @@ async function resolveTxWinner(
   recurring: { id: number; accountId: number; amountCents: bigint; currency: Currency },
   candidates: CandidateTxRow[],
   database: DB,
+  siblingCtx: SiblingContext,
 ): Promise<CandidateTxRow | null> {
   if (candidates.length === 0) return null;
 
@@ -118,6 +185,33 @@ async function resolveTxWinner(
   }
 
   const pool = classic.length >= 2 ? classic : candidates;
+
+  // #873: proven-sibling path — mirror of auto-link.ts resolveCandidate.
+  // Amount-consistent observations unlock cross-account exact-amount matches
+  // without trusting count-1 fingerprints (fetchPatterns stays >= 2).
+  // siblingCtx is computed over ALL leftover recurrings sharing this
+  // amount+currency; a token owned by 2+ of them is not unique and must
+  // fall through to the scorer (same as auto-link's hits.length === 1).
+  const siblingTokens = siblingCtx.tokensByRecurring.get(recurring.id) ?? [];
+  if (siblingTokens.length > 0) {
+    const hits = pool.filter((c) => {
+      if (c.currency !== recurring.currency || c.amountCents !== recurring.amountCents) {
+        return false;
+      }
+      const token = tokeniseDescription(c.descriptionRaw);
+      return token !== null && siblingTokens.includes(token);
+    });
+    if (hits.length === 1) {
+      const token = tokeniseDescription(hits[0]!.descriptionRaw);
+      const ambiguous =
+        token !== null &&
+        siblingCtx.ambiguousKeys.has(
+          siblingAmbiguousKey(recurring.currency, recurring.amountCents, token),
+        );
+      if (!ambiguous) return hits[0]!;
+    }
+  }
+
   const patterns = await fetchPatternsForOne(userId, recurring.id, database);
   const txCandidates: TxCandidate[] = pool.map((c) => ({
     txId: c.id,
@@ -586,6 +680,9 @@ export async function detectGapsForMonth(
   for (const id of nearHandled) handled.add(id);
   result.autoLinked += nearAutoLinked;
 
+  const unresolved = toProcess.filter((r) => !handled.has(r.id));
+  const siblingCtx = await loadSiblingContext(userId, unresolved, database);
+
   for (const r of toProcess) {
     if (handled.has(r.id)) continue;
 
@@ -610,7 +707,7 @@ export async function detectGapsForMonth(
         ),
       );
 
-    const winner = await resolveTxWinner(userId, r, candidates, database);
+    const winner = await resolveTxWinner(userId, r, candidates, database, siblingCtx);
     // #857: a tx within 1% of two still-available recurrings must not be
     // stolen by the unique-token path of whichever recurring the loop
     // happens to visit first (lowest id / insert order).
@@ -785,6 +882,23 @@ export async function reconcileOpenGaps(
     for (const id of handled) handledKeys.add(`${id}:${yearMonth}`);
   }
 
+  const siblingByMonth = new Map<string, SiblingContext>();
+  for (const [yearMonth, gaps] of byMonth) {
+    const unresolved = gaps.filter((g) => !handledKeys.has(`${g.recurringId}:${yearMonth}`));
+    siblingByMonth.set(
+      yearMonth,
+      await loadSiblingContext(
+        userId,
+        unresolved.map((g) => ({
+          id: g.recurringId,
+          amountCents: g.amountCents,
+          currency: g.currency,
+        })),
+        database,
+      ),
+    );
+  }
+
   for (const gap of pending) {
     if (handledKeys.has(`${gap.recurringId}:${gap.yearMonth}`)) continue;
 
@@ -819,6 +933,10 @@ export async function reconcileOpenGaps(
       },
       candidates,
       database,
+      siblingByMonth.get(gap.yearMonth) ?? {
+        tokensByRecurring: new Map(),
+        ambiguousKeys: new Set(),
+      },
     );
     if (!winner || blockedTxIds.has(winner.id)) continue;
 

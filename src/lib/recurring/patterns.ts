@@ -7,7 +7,9 @@
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
-import { recurringDescriptionPatterns } from "@/lib/db/schema";
+import { recurringDescriptionPatterns, recurringLinkObservations } from "@/lib/db/schema";
+import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
+import type { Currency } from "@/lib/types";
 
 /**
  * Fetch learned description-fingerprint patterns for the given recurrings,
@@ -64,4 +66,56 @@ export async function fetchPatternsForOne(
 ): Promise<string[]> {
   const map = await fetchPatterns(userId, [recurringId], database);
   return map.get(recurringId) ?? [];
+}
+
+/**
+ * #873: tokens seen on observations of these recurrings whose amount+currency
+ * match `amountCents`/`currency`.
+ *
+ * This is NOT a lowering of `fetchPatterns`' observation_count >= 2 threshold.
+ * Count-1 fingerprints stay untrusted. A wrong-amount mis-link (prod: COLMEDICA
+ * at -11702 USD hanging off a COP rent recurring) cannot teach a token for a
+ * different payment shape, so it never enters this map.
+ *
+ * Used by auto-link and the gap detector as a proven-sibling signal: one
+ * prior link of this amount+token is enough to auto-link later months even
+ * across accounts, which is how #804's "any card pays it" becomes reachable
+ * without waiting for a second observation to promote the fingerprint.
+ */
+export async function fetchAmountConsistentTokens(
+  userId: number,
+  recurringIds: number[],
+  amountCents: bigint,
+  currency: Currency,
+  database: DB = defaultDb,
+): Promise<Map<number, string[]>> {
+  const map = new Map<number, Set<string>>();
+  if (recurringIds.length === 0) return new Map();
+
+  const rows = await database
+    .select({
+      recurringId: recurringLinkObservations.recurringId,
+      descriptionRaw: recurringLinkObservations.descriptionRaw,
+    })
+    .from(recurringLinkObservations)
+    .where(
+      and(
+        eq(recurringLinkObservations.userId, userId),
+        inArray(recurringLinkObservations.recurringId, recurringIds),
+        eq(recurringLinkObservations.realAmountCents, amountCents),
+        eq(recurringLinkObservations.realCurrency, currency),
+      ),
+    );
+
+  for (const r of rows) {
+    const token = tokeniseDescription(r.descriptionRaw);
+    if (token === null) continue;
+    const set = map.get(r.recurringId) ?? new Set<string>();
+    set.add(token);
+    map.set(r.recurringId, set);
+  }
+
+  const out = new Map<number, string[]>();
+  for (const [id, set] of map) out.set(id, [...set]);
+  return out;
 }

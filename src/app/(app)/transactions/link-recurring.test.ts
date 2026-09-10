@@ -7,7 +7,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
+  recurringDescriptionPatterns,
   recurringGaps,
+  recurringLinkObservations,
   recurringTransactions,
   transactions,
   users,
@@ -445,6 +447,55 @@ describe("unlinkTxFromRecurring", () => {
     await db.execute(sql`DELETE FROM recurring_transactions WHERE id = ${recurringBId}`);
     await db.execute(sql`DELETE FROM accounts WHERE id = ${accountBId}`);
     await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
+  });
+
+  it("#873: unlink retracts the observation and the fingerprint it taught", async () => {
+    const txId = await seedTx(userAId, accountAId, {
+      recurringId: recurringAId,
+      recurringYearMonth: "2026-05",
+    });
+    await db.insert(recurringLinkObservations).values({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId,
+      yearMonth: "2026-05",
+      realAmountCents: BigInt(-11702),
+      realCurrency: "USD",
+      descriptionRaw: "COLMEDICA PREPAGADA",
+      accountId: accountAId,
+      manual: false,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: userAId,
+      recurringId: recurringAId,
+      pattern: "COLMEDICA",
+      observationCount: 1,
+    });
+
+    const result = await unlinkTxFromRecurring({ txId });
+    expect(result.ok).toBe(true);
+
+    const obs = await db
+      .select({ id: recurringLinkObservations.id })
+      .from(recurringLinkObservations)
+      .where(
+        and(
+          eq(recurringLinkObservations.userId, userAId),
+          eq(recurringLinkObservations.recurringId, recurringAId),
+        ),
+      );
+    expect(obs).toHaveLength(0);
+
+    const patterns = await db
+      .select({ pattern: recurringDescriptionPatterns.pattern })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+        ),
+      );
+    expect(patterns).toHaveLength(0);
   });
 });
 

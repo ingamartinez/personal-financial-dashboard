@@ -9,16 +9,19 @@
 // Also upserts the description fingerprint table so pattern_count stays current
 // for the auto-link fallback path (Section D).
 
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, ne, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import {
-  recurringLinkObservations,
   recurringDescriptionPatterns,
+  recurringLinkObservations,
+  recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger({ module: "recurring/observation-recorder" });
+
+type DbOrTrx = Parameters<Parameters<typeof defaultDb.transaction>[0]>[0] | DB;
 
 export type RecordLinkObservationInput = {
   userId: number;
@@ -132,6 +135,27 @@ export async function recordRecurringLinkObservation(
   const pattern = tokeniseDescription(tx.descriptionRaw);
   if (!pattern) return;
 
+  if (
+    !(await shouldLearnPattern(
+      userId,
+      recurringId,
+      pattern,
+      { amountCents: tx.amountCents, currency: tx.currency },
+      database,
+    ))
+  ) {
+    log.info(
+      {
+        event: "pattern_learn_skipped_foreign_owner",
+        userId,
+        recurringId,
+        pattern,
+      },
+      "skipped learning a fingerprint another recurring already owns",
+    );
+    return;
+  }
+
   await database
     .insert(recurringDescriptionPatterns)
     .values({
@@ -163,4 +187,181 @@ export async function recordRecurringLinkObservation(
   // shared with N recurrings"), derive it at read time with
   // count(distinct recurring_id) over (user_id, pattern) — do not
   // reintroduce a stored flag.
+}
+
+/**
+ * #873: refuse to teach this recurring a fingerprint another recurring of
+ * the same user already owns with a materially higher observation count,
+ * unless this observation's amount+currency matches the recurring (a real
+ * payment that happens to share a token, e.g. APPLE on iCloud vs Apple TV).
+ *
+ * "Materially higher" = the other row is already trusted (>= 2) AND at least
+ * twice what this recurring would have after the increment. That blocks the
+ * prod poison (COLMEDICA count 6 on #8 vs a first observation on rent) without
+ * resurrecting the #807 pattern_ambiguous latch for ordinary shared tokens.
+ */
+async function shouldLearnPattern(
+  userId: number,
+  recurringId: number,
+  pattern: string,
+  tx: { amountCents: bigint; currency: string },
+  database: DbOrTrx,
+): Promise<boolean> {
+  const others = await database
+    .select({ observationCount: recurringDescriptionPatterns.observationCount })
+    .from(recurringDescriptionPatterns)
+    .where(
+      and(
+        eq(recurringDescriptionPatterns.userId, userId),
+        eq(recurringDescriptionPatterns.pattern, pattern),
+        ne(recurringDescriptionPatterns.recurringId, recurringId),
+      ),
+    );
+
+  let otherMax = 0;
+  for (const row of others) {
+    if (row.observationCount > otherMax) otherMax = row.observationCount;
+  }
+  if (otherMax < 2) return true;
+
+  const [mine] = await database
+    .select({ observationCount: recurringDescriptionPatterns.observationCount })
+    .from(recurringDescriptionPatterns)
+    .where(
+      and(
+        eq(recurringDescriptionPatterns.userId, userId),
+        eq(recurringDescriptionPatterns.recurringId, recurringId),
+        eq(recurringDescriptionPatterns.pattern, pattern),
+      ),
+    );
+  const myCount = mine?.observationCount ?? 0;
+  if (otherMax < 2 * (myCount + 1)) return true;
+
+  const [rec] = await database
+    .select({
+      amountCents: recurringTransactions.amountCents,
+      currency: recurringTransactions.currency,
+      amountType: recurringTransactions.amountType,
+    })
+    .from(recurringTransactions)
+    .where(and(eq(recurringTransactions.id, recurringId), eq(recurringTransactions.userId, userId)))
+    .limit(1);
+
+  if (!rec) return false;
+  if (rec.amountType === "variable") return true;
+  return rec.currency === tx.currency && rec.amountCents === tx.amountCents;
+}
+
+async function rederivePatternsFromObservations(
+  userId: number,
+  recurringId: number,
+  database: DbOrTrx,
+): Promise<void> {
+  const remaining = await database
+    .select({
+      descriptionRaw: recurringLinkObservations.descriptionRaw,
+      observedAt: recurringLinkObservations.observedAt,
+      realAmountCents: recurringLinkObservations.realAmountCents,
+      realCurrency: recurringLinkObservations.realCurrency,
+    })
+    .from(recurringLinkObservations)
+    .where(
+      and(
+        eq(recurringLinkObservations.userId, userId),
+        eq(recurringLinkObservations.recurringId, recurringId),
+      ),
+    );
+
+  const acc = new Map<string, { count: number; lastObservedAt: Date }>();
+  for (const row of remaining) {
+    const token = tokeniseDescription(row.descriptionRaw);
+    if (token === null) continue;
+    // #864 recompute-from-observations, but each token must still pass the
+    // same foreign-owner check as first-learn. The raw observation row is
+    // always kept (audit); only the fingerprint is gated. Without this, a
+    // previously-blocked COLMEDICA observation would be silently re-taught
+    // the next time any other observation on this recurring is retracted.
+    if (
+      !(await shouldLearnPattern(
+        userId,
+        recurringId,
+        token,
+        { amountCents: row.realAmountCents, currency: row.realCurrency },
+        database,
+      ))
+    ) {
+      continue;
+    }
+    const existing = acc.get(token);
+    if (!existing) {
+      acc.set(token, { count: 1, lastObservedAt: row.observedAt });
+      continue;
+    }
+    existing.count += 1;
+    if (row.observedAt.getTime() > existing.lastObservedAt.getTime()) {
+      existing.lastObservedAt = row.observedAt;
+    }
+  }
+
+  await database
+    .delete(recurringDescriptionPatterns)
+    .where(
+      and(
+        eq(recurringDescriptionPatterns.userId, userId),
+        eq(recurringDescriptionPatterns.recurringId, recurringId),
+      ),
+    );
+
+  if (acc.size === 0) return;
+
+  await database.insert(recurringDescriptionPatterns).values(
+    [...acc.entries()].map(([pattern, v]) => ({
+      userId,
+      recurringId,
+      pattern,
+      observationCount: v.count,
+      lastObservedAt: v.lastObservedAt,
+    })),
+  );
+}
+
+/**
+ * #873: reverse a link's teaching. Deletes the observation for this
+ * (user, recurring, tx) and re-derives that recurring's fingerprints from
+ * whatever observations remain, so a "Deshacer match" actually undoes the
+ * count-1 COLMEDICA poison instead of leaving it behind.
+ *
+ * Idempotent: no matching observation is a no-op besides the re-derive.
+ */
+export async function retractRecurringLinkObservation(
+  input: { userId: number; txId: number; recurringId: number },
+  database: DbOrTrx = defaultDb,
+): Promise<void> {
+  const { userId, txId, recurringId } = input;
+
+  const deleted = await database
+    .delete(recurringLinkObservations)
+    .where(
+      and(
+        eq(recurringLinkObservations.userId, userId),
+        eq(recurringLinkObservations.txId, txId),
+        eq(recurringLinkObservations.recurringId, recurringId),
+      ),
+    )
+    .returning({ id: recurringLinkObservations.id });
+
+  await rederivePatternsFromObservations(userId, recurringId, database);
+
+  if (deleted.length === 0) {
+    log.info(
+      { event: "observation_retract_noop", userId, txId, recurringId },
+      "observation-recorder: nothing to retract",
+    );
+    return;
+  }
+
+  log.info(
+    { event: "observation_retracted", userId, txId, recurringId },
+    "recurring link observation retracted",
+  );
 }
