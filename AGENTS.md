@@ -369,9 +369,13 @@ stops at PR-open and waits for a human.
 #### One lane, end to end
 
 ```bash
-# 1. Worktree off current main
-git worktree add -b claude/phase-4/<issue>-<slug> \
-  ~/projects/personal-financial-dashboard-worktrees/<lane> main
+# 1. Worktree, its own workspace, its first tab and a root pane — one call.
+#    Read workspace_id, tab_id and root_pane.pane_id out of the JSON it
+#    returns. Never assume a wN:pM: ids are not stable across a close.
+herdr worktree create --cwd "$PWD" \
+  --branch claude/phase-4/<issue>-<slug> --base main \
+  --path ~/projects/personal-financial-dashboard-worktrees/<lane> \
+  --label <lane> --no-focus
 # .env.local is gitignored — without this copy the worktree fails at runtime
 cp .env.local ~/projects/personal-financial-dashboard-worktrees/<lane>/.env.local
 
@@ -384,14 +388,17 @@ FINDASH_TEST_DB=findash_test_<lane> bun run db:seed:test
 # 3. node_modules is NOT shared between worktrees
 cd ~/projects/personal-financial-dashboard-worktrees/<lane> && bun install
 
-# 4. One tab per agent — never a pane split of the orchestrator's tab
-herdr tab create --cwd "$PWD" --label <lane> --no-focus     # -> pane_id
-herdr agent start <lane> --kind opencode --pane <pane_id> --timeout 240000 \
-  -- --agent findash-implementer
-herdr agent prompt <lane> "<objective>" --wait --until idle --until done
+# 4. The root pane hosts the implementer. Every later stage — reviewer,
+#    shipper — gets its OWN tab inside that same lane workspace:
+#      herdr tab create --workspace <workspace_id> --cwd "$PWD" \
+#        --label <lane>-review --no-focus
+#    Never a pane split of the orchestrator's tab.
+herdr agent start <lane> --kind opencode --pane <root_pane_id> --timeout 240000 \
+  -- --auto --agent findash-implementer
+herdr agent prompt <lane> "<objective>"
 
-# 5. Teardown the moment it merges — tab, worktree, branch, database
-herdr tab close <tab_id>
+# 5. Teardown the moment it merges — workspace, worktree, branch, database
+herdr workspace close <workspace_id>   # closes every tab of the lane at once
 git worktree remove ~/projects/personal-financial-dashboard-worktrees/<lane> --force
 git branch -D claude/phase-4/<issue>-<slug>
 dropdb findash_test_<lane>
@@ -400,6 +407,18 @@ dropdb findash_test_<lane>
 #    The lane's own database had it; you just dropped that one.
 bun run db:migrate:test
 ```
+
+`herdr worktree create` replaces the old `git worktree add` +
+`herdr tab create` pair. It isolates per workspace rather than per tab, so a
+lane's three stages live together and teardown is one call. `herdr worktree
+list` reports each worktree with its `open_workspace_id`, which makes a lane's
+workspace discoverable instead of remembered.
+
+Closing a lane workspace does **not** touch the checkout — the worktree stays on
+disk with its branch, and `open_workspace_id` goes to `null`. Reopen it with
+`herdr worktree open --cwd <repo> --path <path> --label <lane> --no-focus`,
+which returns **new** ids. Removing the checkout stays an explicit
+`git worktree remove`, which is why step 5 keeps both.
 
 > **Step 6 is the easy one to forget.** Skipping it leaves `findash_test`
 > running the pre-merge schema, and the next full-suite run fails on tests that
@@ -443,6 +462,20 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
 - **Register every lane with your watcher when it starts**, not when you
   remember it. One lane merged completely unobserved because its watcher was
   never rebuilt after being killed.
+- **A prompt sent too early is silently dropped.** `herdr agent prompt` issued
+  right after `herdr agent start` can vanish while the opencode TUI is still
+  painting its splash. The call returns success, the agent stays `idle`, and the
+  input line is empty — a lane that looks alive and never received its task.
+  `agent start` returning `interactive_ready: true` is not enough. Confirm the
+  turn actually began before registering a watcher: `terminal_title` flips to
+  `OC | <objective>` once it does, and `agent read` shows the prompt in the
+  transcript. Verified on herdr 0.9.0 / opencode 1.18.30.
+- **Do not judge a reviewer from its scrollback.** A pane read mid-run surfaces
+  hypotheses the agent later refutes itself. One review showed a `CRITICAL` in
+  scrollback and ended `APPROVE` with zero findings. Ask it to write the final
+  report to a file and read that — the agent runs on the terminal's alternate
+  screen, so rows that scroll away never reach herdr's host scrollback and no
+  `--lines` value brings them back.
 - **Do not poll Herdr — it pushes.** Two mechanisms, both verified on herdr
   0.9.0.
 
