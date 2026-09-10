@@ -1,6 +1,9 @@
 version: 2
 updates:
-  - package-ecosystem: npm
+  # Bun project: the `npm` ecosystem updates package.json but never bun.lock,
+  # and ci.yml installs with `bun install --frozen-lockfile` — so every PR it
+  # opened arrived red (#889). `bun` regenerates the lockfile alongside.
+  - package-ecosystem: bun
     directory: "/"
     schedule:
       interval: weekly
