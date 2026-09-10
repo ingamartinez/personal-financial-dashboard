@@ -1740,3 +1740,168 @@ describe("autoLinkTransaction #852 — verb-stripped unique token", () => {
     expect(epmLinked).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #873: cross-account auto-link via a proven sibling observation, without
+// trusting count-1 fingerprints (lowering fetchPatterns to >= 1 would make
+// a poisoned COLMEDICA token steal Colmedica txs onto rent).
+// ---------------------------------------------------------------------------
+describe("autoLinkTransaction #873 — proven-sibling cross-account", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  const RENT_AMOUNT = BigInt(-230000000);
+  const RENT_DESCRIPTION = "Transferencia a cuenta *138076518";
+
+  async function seedObservation(opts: {
+    recurringId: number;
+    txId: number;
+    accountId: number;
+    yearMonth: string;
+    amountCents: bigint;
+    currency?: "COP" | "USD";
+    description: string;
+  }) {
+    await db.insert(recurringLinkObservations).values({
+      userId: TEST_USER_ID,
+      recurringId: opts.recurringId,
+      txId: opts.txId,
+      yearMonth: opts.yearMonth,
+      realAmountCents: opts.amountCents,
+      realCurrency: opts.currency ?? "COP",
+      descriptionRaw: opts.description,
+      accountId: opts.accountId,
+      manual: true,
+    });
+  }
+
+  it("links a cross-account rent tx after one amount-consistent sibling observation", async () => {
+    const arq = await seedAccount(TEST_USER_ID, "_arq");
+    const bancolombia = await seedAccount(TEST_USER_ID, "_banco");
+    const rentId = await seedRecurring(arq, {
+      label: "__autolink_873_rent__",
+      amountCents: RENT_AMOUNT,
+      dayOfMonth: 1,
+    });
+
+    const juneTx = await seedTx(bancolombia, {
+      occurredOn: "2026-06-05",
+      amountCents: RENT_AMOUNT,
+      description: RENT_DESCRIPTION,
+      recurringId: rentId,
+      recurringYearMonth: "2026-06",
+    });
+    await seedObservation({
+      recurringId: rentId,
+      txId: juneTx,
+      accountId: bancolombia,
+      yearMonth: "2026-06",
+      amountCents: RENT_AMOUNT,
+      description: RENT_DESCRIPTION,
+    });
+
+    const poisonTx = await seedTx(arq, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-11702),
+      description: "COLMEDICA PREPAGADA",
+    });
+    await seedObservation({
+      recurringId: rentId,
+      txId: poisonTx,
+      accountId: arq,
+      yearMonth: "2026-05",
+      amountCents: BigInt(-11702),
+      currency: "USD",
+      description: "COLMEDICA PREPAGADA",
+    });
+
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: rentId, pattern: "COLMEDICA", observationCount: 1 },
+      { userId: TEST_USER_ID, recurringId: rentId, pattern: "YOU", observationCount: 1 },
+      { userId: TEST_USER_ID, recurringId: rentId, pattern: "TRANSFERENCIA", observationCount: 1 },
+    ]);
+
+    const julyTx = await seedTx(bancolombia, {
+      occurredOn: "2026-07-07",
+      amountCents: RENT_AMOUNT,
+      description: RENT_DESCRIPTION,
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, julyTx);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(rentId);
+      expect(result.yearMonth).toBe("2026-07");
+    }
+  });
+
+  it("does NOT trust a count-1 COLMEDICA fingerprint to steal a Colmedica tx onto rent", async () => {
+    const arq = await seedAccount(TEST_USER_ID, "_arq2");
+    const bancolombia = await seedAccount(TEST_USER_ID, "_banco2");
+    const rentId = await seedRecurring(arq, {
+      label: "__autolink_873_nocolmedica__",
+      amountCents: RENT_AMOUNT,
+      dayOfMonth: 1,
+    });
+
+    const juneTx = await seedTx(bancolombia, {
+      occurredOn: "2026-06-05",
+      amountCents: RENT_AMOUNT,
+      description: RENT_DESCRIPTION,
+      recurringId: rentId,
+      recurringYearMonth: "2026-06",
+    });
+    await seedObservation({
+      recurringId: rentId,
+      txId: juneTx,
+      accountId: bancolombia,
+      yearMonth: "2026-06",
+      amountCents: RENT_AMOUNT,
+      description: RENT_DESCRIPTION,
+    });
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: rentId, pattern: "COLMEDICA", observationCount: 1 },
+      { userId: TEST_USER_ID, recurringId: rentId, pattern: "TRANSFERENCIA", observationCount: 1 },
+    ]);
+
+    const colmedicaTx = await seedTx(arq, {
+      occurredOn: "2026-07-07",
+      amountCents: BigInt(-1170200),
+      description: "COLMEDICA PREPAGADA",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, colmedicaTx);
+    expect(result.status).toBe("no-open-gap");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, colmedicaTx));
+    expect(row.recurringId).toBeNull();
+  });
+
+  it("does NOT cross-account-link on a count-1 fingerprint with no sibling observation", async () => {
+    const arq = await seedAccount(TEST_USER_ID, "_arq3");
+    const bancolombia = await seedAccount(TEST_USER_ID, "_banco3");
+    const rentId = await seedRecurring(arq, {
+      label: "__autolink_873_nofingerprint__",
+      amountCents: RENT_AMOUNT,
+      dayOfMonth: 1,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: rentId,
+      pattern: "TRANSFERENCIA",
+      observationCount: 1,
+    });
+
+    const julyTx = await seedTx(bancolombia, {
+      occurredOn: "2026-07-07",
+      amountCents: RENT_AMOUNT,
+      description: RENT_DESCRIPTION,
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, julyTx);
+    expect(result.status).toBe("no-open-gap");
+  });
+});

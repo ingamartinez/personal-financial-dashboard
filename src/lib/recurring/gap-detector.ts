@@ -10,7 +10,12 @@ import {
   type TxCandidate,
 } from "@/lib/recurring/match-score";
 import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
-import { fetchPatterns, fetchPatternsForOne, patternSetsEqual } from "@/lib/recurring/patterns";
+import {
+  fetchAmountConsistentTokens,
+  fetchPatterns,
+  fetchPatternsForOne,
+  patternSetsEqual,
+} from "@/lib/recurring/patterns";
 import { occurrenceWindow } from "@/lib/recurring/slot";
 import type { Currency } from "@/lib/types";
 
@@ -118,6 +123,31 @@ async function resolveTxWinner(
   }
 
   const pool = classic.length >= 2 ? classic : candidates;
+
+  // #873: proven-sibling path — mirror of auto-link.ts resolveCandidate.
+  // Amount-consistent observations unlock cross-account exact-amount matches
+  // without trusting count-1 fingerprints (fetchPatterns stays >= 2).
+  const siblingTokens =
+    (
+      await fetchAmountConsistentTokens(
+        userId,
+        [recurring.id],
+        recurring.amountCents,
+        recurring.currency,
+        database,
+      )
+    ).get(recurring.id) ?? [];
+  if (siblingTokens.length > 0) {
+    const hits = pool.filter((c) => {
+      if (c.currency !== recurring.currency || c.amountCents !== recurring.amountCents) {
+        return false;
+      }
+      const token = tokeniseDescription(c.descriptionRaw);
+      return token !== null && siblingTokens.includes(token);
+    });
+    if (hits.length === 1) return hits[0]!;
+  }
+
   const patterns = await fetchPatternsForOne(userId, recurring.id, database);
   const txCandidates: TxCandidate[] = pool.map((c) => ({
     txId: c.id,

@@ -13,7 +13,11 @@ import {
   tokeniseDescription,
 } from "@/lib/recurring/observation-recorder";
 import { scoreMatchCandidates, type MatchCandidate } from "@/lib/recurring/match-score";
-import { fetchPatterns, patternSetsEqual } from "@/lib/recurring/patterns";
+import {
+  fetchAmountConsistentTokens,
+  fetchPatterns,
+  patternSetsEqual,
+} from "@/lib/recurring/patterns";
 import { claimSlotForTx, occurrenceWindow } from "@/lib/recurring/slot";
 import { detectPriceHike } from "@/lib/recurring/price-hike-detector";
 import { emitNotification } from "@/lib/notifications/emit";
@@ -219,6 +223,36 @@ async function resolveCandidate(
   }
 
   const pool = classic.length >= 2 ? classic : candidates;
+
+  // #873: proven-sibling path. Classic is same-account only, so a recurring
+  // paid from a different card never reaches the #804 cold-start bootstrap.
+  // Cross-account matching used to wait for a trusted fingerprint
+  // (observation_count >= 2), but one manual link only raises the count to 1
+  // — a catch-22. Use the source observation itself, filtered to this
+  // amount+currency, so a count-1 COLMEDICA hanging off a wrong-amount
+  // mis-link stays inert. Do NOT lower fetchPatterns to >= 1.
+  const siblingToken = tokeniseDescription(tx.descriptionRaw);
+  if (siblingToken !== null) {
+    const exactAmount = pool.filter(
+      (c) => c.currency === tx.currency && c.amountCents === tx.amountCents,
+    );
+    if (exactAmount.length > 0) {
+      const siblingMap = await fetchAmountConsistentTokens(
+        userId,
+        exactAmount.map((c) => c.recurringId),
+        tx.amountCents,
+        tx.currency,
+        database,
+      );
+      const hits = exactAmount.filter((c) =>
+        (siblingMap.get(c.recurringId) ?? []).includes(siblingToken),
+      );
+      if (hits.length === 1) {
+        return { winner: hits[0]!, ambiguousCount: null };
+      }
+    }
+  }
+
   const patternMap = await fetchPatterns(
     userId,
     pool.map((c) => c.recurringId),

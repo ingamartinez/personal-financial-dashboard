@@ -5,6 +5,7 @@ import {
   accounts,
   recurringDescriptionPatterns,
   recurringGaps,
+  recurringLinkObservations,
   recurringTransactions,
   transactions,
   users,
@@ -1442,6 +1443,87 @@ describe("detectGapsForMonth #857 — drifted amount with shared fingerprint", (
       occurredOn: "2026-07-19",
       amountCents: BigInt(-3002000), // 0.40% off
       description: "KFC UNICENTRO MEDELL",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(0);
+    expect(result.gapsCreated).toBe(1);
+  });
+});
+
+describe("detectGapsForMonth #873 — proven-sibling cross-account", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  const RENT_AMOUNT = BigInt(-230000000);
+  const RENT_DESCRIPTION = "Transferencia a cuenta *138076518";
+
+  it("auto-links a cross-account rent tx from an amount-consistent sibling observation", async () => {
+    const arq = await seedAccount("_873_arq");
+    const bancolombia = await seedAccount("_873_banco");
+    const rentId = await seedRecurring(arq, {
+      label: "__gap_test 873 rent",
+      amountCents: RENT_AMOUNT,
+      dayOfMonth: 1,
+    });
+
+    const juneTx = await seedTx(bancolombia, {
+      occurredOn: "2026-06-05",
+      amountCents: RENT_AMOUNT,
+      description: RENT_DESCRIPTION,
+      recurringId: rentId,
+      recurringYearMonth: "2026-06",
+    });
+    await db.insert(recurringLinkObservations).values({
+      userId: TEST_USER_ID,
+      recurringId: rentId,
+      txId: juneTx,
+      yearMonth: "2026-06",
+      realAmountCents: RENT_AMOUNT,
+      realCurrency: "COP",
+      descriptionRaw: RENT_DESCRIPTION,
+      accountId: bancolombia,
+      manual: true,
+    });
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: rentId, pattern: "COLMEDICA", observationCount: 1 },
+      { userId: TEST_USER_ID, recurringId: rentId, pattern: "TRANSFERENCIA", observationCount: 1 },
+    ]);
+
+    const julyTx = await seedTx(bancolombia, {
+      occurredOn: "2026-07-07",
+      amountCents: RENT_AMOUNT,
+      description: RENT_DESCRIPTION,
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(1);
+    expect(result.gapsCreated).toBe(0);
+
+    const [linked] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, julyTx));
+    expect(linked.recurringId).toBe(rentId);
+  });
+
+  it("does not steal a Colmedica tx onto rent via a count-1 COLMEDICA fingerprint", async () => {
+    const arq = await seedAccount("_873_arq2");
+    const rentId = await seedRecurring(arq, {
+      label: "__gap_test 873 nocolmedica",
+      amountCents: RENT_AMOUNT,
+      dayOfMonth: 1,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: rentId,
+      pattern: "COLMEDICA",
+      observationCount: 1,
+    });
+    await seedTx(arq, {
+      occurredOn: "2026-07-07",
+      amountCents: BigInt(-1170200),
+      description: "COLMEDICA PREPAGADA",
     });
 
     const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");

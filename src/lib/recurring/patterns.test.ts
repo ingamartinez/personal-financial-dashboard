@@ -1,15 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, recurringDescriptionPatterns, recurringTransactions } from "@/lib/db/schema";
-import { fetchPatterns, fetchPatternsForOne, patternSetsEqual } from "./patterns";
+import {
+  accounts,
+  recurringDescriptionPatterns,
+  recurringLinkObservations,
+  recurringTransactions,
+  transactions,
+} from "@/lib/db/schema";
+import {
+  fetchAmountConsistentTokens,
+  fetchPatterns,
+  fetchPatternsForOne,
+  patternSetsEqual,
+} from "./patterns";
 
 const TEST_USER_ID = 1;
 const TEST_ACCOUNT = "__patterns_test_account__";
 
 async function cleanup() {
   await db.execute(
+    sql`DELETE FROM recurring_link_observations WHERE recurring_id IN (SELECT id FROM recurring_transactions WHERE label LIKE '__patterns_test%')`,
+  );
+  await db.execute(
     sql`DELETE FROM recurring_description_patterns WHERE recurring_id IN (SELECT id FROM recurring_transactions WHERE label LIKE '__patterns_test%')`,
+  );
+  await db.execute(
+    sql`DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE name = ${TEST_ACCOUNT})`,
   );
   await db.execute(sql`DELETE FROM recurring_transactions WHERE label LIKE '__patterns_test%'`);
   await db.execute(sql`DELETE FROM accounts WHERE name = ${TEST_ACCOUNT}`);
@@ -130,5 +147,81 @@ describe("fetchPatterns / fetchPatternsForOne", () => {
 
     const patterns = await fetchPatternsForOne(999999, recurringId);
     expect(patterns).toEqual([]);
+  });
+});
+
+describe("fetchAmountConsistentTokens #873", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function seedTx(
+    accountId: number,
+    opts: { amountCents: bigint; currency?: "COP" | "USD"; description: string },
+  ) {
+    const [t] = await db
+      .insert(transactions)
+      .values({
+        userId: TEST_USER_ID,
+        accountId,
+        occurredAt: new Date("2026-06-05T12:00:00-05:00"),
+        amountCents: opts.amountCents,
+        currency: opts.currency ?? "COP",
+        descriptionRaw: opts.description,
+        source: "manual",
+      })
+      .returning({ id: transactions.id });
+    return t.id;
+  }
+
+  it("returns tokens from amount-matching observations and ignores a wrong-amount mis-link", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, "__patterns_test rent sibling");
+    const rentTx = await seedTx(accountId, {
+      amountCents: BigInt(-230000000),
+      description: "Transferencia a cuenta *138076518",
+    });
+    const poisonTx = await seedTx(accountId, {
+      amountCents: BigInt(-11702),
+      currency: "USD",
+      description: "COLMEDICA PREPAGADA",
+    });
+
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: TEST_USER_ID,
+        recurringId,
+        txId: rentTx,
+        yearMonth: "2026-06",
+        realAmountCents: BigInt(-230000000),
+        realCurrency: "COP",
+        descriptionRaw: "Transferencia a cuenta *138076518",
+        accountId,
+        manual: true,
+      },
+      {
+        userId: TEST_USER_ID,
+        recurringId,
+        txId: poisonTx,
+        yearMonth: "2026-05",
+        realAmountCents: BigInt(-11702),
+        realCurrency: "USD",
+        descriptionRaw: "COLMEDICA PREPAGADA",
+        accountId,
+        manual: false,
+      },
+    ]);
+
+    const map = await fetchAmountConsistentTokens(
+      TEST_USER_ID,
+      [recurringId],
+      BigInt(-230000000),
+      "COP",
+    );
+    expect(map.get(recurringId)).toEqual(["TRANSFERENCIA"]);
+  });
+
+  it("returns an empty map for an empty recurringIds array without querying", async () => {
+    const map = await fetchAmountConsistentTokens(TEST_USER_ID, [], BigInt(-1), "COP");
+    expect(map.size).toBe(0);
   });
 });
