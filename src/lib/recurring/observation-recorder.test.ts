@@ -384,6 +384,53 @@ describe("recordRecurringLinkObservation", () => {
       );
     expect(pattern?.observationCount).toBe(1);
   });
+
+  it("#876: archived owner's fingerprint does not block a live recurring from learning the token", async () => {
+    const archivedOwnerId = await seedRecurring(userAId, accountAId);
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: userAId,
+      recurringId: archivedOwnerId,
+      pattern: "COLMEDICA",
+      observationCount: 6,
+    });
+    await db
+      .update(recurringTransactions)
+      .set({ deletedAt: new Date() })
+      .where(eq(recurringTransactions.id, archivedOwnerId));
+
+    const poisonTx = await seedTx(userAId, accountAId, "COLMEDICA PREPAGADA", BigInt(-11702));
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: poisonTx,
+      yearMonth: "2026-05",
+      manual: false,
+    });
+
+    const leftover = await db
+      .select({ observationCount: recurringDescriptionPatterns.observationCount })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, archivedOwnerId),
+          eq(recurringDescriptionPatterns.pattern, "COLMEDICA"),
+        ),
+      );
+    expect(leftover).toEqual([{ observationCount: 6 }]);
+
+    const [learned] = await db
+      .select({ observationCount: recurringDescriptionPatterns.observationCount })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "COLMEDICA"),
+        ),
+      );
+    expect(learned?.observationCount).toBe(1);
+  });
 });
 
 describe("retractRecurringLinkObservation #873", () => {

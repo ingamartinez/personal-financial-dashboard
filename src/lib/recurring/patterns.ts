@@ -7,7 +7,12 @@
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
-import { recurringDescriptionPatterns, recurringLinkObservations } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
+import {
+  recurringDescriptionPatterns,
+  recurringLinkObservations,
+  recurringTransactions,
+} from "@/lib/db/schema";
 import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
 import type { Currency } from "@/lib/types";
 
@@ -34,11 +39,20 @@ export async function fetchPatterns(
       pattern: recurringDescriptionPatterns.pattern,
     })
     .from(recurringDescriptionPatterns)
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringDescriptionPatterns.recurringId),
+        eq(recurringTransactions.userId, recurringDescriptionPatterns.userId),
+      ),
+    )
     .where(
       and(
         eq(recurringDescriptionPatterns.userId, userId),
+        eq(recurringTransactions.userId, userId),
         inArray(recurringDescriptionPatterns.recurringId, recurringIds),
         sql`${recurringDescriptionPatterns.observationCount} >= 2`,
+        notDeleted(recurringTransactions.deletedAt),
       ),
     );
 
@@ -98,12 +112,21 @@ export async function fetchAmountConsistentTokens(
       descriptionRaw: recurringLinkObservations.descriptionRaw,
     })
     .from(recurringLinkObservations)
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringLinkObservations.recurringId),
+        eq(recurringTransactions.userId, recurringLinkObservations.userId),
+      ),
+    )
     .where(
       and(
         eq(recurringLinkObservations.userId, userId),
+        eq(recurringTransactions.userId, userId),
         inArray(recurringLinkObservations.recurringId, recurringIds),
         eq(recurringLinkObservations.realAmountCents, amountCents),
         eq(recurringLinkObservations.realCurrency, currency),
+        notDeleted(recurringTransactions.deletedAt),
       ),
     );
 

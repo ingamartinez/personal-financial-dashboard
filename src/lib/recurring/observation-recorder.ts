@@ -11,6 +11,7 @@
 
 import { eq, and, ne, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
+import { notDeleted } from "@/lib/db/helpers";
 import {
   recurringDescriptionPatterns,
   recurringLinkObservations,
@@ -210,11 +211,20 @@ async function shouldLearnPattern(
   const others = await database
     .select({ observationCount: recurringDescriptionPatterns.observationCount })
     .from(recurringDescriptionPatterns)
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringDescriptionPatterns.recurringId),
+        eq(recurringTransactions.userId, recurringDescriptionPatterns.userId),
+      ),
+    )
     .where(
       and(
         eq(recurringDescriptionPatterns.userId, userId),
+        eq(recurringTransactions.userId, userId),
         eq(recurringDescriptionPatterns.pattern, pattern),
         ne(recurringDescriptionPatterns.recurringId, recurringId),
+        notDeleted(recurringTransactions.deletedAt),
       ),
     );
 
