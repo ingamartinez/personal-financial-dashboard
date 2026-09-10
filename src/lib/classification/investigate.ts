@@ -90,6 +90,7 @@ export const INVESTIGATOR_MAIL_WINDOW_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAIL_SNIPPET_MAX_CHARS = 400;
 export const CANONICAL_MERCHANT_MAX_CHARS = 80;
 export const BUSINESS_TYPE_MAX_CHARS = 80;
+export const MAIL_REFERENCE_MAX_CHARS = 120;
 export const MAIL_RESULT_LIMIT = 8;
 export const HISTORY_RESULT_LIMIT = 15;
 // Local cost model for the guardrail, not a billing source of truth.
@@ -282,11 +283,13 @@ export function snippetFromHtml(rawHtml: string): string {
   return text.slice(0, MAIL_SNIPPET_MAX_CHARS);
 }
 
-// Slash and parentheses are ordinary noun-phrase punctuation (prod has
-// "Bank / retail credit card issuer", "Restaurant (steakhouse/grill chain)").
-// Instruction-shaped rejection is a separate check; this class only excludes
-// control characters, markup, and newlines.
-const INVESTIGATOR_FREE_TEXT_ALLOWED = /^[\p{L}\p{N} .&'\-,_/()]+$/u;
+// Latin script only. \p{L} would admit Cyrillic/Greek homoglyphs that slip
+// past the Latin instruction-shape regex (Cyrillic і in "іgnore previous…").
+// This user is Colombian and every real merchant/businessType today is Latin;
+// a legitimate CJK name would be nulled rather than persisted. NFC so a
+// combining accent still counts as Latin. Slash and parentheses are ordinary
+// noun-phrase punctuation (prod: "Bank / retail…", "Restaurant (steakhouse/…)").
+const INVESTIGATOR_FREE_TEXT_ALLOWED = /^[\p{Script=Latin}0-9 .&'/,_()\-]+$/u;
 
 const INSTRUCTION_SHAPED_TEXT =
   /ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions|\bignora(?:r)?\s+(?:todas\s+)?(?:las\s+)?instrucciones\b|\bsystem\s+prompt\b|\bprompt\s+del\s+sistema\b|\byou\s+are\s+now\b|\bcategorySlug\b|\bcanonicalMerchant\b|\bset\s+category\b/i;
@@ -301,7 +304,7 @@ function sanitizeInvestigatorFreeText(
   maxChars: number,
 ): string | null {
   if (raw == null) return null;
-  const trimmed = raw.trim().replace(/\s+/g, " ");
+  const trimmed = raw.trim().replace(/\s+/g, " ").normalize("NFC");
   if (!trimmed) return null;
   if (trimmed.length > maxChars) return null;
   if (!INVESTIGATOR_FREE_TEXT_ALLOWED.test(trimmed)) return null;
@@ -321,6 +324,11 @@ export function sanitizeInvestigatorMerchant(raw: string | null | undefined): st
  */
 export function sanitizeInvestigatorBusinessType(raw: string | null | undefined): string | null {
   return sanitizeInvestigatorFreeText(raw, BUSINESS_TYPE_MAX_CHARS);
+}
+
+/** Same persist-path treatment for search_mail referenceId (schema varchar 120). */
+export function sanitizeInvestigatorReferenceId(raw: string | null | undefined): string | null {
+  return sanitizeInvestigatorFreeText(raw, MAIL_REFERENCE_MAX_CHARS);
 }
 
 /**
@@ -557,12 +565,12 @@ async function toolSearchMail(
     rows.map((row) => ({
       receiptId: row.id,
       gateway: row.gateway,
-      merchant: row.merchant,
+      merchant: sanitizeInvestigatorMerchant(row.merchant),
       amountCents: row.amountCents?.toString() ?? null,
       currency: row.currency,
       occurredAt: row.occurredAt?.toISOString() ?? null,
       emailReceivedAt: row.emailReceivedAt?.toISOString() ?? null,
-      referenceId: row.referenceId,
+      referenceId: sanitizeInvestigatorReferenceId(row.referenceId),
       snippet: snippetFromHtml(row.rawHtml),
     })),
   );
