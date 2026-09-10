@@ -252,21 +252,10 @@ async function resolveBijectiveGroups(
     for (let i = 0; i < pairCount; i++) {
       const tx = sortedTxs[i]!;
       const member = sortedMembers[i]!;
-      const updated = await database
-        .update(transactions)
-        .set({ recurringId: member.id, recurringYearMonth: yearMonth, updatedAt: new Date() })
-        .where(
-          and(
-            eq(transactions.userId, userId),
-            eq(transactions.id, tx.id),
-            isNull(transactions.recurringId),
-          ),
-        )
-        .returning({ id: transactions.id });
-      if (updated.length === 0) continue;
+      const claimed = await claimUnlinkedTx(userId, tx.id, member.id, yearMonth, database);
+      if (!claimed) continue;
       autoLinked += 1;
       handled.add(member.id);
-      await deleteOpenGap(userId, member.id, yearMonth, database);
     }
   }
 
@@ -320,6 +309,18 @@ function tokenCompatibleNear(patterns: string[], descriptionRaw: string | null):
   return token !== null && patterns.includes(token);
 }
 
+/**
+ * Create a recurring link. On success, drop any leftover open gap for
+ * (recurring, yearMonth) — a linked occurrence with an open gap is a lie,
+ * no matter which matcher decided the link (#844 invariant).
+ *
+ * Returns false if a concurrent writer already claimed the tx. The
+ * `recurringId IS NULL` predicate is the #804 race guard: without it a
+ * writer that claimed this tx between SELECT and UPDATE would be
+ * silently overwritten.
+ *
+ * Commit-only. Never called from a preview / dry-run path.
+ */
 async function claimUnlinkedTx(
   userId: number,
   txId: number,
@@ -338,7 +339,9 @@ async function claimUnlinkedTx(
       ),
     )
     .returning({ id: transactions.id });
-  return updated.length > 0;
+  if (updated.length === 0) return false;
+  await deleteOpenGap(userId, recurringId, yearMonth, database);
+  return true;
 }
 
 async function resolveExactThenNearAmount(
@@ -614,31 +617,8 @@ export async function detectGapsForMonth(
     const winnerIsBlocked = winner !== null && blockedTxIds.has(winner.id);
 
     if (winner && !winnerIsBlocked) {
-      const updated = await database
-        .update(transactions)
-        .set({
-          recurringId: r.id,
-          recurringYearMonth: yearMonth,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(transactions.userId, userId),
-            eq(transactions.id, winner.id),
-            // Race guard — "one tx links to at most one occurrence" (#804):
-            // without this, a concurrent writer that claimed this tx between
-            // the SELECT above and this UPDATE could be silently overwritten.
-            isNull(transactions.recurringId),
-          ),
-        )
-        .returning({ id: transactions.id });
-      if (updated.length > 0) {
-        result.autoLinked += 1;
-        // #844: if a gap for this month was already opened (tx arrived before
-        // the detector ran, or a previous run used a tighter window), close it
-        // now that the occurrence is linked.
-        await deleteOpenGap(userId, r.id, yearMonth, database);
-      }
+      const claimed = await claimUnlinkedTx(userId, winner.id, r.id, yearMonth, database);
+      if (claimed) result.autoLinked += 1;
       continue;
     }
 
@@ -697,6 +677,9 @@ export type ReconcileResult = {
  *   - delete the gap if the occurrence is already linked, or
  *   - leave it open if nothing matches.
  *
+ * #857: a tx within 1% of two still-open leftover recurrings is blocked —
+ * unique-token must not steal it here after detectGapsForMonth abstained.
+ *
  * Does NOT create new gaps. That is detectGapsForMonth's job. This is the
  * #844 "nothing reconsiders the transaction once its gap finally appears"
  * pass: closePreviousMonth only closes M-1, so older open gaps would
@@ -741,6 +724,7 @@ export async function reconcileOpenGaps(
     staleGapsDeleted: 0,
   };
 
+  const pending: typeof openGaps = [];
   for (const gap of openGaps) {
     if ((gap.skippedMonths ?? []).includes(gap.yearMonth)) {
       await deleteOpenGap(userId, gap.recurringId, gap.yearMonth, database);
@@ -765,6 +749,44 @@ export async function reconcileOpenGaps(
       result.staleGapsDeleted += 1;
       continue;
     }
+    pending.push(gap);
+  }
+
+  // #857: exact-then-near must run across a month's leftover gaps together.
+  // Per-gap unique-token would steal an overlap tx for whichever gap we
+  // happen to visit first. Blocked ids are unioned across months — tx ids
+  // are unique, and threading only the latest detectGapsForMonth set would
+  // miss older open gaps on the next cron.
+  const blockedTxIds = new Set<number>();
+  const handledKeys = new Set<string>();
+  const byMonth = new Map<string, typeof pending>();
+  for (const gap of pending) {
+    const arr = byMonth.get(gap.yearMonth) ?? [];
+    arr.push(gap);
+    byMonth.set(gap.yearMonth, arr);
+  }
+  for (const [yearMonth, gaps] of byMonth) {
+    const { year, month } = parseYearMonth(yearMonth);
+    const leftover: ToProcessRow[] = gaps.map((g) => ({
+      id: g.recurringId,
+      accountId: g.accountId,
+      amountCents: g.amountCents,
+      currency: g.currency,
+      dayOfMonth: g.dayOfMonth,
+      skippedMonths: g.skippedMonths ?? [],
+    }));
+    const {
+      handled,
+      autoLinked,
+      blockedTxIds: blocked,
+    } = await resolveExactThenNearAmount(userId, year, month, yearMonth, leftover, database);
+    result.autoLinked += autoLinked;
+    for (const id of blocked) blockedTxIds.add(id);
+    for (const id of handled) handledKeys.add(`${id}:${yearMonth}`);
+  }
+
+  for (const gap of pending) {
+    if (handledKeys.has(`${gap.recurringId}:${gap.yearMonth}`)) continue;
 
     const { year, month } = parseYearMonth(gap.yearMonth);
     const win = occurrenceWindow(year, month, gap.dayOfMonth);
@@ -798,27 +820,16 @@ export async function reconcileOpenGaps(
       candidates,
       database,
     );
-    if (!winner) continue;
+    if (!winner || blockedTxIds.has(winner.id)) continue;
 
-    const updated = await database
-      .update(transactions)
-      .set({
-        recurringId: gap.recurringId,
-        recurringYearMonth: gap.yearMonth,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(transactions.userId, userId),
-          eq(transactions.id, winner.id),
-          isNull(transactions.recurringId),
-        ),
-      )
-      .returning({ id: transactions.id });
-    if (updated.length === 0) continue;
-
-    await deleteOpenGap(userId, gap.recurringId, gap.yearMonth, database);
-    result.autoLinked += 1;
+    const claimed = await claimUnlinkedTx(
+      userId,
+      winner.id,
+      gap.recurringId,
+      gap.yearMonth,
+      database,
+    );
+    if (claimed) result.autoLinked += 1;
   }
 
   log.info(

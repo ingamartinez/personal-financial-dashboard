@@ -1318,6 +1318,64 @@ describe("detectGapsForMonth #857 — drifted amount with shared fingerprint", (
     expect(overlapRow.recurringId).toBe(aidaId);
   });
 
+  it("closePreviousMonth does not unique-token-steal a tx blocked as ambiguous", async () => {
+    // detectGapsForMonth abstains and opens two gaps; reconcileOpenGaps then
+    // runs. Without blockedTxIds on that pass, pickTxForRecurring's unique-token
+    // path links the overlap tx to Aida (lower id) and this test fails.
+    const { accountId, aidaId, alejoId } = await seedAportesTwins("_857_cron_steal");
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: OVERLAP,
+      description: DESC,
+    });
+
+    await closePreviousMonth(TEST_USER_ID, new Date("2026-08-05T12:00:00Z"));
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+
+    const gaps = await db
+      .select({ recurringId: recurringGaps.recurringId })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.userId, TEST_USER_ID));
+    expect(new Set(gaps.map((g) => g.recurringId))).toEqual(new Set([aidaId, alejoId]));
+  });
+
+  it("reconcileOpenGaps does not unique-token-steal an overlap tx against older open gaps", async () => {
+    // Pre-seeded July gaps; detectGapsForMonth is not run for July. Threading
+    // blockedTxIds only from the latest detectGapsForMonth would miss this —
+    // the blocked set has to be computed here. Without it, unique-token
+    // links to Aida (lower id) and this test fails.
+    const { accountId, aidaId, alejoId } = await seedAportesTwins("_857_recon_steal");
+    await db.insert(recurringGaps).values([
+      { userId: TEST_USER_ID, recurringId: aidaId, yearMonth: "2026-07" },
+      { userId: TEST_USER_ID, recurringId: alejoId, yearMonth: "2026-07" },
+    ]);
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: OVERLAP,
+      description: DESC,
+    });
+
+    const result = await reconcileOpenGaps(TEST_USER_ID);
+    expect(result.autoLinked).toBe(0);
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+
+    const gaps = await db
+      .select({ recurringId: recurringGaps.recurringId })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.userId, TEST_USER_ID));
+    expect(new Set(gaps.map((g) => g.recurringId))).toEqual(new Set([aidaId, alejoId]));
+  });
+
   it("does not near-match a 0.4% drift whose token contradicts the learned fingerprint", async () => {
     const accountId = await seedAccount("_857_kfc");
     const recId = await seedRecurring(accountId, {
