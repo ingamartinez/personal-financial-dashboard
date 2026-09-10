@@ -396,6 +396,12 @@ async function autoLinkTransactionOnce(
         // Manual link closes gaps by setting resolution; auto-link deletes.
         // Either way, a resolved row must not be a candidate.
         isNull(recurringGaps.resolution),
+        // #883: archiving/deactivating does not close open gaps. Filter at
+        // read time (same as #876 fingerprints) so leftover rows cannot win
+        // as the unique candidate. gap-detector already refuses to create
+        // new gaps for dead recurrings.
+        eq(recurringTransactions.active, true),
+        notDeleted(recurringTransactions.deletedAt),
       ),
     );
 

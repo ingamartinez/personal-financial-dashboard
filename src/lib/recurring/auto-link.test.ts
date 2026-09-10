@@ -304,6 +304,122 @@ describe("autoLinkTransaction (integration)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #883: open gaps left behind by archive/deactivate must not auto-link.
+// The candidate pool on the gap path is *only* gaps, so an archived owner
+// is often the unique candidate — no live competitor to trigger abstain.
+// Tests below keep that uniqueness on purpose.
+// ---------------------------------------------------------------------------
+describe("autoLinkTransaction #883 — archived gap path", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("unique archived recurring with an open gap does not auto-link", async () => {
+    const accountId = await seedAccount();
+    const { recurringId, gapId } = await seedRecurringWithGap(accountId, {
+      label: "__autolink_883_archived__",
+      amountCents: BigInt(-2490000),
+      dayOfMonth: 10,
+      yearMonth: "2026-04",
+    });
+    await db
+      .update(recurringTransactions)
+      .set({ deletedAt: new Date("2026-05-08T00:00:00Z") })
+      .where(eq(recurringTransactions.id, recurringId));
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-2490000),
+      description: "PROTONVPN*DL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+
+    const leftover = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, gapId));
+    expect(leftover).toHaveLength(1);
+  });
+
+  it("unique inactive recurring with an open gap does not auto-link", async () => {
+    const accountId = await seedAccount();
+    const { recurringId, gapId } = await seedRecurringWithGap(accountId, {
+      label: "__autolink_883_inactive__",
+      amountCents: BigInt(-6500000),
+      dayOfMonth: 10,
+      yearMonth: "2026-04",
+    });
+    await db
+      .update(recurringTransactions)
+      .set({ active: false })
+      .where(eq(recurringTransactions.id, recurringId));
+
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-6500000),
+      description: "FREEPIK*PRO",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("no-open-gap");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+
+    const leftover = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, gapId));
+    expect(leftover).toHaveLength(1);
+  });
+
+  it("active recurring with an open gap still auto-links", async () => {
+    const accountId = await seedAccount();
+    const { recurringId, gapId } = await seedRecurringWithGap(accountId, {
+      label: "__autolink_883_active__",
+      amountCents: BigInt(-2490000),
+      dayOfMonth: 10,
+      yearMonth: "2026-04",
+    });
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-2490000),
+      description: "PROTONVPN*DL",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") {
+      expect(result.recurringId).toBe(recurringId);
+      expect(result.gapId).toBe(gapId);
+      expect(result.yearMonth).toBe("2026-04");
+    }
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBe(recurringId);
+
+    const leftover = await db
+      .select({ id: recurringGaps.id })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.id, gapId));
+    expect(leftover).toHaveLength(0);
+  });
+});
+
 // ── Direct-recurring path (no gap exists yet — current month) ───────────────
 describe("autoLinkTransaction direct-recurring path", () => {
   beforeEach(cleanup);
