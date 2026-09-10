@@ -155,25 +155,43 @@ export default async function ConsolidatePage({
         />
       ) : (
         <div className="flex flex-col gap-4">
-          {/* Phase 2: CTA deep-links to unified /imports with account + cycle pre-filled */}
-          <Link
-            href={`/imports?hint_account_id=${accountId}&hint_cycle=${cycle}`}
-            className={buttonVariants({ variant: "default" })}
-          >
-            Subir extracto detallado →
-          </Link>
-          {/* ConsolidateForm kept for Phase 3 rollback — hidden behind details */}
-          <details className="text-muted-foreground text-xs">
-            <summary className="cursor-pointer">Formulario legacy (reserva)</summary>
-            <div className="mt-2">
+          {/* #908: two real options, not one plus a rollback hatch. The link is
+              the quick path; the form below is the only one that records the
+              saldo real (insertSaldoRealPlug). Say which is which up front. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Subir el extracto</CardTitle>
+              <CardDescription>
+                Importa los movimientos del ciclo y arma el reporte. No pide el saldo real.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link
+                href={`/imports?hint_account_id=${accountId}&hint_cycle=${cycle}`}
+                className={buttonVariants({ variant: "default" })}
+              >
+                Subir extracto detallado →
+              </Link>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Subir y cuadrar con el saldo real</CardTitle>
+              <CardDescription>
+                Lo mismo, más el saldo que te muestra el banco al cierre. Si no coincide con lo que
+                tenemos, se registra un ajuste para que el balance de la app quede igual al del
+                extracto.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
               <ConsolidateForm
                 accountId={accountId}
                 accountName={accountLabel}
                 cycle={cycle}
                 institutionSlug={account.institutionSlug}
               />
-            </div>
-          </details>
+            </CardContent>
+          </Card>
         </div>
       )}
     </main>
