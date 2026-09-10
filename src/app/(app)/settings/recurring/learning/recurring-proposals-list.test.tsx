@@ -178,11 +178,14 @@ describe("RecurringProposalsList", () => {
     // instead of $20.00 USD). Assert against formatMoney itself so the test
     // doesn't hardcode an ICU-specific literal.
     expect(
-      screen.getByText(formatMoney(BigInt("-2000"), "USD"), { exact: false }),
+      screen.getByText(formatMoney(BigInt("2000"), "USD"), { exact: false }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(formatMoney(BigInt("-20000"), "USD"), { exact: false }),
+      screen.getByText(formatMoney(BigInt("20000"), "USD"), { exact: false }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(formatMoney(BigInt("-2000"), "USD"), { exact: false }),
+    ).not.toBeInTheDocument();
   });
 
   it("surfaces the proposal's currency even when it disagrees with the account label", () => {
@@ -206,8 +209,8 @@ describe("RecurringProposalsList", () => {
     payload: {
       observationId: 99,
       outlierAmountCents: "-1200000",
-      bandMinCents: "-518660",
-      bandMaxCents: "-667775",
+      bandLoAbsCents: "-518660",
+      bandHiAbsCents: "-667775",
       currency: "COP",
       observationCount: 4,
     },
@@ -229,6 +232,31 @@ describe("RecurringProposalsList", () => {
       proposalId: outlierProposal.id,
       outlierDecision: "new_normal",
     });
+  });
+
+  it("renders the outlier band as unsigned magnitudes in ascending order", () => {
+    // Swap the payload edges so a field-order print would read backwards.
+    const swapped = {
+      ...outlierProposal,
+      payload: {
+        ...outlierProposal.payload,
+        bandLoAbsCents: "-667775",
+        bandHiAbsCents: "-518660",
+      },
+    };
+    render(<RecurringProposalsList proposals={[swapped]} />);
+
+    const normalize = (s: string) => s.replace(/\u00a0/g, " ");
+    const lo = normalize(formatMoney(BigInt(518_660), "COP"));
+    const hi = normalize(formatMoney(BigInt(667_775), "COP"));
+    const signedLo = normalize(formatMoney(BigInt(-518_660), "COP"));
+    const text = normalize(screen.getByTestId("outlier-band").textContent ?? "");
+
+    const loAt = text.indexOf(lo);
+    const hiAt = text.indexOf(hi);
+    expect(loAt).toBeGreaterThanOrEqual(0);
+    expect(hiAt).toBeGreaterThan(loAt);
+    expect(text).not.toContain(signedLo);
   });
 
   it("sends one_off when the user marks the outlier as puntual", async () => {

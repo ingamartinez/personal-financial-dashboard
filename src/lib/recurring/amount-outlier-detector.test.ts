@@ -52,8 +52,8 @@ describe("detectAmountOutlier", () => {
     expect(result!.recurringId).toBe(15);
     expect(result!.observationId).toBe(100);
     expect(result!.outlierAmountCents).toBe(BigInt(-1_200_000));
-    expect(result!.bandMinCents).toBe(BigInt(-518_660));
-    expect(result!.bandMaxCents).toBe(BigInt(-667_775));
+    expect(result!.bandLoAbsCents).toBe(BigInt(-518_660));
+    expect(result!.bandHiAbsCents).toBe(BigInt(-667_775));
     expect(result!.currency).toBe("COP");
   });
 
@@ -63,8 +63,8 @@ describe("detectAmountOutlier", () => {
     const result = detectAmountOutlier(1, observations);
     expect(result).not.toBeNull();
     expect(result!.outlierAmountCents).toBe(BigInt(-44_900));
-    expect(result!.bandMinCents).toBe(BigInt(-42_000));
-    expect(result!.bandMaxCents).toBe(BigInt(-42_000));
+    expect(result!.bandLoAbsCents).toBe(BigInt(-42_000));
+    expect(result!.bandHiAbsCents).toBe(BigInt(-42_000));
   });
 
   it("does NOT fire a 1-peso blip on a flat bill", () => {

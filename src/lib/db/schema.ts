@@ -1173,8 +1173,8 @@ export const recurringDescriptionPatterns = pgTable(
 // /settings/recurring/learning. payload is typed by proposal_type:
 //   - amount_update: { newAmountCents: string, oldAmountCents: string, currency: string }
 //   - variable_flag:  { detectedAmounts: string[], currency: string }
-//   - amount_outlier (#871 C): { observationId, outlierAmountCents, bandMinCents,
-//     bandMaxCents, currency, observationCount }
+//   - amount_outlier (#871 C): { observationId, outlierAmountCents, bandLoAbsCents,
+//     bandHiAbsCents, currency, observationCount }
 export const recurringProposals = pgTable(
   "recurring_proposals",
   {

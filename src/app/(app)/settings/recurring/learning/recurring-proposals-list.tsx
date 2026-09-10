@@ -27,9 +27,27 @@ type ProposalCardProps = {
 // #870: currency MUST come from the proposal payload, not a hardcoded COP —
 // a proposal generated while a recurring lived in USD (later migrated to
 // COP) still carries its original currency in payload.currency.
+function absCents(cents: bigint): bigint {
+  return cents < BigInt(0) ? -cents : cents;
+}
+
+// Magnitudes only. Payloads stay signed (the money convention); this card's
+// copy is "pagaste X", so a leading minus is noise. Restores the pre-#870
+// abs that formatMoney does not do.
 function formatCents(cents: string | undefined, currency: Currency): string {
   if (!cents) return "—";
-  return formatMoney(BigInt(cents), currency);
+  return formatMoney(absCents(BigInt(cents)), currency);
+}
+
+function formatBandRange(
+  loAbs: string | undefined,
+  hiAbs: string | undefined,
+  currency: Currency,
+): string {
+  const a = loAbs ? absCents(BigInt(loAbs)) : BigInt(0);
+  const b = hiAbs ? absCents(BigInt(hiAbs)) : BigInt(0);
+  const [lo, hi] = a <= b ? [a, b] : [b, a];
+  return `${formatMoney(lo, currency)} – ${formatMoney(hi, currency)}`;
 }
 
 function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
@@ -117,9 +135,15 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
           ) : isOutlier ? (
             <p className="text-sm">
               El último pago ({formatCents(p.outlierAmountCents as string, proposalCurrency)}) está
-              fuera de la banda histórica ({formatCents(p.bandMinCents as string, proposalCurrency)}{" "}
-              – {formatCents(p.bandMaxCents as string, proposalCurrency)}).{" "}
-              <span className="text-ink-muted">¿Es el nuevo normal o fue puntual?</span>
+              fuera de la banda histórica (
+              <span data-testid="outlier-band">
+                {formatBandRange(
+                  p.bandLoAbsCents as string,
+                  p.bandHiAbsCents as string,
+                  proposalCurrency,
+                )}
+              </span>
+              ). <span className="text-ink-muted">¿Es el nuevo normal o fue puntual?</span>
             </p>
           ) : (
             <p className="text-sm">

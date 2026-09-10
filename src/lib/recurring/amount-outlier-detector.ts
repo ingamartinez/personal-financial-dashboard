@@ -32,10 +32,10 @@ export interface AmountOutlier {
   recurringId: number;
   observationId: number;
   outlierAmountCents: bigint;
-  /** Signed observation that produced the smaller absolute band edge. */
-  bandMinCents: bigint;
-  /** Signed observation that produced the larger absolute band edge. */
-  bandMaxCents: bigint;
+  /** Signed observation at the smaller-magnitude band edge. Not a numeric min. */
+  bandLoAbsCents: bigint;
+  /** Signed observation at the larger-magnitude band edge. Not a numeric max. */
+  bandHiAbsCents: bigint;
   currency: Currency;
   observationCount: number;
 }
@@ -116,8 +116,8 @@ export function detectAmountOutlier(
     recurringId,
     observationId: latest.id,
     outlierAmountCents: latest.realAmountCents,
-    bandMinCents: bandMinSigned,
-    bandMaxCents: bandMaxSigned,
+    bandLoAbsCents: bandMinSigned,
+    bandHiAbsCents: bandMaxSigned,
     currency: latest.realCurrency,
     observationCount: observations.length,
   };
