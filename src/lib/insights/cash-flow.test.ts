@@ -10,6 +10,7 @@ import {
   detectSalaryGap,
   estimateAmountCop,
   INCOME_CATEGORY_SLUGS,
+  medianOfLast3SameCurrency,
   toDateString,
   toYearMonth,
   type ForecastInput,
@@ -108,6 +109,92 @@ describe("bigintMedian", () => {
     const vals = [BigInt(5_000_000_00), BigInt(4_500_000_00), BigInt(5_200_000_00)];
     // sorted: [4_500_000_00, 5_000_000_00, 5_200_000_00] → median = 5_000_000_00
     expect(bigintMedian(vals)).toBe(BigInt(5_000_000_00));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// medianOfLast3SameCurrency (#871 B)
+// ---------------------------------------------------------------------------
+
+describe("medianOfLast3SameCurrency", () => {
+  it("returns null when no observations match the currency", () => {
+    expect(medianOfLast3SameCurrency([], "COP")).toBeNull();
+    expect(
+      medianOfLast3SameCurrency(
+        [
+          {
+            realAmountCents: BigInt(-1000),
+            realCurrency: "USD",
+            observedAt: new Date("2026-04-01"),
+          },
+        ],
+        "COP",
+      ),
+    ).toBeNull();
+  });
+
+  it("returns the single matching observation when only one exists", () => {
+    expect(
+      medianOfLast3SameCurrency(
+        [
+          {
+            realAmountCents: BigInt(-50_000),
+            realCurrency: "COP",
+            observedAt: new Date("2026-04-01"),
+          },
+        ],
+        "COP",
+      ),
+    ).toBe(BigInt(-50_000));
+  });
+
+  it("takes the median of the 3 most recent same-currency observations and ignores older ones", () => {
+    const obs = [
+      {
+        realAmountCents: BigInt(-999_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-01-01"),
+      },
+      {
+        realAmountCents: BigInt(-50_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-04-01"),
+      },
+      {
+        realAmountCents: BigInt(-60_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-03-01"),
+      },
+      {
+        realAmountCents: BigInt(-55_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-02-01"),
+      },
+    ];
+    // last 3 by date: -50k, -60k, -55k → sorted [-60k, -55k, -50k] → -55k
+    expect(medianOfLast3SameCurrency(obs, "COP")).toBe(BigInt(-55_000));
+  });
+
+  it("drops cross-currency observations before taking the median", () => {
+    const obs = [
+      {
+        realAmountCents: BigInt(-1000),
+        realCurrency: "USD",
+        observedAt: new Date("2026-04-01"),
+      },
+      {
+        realAmountCents: BigInt(-50_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-03-01"),
+      },
+      {
+        realAmountCents: BigInt(-70_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-02-01"),
+      },
+    ];
+    // two COP values → even-length median avg(-70k, -50k) = -60k
+    expect(medianOfLast3SameCurrency(obs, "COP")).toBe(BigInt(-60_000));
   });
 });
 

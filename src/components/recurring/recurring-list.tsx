@@ -51,6 +51,11 @@ function PriceHikeBadge({ hike }: { hike: PriceHike }) {
 // "aggressive auto-matching without a one-tap undo is silent data corruption".
 // Exported so recurring-calendar-grid.tsx (the default-open surface on
 // /recurring) can reuse it instead of duplicating the logic.
+export function VariableEstimateHint({ amountType }: { amountType: "fixed" | "variable" }) {
+  if (amountType !== "variable") return null;
+  return <p data-testid="variable-estimate-hint">Estimado: mediana de las últimas 3</p>;
+}
+
 export function UndoMatchButton({ txId, label }: { txId: number; label: string }) {
   const [pending, startTransition] = useTransition();
 
@@ -101,6 +106,7 @@ function SubDetailContent({
           {row.amountType === "variable" ? "~" : ""}
           {formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD")}
         </p>
+        <VariableEstimateHint amountType={row.amountType} />
 
         <p>{row.accountLabel}</p>
 

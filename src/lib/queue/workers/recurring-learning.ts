@@ -10,15 +10,24 @@
 //   - variable_flag: N≥3 manual observations showing non-uniform real amounts.
 //     Proposes setting amount_type='variable' and stops firing amount proposals.
 //
+// #871 B: after proposals, active variable recurrings get amount_cents
+// rewritten to the median of the last 3 same-currency observations. Silent —
+// no proposal, no notification.
+//
 // Idempotency: duplicate proposals (same recurring + type with status='pending')
 // are skipped to avoid flooding the user.
 
 import type { Job } from "bullmq";
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 
 import { createLogger } from "@/lib/logger";
 import { db } from "@/lib/db";
-import { recurringProposals, recurringTransactions } from "@/lib/db/schema";
+import {
+  recurringLinkObservations,
+  recurringProposals,
+  recurringTransactions,
+} from "@/lib/db/schema";
+import { medianOfLast3SameCurrency } from "@/lib/insights/cash-flow";
 import { emitNotification } from "@/lib/notifications/emit";
 import { createWorker } from "@/lib/queue";
 
@@ -54,6 +63,7 @@ export type LearningResult = {
   usersProcessed: number;
   proposalsCreated: number;
   errors: number;
+  variableEstimatesUpdated: number;
 };
 
 type ProposalOutcome =
@@ -71,7 +81,12 @@ export async function recurringLearningProcessor(
   await job.updateProgress({ users: 0, total: 0 });
   await job.log("start: expiring stale proposals + scanning observations");
 
-  const result: LearningResult = { usersProcessed: 0, proposalsCreated: 0, errors: 0 };
+  const result: LearningResult = {
+    usersProcessed: 0,
+    proposalsCreated: 0,
+    errors: 0,
+    variableEstimatesUpdated: 0,
+  };
 
   // Step 0: expire pending proposals older than 30 days BEFORE generating new ones.
   // This is a global sweep (all users), idempotent on retry — runs outside per-row tx.
@@ -416,6 +431,12 @@ export async function recurringLearningProcessor(
     }
   }
 
+  // #871 B: silently recompute amount_cents for variable recurrings from the
+  // median of the last 3 same-currency observations. Accepting variable_flag
+  // already told us to stop asking — writing the median is arithmetic, not a
+  // judgment. No proposal, no notification.
+  await recomputeVariableEstimates(result);
+
   result.usersProcessed = usersSeen.size;
 
   log.info(
@@ -424,6 +445,7 @@ export async function recurringLearningProcessor(
       jobId: job.id,
       usersProcessed: result.usersProcessed,
       proposalsCreated: result.proposalsCreated,
+      variableEstimatesUpdated: result.variableEstimatesUpdated,
       errors: result.errors,
     },
     "recurring-learning complete",
@@ -432,13 +454,114 @@ export async function recurringLearningProcessor(
   await job.updateProgress({
     done: true,
     proposalsGenerated: result.proposalsCreated,
+    variableEstimatesUpdated: result.variableEstimatesUpdated,
     totalUsers: result.usersProcessed,
   });
   await job.log(
-    `done: users=${result.usersProcessed} proposals=${result.proposalsCreated} errors=${result.errors}`,
+    `done: users=${result.usersProcessed} proposals=${result.proposalsCreated} variableEstimates=${result.variableEstimatesUpdated} errors=${result.errors}`,
   );
 
   return result;
+}
+
+/**
+ * #871 B: write median-of-last-3 onto every active variable recurring.
+ * Isolated so the proposal loop stays untouched. Failures on one row do
+ * not abort the rest — same continue-on-error contract as the group loop.
+ */
+async function recomputeVariableEstimates(result: LearningResult): Promise<void> {
+  const variableRecurrings = await db
+    .select({
+      id: recurringTransactions.id,
+      userId: recurringTransactions.userId,
+      currency: recurringTransactions.currency,
+      amountCents: recurringTransactions.amountCents,
+    })
+    .from(recurringTransactions)
+    .where(
+      and(
+        isNull(recurringTransactions.deletedAt),
+        eq(recurringTransactions.active, true),
+        eq(recurringTransactions.amountType, "variable"),
+      ),
+    );
+
+  if (variableRecurrings.length === 0) return;
+
+  const ids = variableRecurrings.map((r) => r.id);
+  const obsRows = await db
+    .select({
+      recurringId: recurringLinkObservations.recurringId,
+      realAmountCents: recurringLinkObservations.realAmountCents,
+      realCurrency: recurringLinkObservations.realCurrency,
+      observedAt: recurringLinkObservations.observedAt,
+    })
+    .from(recurringLinkObservations)
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringLinkObservations.recurringId),
+        eq(recurringTransactions.userId, recurringLinkObservations.userId),
+      ),
+    )
+    .where(inArray(recurringLinkObservations.recurringId, ids));
+
+  const obsByRecurring = new Map<
+    number,
+    { realAmountCents: bigint; realCurrency: string; observedAt: Date }[]
+  >();
+  for (const row of obsRows) {
+    const list = obsByRecurring.get(row.recurringId) ?? [];
+    list.push({
+      realAmountCents: BigInt(row.realAmountCents),
+      realCurrency: row.realCurrency,
+      observedAt: row.observedAt,
+    });
+    obsByRecurring.set(row.recurringId, list);
+  }
+
+  for (const rt of variableRecurrings) {
+    const median = medianOfLast3SameCurrency(obsByRecurring.get(rt.id) ?? [], rt.currency);
+    if (median === null) continue;
+    if (median === rt.amountCents) continue;
+
+    try {
+      await db
+        .update(recurringTransactions)
+        .set({ amountCents: median })
+        .where(
+          and(
+            eq(recurringTransactions.id, rt.id),
+            eq(recurringTransactions.userId, rt.userId),
+            isNull(recurringTransactions.deletedAt),
+            eq(recurringTransactions.amountType, "variable"),
+          ),
+        );
+
+      result.variableEstimatesUpdated++;
+      log.info(
+        {
+          event: "recurring_learning_variable_estimate_updated",
+          userId: rt.userId,
+          recurringId: rt.id,
+          oldAmountCents: rt.amountCents.toString(),
+          newAmountCents: median.toString(),
+        },
+        "variable recurring estimate recomputed from median of last 3",
+      );
+    } catch (err) {
+      log.error(
+        {
+          err,
+          event: "recurring_learning_variable_estimate_failed",
+          userId: rt.userId,
+          recurringId: rt.id,
+        },
+        "error recomputing variable estimate — continuing",
+      );
+      result.errors++;
+    }
+  }
 }
 
 /**

@@ -38,6 +38,7 @@ vi.mock("@/lib/notifications/emit", () => ({
 // ---------------------------------------------------------------------------
 
 const { recurringLearningProcessor } = await import("./recurring-learning");
+const { estimateAmountCop, medianOfLast3SameCurrency } = await import("@/lib/insights/cash-flow");
 
 // ---------------------------------------------------------------------------
 // Test data tag and seed helpers
@@ -920,5 +921,185 @@ describe("recurringLearningProcessor", () => {
     await recurringLearningProcessor(mockJob());
 
     expect(emitMocks.emitNotification).not.toHaveBeenCalled();
+  });
+
+  // ── #871 B: silent variable estimate recompute ───────────────────────────
+
+  it("writes the median of the last 3 same-currency observations onto a variable recurring", async () => {
+    await db
+      .update(recurringTransactions)
+      .set({ amountType: "variable", amountCents: BigInt(-42_000) })
+      .where(eq(recurringTransactions.id, recurringAId));
+
+    const amounts = [BigInt(-50_000), BigInt(-60_000), BigInt(-55_000), BigInt(-999_000)];
+    const months = ["2026-04", "2026-03", "2026-02", "2026-01"] as const;
+    const dates = [
+      new Date("2026-04-15T12:00:00Z"),
+      new Date("2026-03-15T12:00:00Z"),
+      new Date("2026-02-15T12:00:00Z"),
+      new Date("2026-01-15T12:00:00Z"),
+    ];
+
+    for (let i = 0; i < amounts.length; i++) {
+      const txId = await seedTx(userAId, accountAId, amounts[i]);
+      await db.insert(recurringLinkObservations).values({
+        userId: userAId,
+        recurringId: recurringAId,
+        txId,
+        yearMonth: months[i],
+        realAmountCents: amounts[i]!,
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+        observedAt: dates[i],
+      });
+    }
+
+    const result = await recurringLearningProcessor(mockJob());
+
+    expect(result.variableEstimatesUpdated).toBe(1);
+    expect(result.proposalsCreated).toBe(0);
+    expect(emitMocks.emitNotification).not.toHaveBeenCalled();
+
+    const [rt] = await db
+      .select({ amountCents: recurringTransactions.amountCents })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.id, recurringAId));
+
+    const obs = amounts.map((realAmountCents, i) => ({
+      realAmountCents,
+      realCurrency: "COP",
+      observedAt: dates[i]!,
+    }));
+    const median = medianOfLast3SameCurrency(obs, "COP");
+    expect(median).toBe(BigInt(-55_000));
+    expect(rt?.amountCents).toBe(median);
+
+    const forecast = estimateAmountCop(
+      {
+        id: recurringAId,
+        amountCents: rt!.amountCents,
+        currency: "COP",
+        dayOfMonth: 15,
+        amountType: "variable",
+      },
+      obs.map((o) => ({ ...o, recurringId: recurringAId, realCurrency: "COP" as const })),
+      4000,
+    );
+    expect(forecast).toBe(median);
+  });
+
+  it("does not emit a proposal or notification when recomputing a variable estimate", async () => {
+    await db
+      .update(recurringTransactions)
+      .set({ amountType: "variable", amountCents: BigInt(-42_000) })
+      .where(eq(recurringTransactions.id, recurringAId));
+
+    const tx1 = await seedTx(userAId, accountAId, BigInt(-50_000));
+    const tx2 = await seedTx(userAId, accountAId, BigInt(-70_000));
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx1,
+        yearMonth: "2026-03",
+        realAmountCents: BigInt(-50_000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+        observedAt: new Date("2026-03-15T12:00:00Z"),
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx2,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-70_000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+        observedAt: new Date("2026-04-15T12:00:00Z"),
+      },
+    ]);
+
+    const result = await recurringLearningProcessor(mockJob());
+
+    expect(result.proposalsCreated).toBe(0);
+    expect(emitMocks.emitNotification).not.toHaveBeenCalled();
+
+    const proposals = await db
+      .select()
+      .from(recurringProposals)
+      .where(eq(recurringProposals.userId, userAId));
+    expect(proposals).toHaveLength(0);
+  });
+
+  it("leaves fixed-type amount_cents untouched even when observations would drift the median", async () => {
+    // recurringAId is seeded amount_type=fixed, amount=-42000
+    const tx1 = await seedTx(userAId, accountAId, BigInt(-50_000));
+    const tx2 = await seedTx(userAId, accountAId, BigInt(-60_000));
+    const tx3 = await seedTx(userAId, accountAId, BigInt(-55_000));
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx1,
+        yearMonth: "2026-02",
+        realAmountCents: BigInt(-50_000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: false,
+        applied: false,
+        observedAt: new Date("2026-02-15T12:00:00Z"),
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx2,
+        yearMonth: "2026-03",
+        realAmountCents: BigInt(-60_000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: false,
+        applied: false,
+        observedAt: new Date("2026-03-15T12:00:00Z"),
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx3,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-55_000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: false,
+        applied: false,
+        observedAt: new Date("2026-04-15T12:00:00Z"),
+      },
+    ]);
+
+    const result = await recurringLearningProcessor(mockJob());
+
+    expect(result.variableEstimatesUpdated).toBe(0);
+
+    const [rt] = await db
+      .select({
+        amountCents: recurringTransactions.amountCents,
+        amountType: recurringTransactions.amountType,
+      })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.id, recurringAId));
+
+    expect(rt?.amountType).toBe("fixed");
+    expect(rt?.amountCents).toBe(BigInt(-42_000));
   });
 });
