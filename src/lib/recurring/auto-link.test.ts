@@ -1550,6 +1550,9 @@ describe("autoLinkTransaction #844 — payment before its own gap exists", () =>
   });
 
   it("unique learned token links a utility bill whose amount differs from the recurring", async () => {
+    // #852: SMS shape is `Pago a ${merchant}`. If the PAGO prefix is not
+    // stripped, tokeniseDescription returns PAGO, the EMPRESAS pattern never
+    // matches, and this fails.
     const accountId = await seedAccount();
     const recurringId = await seedRecurring(accountId, {
       label: "__autolink_844_epm__",
@@ -1570,7 +1573,7 @@ describe("autoLinkTransaction #844 — payment before its own gap exists", () =>
     const txId = await seedTx(accountId, {
       occurredOn: "2026-09-08",
       amountCents: BigInt(-594594),
-      description: "EMPRESAS PUBLICAS DE MEDELLIN",
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
     });
 
     const result = await autoLinkTransaction(TEST_USER_ID, txId);
@@ -1609,13 +1612,13 @@ describe("autoLinkTransaction #857 — drifted amount with shared fingerprint", 
       {
         userId: TEST_USER_ID,
         recurringId: aida.recurringId,
-        pattern: "PAGO",
+        pattern: "APORTES",
         observationCount: 2,
       },
       {
         userId: TEST_USER_ID,
         recurringId: alejo.recurringId,
-        pattern: "PAGO",
+        pattern: "APORTES",
         observationCount: 2,
       },
     ]);
@@ -1634,5 +1637,88 @@ describe("autoLinkTransaction #857 — drifted amount with shared fingerprint", 
       .from(transactions)
       .where(eq(transactions.id, txId));
     expect(row.recurringId).toBeNull();
+  });
+});
+
+describe("autoLinkTransaction #852 — verb-stripped unique token", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function seedEpmAndAportesTwins() {
+    // Prod shape of Sept 9: day-1 APORTES twins and day-15 EPM are ALL
+    // inside the slot window. Stripping PAGO makes EMPRESAS unique and
+    // APORTES shared — both must stay true at once.
+    const accountId = await seedAccount(TEST_USER_ID, "_852");
+    const aida = await seedRecurring(accountId, {
+      label: "__autolink_852_aida",
+      amountCents: BigInt(-49910000),
+      dayOfMonth: 1,
+    });
+    const alejo = await seedRecurring(accountId, {
+      label: "__autolink_852_alejo",
+      amountCents: BigInt(-50830000),
+      dayOfMonth: 1,
+    });
+    const epm = await seedRecurring(accountId, {
+      label: "__autolink_852_epm",
+      amountCents: BigInt(-49000000),
+      dayOfMonth: 15,
+    });
+    expect(aida).toBeLessThan(alejo);
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: aida, pattern: "APORTES", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: alejo, pattern: "APORTES", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: epm, pattern: "EMPRESAS", observationCount: 2 },
+    ]);
+    return { accountId, aida, alejo, epm };
+  }
+
+  it("tx 2652 shape: unique EMPRESAS links EPM with no amount check while APORTES twins sit in the same window", async () => {
+    const { accountId, epm, aida, alejo } = await seedEpmAndAportesTwins();
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-09-09",
+      amountCents: BigInt(-59459400),
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result).toMatchObject({
+      status: "linked",
+      recurringId: epm,
+      yearMonth: "2026-09",
+      gapId: null,
+    });
+
+    const linkedTwins = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(inArray(transactions.recurringId, [aida, alejo]));
+    expect(linkedTwins).toHaveLength(0);
+  });
+
+  it("APORTES overlap still abstains when EPM is a unique EMPRESAS candidate in the same pool", async () => {
+    // If unique-token steal routed around #857, Aida (lowest id) would take
+    // this. If EPM stole it because EMPRESAS is unique, recurringId === epm.
+    const { accountId, epm } = await seedEpmAndAportesTwins();
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-09-09",
+      amountCents: BigInt(-50350000),
+      description: "Pago a APORTES EN LINEA",
+    });
+
+    const result = await autoLinkTransaction(TEST_USER_ID, txId);
+    expect(result.status).toBe("ambiguous");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+
+    const epmLinked = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.recurringId, epm));
+    expect(epmLinked).toHaveLength(0);
   });
 });

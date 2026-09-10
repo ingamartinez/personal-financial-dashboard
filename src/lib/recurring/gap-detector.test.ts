@@ -1137,7 +1137,7 @@ describe("detectGapsForMonth / reconcileOpenGaps #844", () => {
     const txId = await seedTx(accountId, {
       occurredOn: "2026-08-20",
       amountCents: BigInt(-594594),
-      description: "EMPRESAS PUBLICAS DE MEDELLIN",
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
     });
 
     const result = await detectGapsForMonth(TEST_USER_ID, "2026-08");
@@ -1180,8 +1180,8 @@ describe("detectGapsForMonth #857 — drifted amount with shared fingerprint", (
     });
     expect(aidaId).toBeLessThan(alejoId);
     await db.insert(recurringDescriptionPatterns).values([
-      { userId: TEST_USER_ID, recurringId: aidaId, pattern: "PAGO", observationCount: 2 },
-      { userId: TEST_USER_ID, recurringId: alejoId, pattern: "PAGO", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: aidaId, pattern: "APORTES", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: alejoId, pattern: "APORTES", observationCount: 2 },
     ]);
     return { accountId, aidaId, alejoId };
   }
@@ -1236,8 +1236,8 @@ describe("detectGapsForMonth #857 — drifted amount with shared fingerprint", (
     });
     expect(closerId).toBeLessThan(fartherId);
     await db.insert(recurringDescriptionPatterns).values([
-      { userId: TEST_USER_ID, recurringId: closerId, pattern: "PAGO", observationCount: 2 },
-      { userId: TEST_USER_ID, recurringId: fartherId, pattern: "PAGO", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: closerId, pattern: "APORTES", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: fartherId, pattern: "APORTES", observationCount: 2 },
     ]);
     const txId = await seedTx(accountId, {
       occurredOn: "2026-07-19",
@@ -1368,6 +1368,55 @@ describe("detectGapsForMonth #857 — drifted amount with shared fingerprint", (
       .from(transactions)
       .where(eq(transactions.id, txId));
     expect(row.recurringId).toBeNull();
+
+    const gaps = await db
+      .select({ recurringId: recurringGaps.recurringId })
+      .from(recurringGaps)
+      .where(eq(recurringGaps.userId, TEST_USER_ID));
+    expect(new Set(gaps.map((g) => g.recurringId))).toEqual(new Set([aidaId, alejoId]));
+  });
+
+  it("verb-stripped unique EMPRESAS does not unique-token-steal an APORTES overlap", async () => {
+    // #852: stripping PAGO makes EMPRESAS unique. That must not give EPM
+    // a back door into an APORTES overlap, and must not let unique-token
+    // on APORTES (now the shared merchant token, not PAGO) steal for Aida.
+    const { accountId, aidaId, alejoId } = await seedAportesTwins("_852_epm_pool");
+    const epmId = await seedRecurring(accountId, {
+      label: "__gap_test aportes epm",
+      amountCents: BigInt(-49000000),
+      dayOfMonth: 15,
+    });
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: TEST_USER_ID,
+      recurringId: epmId,
+      pattern: "EMPRESAS",
+      observationCount: 2,
+    });
+    const overlapTxId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: OVERLAP,
+      description: DESC,
+    });
+    const epmTxId = await seedTx(accountId, {
+      occurredOn: "2026-07-20",
+      amountCents: BigInt(-59459400),
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(1);
+
+    const [overlapRow] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, overlapTxId));
+    expect(overlapRow.recurringId).toBeNull();
+
+    const [epmRow] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, epmTxId));
+    expect(epmRow.recurringId).toBe(epmId);
 
     const gaps = await db
       .select({ recurringId: recurringGaps.recurringId })
