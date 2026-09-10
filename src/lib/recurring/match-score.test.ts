@@ -285,23 +285,26 @@ describe("scoreMatchCandidates", () => {
 
   // ---------------------------------------------------------------------
   // #857: bounded leftover tolerance when a shared token collides.
+  // #852: the shared token is APORTES (Pago-prefix stripped), not PAGO.
+  // Stripping the verb must not create a false unique — two recurrings
+  // now share APORTES, so overlap still abstains.
   // ---------------------------------------------------------------------
   describe("#857 bounded amount tolerance when tokens collide", () => {
-    // Prod Aida / Alejo amounts. Token "PAGO" is what tokeniseDescription
-    // extracts from "Pago a APORTES EN LINEA".
+    // Prod Aida / Alejo amounts. Token "APORTES" is what tokeniseDescription
+    // extracts from "Pago a APORTES EN LINEA" after skipping the PAGO prefix.
     const aida = (recurringId: number) =>
       candidate({
         recurringId,
         accountId: 1,
         amountCents: BigInt(-49910000),
-        patterns: ["PAGO"],
+        patterns: ["APORTES"],
       });
     const alejo = (recurringId: number) =>
       candidate({
         recurringId,
         accountId: 1,
         amountCents: BigInt(-50830000),
-        patterns: ["PAGO"],
+        patterns: ["APORTES"],
       });
 
     it("a tx within 1% of two still-available recurrings abstains — neither lowest-id nor nearest", () => {
@@ -329,13 +332,13 @@ describe("scoreMatchCandidates", () => {
         recurringId: 99,
         accountId: 1,
         amountCents: BigInt(-10000000),
-        patterns: ["PAGO"],
+        patterns: ["APORTES"],
       });
       const twinB = candidate({
         recurringId: 1,
         accountId: 1,
         amountCents: BigInt(-10050000),
-        patterns: ["PAGO"],
+        patterns: ["APORTES"],
       });
       const result = scoreMatchCandidates(
         tx({
@@ -347,6 +350,81 @@ describe("scoreMatchCandidates", () => {
       );
       expect(result.winner).toBeNull();
       expect(result.ambiguous).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // #852: verb-stripped unique token vs shared new token. EPM's amount
+  // never matches; the path is unique EMPRESAS, no amount check. APORTES
+  // twins share the stripped token — stripping PAGO must not let either
+  // twin become a unique leftover, and must not let EPM steal an APORTES
+  // bill (or vice versa).
+  // ---------------------------------------------------------------------
+  describe("#852 verb-stripped unique token does not bypass abstain", () => {
+    const epm = candidate({
+      recurringId: 13,
+      accountId: 1,
+      amountCents: BigInt(-49000000),
+      patterns: ["EMPRESAS"],
+    });
+    const aida = candidate({
+      recurringId: 9,
+      accountId: 1,
+      amountCents: BigInt(-49910000),
+      patterns: ["APORTES"],
+    });
+    const alejo = candidate({
+      recurringId: 10,
+      accountId: 1,
+      amountCents: BigInt(-50830000),
+      patterns: ["APORTES"],
+    });
+    const pool = [epm, aida, alejo];
+
+    it("Pago a EMPRESAS links to EPM on unique token despite a 21% amount swing", () => {
+      // -59_459_400 vs modelled -49_000_000. 1% leftover cannot cover this;
+      // unique EMPRESAS can. If PAGO is not stripped, the token matches
+      // nobody (patterns are EMPRESAS/APORTES) and this fails.
+      const result = scoreMatchCandidates(
+        tx({
+          descriptionRaw: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+          amountCents: BigInt(-59459400),
+          accountId: 1,
+        }),
+        pool,
+      );
+      expect(result.ambiguous).toBe(false);
+      expect(result.winner).toEqual({
+        recurringId: 13,
+        reason: "token",
+        sameAccount: true,
+      });
+    });
+
+    it("Pago a APORTES still abstains when two recurrings share the stripped token", () => {
+      const result = scoreMatchCandidates(
+        tx({
+          descriptionRaw: "Pago a APORTES EN LINEA",
+          amountCents: BigInt(-50350000),
+          accountId: 1,
+        }),
+        pool,
+      );
+      expect(result.winner).toBeNull();
+      expect(result.ambiguous).toBe(true);
+    });
+
+    it("does not steal an APORTES exact match for EPM just because EMPRESAS is unique", () => {
+      const result = scoreMatchCandidates(
+        tx({
+          descriptionRaw: "Pago a APORTES EN LINEA",
+          amountCents: BigInt(-50830000),
+          accountId: 1,
+        }),
+        pool,
+      );
+      expect(result.winner?.recurringId).toBe(10);
+      expect(result.winner?.reason).toBe("token+amount-exact");
     });
   });
 });

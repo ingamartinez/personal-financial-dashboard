@@ -19,6 +19,7 @@
     "db:backfill:users": "bun run scripts/backfill-users-reference.ts",
     "db:backfill:canonical-merchant": "bun run scripts/backfill-canonical-merchant.ts",
     "db:backfill:atm": "bun run scripts/backfill-atm-channel.ts",
+    "db:backfill:retokenize-patterns": "bun run scripts/backfill-retokenize-patterns.ts",
     "db:migrate:pago-tc": "bun run scripts/migrate-pago-tc-to-transfer.ts",
     "intereses:run": "bun run scripts/run-intereses-causados.ts",
     "backfill:arq-snapshots": "bun run scripts/backfill-arq-snapshots.ts",

@@ -29,27 +29,45 @@ export type RecordLinkObservationInput = {
 };
 
 /**
+ * Bancolombia `provider_payment_sent` stores `Pago a ${providerName}` as
+ * descriptionRaw (#852). Taking the first significant token then made every
+ * such payment fingerprint as PAGO — EPM, APORTES, and any other provider
+ * bill shared one verb, so the unique-token path never saw EMPRESAS and the
+ * APORTES twins collided on a word that is not their identity.
+ *
+ * Skip only those payment-verb prefixes. Do not grow this into a stoplist:
+ * stripping more English/Spanish filler widens what counts as unique.
+ */
+const PAYMENT_VERB_PREFIXES = new Set(["PAGO", "PAGASTE"]);
+
+/**
  * Tokenise a raw description into a stable fingerprint token.
  *
  * Rules:
  *   1. Uppercase
  *   2. Strip all non-alphanumeric characters (keep spaces for splitting)
  *   3. Split on whitespace
- *   4. Take the first significant token (≥3 chars, not purely numeric)
- *   5. Return null if no significant token found
+ *   4. Skip payment-verb prefixes (PAGO / PAGASTE) and insignificant tokens
+ *      (<3 chars or purely numeric)
+ *   5. Take the first remaining significant token
+ *   6. Return null if none found (including a description that is only verbs)
  *
  * Examples:
- *   "NETFLIX*DL"              → "NETFLIX"
- *   "SPOTIFY P 12345"         → "SPOTIFY"
- *   "GOOGLE *PLAY YOUTUBE"    → "GOOGLE"  (will clash — that's intentional)
- *   "1234 5678"               → null      (purely numeric)
+ *   "NETFLIX*DL"                          → "NETFLIX"
+ *   "SPOTIFY P 12345"                     → "SPOTIFY"
+ *   "GOOGLE *PLAY YOUTUBE"                → "GOOGLE"  (will clash — that's intentional)
+ *   "Pago a EMPRESAS PUBLICAS DE MEDELLIN" → "EMPRESAS"
+ *   "Pago a APORTES EN LINEA"             → "APORTES"
+ *   "1234 5678"                           → null      (purely numeric)
  */
 export function tokeniseDescription(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const upper = raw.toUpperCase().replace(/[^A-Z0-9 ]/g, " ");
   const tokens = upper.split(/\s+/).filter(Boolean);
   for (const tok of tokens) {
-    if (tok.length >= 3 && /[A-Z]/.test(tok)) return tok;
+    if (tok.length < 3 || !/[A-Z]/.test(tok)) continue;
+    if (PAYMENT_VERB_PREFIXES.has(tok)) continue;
+    return tok;
   }
   return null;
 }

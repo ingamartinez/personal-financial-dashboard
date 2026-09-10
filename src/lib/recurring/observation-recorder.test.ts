@@ -125,6 +125,30 @@ describe("tokeniseDescription", () => {
   it("strips non-alphanumeric characters before splitting", () => {
     expect(tokeniseDescription("PAYU-WOMPI-12345")).toBe("PAYU");
   });
+
+  // #852: SMS provider_payment_sent prefixes `Pago a`. Without skipping that
+  // verb, every such bill fingerprints as PAGO and the unique-token path
+  // never sees the merchant. These fail if the skip is removed.
+  it("skips Pago/Pagaste prefixes so the merchant token is the fingerprint", () => {
+    expect(tokeniseDescription("Pago a EMPRESAS PUBLICAS DE MEDELLIN")).toBe("EMPRESAS");
+    expect(tokeniseDescription("Pago a APORTES EN LINEA")).toBe("APORTES");
+    expect(tokeniseDescription("Pagaste a EMPRESAS PUBLICAS DE MEDELLIN")).toBe("EMPRESAS");
+    expect(tokeniseDescription("pago a empresas publicas de medellin")).toBe("EMPRESAS");
+  });
+
+  it("does not treat a payment verb as the fingerprint when nothing follows", () => {
+    expect(tokeniseDescription("Pago")).toBeNull();
+    expect(tokeniseDescription("Pagaste")).toBeNull();
+    expect(tokeniseDescription("Pago a AB")).toBeNull();
+  });
+
+  it("does not skip a merchant token that merely contains PAGO", () => {
+    // "MERCADO PAGO*MELIMAS" returns MERCADO even with the skip removed,
+    // because MERCADO is already the first significant token. An over-eager
+    // startsWith("PAGO") / includes("PAGO") skip would drop MERCADOPAGO.
+    expect(tokeniseDescription("MERCADOPAGO COLOMBIA")).toBe("MERCADOPAGO");
+    expect(tokeniseDescription("Pago a MERCADO PAGO")).toBe("MERCADO");
+  });
 });
 
 // ---------------------------------------------------------------------------
