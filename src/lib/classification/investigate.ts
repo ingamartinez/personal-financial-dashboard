@@ -282,7 +282,11 @@ export function snippetFromHtml(rawHtml: string): string {
   return text.slice(0, MAIL_SNIPPET_MAX_CHARS);
 }
 
-const INVESTIGATOR_FREE_TEXT_ALLOWED = /^[\p{L}\p{N} .&'\-,_]+$/u;
+// Slash and parentheses are ordinary noun-phrase punctuation (prod has
+// "Bank / retail credit card issuer", "Restaurant (steakhouse/grill chain)").
+// Instruction-shaped rejection is a separate check; this class only excludes
+// control characters, markup, and newlines.
+const INVESTIGATOR_FREE_TEXT_ALLOWED = /^[\p{L}\p{N} .&'\-,_/()]+$/u;
 
 const INSTRUCTION_SHAPED_TEXT =
   /ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions|\bignora(?:r)?\s+(?:todas\s+)?(?:las\s+)?instrucciones\b|\bsystem\s+prompt\b|\bprompt\s+del\s+sistema\b|\byou\s+are\s+now\b|\bcategorySlug\b|\bcanonicalMerchant\b|\bset\s+category\b/i;
