@@ -14,6 +14,9 @@
 // rewritten to the median of the last 3 same-currency observations. Silent —
 // no proposal, no notification.
 //
+// #871 C: variable recurrings then run through detectAmountOutlier. A hit
+// becomes an amount_outlier proposal ("nuevo normal" vs "fue puntual").
+//
 // Idempotency: duplicate proposals (same recurring + type with status='pending')
 // are skipped to avoid flooding the user.
 
@@ -28,6 +31,8 @@ import {
   recurringTransactions,
 } from "@/lib/db/schema";
 import { medianOfLast3SameCurrency } from "@/lib/insights/cash-flow";
+import { detectAmountOutlier } from "@/lib/recurring/amount-outlier-detector";
+import type { Currency } from "@/lib/types";
 import { emitNotification } from "@/lib/notifications/emit";
 import { createWorker } from "@/lib/queue";
 
@@ -59,6 +64,15 @@ export type VariableFlagPayload = {
   observationCount: number;
 };
 
+export type AmountOutlierPayload = {
+  observationId: number;
+  outlierAmountCents: string;
+  bandMinCents: string;
+  bandMaxCents: string;
+  currency: string;
+  observationCount: number;
+};
+
 export type LearningResult = {
   usersProcessed: number;
   proposalsCreated: number;
@@ -68,7 +82,11 @@ export type LearningResult = {
 
 type ProposalOutcome =
   | { count: 0 }
-  | { count: 1; proposalId: number; proposalKind: "variable_flag" | "amount_update" };
+  | {
+      count: 1;
+      proposalId: number;
+      proposalKind: "variable_flag" | "amount_update" | "amount_outlier";
+    };
 
 /**
  * Core processor — exported separately for tests (no live Worker needed).
@@ -436,6 +454,7 @@ export async function recurringLearningProcessor(
   // already told us to stop asking — writing the median is arithmetic, not a
   // judgment. No proposal, no notification.
   await recomputeVariableEstimates(result);
+  await detectVariableOutliers(result);
 
   result.usersProcessed = usersSeen.size;
 
@@ -504,7 +523,12 @@ async function recomputeVariableEstimates(result: LearningResult): Promise<void>
         eq(recurringTransactions.userId, recurringLinkObservations.userId),
       ),
     )
-    .where(inArray(recurringLinkObservations.recurringId, ids));
+    .where(
+      and(
+        inArray(recurringLinkObservations.recurringId, ids),
+        isNull(recurringLinkObservations.excludedAt),
+      ),
+    );
 
   const obsByRecurring = new Map<
     number,
@@ -558,6 +582,184 @@ async function recomputeVariableEstimates(result: LearningResult): Promise<void>
           recurringId: rt.id,
         },
         "error recomputing variable estimate — continuing",
+      );
+      result.errors++;
+    }
+  }
+}
+
+/**
+ * #871 C: propose amount_outlier for variable recurrings whose latest
+ * observation sits outside their own dispersion band. Caller (this worker)
+ * pre-filters amount_type=variable; the detector itself is amountType-blind.
+ */
+async function detectVariableOutliers(result: LearningResult): Promise<void> {
+  const variableRecurrings = await db
+    .select({
+      id: recurringTransactions.id,
+      userId: recurringTransactions.userId,
+      currency: recurringTransactions.currency,
+      label: recurringTransactions.label,
+    })
+    .from(recurringTransactions)
+    .where(
+      and(
+        isNull(recurringTransactions.deletedAt),
+        eq(recurringTransactions.active, true),
+        eq(recurringTransactions.amountType, "variable"),
+      ),
+    );
+
+  if (variableRecurrings.length === 0) return;
+
+  const ids = variableRecurrings.map((r) => r.id);
+  const userIds = [...new Set(variableRecurrings.map((r) => r.userId))];
+  const obsRows = await db
+    .select({
+      id: recurringLinkObservations.id,
+      recurringId: recurringLinkObservations.recurringId,
+      realAmountCents: recurringLinkObservations.realAmountCents,
+      realCurrency: recurringLinkObservations.realCurrency,
+      observedAt: recurringLinkObservations.observedAt,
+    })
+    .from(recurringLinkObservations)
+    .innerJoin(
+      recurringTransactions,
+      and(
+        eq(recurringTransactions.id, recurringLinkObservations.recurringId),
+        eq(recurringTransactions.userId, recurringLinkObservations.userId),
+      ),
+    )
+    .where(
+      and(
+        inArray(recurringLinkObservations.recurringId, ids),
+        isNull(recurringLinkObservations.excludedAt),
+      ),
+    );
+
+  const grouped = new Map<number, typeof obsRows>();
+  for (const row of obsRows) {
+    const list = grouped.get(row.recurringId) ?? [];
+    list.push(row);
+    grouped.set(row.recurringId, list);
+  }
+
+  const acceptedOutliers = await db
+    .select({
+      recurringId: recurringProposals.recurringId,
+      payload: recurringProposals.payload,
+    })
+    .from(recurringProposals)
+    .where(
+      and(
+        inArray(recurringProposals.recurringId, ids),
+        inArray(recurringProposals.userId, userIds),
+        eq(recurringProposals.proposalType, "amount_outlier"),
+        eq(recurringProposals.status, "accepted"),
+      ),
+    );
+  const decidedObsIds = new Set<number>();
+  for (const row of acceptedOutliers) {
+    const observationId = (row.payload as { observationId?: unknown }).observationId;
+    if (typeof observationId === "number") decidedObsIds.add(observationId);
+  }
+
+  for (const rt of variableRecurrings) {
+    const rows = grouped.get(rt.id) ?? [];
+    const sameCurrency = rows
+      .filter((o) => o.realCurrency === rt.currency)
+      .sort((a, b) => {
+        const dt = b.observedAt.getTime() - a.observedAt.getTime();
+        if (dt !== 0) return dt;
+        return b.id - a.id;
+      })
+      .map((o) => ({
+        id: o.id,
+        realAmountCents: BigInt(o.realAmountCents),
+        observedAt: o.observedAt,
+        realCurrency: o.realCurrency as Currency,
+      }));
+
+    const latest = sameCurrency[0];
+    if (!latest || decidedObsIds.has(latest.id)) continue;
+
+    const hit = detectAmountOutlier(rt.id, sameCurrency);
+    if (!hit) continue;
+
+    try {
+      const outcome = await db.transaction(async (trx): Promise<ProposalOutcome> => {
+        const [existingPending] = await trx
+          .select({ id: recurringProposals.id })
+          .from(recurringProposals)
+          .where(
+            and(
+              eq(recurringProposals.userId, rt.userId),
+              eq(recurringProposals.recurringId, rt.id),
+              eq(recurringProposals.status, "pending"),
+            ),
+          )
+          .limit(1);
+        if (existingPending) return { count: 0 };
+
+        const payload: AmountOutlierPayload = {
+          observationId: hit.observationId,
+          outlierAmountCents: hit.outlierAmountCents.toString(),
+          bandMinCents: hit.bandMinCents.toString(),
+          bandMaxCents: hit.bandMaxCents.toString(),
+          currency: hit.currency,
+          observationCount: hit.observationCount,
+        };
+
+        const [inserted] = await trx
+          .insert(recurringProposals)
+          .values({
+            userId: rt.userId,
+            recurringId: rt.id,
+            proposalType: "amount_outlier",
+            payload,
+          })
+          .returning({ id: recurringProposals.id });
+
+        log.info(
+          {
+            event: "recurring_learning_proposal_outlier",
+            userId: rt.userId,
+            recurringId: rt.id,
+            observationId: hit.observationId,
+            proposalId: inserted?.id,
+          },
+          "amount_outlier proposal created",
+        );
+
+        return { count: 1, proposalId: inserted!.id, proposalKind: "amount_outlier" };
+      });
+
+      result.proposalsCreated += outcome.count;
+
+      if (outcome.count === 1) {
+        await emitNotification(rt.userId, {
+          type: "recurring_proposal_ready",
+          entityId: String(outcome.proposalId),
+          priority: "medium",
+          title: "Sugerencia para recurrente",
+          body: `Detectamos un patrón nuevo en ${rt.label}. Revisá la propuesta.`,
+          actionUrl: "/recurring",
+          metadata: {
+            proposalId: outcome.proposalId,
+            recurringId: rt.id,
+            proposalKind: outcome.proposalKind,
+          },
+        });
+      }
+    } catch (err) {
+      log.error(
+        {
+          err,
+          event: "recurring_learning_outlier_failed",
+          userId: rt.userId,
+          recurringId: rt.id,
+        },
+        "error detecting amount outlier — continuing",
       );
       result.errors++;
     }

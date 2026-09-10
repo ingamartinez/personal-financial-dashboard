@@ -196,4 +196,52 @@ describe("RecurringProposalsList", () => {
 
     expect(screen.getByTestId("proposal-currency")).toHaveTextContent("COP");
   });
+
+  const outlierProposal = {
+    id: 4,
+    recurringId: 13,
+    label: "EPM",
+    accountLabel: "Bancolombia COP",
+    proposalType: "amount_outlier" as const,
+    payload: {
+      observationId: 99,
+      outlierAmountCents: "-1200000",
+      bandMinCents: "518660",
+      bandMaxCents: "667775",
+      currency: "COP",
+      observationCount: 4,
+    },
+    createdAt: "2026-04-01T00:00:00Z",
+  };
+
+  it("offers new-normal and one-off choices for an amount_outlier proposal", async () => {
+    acceptProposal.mockResolvedValueOnce({ ok: true });
+
+    const user = userEvent.setup();
+    render(<RecurringProposalsList proposals={[outlierProposal]} />);
+
+    expect(screen.queryByTestId("proposal-accept")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("proposal-reject")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("proposal-outlier-new-normal"));
+
+    expect(acceptProposal).toHaveBeenCalledWith({
+      proposalId: outlierProposal.id,
+      outlierDecision: "new_normal",
+    });
+  });
+
+  it("sends one_off when the user marks the outlier as puntual", async () => {
+    acceptProposal.mockResolvedValueOnce({ ok: true });
+
+    const user = userEvent.setup();
+    render(<RecurringProposalsList proposals={[outlierProposal]} />);
+
+    await user.click(screen.getByTestId("proposal-outlier-one-off"));
+
+    expect(acceptProposal).toHaveBeenCalledWith({
+      proposalId: outlierProposal.id,
+      outlierDecision: "one_off",
+    });
+  });
 });

@@ -175,6 +175,28 @@ describe("medianOfLast3SameCurrency", () => {
     expect(medianOfLast3SameCurrency(obs, "COP")).toBe(BigInt(-55_000));
   });
 
+  it("drops observations marked excludedAt (one-off outliers)", () => {
+    const obs = [
+      {
+        realAmountCents: BigInt(-999_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-04-01"),
+        excludedAt: new Date("2026-04-02"),
+      },
+      {
+        realAmountCents: BigInt(-50_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-03-01"),
+      },
+      {
+        realAmountCents: BigInt(-70_000),
+        realCurrency: "COP",
+        observedAt: new Date("2026-02-01"),
+      },
+    ];
+    expect(medianOfLast3SameCurrency(obs, "COP")).toBe(BigInt(-60_000));
+  });
+
   it("drops cross-currency observations before taking the median", () => {
     const obs = [
       {

@@ -4,7 +4,7 @@
 // Tenant-safe: userId ALWAYS from getSessionUser(), never from caller input.
 
 import { revalidatePath } from "next/cache";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   recurringProposals,
@@ -13,6 +13,7 @@ import {
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { getSessionUser } from "@/lib/auth/session";
+import { medianOfLast3SameCurrency } from "@/lib/insights/cash-flow";
 import { createLogger } from "@/lib/logger";
 import type { ProposalActionResult, ProposalActionInput } from "./learning-types";
 import { proposalIdSchema } from "./learning-types";
@@ -23,7 +24,9 @@ const log = createLogger({ module: "settings/recurring/learning/actions" });
  * Accept a proposal:
  *   - amount_update: updates recurring.amount_cents to the proposed value.
  *   - variable_flag: sets recurring.amount_type = 'variable'.
- * In both cases, marks the proposal as 'accepted' and marks linked observations as applied=true.
+ *   - amount_outlier: "new_normal" keeps the observation in the band;
+ *     "one_off" sets excluded_at. Both recompute amount_cents from the median.
+ * amount_update and variable_flag also mark linked observations as applied=true.
  * Atomic — runs in a single DB transaction.
  */
 export async function acceptProposal(input: ProposalActionInput): Promise<ProposalActionResult> {
@@ -122,6 +125,75 @@ export async function acceptProposal(input: ProposalActionInput): Promise<Propos
               notDeleted(recurringTransactions.deletedAt),
             ),
           );
+      } else if (proposal.proposalType === "amount_outlier") {
+        const decision = parsed.data.outlierDecision;
+        if (decision !== "new_normal" && decision !== "one_off") {
+          throw new Error("Esta propuesta necesita una decisión: nuevo normal o puntual");
+        }
+        const p = proposal.payload as { observationId?: unknown };
+        if (typeof p.observationId !== "number") {
+          throw new Error("Payload inválido: falta observationId");
+        }
+
+        const [recurring] = await trx
+          .select({
+            amountCents: recurringTransactions.amountCents,
+            currency: recurringTransactions.currency,
+          })
+          .from(recurringTransactions)
+          .where(
+            and(
+              eq(recurringTransactions.userId, session.id),
+              eq(recurringTransactions.id, proposal.recurringId),
+              notDeleted(recurringTransactions.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!recurring) throw new Error("Recurrente no encontrado");
+
+        if (decision === "one_off") {
+          const excluded = await trx
+            .update(recurringLinkObservations)
+            .set({ excludedAt: new Date() })
+            .where(
+              and(
+                eq(recurringLinkObservations.userId, session.id),
+                eq(recurringLinkObservations.recurringId, proposal.recurringId),
+                eq(recurringLinkObservations.id, p.observationId),
+              ),
+            )
+            .returning({ id: recurringLinkObservations.id });
+          if (excluded.length === 0) throw new Error("Observación no encontrada");
+        }
+
+        const remaining = await trx
+          .select({
+            realAmountCents: recurringLinkObservations.realAmountCents,
+            realCurrency: recurringLinkObservations.realCurrency,
+            observedAt: recurringLinkObservations.observedAt,
+            excludedAt: recurringLinkObservations.excludedAt,
+          })
+          .from(recurringLinkObservations)
+          .where(
+            and(
+              eq(recurringLinkObservations.userId, session.id),
+              eq(recurringLinkObservations.recurringId, proposal.recurringId),
+              isNull(recurringLinkObservations.excludedAt),
+            ),
+          );
+        const median = medianOfLast3SameCurrency(remaining, recurring.currency);
+        if (median !== null && median !== recurring.amountCents) {
+          await trx
+            .update(recurringTransactions)
+            .set({ amountCents: median })
+            .where(
+              and(
+                eq(recurringTransactions.userId, session.id),
+                eq(recurringTransactions.id, proposal.recurringId),
+                notDeleted(recurringTransactions.deletedAt),
+              ),
+            );
+        }
       } else {
         throw new Error(`Tipo de propuesta desconocido: ${proposal.proposalType}`);
       }
@@ -135,17 +207,21 @@ export async function acceptProposal(input: ProposalActionInput): Promise<Propos
         );
 
       // 4. Mark related unapplied manual observations as applied=true.
-      await trx
-        .update(recurringLinkObservations)
-        .set({ applied: true })
-        .where(
-          and(
-            eq(recurringLinkObservations.userId, session.id),
-            eq(recurringLinkObservations.recurringId, proposal.recurringId),
-            eq(recurringLinkObservations.manual, true),
-            eq(recurringLinkObservations.applied, false),
-          ),
-        );
+      // amount_outlier does not consume the observation set — "nuevo normal"
+      // keeps the spike in the band, "fue puntual" sets excluded_at on one row.
+      if (proposal.proposalType !== "amount_outlier") {
+        await trx
+          .update(recurringLinkObservations)
+          .set({ applied: true })
+          .where(
+            and(
+              eq(recurringLinkObservations.userId, session.id),
+              eq(recurringLinkObservations.recurringId, proposal.recurringId),
+              eq(recurringLinkObservations.manual, true),
+              eq(recurringLinkObservations.applied, false),
+            ),
+          );
+      }
     });
 
     log.info(

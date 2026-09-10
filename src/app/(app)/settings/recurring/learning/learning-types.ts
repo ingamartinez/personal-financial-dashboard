@@ -5,6 +5,7 @@ import { z } from "zod";
 
 export const proposalIdSchema = z.object({
   proposalId: z.coerce.number().int().positive(),
+  outlierDecision: z.enum(["new_normal", "one_off"]).optional(),
 });
 
 export type ProposalActionInput = z.input<typeof proposalIdSchema>;

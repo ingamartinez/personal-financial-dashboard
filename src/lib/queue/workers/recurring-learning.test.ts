@@ -1102,4 +1102,121 @@ describe("recurringLearningProcessor", () => {
     expect(rt?.amountType).toBe("fixed");
     expect(rt?.amountCents).toBe(BigInt(-42_000));
   });
+
+  // ── #871 C: amount_outlier ───────────────────────────────────────────────
+
+  async function seedObsAt(amounts: bigint[], dates: Date[], months: string[]): Promise<number[]> {
+    const ids: number[] = [];
+    for (let i = 0; i < amounts.length; i++) {
+      const txId = await seedTx(userAId, accountAId, amounts[i]);
+      const [row] = await db
+        .insert(recurringLinkObservations)
+        .values({
+          userId: userAId,
+          recurringId: recurringAId,
+          txId,
+          yearMonth: months[i]!,
+          realAmountCents: amounts[i]!,
+          realCurrency: "COP",
+          descriptionRaw: `${TAG}-tx`,
+          accountId: accountAId,
+          manual: true,
+          applied: false,
+          observedAt: dates[i],
+        })
+        .returning({ id: recurringLinkObservations.id });
+      ids.push(row.id);
+    }
+    return ids;
+  }
+
+  it("creates an amount_outlier proposal when the latest observation is outside the band", async () => {
+    await db
+      .update(recurringTransactions)
+      .set({ amountType: "variable" })
+      .where(eq(recurringTransactions.id, recurringAId));
+
+    const obsIds = await seedObsAt(
+      [BigInt(-518_660), BigInt(-580_000), BigInt(-667_775), BigInt(-1_200_000)],
+      [
+        new Date("2026-01-15T12:00:00Z"),
+        new Date("2026-02-15T12:00:00Z"),
+        new Date("2026-03-15T12:00:00Z"),
+        new Date("2026-04-15T12:00:00Z"),
+      ],
+      ["2026-01", "2026-02", "2026-03", "2026-04"],
+    );
+
+    const result = await recurringLearningProcessor(mockJob());
+
+    expect(result.proposalsCreated).toBe(1);
+
+    const [proposal] = await db
+      .select()
+      .from(recurringProposals)
+      .where(
+        and(
+          eq(recurringProposals.userId, userAId),
+          eq(recurringProposals.recurringId, recurringAId),
+        ),
+      );
+    expect(proposal?.proposalType).toBe("amount_outlier");
+    const p = proposal?.payload as { observationId: number; outlierAmountCents: string };
+    expect(p.observationId).toBe(obsIds[3]);
+    expect(p.outlierAmountCents).toBe("-1200000");
+
+    expect(emitMocks.emitNotification).toHaveBeenCalledOnce();
+    const [, calledInput] = emitMocks.emitNotification.mock.calls[0] as [
+      number,
+      { metadata: { proposalKind: string } },
+    ];
+    expect(calledInput.metadata.proposalKind).toBe("amount_outlier");
+  });
+
+  it("does NOT propose an outlier on EPM's normal month-to-month swing", async () => {
+    await db
+      .update(recurringTransactions)
+      .set({ amountType: "variable" })
+      .where(eq(recurringTransactions.id, recurringAId));
+
+    await seedObsAt(
+      [BigInt(-518_660), BigInt(-580_000), BigInt(-667_775), BigInt(-600_000)],
+      [
+        new Date("2026-01-15T12:00:00Z"),
+        new Date("2026-02-15T12:00:00Z"),
+        new Date("2026-03-15T12:00:00Z"),
+        new Date("2026-04-15T12:00:00Z"),
+      ],
+      ["2026-01", "2026-02", "2026-03", "2026-04"],
+    );
+
+    const result = await recurringLearningProcessor(mockJob());
+
+    expect(result.proposalsCreated).toBe(0);
+    const proposals = await db
+      .select()
+      .from(recurringProposals)
+      .where(eq(recurringProposals.userId, userAId));
+    expect(proposals).toHaveLength(0);
+  });
+
+  it("does NOT propose an outlier with fewer than 4 observations", async () => {
+    await db
+      .update(recurringTransactions)
+      .set({ amountType: "variable" })
+      .where(eq(recurringTransactions.id, recurringAId));
+
+    await seedObsAt(
+      [BigInt(-42_000), BigInt(-42_000), BigInt(-80_000)],
+      [
+        new Date("2026-01-15T12:00:00Z"),
+        new Date("2026-02-15T12:00:00Z"),
+        new Date("2026-03-15T12:00:00Z"),
+      ],
+      ["2026-01", "2026-02", "2026-03"],
+    );
+
+    const result = await recurringLearningProcessor(mockJob());
+    expect(result.proposalsCreated).toBe(0);
+  });
 });

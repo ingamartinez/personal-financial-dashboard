@@ -18,7 +18,7 @@
  * entry points called from the daily BullMQ worker.
  */
 
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import {
   cashFlowForecastState,
@@ -238,6 +238,8 @@ export type MedianObservation = {
   realAmountCents: bigint;
   realCurrency: string;
   observedAt: Date;
+  /** #871 C: one-off outliers drop out of the median/band. */
+  excludedAt?: Date | null;
 };
 
 /**
@@ -247,13 +249,14 @@ export type MedianObservation = {
  *
  * Returns null when no observation matches `currency`, so callers can fall
  * back to the stored estimate. Never coerces money to Number.
+ * Observations with `excludedAt` set (#871 C "Fue puntual") are ignored.
  */
 export function medianOfLast3SameCurrency(
   observations: MedianObservation[],
   currency: string,
 ): bigint | null {
   const relevant = observations
-    .filter((o) => o.realCurrency === currency)
+    .filter((o) => o.realCurrency === currency && o.excludedAt == null)
     .sort((a, b) => b.observedAt.getTime() - a.observedAt.getTime())
     .slice(0, 3);
   if (relevant.length === 0) return null;
@@ -543,6 +546,7 @@ export async function runCashFlowForecastForUser(
       and(
         eq(recurringLinkObservations.userId, userId),
         gte(recurringLinkObservations.observedAt, obs90dAgo),
+        isNull(recurringLinkObservations.excludedAt),
       ),
     );
 

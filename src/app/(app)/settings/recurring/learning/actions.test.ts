@@ -99,7 +99,7 @@ async function seedTx(userId: number, accountId: number): Promise<number> {
 async function seedProposal(
   userId: number,
   recurringId: number,
-  proposalType: "amount_update" | "variable_flag",
+  proposalType: "amount_update" | "variable_flag" | "amount_outlier",
   payload: Record<string, unknown> = {},
 ): Promise<number> {
   const [row] = await db
@@ -420,6 +420,150 @@ describe("rejectProposal", () => {
     await db.execute(sql`DELETE FROM recurring_transactions WHERE id = ${recurringBId}`);
     await db.execute(sql`DELETE FROM accounts WHERE id = ${accountBId}`);
     await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
+  });
+});
+
+describe("acceptProposal (amount_outlier)", () => {
+  let userAId: number;
+  let accountAId: number;
+  let recurringAId: number;
+
+  beforeEach(async () => {
+    await cleanup();
+    userAId = await seedUser(`${TAG}-userA@test.local`);
+    accountAId = await seedAccount(userAId);
+    recurringAId = await seedRecurring(userAId, accountAId, BigInt(-42_000));
+    await db
+      .update(recurringTransactions)
+      .set({ amountType: "variable" })
+      .where(eq(recurringTransactions.id, recurringAId));
+    mockGetSessionUser.mockResolvedValue({
+      id: userAId,
+      email: `${TAG}-userA@test.local`,
+      name: "A",
+      role: "user" as const,
+      active: true,
+    });
+  });
+
+  afterEach(cleanup);
+
+  async function seedOutlierObs(): Promise<{ outlierObsId: number }> {
+    const amounts = [BigInt(-50_000), BigInt(-60_000), BigInt(-55_000), BigInt(-200_000)];
+    const months = ["2026-01", "2026-02", "2026-03", "2026-04"] as const;
+    const dates = [
+      new Date("2026-01-15T12:00:00Z"),
+      new Date("2026-02-15T12:00:00Z"),
+      new Date("2026-03-15T12:00:00Z"),
+      new Date("2026-04-15T12:00:00Z"),
+    ];
+    let outlierObsId = 0;
+    for (let i = 0; i < amounts.length; i++) {
+      const txId = await seedTx(userAId, accountAId);
+      const [row] = await db
+        .insert(recurringLinkObservations)
+        .values({
+          userId: userAId,
+          recurringId: recurringAId,
+          txId,
+          yearMonth: months[i],
+          realAmountCents: amounts[i]!,
+          realCurrency: "COP",
+          descriptionRaw: `${TAG}-tx`,
+          accountId: accountAId,
+          manual: true,
+          applied: false,
+          observedAt: dates[i],
+        })
+        .returning({ id: recurringLinkObservations.id });
+      if (i === amounts.length - 1) outlierObsId = row.id;
+    }
+    return { outlierObsId };
+  }
+
+  it("new_normal keeps the outlier in the band and recomputes the median", async () => {
+    const { outlierObsId } = await seedOutlierObs();
+    const proposalId = await seedProposal(userAId, recurringAId, "amount_outlier", {
+      observationId: outlierObsId,
+      outlierAmountCents: "-200000",
+      bandMinCents: "50000",
+      bandMaxCents: "60000",
+      currency: "COP",
+      observationCount: 4,
+    });
+
+    const result = await acceptProposal({ proposalId, outlierDecision: "new_normal" });
+    expect(result.ok).toBe(true);
+
+    const [obs] = await db
+      .select({ excludedAt: recurringLinkObservations.excludedAt })
+      .from(recurringLinkObservations)
+      .where(eq(recurringLinkObservations.id, outlierObsId));
+    expect(obs?.excludedAt).toBeNull();
+
+    const [rt] = await db
+      .select({ amountCents: recurringTransactions.amountCents })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.id, recurringAId));
+    // last 3: -200k, -55k, -60k → median -60k
+    expect(rt?.amountCents).toBe(BigInt(-60_000));
+
+    const [p] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, proposalId));
+    expect(p?.status).toBe("accepted");
+  });
+
+  it("one_off sets excluded_at and drops the outlier from the median", async () => {
+    const { outlierObsId } = await seedOutlierObs();
+    const proposalId = await seedProposal(userAId, recurringAId, "amount_outlier", {
+      observationId: outlierObsId,
+      outlierAmountCents: "-200000",
+      bandMinCents: "50000",
+      bandMaxCents: "60000",
+      currency: "COP",
+      observationCount: 4,
+    });
+
+    const result = await acceptProposal({ proposalId, outlierDecision: "one_off" });
+    expect(result.ok).toBe(true);
+
+    const [obs] = await db
+      .select({ excludedAt: recurringLinkObservations.excludedAt })
+      .from(recurringLinkObservations)
+      .where(eq(recurringLinkObservations.id, outlierObsId));
+    expect(obs?.excludedAt).not.toBeNull();
+
+    const [rt] = await db
+      .select({ amountCents: recurringTransactions.amountCents })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.id, recurringAId));
+    // remaining last 3: -55k, -60k, -50k → median -55k
+    expect(rt?.amountCents).toBe(BigInt(-55_000));
+  });
+
+  it("rejects amount_outlier without an outlierDecision", async () => {
+    const { outlierObsId } = await seedOutlierObs();
+    const proposalId = await seedProposal(userAId, recurringAId, "amount_outlier", {
+      observationId: outlierObsId,
+      outlierAmountCents: "-200000",
+      bandMinCents: "50000",
+      bandMaxCents: "60000",
+      currency: "COP",
+      observationCount: 4,
+    });
+
+    const result = await acceptProposal({ proposalId });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("should not reach");
+    expect(result.error).toMatch(/decisión|nuevo normal|puntual/i);
+
+    const [p] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, proposalId));
+    expect(p?.status).toBe("pending");
   });
 });
 
