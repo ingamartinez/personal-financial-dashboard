@@ -1161,9 +1161,16 @@ describe("recurringLearningProcessor", () => {
         ),
       );
     expect(proposal?.proposalType).toBe("amount_outlier");
-    const p = proposal?.payload as { observationId: number; outlierAmountCents: string };
+    const p = proposal?.payload as {
+      observationId: number;
+      outlierAmountCents: string;
+      bandMinCents: string;
+      bandMaxCents: string;
+    };
     expect(p.observationId).toBe(obsIds[3]);
     expect(p.outlierAmountCents).toBe("-1200000");
+    expect(p.bandMinCents).toBe("-518660");
+    expect(p.bandMaxCents).toBe("-667775");
 
     expect(emitMocks.emitNotification).toHaveBeenCalledOnce();
     const [, calledInput] = emitMocks.emitNotification.mock.calls[0] as [

@@ -32,8 +32,9 @@ export interface AmountOutlier {
   recurringId: number;
   observationId: number;
   outlierAmountCents: bigint;
-  /** Absolute-magnitude band of the prior observations. */
+  /** Signed observation that produced the smaller absolute band edge. */
   bandMinCents: bigint;
+  /** Signed observation that produced the larger absolute band edge. */
   bandMaxCents: bigint;
   currency: Currency;
   observationCount: number;
@@ -59,24 +60,36 @@ export function detectAmountOutlier(
   const latest = observations[0]!;
   const prior = observations.slice(1);
   const latestAbs = absBigInt(latest.realAmountCents);
-  const priorAbs = prior.map((o) => absBigInt(o.realAmountCents));
 
-  let bandMin = priorAbs[0]!;
-  let bandMax = priorAbs[0]!;
-  for (const value of priorAbs) {
-    if (value < bandMin) bandMin = value;
-    if (value > bandMax) bandMax = value;
+  // Abs for the threshold; keep the signed observations that produced each
+  // edge so the returned band matches outlierAmountCents (price-hike-detector
+  // uses abs only internally and returns signed amounts).
+  let bandMinAbs = absBigInt(prior[0]!.realAmountCents);
+  let bandMaxAbs = bandMinAbs;
+  let bandMinSigned = prior[0]!.realAmountCents;
+  let bandMaxSigned = bandMinSigned;
+  for (const o of prior) {
+    const value = absBigInt(o.realAmountCents);
+    if (value < bandMinAbs) {
+      bandMinAbs = value;
+      bandMinSigned = o.realAmountCents;
+    }
+    if (value > bandMaxAbs) {
+      bandMaxAbs = value;
+      bandMaxSigned = o.realAmountCents;
+    }
   }
 
   // Inside the historical band → a normal swing, not an outlier.
-  if (latestAbs >= bandMin && latestAbs <= bandMax) return null;
+  if (latestAbs >= bandMinAbs && latestAbs <= bandMaxAbs) return null;
 
-  const n = BigInt(priorAbs.length);
+  const n = BigInt(prior.length);
   if (n < BigInt(2)) return null;
 
   let sumX = BigInt(0);
   let sumX2 = BigInt(0);
-  for (const value of priorAbs) {
+  for (const o of prior) {
+    const value = absBigInt(o.realAmountCents);
     sumX += value;
     sumX2 += value * value;
   }
@@ -88,7 +101,7 @@ export function detectAmountOutlier(
   if (sumSq === BigInt(0)) {
     // Degenerate band. Require ≥ 1% of the mean so a 1-peso blip is not an
     // outlier but a 7% Netflix-style hike is: beyond * 100 * n >= sumX.
-    const beyond = latestAbs > bandMax ? latestAbs - bandMax : bandMin - latestAbs;
+    const beyond = latestAbs > bandMaxAbs ? latestAbs - bandMaxAbs : bandMinAbs - latestAbs;
     if (beyond * BigInt(100) * n < sumX) return null;
   } else {
     // |x - mean| >= 2σ, integer form that never divides money:
@@ -103,8 +116,8 @@ export function detectAmountOutlier(
     recurringId,
     observationId: latest.id,
     outlierAmountCents: latest.realAmountCents,
-    bandMinCents: bandMin,
-    bandMaxCents: bandMax,
+    bandMinCents: bandMinSigned,
+    bandMaxCents: bandMaxSigned,
     currency: latest.realCurrency,
     observationCount: observations.length,
   };

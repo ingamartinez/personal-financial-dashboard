@@ -206,8 +206,8 @@ describe("RecurringProposalsList", () => {
     payload: {
       observationId: 99,
       outlierAmountCents: "-1200000",
-      bandMinCents: "518660",
-      bandMaxCents: "667775",
+      bandMinCents: "-518660",
+      bandMaxCents: "-667775",
       currency: "COP",
       observationCount: 4,
     },

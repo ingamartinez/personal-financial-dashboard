@@ -565,6 +565,83 @@ describe("acceptProposal (amount_outlier)", () => {
       .where(eq(recurringProposals.id, proposalId));
     expect(p?.status).toBe("pending");
   });
+
+  it("cross-tenant: userA cannot accept userB's amount_outlier as new_normal or one_off", async () => {
+    const userBId = await seedUser(`${TAG}-userB@test.local`);
+    const accountBId = await seedAccount(userBId);
+    const recurringBId = await seedRecurring(userBId, accountBId, BigInt(-42_000));
+    await db
+      .update(recurringTransactions)
+      .set({ amountType: "variable", amountCents: BigInt(-42_000) })
+      .where(eq(recurringTransactions.id, recurringBId));
+
+    const txId = await seedTx(userBId, accountBId);
+    const [obsB] = await db
+      .insert(recurringLinkObservations)
+      .values({
+        userId: userBId,
+        recurringId: recurringBId,
+        txId,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-200_000),
+        realCurrency: "COP",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountBId,
+        manual: true,
+        applied: false,
+      })
+      .returning({ id: recurringLinkObservations.id });
+
+    const proposalBId = await seedProposal(userBId, recurringBId, "amount_outlier", {
+      observationId: obsB.id,
+      outlierAmountCents: "-200000",
+      bandMinCents: "-50000",
+      bandMaxCents: "-60000",
+      currency: "COP",
+      observationCount: 4,
+    });
+
+    const newNormal = await acceptProposal({
+      proposalId: proposalBId,
+      outlierDecision: "new_normal",
+    });
+    expect(newNormal.ok).toBe(false);
+    if (newNormal.ok) throw new Error("should not reach");
+    expect(newNormal.error).toMatch(/no encontrada/i);
+
+    const oneOff = await acceptProposal({
+      proposalId: proposalBId,
+      outlierDecision: "one_off",
+    });
+    expect(oneOff.ok).toBe(false);
+    if (oneOff.ok) throw new Error("should not reach");
+    expect(oneOff.error).toMatch(/no encontrada/i);
+
+    const [p] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, proposalBId));
+    expect(p?.status).toBe("pending");
+
+    const [rt] = await db
+      .select({ amountCents: recurringTransactions.amountCents })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.id, recurringBId));
+    expect(rt?.amountCents).toBe(BigInt(-42_000));
+
+    const [obs] = await db
+      .select({ excludedAt: recurringLinkObservations.excludedAt })
+      .from(recurringLinkObservations)
+      .where(eq(recurringLinkObservations.id, obsB.id));
+    expect(obs?.excludedAt).toBeNull();
+
+    await db.execute(sql`DELETE FROM recurring_link_observations WHERE id = ${obsB.id}`);
+    await db.execute(sql`DELETE FROM recurring_proposals WHERE id = ${proposalBId}`);
+    await db.execute(sql`DELETE FROM transactions WHERE id = ${txId}`);
+    await db.execute(sql`DELETE FROM recurring_transactions WHERE id = ${recurringBId}`);
+    await db.execute(sql`DELETE FROM accounts WHERE id = ${accountBId}`);
+    await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
+  });
 });
 
 describe("countPendingProposals", () => {
