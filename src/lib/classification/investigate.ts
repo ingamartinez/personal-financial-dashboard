@@ -306,6 +306,14 @@ const INVESTIGATOR_FREE_TEXT_ALLOWED = /^[\p{Script=Latin}0-9 .&'/,_()\-]+$/u;
 const INSTRUCTION_SHAPED_TEXT =
   /ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions|\bignora(?:r)?\s+(?:todas\s+)?(?:las\s+)?instrucciones\b|\bsystem\s+prompt\b|\bprompt\s+del\s+sistema\b|\byou\s+are\s+now\b|\bcategorySlug\b|\bcanonicalMerchant\b|\bset\s+category\b/i;
 
+// A letter that is not Latin. Catches Cyrillic/Greek homoglyphs without
+// rejecting `$`, `:`, `@`, or emoji (those are not `\p{L}`).
+const NON_LATIN_LETTER = /[^\p{Script=Latin}\P{L}]/u;
+
+function isPoisonedInvestigatorText(trimmed: string): boolean {
+  return NON_LATIN_LETTER.test(trimmed) || INSTRUCTION_SHAPED_TEXT.test(trimmed);
+}
+
 /**
  * Persist-path guard for free-text the investigator may write into
  * merchant_knowledge. Nulls (does not strip-and-keep) so poisoned text
@@ -344,6 +352,37 @@ export function sanitizeInvestigatorReferenceId(raw: string | null | undefined):
 }
 
 /**
+ * Inbound guard for live From/Subject. Not INVESTIGATOR_FREE_TEXT_ALLOWED:
+ * real subjects carry `:`, `$`, `@` in emails, and sometimes emoji. Those
+ * are ordinary header punctuation. What we still refuse — same as #859 —
+ * is instruction-shaped text and non-Latin letters (Cyrillic homoglyphs).
+ * Nulls rather than strip-and-keep so poison never reaches the model.
+ */
+export function sanitizeInvestigatorHeader(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim().replace(/\s+/g, " ").normalize("NFC");
+  if (!trimmed) return null;
+  if (trimmed.length > MAIL_HEADER_MAX_CHARS) return null;
+  if (isPoisonedInvestigatorText(trimmed)) return null;
+  return trimmed;
+}
+
+/**
+ * Persist-path guard for conclude.reason. #860 stores this as
+ * classification_reason.text for gateway-less live hits, so an unguarded
+ * slice(0, 500) is a backdoor. Same poison checks as headers; not the
+ * merchant allowlist — evidence prose cites emails, amounts, and colons.
+ */
+export function sanitizeInvestigatorReason(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim().replace(/\s+/g, " ").normalize("NFC");
+  if (!trimmed) return null;
+  if (isPoisonedInvestigatorText(trimmed)) return null;
+  if (/[<>]/.test(trimmed)) return null;
+  return trimmed.slice(0, 500);
+}
+
+/**
  * Whitelist pick for the web tool. Extra keys and transaction-shaped values
  * fail through pickMerchantLookupInput. Amounts/currencies/card digits in
  * the merchant string are a second door: the model can see the tx, and
@@ -360,8 +399,10 @@ export function pickInvestigatorWebLookupInput(raw: unknown): InvestigatorWebLoo
 /**
  * Prompt-level "untrusted DATA" language is defense-in-depth for how the
  * model reads snippets. It is not the inbound security boundary. Mail reaches
- * the model only through snippetFromHtml; durable writes go through
- * sanitizeInvestigatorMerchant. Do not treat the sentence below as the guard.
+ * the model only through snippetFromHtml (bodies) and
+ * sanitizeInvestigatorHeader (From/Subject). Durable writes go through
+ * sanitizeInvestigatorMerchant / sanitizeInvestigatorReason. Do not treat
+ * the sentence below as the guard.
  */
 export function buildInvestigatorSystemPrompt(categories: readonly InvestigatorCategory[]): string {
   const offered = categories.filter((c) => !SYSTEM_OWNED_CATEGORY_SLUGS.has(c.slug));
@@ -746,8 +787,12 @@ async function searchLiveMail(opts: {
         source: "live",
         gmailMsgId: id,
         gateway: null,
-        from: headerText(headerValue(payload, "from"), MAIL_HEADER_MAX_CHARS),
-        subject: headerText(headerValue(payload, "subject"), MAIL_HEADER_MAX_CHARS),
+        from: sanitizeInvestigatorHeader(
+          headerText(headerValue(payload, "from"), MAIL_HEADER_MAX_CHARS),
+        ),
+        subject: sanitizeInvestigatorHeader(
+          headerText(headerValue(payload, "subject"), MAIL_HEADER_MAX_CHARS),
+        ),
         merchant: null,
         amountCents: null,
         currency: null,
@@ -1047,7 +1092,7 @@ function sanitizeConclude(
     canonicalMerchant,
     receiptId: raw.receiptId,
     confidence,
-    reason: raw.reason.slice(0, 500),
+    reason: sanitizeInvestigatorReason(raw.reason) ?? "",
     businessType: sanitizeInvestigatorBusinessType(raw.businessType),
   };
 }
