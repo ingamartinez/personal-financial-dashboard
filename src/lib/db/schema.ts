@@ -1116,6 +1116,9 @@ export const recurringLinkObservations = pgTable(
     manual: boolean("manual").notNull().default(false),
     applied: boolean("applied").notNull().default(false),
     observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+    // #871 C: set when the user marks this observation as a one-off outlier
+    // ("Fue puntual"). Null means it still participates in median/band math.
+    excludedAt: timestamp("excluded_at", { withTimezone: true }),
   },
   (t) => [
     // Idempotency: one observation per (user, recurring, tx, month).
@@ -1170,6 +1173,8 @@ export const recurringDescriptionPatterns = pgTable(
 // /settings/recurring/learning. payload is typed by proposal_type:
 //   - amount_update: { newAmountCents: string, oldAmountCents: string, currency: string }
 //   - variable_flag:  { detectedAmounts: string[], currency: string }
+//   - amount_outlier (#871 C): { observationId, outlierAmountCents, bandNearEdgeCents,
+//     bandFarEdgeCents, currency, observationCount }
 export const recurringProposals = pgTable(
   "recurring_proposals",
   {

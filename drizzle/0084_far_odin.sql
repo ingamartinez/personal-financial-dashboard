@@ -1,0 +1,1 @@
+ALTER TABLE "recurring_link_observations" ADD COLUMN "excluded_at" timestamp with time zone;

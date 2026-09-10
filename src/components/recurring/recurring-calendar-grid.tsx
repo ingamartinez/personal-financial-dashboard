@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { UndoMatchButton } from "./recurring-list";
+import { UndoMatchButton, VariableEstimateHint } from "./recurring-list";
 import type { PriceHike, RecurringRow } from "@/app/(app)/recurring/queries";
 import type { UpcomingStatus } from "@/lib/recurring/upcoming";
 
@@ -97,6 +97,7 @@ function SubDetailContent({
           {row.amountType === "variable" ? "~" : ""}
           {formatMoney(absDisplayCents, row.displayAmount.currency as "COP" | "USD")}
         </p>
+        <VariableEstimateHint amountType={row.amountType} />
 
         <p>{row.accountLabel}</p>
 

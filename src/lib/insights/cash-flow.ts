@@ -18,7 +18,7 @@
  * entry points called from the daily BullMQ worker.
  */
 
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import {
   cashFlowForecastState,
@@ -234,6 +234,35 @@ export function bigintMedian(values: bigint[]): bigint {
   return (sorted[mid - 1]! + sorted[mid]!) / BigInt(2);
 }
 
+export type MedianObservation = {
+  realAmountCents: bigint;
+  realCurrency: string;
+  observedAt: Date;
+  /** #871 C: one-off outliers drop out of the median/band. */
+  excludedAt?: Date | null;
+};
+
+/**
+ * Median of the last 3 same-currency observations. Shared by the 30-day
+ * forecast (`estimateAmountCop`) and the recurring-learning worker so the
+ * stored `amount_cents` and the projected amount cannot drift apart (#871 B).
+ *
+ * Returns null when no observation matches `currency`, so callers can fall
+ * back to the stored estimate. Never coerces money to Number.
+ * Observations with `excludedAt` set (#871 C "Fue puntual") are ignored.
+ */
+export function medianOfLast3SameCurrency(
+  observations: MedianObservation[],
+  currency: string,
+): bigint | null {
+  const relevant = observations
+    .filter((o) => o.realCurrency === currency && o.excludedAt == null)
+    .sort((a, b) => b.observedAt.getTime() - a.observedAt.getTime())
+    .slice(0, 3);
+  if (relevant.length === 0) return null;
+  return bigintMedian(relevant.map((o) => o.realAmountCents));
+}
+
 /**
  * Estimate the projected amount for a single recurring using observations.
  *
@@ -249,14 +278,11 @@ export function estimateAmountCop(
   copPerUsd: number,
 ): bigint {
   if (recurring.amountType === "variable") {
-    // Use last 3 observations for this recurring, same currency
-    const relevantObs = observations
-      .filter((o) => o.recurringId === recurring.id && o.realCurrency === recurring.currency)
-      .sort((a, b) => b.observedAt.getTime() - a.observedAt.getTime())
-      .slice(0, 3);
-
-    if (relevantObs.length > 0) {
-      const median = bigintMedian(relevantObs.map((o) => o.realAmountCents));
+    const median = medianOfLast3SameCurrency(
+      observations.filter((o) => o.recurringId === recurring.id),
+      recurring.currency,
+    );
+    if (median !== null) {
       return toCop(median, recurring.currency, copPerUsd);
     }
     // Fallback: use the stored amount
@@ -520,6 +546,7 @@ export async function runCashFlowForecastForUser(
       and(
         eq(recurringLinkObservations.userId, userId),
         gte(recurringLinkObservations.observedAt, obs90dAgo),
+        isNull(recurringLinkObservations.excludedAt),
       ),
     );
 

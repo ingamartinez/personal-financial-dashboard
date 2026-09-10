@@ -4,7 +4,7 @@
 // with accept/reject buttons.
 
 import { useState, useTransition } from "react";
-import { CheckIcon, XIcon, TrendingUpIcon, ActivityIcon } from "lucide-react";
+import { CheckIcon, XIcon, TrendingUpIcon, ActivityIcon, AlertTriangleIcon } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import type { Currency } from "@/lib/types";
 import { acceptProposal, rejectProposal } from "./actions";
@@ -14,7 +14,7 @@ type Proposal = {
   recurringId: number;
   label: string;
   accountLabel: string;
-  proposalType: "amount_update" | "variable_flag";
+  proposalType: "amount_update" | "variable_flag" | "amount_outlier";
   payload: Record<string, unknown>;
   createdAt: string;
 };
@@ -27,19 +27,42 @@ type ProposalCardProps = {
 // #870: currency MUST come from the proposal payload, not a hardcoded COP —
 // a proposal generated while a recurring lived in USD (later migrated to
 // COP) still carries its original currency in payload.currency.
+function absCents(cents: bigint): bigint {
+  return cents < BigInt(0) ? -cents : cents;
+}
+
+// Magnitudes only. Payloads stay signed (the money convention); this card's
+// copy is "pagaste X", so a leading minus is noise. Restores the pre-#870
+// abs that formatMoney does not do.
 function formatCents(cents: string | undefined, currency: Currency): string {
   if (!cents) return "—";
-  return formatMoney(BigInt(cents), currency);
+  return formatMoney(absCents(BigInt(cents)), currency);
+}
+
+function formatBandRange(
+  nearEdge: string | undefined,
+  farEdge: string | undefined,
+  currency: Currency,
+): string {
+  // Strip sign here — do not assume the caller already did.
+  const a = nearEdge ? absCents(BigInt(nearEdge)) : BigInt(0);
+  const b = farEdge ? absCents(BigInt(farEdge)) : BigInt(0);
+  const [lo, hi] = a <= b ? [a, b] : [b, a];
+  return `${formatMoney(lo, currency)} – ${formatMoney(hi, currency)}`;
 }
 
 function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  function handleAccept() {
+  function handleAccept(outlierDecision?: "new_normal" | "one_off") {
     setError(null);
     startTransition(async () => {
-      const result = await acceptProposal({ proposalId: proposal.id });
+      const result = await acceptProposal(
+        outlierDecision
+          ? { proposalId: proposal.id, outlierDecision }
+          : { proposalId: proposal.id },
+      );
       if (result.ok) {
         onDecided(proposal.id);
       } else {
@@ -61,6 +84,7 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
   }
 
   const isAmountUpdate = proposal.proposalType === "amount_update";
+  const isOutlier = proposal.proposalType === "amount_outlier";
   const p = proposal.payload;
   // #870: proposal currency is authoritative for the amounts on this card —
   // it may disagree with the account's own currency (a COP recurring can
@@ -80,7 +104,9 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
     >
       <div className="flex items-start gap-3">
         <span className="mt-0.5 rounded-md bg-blue-50 p-1.5 dark:bg-blue-900/30">
-          {isAmountUpdate ? (
+          {isOutlier ? (
+            <AlertTriangleIcon className="size-4 text-amber-600 dark:text-amber-400" />
+          ) : isAmountUpdate ? (
             <TrendingUpIcon className="size-4 text-blue-600 dark:text-blue-400" />
           ) : (
             <ActivityIcon className="size-4 text-purple-600 dark:text-purple-400" />
@@ -107,6 +133,19 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
               {formatCents(p.oldAmountCents as string, proposalCurrency)}).{" "}
               <span className="text-ink-muted">¿Actualizar el estimado?</span>
             </p>
+          ) : isOutlier ? (
+            <p className="text-sm">
+              El último pago ({formatCents(p.outlierAmountCents as string, proposalCurrency)}) está
+              fuera de la banda histórica (
+              <span data-testid="outlier-band">
+                {formatBandRange(
+                  p.bandNearEdgeCents as string,
+                  p.bandFarEdgeCents as string,
+                  proposalCurrency,
+                )}
+              </span>
+              ). <span className="text-ink-muted">¿Es el nuevo normal o fue puntual?</span>
+            </p>
           ) : (
             <p className="text-sm">
               Pagaste montos distintos en los últimos {p.observationCount as number} meses (
@@ -122,26 +161,53 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
       </div>
 
       <div className="mt-3 flex gap-2">
-        <button
-          type="button"
-          onClick={handleAccept}
-          disabled={isPending}
-          className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          data-testid="proposal-accept"
-        >
-          <CheckIcon className="size-3.5" />
-          Actualizar
-        </button>
-        <button
-          type="button"
-          onClick={handleReject}
-          disabled={isPending}
-          className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
-          data-testid="proposal-reject"
-        >
-          <XIcon className="size-3.5" />
-          Descartar
-        </button>
+        {isOutlier ? (
+          <>
+            <button
+              type="button"
+              onClick={() => handleAccept("new_normal")}
+              disabled={isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              data-testid="proposal-outlier-new-normal"
+            >
+              <CheckIcon className="size-3.5" />
+              Es el nuevo normal
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAccept("one_off")}
+              disabled={isPending}
+              className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+              data-testid="proposal-outlier-one-off"
+            >
+              <XIcon className="size-3.5" />
+              Fue puntual
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => handleAccept()}
+              disabled={isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              data-testid="proposal-accept"
+            >
+              <CheckIcon className="size-3.5" />
+              Actualizar
+            </button>
+            <button
+              type="button"
+              onClick={handleReject}
+              disabled={isPending}
+              className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+              data-testid="proposal-reject"
+            >
+              <XIcon className="size-3.5" />
+              Descartar
+            </button>
+          </>
+        )}
       </div>
     </article>
   );

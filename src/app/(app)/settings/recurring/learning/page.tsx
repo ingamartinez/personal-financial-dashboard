@@ -1,5 +1,5 @@
 // #633: Learning proposals page — /settings/recurring/learning
-// Lists pending recurring learning proposals (amount_update + variable_flag)
+// Lists pending recurring learning proposals (amount_update, variable_flag, amount_outlier)
 // and lets the user accept or reject each one.
 
 import { and, eq, desc } from "drizzle-orm";
@@ -57,7 +57,7 @@ export default async function RecurringLearningPage() {
     recurringId: p.recurringId,
     label: p.label,
     accountLabel: formatAccountLabel({ name: p.accountName, currency: p.accountCurrency }),
-    proposalType: p.proposalType as "amount_update" | "variable_flag",
+    proposalType: p.proposalType as "amount_update" | "variable_flag" | "amount_outlier",
     payload: p.payload as Record<string, unknown>,
     createdAt: p.createdAt.toISOString(),
   }));

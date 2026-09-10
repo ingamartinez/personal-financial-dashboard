@@ -123,6 +123,26 @@ describe("RecurringList", () => {
     // Popover with detail opens.
     expect(screen.getByText("Mastercard *5555")).toBeInTheDocument();
     expect(screen.getByText(/próximo/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("variable-estimate-hint")).not.toBeInTheDocument();
+  });
+
+  it("surfaces median provenance on a variable recurring's detail popover", async () => {
+    const user = userEvent.setup();
+    nextId = 21;
+    const row = makeRow({
+      id: 21,
+      label: "EPM",
+      amountType: "variable",
+      accountLabel: "Bancolombia COP",
+    });
+
+    render(<RecurringList rows={[row]} excludedIds={new Set()} isCalculatorOpen={false} />);
+
+    await user.click(screen.getByTestId("recurring-list-pill"));
+
+    expect(screen.getByTestId("variable-estimate-hint")).toHaveTextContent(
+      "Estimado: mediana de las últimas 3",
+    );
   });
 
   it("in calculator mode: clicking a pill calls onToggleExcluded", async () => {
