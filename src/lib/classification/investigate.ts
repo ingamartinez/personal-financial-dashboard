@@ -88,6 +88,9 @@ export const INVESTIGATOR_MIN_CONFIDENCE = 60;
 export const INVESTIGATOR_TIMEOUT_MS = 45_000;
 export const INVESTIGATOR_MAIL_WINDOW_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAIL_SNIPPET_MAX_CHARS = 400;
+export const CANONICAL_MERCHANT_MAX_CHARS = 80;
+export const BUSINESS_TYPE_MAX_CHARS = 80;
+export const MAIL_REFERENCE_MAX_CHARS = 120;
 export const MAIL_RESULT_LIMIT = 8;
 export const HISTORY_RESULT_LIMIT = 15;
 // Local cost model for the guardrail, not a billing source of truth.
@@ -266,12 +269,66 @@ export function estimateInvestigatorCostCents(usage: {
   return tokenCents + usage.webLookupCostCents;
 }
 
-export function snippetFromHtml(rawHtml: string, max = MAIL_SNIPPET_MAX_CHARS): string {
+/**
+ * The only function allowed to put a mail body into the model's context.
+ * HTML is stripped and the result is hard-capped at MAIL_SNIPPET_MAX_CHARS —
+ * there is no caller-overridable larger cap. Live Gmail search (#860) must
+ * go through here too; inlining raw HTML or plaintext is a bypass.
+ */
+export function snippetFromHtml(rawHtml: string): string {
   const text = rawHtml
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return text.slice(0, max);
+  return text.slice(0, MAIL_SNIPPET_MAX_CHARS);
+}
+
+// Latin script only. \p{L} would admit Cyrillic/Greek homoglyphs that slip
+// past the Latin instruction-shape regex (Cyrillic і in "іgnore previous…").
+// This user is Colombian and every real merchant/businessType today is Latin;
+// a legitimate CJK name would be nulled rather than persisted. NFC so a
+// combining accent still counts as Latin. Slash and parentheses are ordinary
+// noun-phrase punctuation (prod: "Bank / retail…", "Restaurant (steakhouse/…)").
+const INVESTIGATOR_FREE_TEXT_ALLOWED = /^[\p{Script=Latin}0-9 .&'/,_()\-]+$/u;
+
+const INSTRUCTION_SHAPED_TEXT =
+  /ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions|\bignora(?:r)?\s+(?:todas\s+)?(?:las\s+)?instrucciones\b|\bsystem\s+prompt\b|\bprompt\s+del\s+sistema\b|\byou\s+are\s+now\b|\bcategorySlug\b|\bcanonicalMerchant\b|\bset\s+category\b/i;
+
+/**
+ * Persist-path guard for free-text the investigator may write into
+ * merchant_knowledge. Nulls (does not strip-and-keep) so poisoned text
+ * never becomes a KB key or a value lookup_merchant_kb will replay.
+ */
+function sanitizeInvestigatorFreeText(
+  raw: string | null | undefined,
+  maxChars: number,
+): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim().replace(/\s+/g, " ").normalize("NFC");
+  if (!trimmed) return null;
+  if (trimmed.length > maxChars) return null;
+  if (!INVESTIGATOR_FREE_TEXT_ALLOWED.test(trimmed)) return null;
+  if (INSTRUCTION_SHAPED_TEXT.test(trimmed)) return null;
+  return trimmed;
+}
+
+/** Persist-path guard for the KB key. categorySlug is already a whitelist. */
+export function sanitizeInvestigatorMerchant(raw: string | null | undefined): string | null {
+  return sanitizeInvestigatorFreeText(raw, CANONICAL_MERCHANT_MAX_CHARS);
+}
+
+/**
+ * Persist-path guard for businessType. lookup_merchant_kb returns this
+ * field into a later model context, so it is the same inbound hole as
+ * canonicalMerchant, reached by a second door.
+ */
+export function sanitizeInvestigatorBusinessType(raw: string | null | undefined): string | null {
+  return sanitizeInvestigatorFreeText(raw, BUSINESS_TYPE_MAX_CHARS);
+}
+
+/** Same persist-path treatment for search_mail referenceId (schema varchar 120). */
+export function sanitizeInvestigatorReferenceId(raw: string | null | undefined): string | null {
+  return sanitizeInvestigatorFreeText(raw, MAIL_REFERENCE_MAX_CHARS);
 }
 
 /**
@@ -288,6 +345,12 @@ export function pickInvestigatorWebLookupInput(raw: unknown): InvestigatorWebLoo
   return input;
 }
 
+/**
+ * Prompt-level "untrusted DATA" language is defense-in-depth for how the
+ * model reads snippets. It is not the inbound security boundary. Mail reaches
+ * the model only through snippetFromHtml; durable writes go through
+ * sanitizeInvestigatorMerchant. Do not treat the sentence below as the guard.
+ */
 export function buildInvestigatorSystemPrompt(categories: readonly InvestigatorCategory[]): string {
   const offered = categories.filter((c) => !SYSTEM_OWNED_CATEGORY_SLUGS.has(c.slug));
   const categoryList =
@@ -502,12 +565,12 @@ async function toolSearchMail(
     rows.map((row) => ({
       receiptId: row.id,
       gateway: row.gateway,
-      merchant: row.merchant,
+      merchant: sanitizeInvestigatorMerchant(row.merchant),
       amountCents: row.amountCents?.toString() ?? null,
       currency: row.currency,
       occurredAt: row.occurredAt?.toISOString() ?? null,
       emailReceivedAt: row.emailReceivedAt?.toISOString() ?? null,
-      referenceId: row.referenceId,
+      referenceId: sanitizeInvestigatorReferenceId(row.referenceId),
       snippet: snippetFromHtml(row.rawHtml),
     })),
   );
@@ -705,7 +768,7 @@ function sanitizeConclude(
   ) {
     categorySlug = null;
   }
-  let canonicalMerchant = raw.canonicalMerchant?.trim() || null;
+  let canonicalMerchant = sanitizeInvestigatorMerchant(raw.canonicalMerchant);
   if (canonicalMerchant && matchOpaqueGateway([canonicalMerchant])) {
     canonicalMerchant = null;
   }
@@ -716,7 +779,7 @@ function sanitizeConclude(
     receiptId: raw.receiptId,
     confidence,
     reason: raw.reason.slice(0, 500),
-    businessType: raw.businessType?.trim() || null,
+    businessType: sanitizeInvestigatorBusinessType(raw.businessType),
   };
 }
 
