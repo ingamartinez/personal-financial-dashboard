@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, statementImports, transactions, users } from "@/lib/db/schema";
+import { accounts, physicalCards, statementImports, transactions, users } from "@/lib/db/schema";
 import type { ParsedStatement } from "@/lib/reconciliation/parsers/types";
 
 const TAG = "IMPORTS_PARITY_905";
@@ -49,9 +49,11 @@ vi.mock("@/lib/notifications/emit", () => ({
 }));
 
 const { previewIngestion, commitIngestion } = await import("./actions");
+const { emitNotification } = await import("@/lib/notifications/emit");
 
 let userId: number;
 let copAccountId: number;
+let soloCopWithPcId: number;
 
 async function cleanup() {
   await db
@@ -63,6 +65,9 @@ async function cleanup() {
   await db
     .delete(accounts)
     .where(sql`${accounts.userId} IN (SELECT id FROM users WHERE email LIKE ${TAG + "%"})`);
+  await db
+    .delete(physicalCards)
+    .where(sql`${physicalCards.userId} IN (SELECT id FROM users WHERE email LIKE ${TAG + "%"})`);
   await db.delete(users).where(sql`email LIKE ${TAG + "%"}`);
 }
 
@@ -103,6 +108,36 @@ function makeDispatch(currency: "COP" | "USD") {
   return {
     kind: "bancolombia-savings" as const,
     parsed: makeParsed(currency),
+    accountHint: null,
+  };
+}
+
+function makeMixedDispatch() {
+  const occurredAt = new Date("2026-04-15T05:00:00Z");
+  const row = (
+    currency: "COP" | "USD",
+    amountCents: bigint,
+    descriptionRaw: string,
+  ): ParsedStatement["rows"][number] => ({
+    occurredAt,
+    amountCents,
+    currency,
+    direction: "out",
+    descriptionRaw,
+    rawData: {},
+    isMetadata: false,
+  });
+  return {
+    kind: "bancolombia-savings" as const,
+    parsed: {
+      bank: "bancolombia" as const,
+      format: "bancolombia_savings" as const,
+      periodStart: new Date("2026-04-01T05:00:00Z"),
+      periodEnd: new Date("2026-04-30T05:00:00Z"),
+      rowCount: 2,
+      balanceAtEndCents: null,
+      rows: [row("COP", BigInt(30_000_00), `${TAG} cop`), row("USD", BigInt(14_99), `${TAG} usd`)],
+    },
     accountHint: null,
   };
 }
@@ -149,6 +184,34 @@ beforeAll(async () => {
     })
     .returning({ id: accounts.id });
   copAccountId = account.id;
+
+  const [pc] = await db
+    .insert(physicalCards)
+    .values({
+      id: sql`gen_random_uuid()`,
+      userId,
+      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
+      name: `${TAG} solo pc`,
+      creditLimitCents: BigInt(10_000_000_00),
+      network: "mastercard",
+      last4: "5555",
+    })
+    .returning({ id: physicalCards.id });
+  const [soloWithPc] = await db
+    .insert(accounts)
+    .values({
+      userId,
+      name: `${TAG} solo-pc`,
+      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
+      currency: "COP",
+      type: "credit_card",
+      physicalCardId: pc.id,
+      metadata: { last4s: ["5555"] },
+    })
+    .returning({ id: accounts.id });
+  soloCopWithPcId = soloWithPc.id;
 });
 
 afterAll(async () => {
@@ -161,6 +224,8 @@ beforeEach(() => {
   mockResolveAccountHint.mockReset();
   mockGetSessionUser.mockResolvedValue(session());
   mockResolveAccountHint.mockResolvedValue(null);
+  vi.mocked(emitNotification).mockReset();
+  vi.mocked(emitNotification).mockResolvedValue({ id: 1 });
 });
 
 describe("commitIngestion — userBalanceAtEndCents (#905)", () => {
@@ -212,5 +277,103 @@ describe("previewIngestion — #444 dispatch throws (#905)", () => {
     await expect(
       previewIngestion(makeFormData("usd-on-cop", { hint_account_id: String(copAccountId) })),
     ).rejects.toThrow(/currency_mismatch/);
+  });
+
+  it("rejects multi_currency_without_physical_card when the origin has no plastic link", async () => {
+    mockParseAndHint.mockResolvedValue(makeMixedDispatch());
+    await expect(
+      previewIngestion(makeFormData("mixed-no-pc", { hint_account_id: String(copAccountId) })),
+    ).rejects.toThrow(/multi_currency_without_physical_card/);
+  });
+
+  it("rejects missing_usd_sibling when the plastic has no USD sibling linked", async () => {
+    mockParseAndHint.mockResolvedValue(makeMixedDispatch());
+    await expect(
+      previewIngestion(makeFormData("mixed-no-usd", { hint_account_id: String(soloCopWithPcId) })),
+    ).rejects.toThrow(/missing_usd_sibling/);
+  });
+});
+
+describe("commitIngestion — notifications (#905)", () => {
+  it("emits statement_import_complete once when status is applied, not flagged when flagged === 0", async () => {
+    mockParseAndHint.mockResolvedValue(makeDispatch("COP"));
+    const preview = await previewIngestion(
+      makeFormData("emit-complete", { hint_account_id: String(copAccountId) }),
+    );
+    if (preview.kind === "format_unknown") throw new Error("unexpected kind");
+
+    const result = await commitIngestion(preview.token);
+    expect(result.status).toBe("committed");
+
+    const completeCall = vi
+      .mocked(emitNotification)
+      .mock.calls.find(([, input]) => input.type === "statement_import_complete");
+    expect(completeCall).toBeDefined();
+    expect(completeCall![1]).toMatchObject({
+      type: "statement_import_complete",
+      priority: "medium",
+    });
+    const flaggedCall = vi
+      .mocked(emitNotification)
+      .mock.calls.find(([, input]) => input.type === "reconciliation_flagged_txns");
+    expect(flaggedCall).toBeUndefined();
+  });
+
+  it("emits reconciliation_flagged_txns once when flagged > 0", async () => {
+    await db.insert(transactions).values({
+      userId,
+      accountId: copAccountId,
+      occurredAt: new Date("2026-04-15T05:00:00Z"),
+      amountCents: BigInt(-50_000),
+      currency: "COP",
+      descriptionRaw: `${TAG} leftover`,
+      source: "sms",
+      channel: "bank",
+    });
+
+    mockParseAndHint.mockResolvedValue(makeDispatch("COP"));
+    const preview = await previewIngestion(
+      makeFormData("emit-flagged", { hint_account_id: String(copAccountId) }),
+    );
+    if (preview.kind === "format_unknown") throw new Error("unexpected kind");
+
+    const result = await commitIngestion(preview.token);
+    expect(result.status).toBe("committed");
+    expect(result.kind === "bancolombia-savings" && result.flagged).toBeGreaterThan(0);
+
+    const flaggedCall = vi
+      .mocked(emitNotification)
+      .mock.calls.find(([, input]) => input.type === "reconciliation_flagged_txns");
+    expect(flaggedCall).toBeDefined();
+    expect(flaggedCall![1]).toMatchObject({
+      type: "reconciliation_flagged_txns",
+      audience: "user",
+      priority: "high",
+    });
+  });
+
+  it("does NOT emit statement_import_complete when status is already_imported", async () => {
+    mockParseAndHint.mockResolvedValue(makeDispatch("COP"));
+    const firstPreview = await previewIngestion(
+      makeFormData("dup-file", { hint_account_id: String(copAccountId) }),
+    );
+    if (firstPreview.kind === "format_unknown") throw new Error("unexpected kind");
+    const first = await commitIngestion(firstPreview.token);
+    expect(first.status).toBe("committed");
+
+    vi.mocked(emitNotification).mockClear();
+
+    mockParseAndHint.mockResolvedValue(makeDispatch("COP"));
+    const secondPreview = await previewIngestion(
+      makeFormData("dup-file", { hint_account_id: String(copAccountId) }),
+    );
+    if (secondPreview.kind === "format_unknown") throw new Error("unexpected kind");
+    const second = await commitIngestion(secondPreview.token);
+    expect(second.status).toBe("already_imported");
+
+    const completeCall = vi
+      .mocked(emitNotification)
+      .mock.calls.find(([, input]) => input.type === "statement_import_complete");
+    expect(completeCall).toBeUndefined();
   });
 });
