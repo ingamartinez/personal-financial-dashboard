@@ -494,7 +494,10 @@ describe("doors: inbound mail sanitization", () => {
   it("strips HTML tags so markup cannot reach the model — removing the replace turns this red", () => {
     expect(snippetFromHtml("<b>Hello</b>")).toBe("Hello");
     expect(snippetFromHtml("<html><p>Almohada</p></html>")).toBe("Almohada");
-    expect(snippetFromHtml("<div>visible</div><script>hidden()</script>")).not.toMatch(/<[^>]+>/);
+    const stripped = snippetFromHtml("<div>visible</div><script>hidden()</script>");
+    expect(stripped).toBe("visible hidden()");
+    expect(stripped).not.toContain("<");
+    expect(stripped).not.toContain(">");
   });
 
   it("hard-caps at MAIL_SNIPPET_MAX_CHARS — removing the slice turns this red", () => {
@@ -508,7 +511,8 @@ describe("doors: inbound mail sanitization", () => {
     const raw = `<p>${"N".repeat(MAIL_SNIPPET_MAX_CHARS + 50)}</p>`;
     const snippet = snippetFromHtml(raw);
     expect(snippet.length).toBe(MAIL_SNIPPET_MAX_CHARS);
-    expect(snippet).not.toContain("<p>");
+    expect(snippet).not.toContain("<");
+    expect(snippet).not.toContain(">");
   });
 });
 
@@ -932,7 +936,8 @@ describe("investigateResidueRow", () => {
     expect(content).toContain(`${TAG} Almohada`);
     expect(content).toContain("untrusted");
     expect(content).not.toContain("SECRET OTHER USER");
-    expect(content).not.toContain("<html>");
+    expect(content).not.toContain("<");
+    expect(content).not.toContain(">");
   });
 
   it("search_mail strips tags in the payload the model sees — returning rawHtml turns this red", async () => {
@@ -985,10 +990,11 @@ describe("investigateResidueRow", () => {
     const snippets = mailSnippetsFromCaptured(captured);
     expect(snippets.length).toBeGreaterThan(0);
     expect(snippets.some((s) => s.includes(`${merchant} almohada`))).toBe(true);
-    expect(snippets.join("\n")).not.toMatch(/<div>|<script>/);
-    const serialized = JSON.stringify(captured[1]?.body.messages ?? "");
-    expect(serialized).not.toContain("<div>");
-    expect(serialized).not.toContain("<script>");
+    const seenByModel = [snippets.join("\n"), JSON.stringify(captured[1]?.body.messages ?? "")];
+    for (const text of seenByModel) {
+      expect(text).not.toContain("<");
+      expect(text).not.toContain(">");
+    }
   });
 
   it("search_mail caps snippet length in the payload the model sees — dropping slice turns this red", async () => {
@@ -1180,7 +1186,8 @@ describe("investigateResidueRow", () => {
       .where(sql`canonical_merchant = ${poison.toLowerCase()}`);
     expect(kb).toBeUndefined();
     const row = await getTx(txId);
-    expect(JSON.stringify(row?.classificationReason ?? {})).not.toContain("<script>");
+    expect(JSON.stringify(row?.classificationReason ?? {})).not.toContain("<");
+    expect(JSON.stringify(row?.classificationReason ?? {})).not.toContain(">");
   });
 
   it("does not persist an over-length canonicalMerchant that would pass class and instruction checks", async () => {
