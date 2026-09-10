@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { webhookTokens } from "@/lib/db/schema";
+import { waitUntil } from "@/lib/test/wait-until";
 import {
   hashWebhookToken,
   listWebhookTokensForUser,
@@ -137,8 +138,16 @@ describe("webhook-tokens module", () => {
     expect(before[0].lastUsedAt).toBeNull();
 
     await resolveWebhookAuth({ authHeader: `Bearer ${plaintext}`, purpose: "sms" });
-    // fire-and-forget — give it a moment to settle
-    await new Promise((r) => setTimeout(r, 50));
+    await waitUntil(
+      async () => {
+        const [row] = await db
+          .select({ lastUsedAt: webhookTokens.lastUsedAt })
+          .from(webhookTokens)
+          .where(and(eq(webhookTokens.id, id), isNull(webhookTokens.revokedAt)));
+        return row?.lastUsedAt != null;
+      },
+      { message: `webhook token ${id} last_used_at was not stamped` },
+    );
 
     const after = await db
       .select({ lastUsedAt: webhookTokens.lastUsedAt })

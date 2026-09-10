@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { notifications, users } from "@/lib/db/schema";
 import { emit, subscribe, type AppEvent } from "@/lib/events/bus";
+import { waitUntil } from "@/lib/test/wait-until";
 import { registerAutoMarkRead } from "./auto-mark-read";
 
 // ---------------------------------------------------------------------------
@@ -60,15 +61,10 @@ async function getReadAt(id: number): Promise<Date | null> {
   return row?.readAt ?? null;
 }
 
-/**
- * Flush pending microtasks so async bus subscribers (which are async functions
- * called synchronously by the EventEmitter) have time to resolve their DB
- * calls before we assert.
- */
-async function flush(): Promise<void> {
-  // Two rounds of Promise.resolve ensures both the immediate microtask queue
-  // and any awaited-within-subscribers work is settled.
-  await new Promise<void>((r) => setTimeout(r, 50));
+async function waitUntilRead(id: number): Promise<void> {
+  await waitUntil(async () => (await getReadAt(id)) !== null, {
+    message: `notification ${id} was not marked read`,
+  });
 }
 
 beforeAll(async () => {
@@ -106,7 +102,7 @@ describe("registerAutoMarkRead", () => {
       reason: "linked",
       timestamp: Date.now(),
     });
-    await flush();
+    await waitUntilRead(id);
 
     expect(await getReadAt(id)).not.toBeNull();
   });
@@ -118,7 +114,7 @@ describe("registerAutoMarkRead", () => {
     });
 
     emit({ type: "gmail:reconnected", userId: userA, connectionId: 7, timestamp: Date.now() });
-    await flush();
+    await waitUntilRead(id);
 
     expect(await getReadAt(id)).not.toBeNull();
   });
@@ -130,7 +126,7 @@ describe("registerAutoMarkRead", () => {
     });
 
     emit({ type: "slo:resolved", userId: userA, alertId: 99, timestamp: Date.now() });
-    await flush();
+    await waitUntilRead(id);
 
     expect(await getReadAt(id)).not.toBeNull();
   });
@@ -142,7 +138,7 @@ describe("registerAutoMarkRead", () => {
     });
 
     emit({ type: "disambiguation:resolved", userId: userA, receiptId: 55, timestamp: Date.now() });
-    await flush();
+    await waitUntilRead(id);
 
     expect(await getReadAt(id)).not.toBeNull();
   });
@@ -163,9 +159,8 @@ describe("registerAutoMarkRead", () => {
       reason: "synthetic",
       timestamp: Date.now(),
     });
-    await flush();
 
-    // readAt must remain null.
+    // Listener bails synchronously on gapId === null — no write is in flight.
     expect(await getReadAt(id)).toBeNull();
   });
 
@@ -181,10 +176,10 @@ describe("registerAutoMarkRead", () => {
 
     // Fire event for userA only.
     emit({ type: "slo:resolved", userId: userA, alertId: 10, timestamp: Date.now() });
-    await flush();
+    await waitUntilRead(idA);
 
     expect(await getReadAt(idA)).not.toBeNull();
-    // B's notification must remain unread.
+    // Same UPDATE already completed for userA — B was not in its WHERE.
     expect(await getReadAt(idB)).toBeNull();
   });
 
@@ -195,9 +190,8 @@ describe("registerAutoMarkRead", () => {
       entityId: "1",
     });
 
-    // Should not throw.
+    // Should not throw. No matching row, so the in-flight UPDATE cannot set readAt.
     emit({ type: "slo:resolved", userId: userA, alertId: 999, timestamp: Date.now() });
-    await flush();
 
     // Original notification still unread.
     const rows = await db
@@ -216,14 +210,14 @@ describe("registerAutoMarkRead", () => {
 
     // Should not throw.
     emit({ type: "slo:resolved", userId: userA, alertId: 20, timestamp: Date.now() });
-    await flush();
+    await waitUntilRead(id);
 
     // readAt should still be set (no crash).
     expect(await getReadAt(id)).not.toBeNull();
   });
 
   it("does NOT emit notification:created when auto-marking as read", async () => {
-    await createNotification(userA, {
+    const id = await createNotification(userA, {
       type: "gmail_token_expired",
       entityId: "30",
     });
@@ -233,7 +227,7 @@ describe("registerAutoMarkRead", () => {
 
     try {
       emit({ type: "gmail:reconnected", userId: userA, connectionId: 30, timestamp: Date.now() });
-      await flush();
+      await waitUntilRead(id);
 
       const createdEvents = received.filter((e) => e.type === "notification:created");
       expect(createdEvents).toHaveLength(0);
