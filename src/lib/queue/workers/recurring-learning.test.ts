@@ -816,6 +816,63 @@ describe("recurringLearningProcessor", () => {
     expect(noop?.status).toBe("expired");
   });
 
+  it("does NOT expire a pending amount_update proposal whose payload is missing currency", async () => {
+    // Malformed/legacy payload — the IS NOT NULL guard must make this
+    // OR-branch false rather than NULL-propagate into a false-positive
+    // expiry (or a SQL error on the `<>` comparison).
+    const [row] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringAId,
+        proposalType: "amount_update",
+        payload: {
+          newAmountCents: "-44900",
+          oldAmountCents: "-42000",
+          observationCount: 2,
+          // currency deliberately omitted.
+        },
+        status: "pending",
+      })
+      .returning({ id: recurringProposals.id });
+
+    await recurringLearningProcessor(mockJob());
+
+    const [after] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, row.id));
+
+    expect(after?.status).toBe("pending");
+  });
+
+  it("does NOT expire a pending amount_update proposal whose payload is missing newAmountCents", async () => {
+    const [row] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringAId,
+        proposalType: "amount_update",
+        payload: {
+          oldAmountCents: "-42000",
+          currency: "COP",
+          observationCount: 2,
+          // newAmountCents deliberately omitted.
+        },
+        status: "pending",
+      })
+      .returning({ id: recurringProposals.id });
+
+    await recurringLearningProcessor(mockJob());
+
+    const [after] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, row.id));
+
+    expect(after?.status).toBe("pending");
+  });
+
   it("does NOT expire a still-valid pending amount_update proposal (same currency, changed amount)", async () => {
     const [validRow] = await db
       .insert(recurringProposals)

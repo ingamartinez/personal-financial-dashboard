@@ -88,11 +88,20 @@ export async function recurringLearningProcessor(
   await job.log(`expired: stale proposals expired=${expired.length}`);
 
   // Step 0b (#870): expire pending amount_update proposals that are already
-  // stale regardless of age — either the recurring's currency has since
-  // diverged from the currency the proposal was computed in (recurring
-  // migrated USD -> COP after the worker ran), or newAmountCents already
-  // equals the recurring's current estimate (accepting would be a no-op).
-  // Scoped to amount_update — variable_flag proposals carry no such staleness.
+  // stale, REGARDLESS OF AGE — deliberately not folded into the 30-day
+  // cutoff above. Either the recurring's currency has since diverged from
+  // the currency the proposal was computed in (recurring migrated
+  // USD -> COP after the worker ran), or newAmountCents already equals the
+  // recurring's current estimate (accepting would be a no-op). A proposal
+  // already known to be wrong or redundant shouldn't sit pending for up to
+  // 30 days waiting on the age-based sweep — expire it the moment this
+  // worker run can prove it's stale. Scoped to amount_update —
+  // variable_flag proposals carry no such staleness.
+  //
+  // IS NOT NULL guards: a payload missing `currency` or `newAmountCents`
+  // makes its OR-branch evaluate to NULL/false, so the row is left
+  // untouched (not errored, not force-expired) — see
+  // recurring-learning.test.ts's "malformed payload" coverage.
   const staleExpired = await db.execute<{ id: number }>(sql`
     UPDATE recurring_proposals rp
     SET status = 'expired', decided_at = NOW()
@@ -101,6 +110,7 @@ export async function recurringLearningProcessor(
       AND rp.user_id = rt.user_id
       AND rp.status = 'pending'
       AND rp.proposal_type = 'amount_update'
+      AND rt.deleted_at IS NULL
       AND (
         (
           rp.payload->>'currency' IS NOT NULL

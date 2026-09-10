@@ -65,7 +65,13 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
   // #870: proposal currency is authoritative for the amounts on this card —
   // it may disagree with the account's own currency (a COP recurring can
   // sit on a USD account), so it's surfaced explicitly rather than assumed.
-  const proposalCurrency = (p.currency as Currency | undefined) ?? "COP";
+  // Real runtime narrowing, NOT a blind `as Currency` cast: `p` is
+  // `Record<string, unknown>` (raw jsonb), so any unexpected value here
+  // (hand-edited row, a future payload shape) must degrade to a rendered
+  // amount rather than reach `formatMoney`'s `Intl.NumberFormat`, which
+  // throws a synchronous RangeError on an invalid ISO code — taking down
+  // the whole proposals page, not just this card.
+  const proposalCurrency: Currency = p.currency === "USD" ? "USD" : "COP";
 
   return (
     <article
