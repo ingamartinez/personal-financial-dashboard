@@ -335,6 +335,87 @@ describe("rebuildDescriptionPatterns", () => {
     expect(linked.recurringId).toBe(recId);
   });
 
+  it("#864: relink of an already-sourced tx does not inflate count; second run is unchanged", async () => {
+    // Undo-match leaves the observation row. Relink re-links that tx and
+    // recordRecurringLinkObservation increments observation_count even though
+    // the observation already existed — extra relative to distinct tx ids.
+    // The first run must actually relink; the second must report changed:false
+    // with the derived count. If the post-relink re-derive is removed, the
+    // increment survives and this test goes red.
+    const userId = await seedUser("864-idempotent");
+    const accountId = await seedAccount(userId);
+    const recId = await seedRecurring(userId, accountId, {
+      label: `${TAG}-864`,
+      amountCents: BigInt(-49000000),
+      dayOfMonth: 15,
+    });
+    const txMay = await seedTx(userId, accountId, {
+      occurredOn: "2026-05-15",
+      amountCents: BigInt(-51866000),
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+      recurringId: recId,
+      recurringYearMonth: "2026-05",
+    });
+    const txJun = await seedTx(userId, accountId, {
+      occurredOn: "2026-06-24",
+      amountCents: BigInt(-66777500),
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+      recurringId: recId,
+      recurringYearMonth: "2026-06",
+    });
+    const orphan = await seedTx(userId, accountId, {
+      occurredOn: "2026-09-09",
+      amountCents: BigInt(-59459400),
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+    });
+    await seedObservation({
+      userId,
+      recurringId: recId,
+      txId: txMay,
+      yearMonth: "2026-05",
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+      accountId,
+      amountCents: BigInt(-51866000),
+    });
+    await seedObservation({
+      userId,
+      recurringId: recId,
+      txId: txJun,
+      yearMonth: "2026-06",
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+      accountId,
+      amountCents: BigInt(-66777500),
+    });
+    await seedObservation({
+      userId,
+      recurringId: recId,
+      txId: orphan,
+      yearMonth: "2026-09",
+      description: "Pago a EMPRESAS PUBLICAS DE MEDELLIN",
+      accountId,
+      amountCents: BigInt(-59459400),
+    });
+    await seedStalePattern({ userId, recurringId: recId, pattern: "PAGO", observationCount: 9 });
+
+    const first = await rebuildDescriptionPatterns({ userId, relink: true });
+    expect(first.changed).toBe(true);
+    expect(first.relinked).toBe(1);
+    expect(await patternsFor(userId, recId)).toEqual([
+      { pattern: "EMPRESAS", observationCount: 3 },
+    ]);
+    const [linked] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, orphan));
+    expect(linked.recurringId).toBe(recId);
+
+    const second = await rebuildDescriptionPatterns({ userId, relink: true });
+    expect(second.changed).toBe(false);
+    expect(await patternsFor(userId, recId)).toEqual([
+      { pattern: "EMPRESAS", observationCount: 3 },
+    ]);
+  });
+
   it("dry-run does not write", async () => {
     const userId = await seedUser("dry");
     const accountId = await seedAccount(userId);

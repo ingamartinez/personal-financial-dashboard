@@ -7,8 +7,10 @@
  * (never summed old counts), and on a real change re-runs auto-link so
  * orphans like tx 2652 can take the unique-token path.
  *
- * Idempotent: a second run writes nothing; relink still runs so a crash
- * mid-auto-link can recover.
+ * Idempotent: a second run writes nothing. Relink still runs so a crash
+ * mid-auto-link can recover; observation_count is then re-derived from
+ * sources so the increment on a newly linked tx cannot drift the stored
+ * count above distinct tx ids.
  *
  * Usage:
  *   bun scripts/backfill-retokenize-patterns.ts --dry-run

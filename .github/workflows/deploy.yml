@@ -330,7 +330,8 @@ jobs:
 
       # #852: rebuild description fingerprints from description_raw after the
       # PAGO-prefix tokenizer change, then auto-link orphans (tx 2652).
-      # Idempotent: a second deploy writes nothing; relink is still attempted.
+      # Idempotent (#864): a second deploy writes nothing; relink is still
+      # attempted, then observation_count is re-derived from sources.
       - name: Run #852 description-pattern rebuild
         env:
           GIT_SHA: ${{ steps.sha.outputs.sha }}

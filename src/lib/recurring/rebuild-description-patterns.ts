@@ -11,8 +11,11 @@
 // merchant that the old tokenizer split (PAGO vs EMPRESAS) collapsing into
 // EMPRESAS count=2 is legitimate — both payments were that merchant.
 //
-// Idempotent: the desired set is a pure function of current sources. A second
-// run writes nothing; relink still runs so a crash mid-auto-link can recover.
+// Idempotent: the desired set is a pure function of current sources AFTER
+// relink finishes. Relink may increment observation_count (recording the
+// observation is correct); we re-derive from sources afterward so the stored
+// count cannot drift above distinct tx ids. A second run writes nothing;
+// relink still runs so a crash mid-auto-link can recover.
 
 import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
@@ -112,11 +115,31 @@ export function computePatternsFromSources(sources: PatternSource[]): ComputedPa
   }));
 }
 
+type ExistingPattern = {
+  userId: number;
+  recurringId: number;
+  pattern: string;
+  observationCount: number;
+};
+
 function snapshot(rows: { userId: number; recurringId: number; pattern: string; count: number }[]) {
   return rows
     .map((r) => `${r.userId}:${r.recurringId}:${r.pattern}:${r.count}`)
     .sort()
     .join("|");
+}
+
+function snapshotPatterns(
+  rows: { userId: number; recurringId: number; pattern: string; observationCount: number }[],
+) {
+  return snapshot(
+    rows.map((r) => ({
+      userId: r.userId,
+      recurringId: r.recurringId,
+      pattern: r.pattern,
+      count: r.observationCount,
+    })),
+  );
 }
 
 async function loadSources(userId: number | undefined, database: DB): Promise<PatternSource[]> {
@@ -175,13 +198,7 @@ async function loadSources(userId: number | undefined, database: DB): Promise<Pa
   return [...byKey.values()];
 }
 
-export async function rebuildDescriptionPatterns(
-  opts: RebuildOptions = {},
-): Promise<RebuildReport> {
-  const database = opts.database ?? defaultDb;
-  const dryRun = opts.dryRun ?? false;
-  const relink = opts.relink ?? true;
-
+async function loadExisting(userId: number | undefined, database: DB): Promise<ExistingPattern[]> {
   const existingBase = database
     .select({
       userId: recurringDescriptionPatterns.userId,
@@ -190,31 +207,64 @@ export async function rebuildDescriptionPatterns(
       observationCount: recurringDescriptionPatterns.observationCount,
     })
     .from(recurringDescriptionPatterns);
-  const existing =
-    opts.userId === undefined
-      ? await existingBase
-      : await existingBase.where(eq(recurringDescriptionPatterns.userId, opts.userId));
+  return userId === undefined
+    ? await existingBase
+    : await existingBase.where(eq(recurringDescriptionPatterns.userId, userId));
+}
 
+async function replacePatterns(
+  database: DB,
+  computed: ComputedPattern[],
+  existing: ExistingPattern[],
+  userId: number | undefined,
+): Promise<{ rowsDeleted: number; rowsInserted: number }> {
+  const recurringIds = [
+    ...new Set([...existing.map((r) => r.recurringId), ...computed.map((r) => r.recurringId)]),
+  ];
+  let rowsDeleted = 0;
+  let rowsInserted = 0;
+
+  await database.transaction(async (trx) => {
+    if (recurringIds.length > 0) {
+      const delFilter = [
+        inArray(recurringDescriptionPatterns.recurringId, recurringIds),
+        ...(userId === undefined ? [] : [eq(recurringDescriptionPatterns.userId, userId)]),
+      ];
+      const deleted = await trx
+        .delete(recurringDescriptionPatterns)
+        .where(and(...delFilter))
+        .returning({ id: recurringDescriptionPatterns.id });
+      rowsDeleted = deleted.length;
+    }
+    if (computed.length > 0) {
+      await trx.insert(recurringDescriptionPatterns).values(
+        computed.map((r) => ({
+          userId: r.userId,
+          recurringId: r.recurringId,
+          pattern: r.pattern,
+          observationCount: r.observationCount,
+          lastObservedAt: r.lastObservedAt,
+        })),
+      );
+      rowsInserted = computed.length;
+    }
+  });
+
+  return { rowsDeleted, rowsInserted };
+}
+
+export async function rebuildDescriptionPatterns(
+  opts: RebuildOptions = {},
+): Promise<RebuildReport> {
+  const database = opts.database ?? defaultDb;
+  const dryRun = opts.dryRun ?? false;
+  const relink = opts.relink ?? true;
+
+  const existing = await loadExisting(opts.userId, database);
   const sources = await loadSources(opts.userId, database);
   const computed = computePatternsFromSources(sources);
 
-  const before = snapshot(
-    existing.map((r) => ({
-      userId: r.userId,
-      recurringId: r.recurringId,
-      pattern: r.pattern,
-      count: r.observationCount,
-    })),
-  );
-  const after = snapshot(
-    computed.map((r) => ({
-      userId: r.userId,
-      recurringId: r.recurringId,
-      pattern: r.pattern,
-      count: r.observationCount,
-    })),
-  );
-  const changed = before !== after;
+  const changed = snapshotPatterns(existing) !== snapshotPatterns(computed);
 
   log.info(
     {
@@ -245,37 +295,9 @@ export async function rebuildDescriptionPatterns(
   }
 
   if (changed) {
-    const recurringIds = [
-      ...new Set([...existing.map((r) => r.recurringId), ...computed.map((r) => r.recurringId)]),
-    ];
-
-    await database.transaction(async (trx) => {
-      if (recurringIds.length > 0) {
-        const delFilter = [
-          inArray(recurringDescriptionPatterns.recurringId, recurringIds),
-          ...(opts.userId === undefined
-            ? []
-            : [eq(recurringDescriptionPatterns.userId, opts.userId)]),
-        ];
-        const deleted = await trx
-          .delete(recurringDescriptionPatterns)
-          .where(and(...delFilter))
-          .returning({ id: recurringDescriptionPatterns.id });
-        report.rowsDeleted = deleted.length;
-      }
-      if (computed.length > 0) {
-        await trx.insert(recurringDescriptionPatterns).values(
-          computed.map((r) => ({
-            userId: r.userId,
-            recurringId: r.recurringId,
-            pattern: r.pattern,
-            observationCount: r.observationCount,
-            lastObservedAt: r.lastObservedAt,
-          })),
-        );
-        report.rowsInserted = computed.length;
-      }
-    });
+    const written = await replacePatterns(database, computed, existing, opts.userId);
+    report.rowsDeleted = written.rowsDeleted;
+    report.rowsInserted = written.rowsInserted;
 
     log.info(
       {
@@ -323,6 +345,24 @@ export async function rebuildDescriptionPatterns(
     },
     "rebuild description patterns relink finished",
   );
+
+  // Relink records observations and increments observation_count. Re-derive
+  // from sources so the stored count stays COUNT(distinct tx_id), not
+  // "derived + however many links this run just recorded".
+  const sourcesAfter = await loadSources(opts.userId, database);
+  const computedAfter = computePatternsFromSources(sourcesAfter);
+  const existingAfter = await loadExisting(opts.userId, database);
+  if (snapshotPatterns(existingAfter) !== snapshotPatterns(computedAfter)) {
+    const reconciled = await replacePatterns(database, computedAfter, existingAfter, opts.userId);
+    log.info(
+      {
+        event: "rebuild_description_patterns_relink_reconciled",
+        rowsDeleted: reconciled.rowsDeleted,
+        rowsInserted: reconciled.rowsInserted,
+      },
+      "rebuild description patterns re-derived after relink",
+    );
+  }
 
   return report;
 }

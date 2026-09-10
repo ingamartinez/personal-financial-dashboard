@@ -468,34 +468,38 @@ async function autoLinkTransactionOnce(
       timestamp: Date.now(),
     });
 
-    // #633: Record observation (auto, gap path).
-    recordRecurringLinkObservation(
-      { userId, recurringId: result.recurringId, txId, yearMonth: result.yearMonth, manual: false },
-      database,
-    )
-      .then(() => {
-        // #701: After observation is recorded, check for price hike (fire-and-forget).
-        maybeEmitPriceHikeNotification(userId, result.recurringId, database).catch(
-          (err: unknown) => {
-            log.error(
-              { err, event: "price_hike_emit_failed", recurringId: result.recurringId, userId },
-              "failed to emit subscription price hike notification (gap path) — non-critical",
-            );
-          },
-        );
-      })
-      .catch((err) => {
+    // #633: Record observation (auto, gap path). Awaited so callers that
+    // re-derive pattern counts after a batch of links (rebuild) see the
+    // increment. Failures stay non-critical. Price-hike stays fire-and-forget.
+    try {
+      await recordRecurringLinkObservation(
+        {
+          userId,
+          recurringId: result.recurringId,
+          txId,
+          yearMonth: result.yearMonth,
+          manual: false,
+        },
+        database,
+      );
+      maybeEmitPriceHikeNotification(userId, result.recurringId, database).catch((err: unknown) => {
         log.error(
-          {
-            err,
-            event: "observation_record_failed",
-            txId,
-            recurringId: result.recurringId,
-            userId,
-          },
-          "failed to record recurring link observation (gap path) — non-critical",
+          { err, event: "price_hike_emit_failed", recurringId: result.recurringId, userId },
+          "failed to emit subscription price hike notification (gap path) — non-critical",
         );
       });
+    } catch (err) {
+      log.error(
+        {
+          err,
+          event: "observation_record_failed",
+          txId,
+          recurringId: result.recurringId,
+          userId,
+        },
+        "failed to record recurring link observation (gap path) — non-critical",
+      );
+    }
 
     return result;
   }
@@ -646,40 +650,40 @@ async function autoLinkTransactionOnce(
     timestamp: Date.now(),
   });
 
-  // #633: Record observation (auto, direct path).
-  recordRecurringLinkObservation(
-    {
-      userId,
-      recurringId: directHit.recurringId,
-      txId,
-      yearMonth: directHit.yearMonth,
-      manual: false,
-    },
-    database,
-  )
-    .then(() => {
-      // #701: After observation is recorded, check for price hike (fire-and-forget).
-      maybeEmitPriceHikeNotification(userId, directHit.recurringId, database).catch(
-        (err: unknown) => {
-          log.error(
-            { err, event: "price_hike_emit_failed", recurringId: directHit.recurringId, userId },
-            "failed to emit subscription price hike notification (direct path) — non-critical",
-          );
-        },
-      );
-    })
-    .catch((err) => {
-      log.error(
-        {
-          err,
-          event: "observation_record_failed",
-          txId,
-          recurringId: directHit.recurringId,
-          userId,
-        },
-        "failed to record recurring link observation (direct path) — non-critical",
-      );
-    });
+  // #633: Record observation (auto, direct path). Awaited so callers that
+  // re-derive pattern counts after a batch of links (rebuild) see the
+  // increment. Failures stay non-critical. Price-hike stays fire-and-forget.
+  try {
+    await recordRecurringLinkObservation(
+      {
+        userId,
+        recurringId: directHit.recurringId,
+        txId,
+        yearMonth: directHit.yearMonth,
+        manual: false,
+      },
+      database,
+    );
+    maybeEmitPriceHikeNotification(userId, directHit.recurringId, database).catch(
+      (err: unknown) => {
+        log.error(
+          { err, event: "price_hike_emit_failed", recurringId: directHit.recurringId, userId },
+          "failed to emit subscription price hike notification (direct path) — non-critical",
+        );
+      },
+    );
+  } catch (err) {
+    log.error(
+      {
+        err,
+        event: "observation_record_failed",
+        txId,
+        recurringId: directHit.recurringId,
+        userId,
+      },
+      "failed to record recurring link observation (direct path) — non-critical",
+    );
+  }
 
   return {
     status: "linked",
