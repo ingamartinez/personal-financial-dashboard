@@ -708,6 +708,198 @@ describe("recurringLearningProcessor", () => {
     await db.execute(sql`DELETE FROM users WHERE id = ${userBId}`);
   });
 
+  // ── New: #870 currency guard + stale-proposal expiry ────────────────────
+
+  it("skips observations whose real_currency disagrees with the recurring's currency", async () => {
+    // recurringAId lives in COP. Observations recorded in USD must never be
+    // drift-compared against the COP estimate.
+    const tx1 = await seedTx(userAId, accountAId, BigInt(-2000));
+    const tx2 = await seedTx(userAId, accountAId, BigInt(-2000));
+
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx1,
+        yearMonth: "2026-03",
+        realAmountCents: BigInt(-2000),
+        realCurrency: "USD",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+      {
+        userId: userAId,
+        recurringId: recurringAId,
+        txId: tx2,
+        yearMonth: "2026-04",
+        realAmountCents: BigInt(-2000),
+        realCurrency: "USD",
+        descriptionRaw: `${TAG}-tx`,
+        accountId: accountAId,
+        manual: true,
+        applied: false,
+      },
+    ]);
+
+    const result = await recurringLearningProcessor(mockJob());
+
+    expect(result.proposalsCreated).toBe(0);
+    expect(result.errors).toBe(0);
+
+    const proposals = await db
+      .select()
+      .from(recurringProposals)
+      .where(eq(recurringProposals.userId, userAId));
+
+    expect(proposals).toHaveLength(0);
+    expect(emitMocks.emitNotification).not.toHaveBeenCalled();
+  });
+
+  it("expires a pending amount_update proposal whose currency no longer matches the recurring", async () => {
+    // Proposal was computed while the recurring was USD; it has since moved
+    // to COP (recurringAId is seeded as COP by seedRecurring).
+    const [staleRow] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringAId,
+        proposalType: "amount_update",
+        payload: {
+          newAmountCents: "-2000",
+          oldAmountCents: "-20000",
+          currency: "USD",
+          observationCount: 2,
+        },
+        status: "pending",
+      })
+      .returning({ id: recurringProposals.id });
+
+    await recurringLearningProcessor(mockJob());
+
+    const [stale] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, staleRow.id));
+
+    expect(stale?.status).toBe("expired");
+  });
+
+  it("expires a pending amount_update proposal whose newAmountCents already equals the recurring's estimate", async () => {
+    // recurringAId's estimate is -42000 (seeded default). A pending proposal
+    // proposing that exact same value is a no-op — accepting it would change
+    // nothing, so the sweep should expire it outright.
+    const [noopRow] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringAId,
+        proposalType: "amount_update",
+        payload: {
+          newAmountCents: "-42000",
+          oldAmountCents: "-42000",
+          currency: "COP",
+          observationCount: 2,
+        },
+        status: "pending",
+      })
+      .returning({ id: recurringProposals.id });
+
+    await recurringLearningProcessor(mockJob());
+
+    const [noop] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, noopRow.id));
+
+    expect(noop?.status).toBe("expired");
+  });
+
+  it("does NOT expire a pending amount_update proposal whose payload is missing currency", async () => {
+    // Malformed/legacy payload — the IS NOT NULL guard must make this
+    // OR-branch false rather than NULL-propagate into a false-positive
+    // expiry (or a SQL error on the `<>` comparison).
+    const [row] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringAId,
+        proposalType: "amount_update",
+        payload: {
+          newAmountCents: "-44900",
+          oldAmountCents: "-42000",
+          observationCount: 2,
+          // currency deliberately omitted.
+        },
+        status: "pending",
+      })
+      .returning({ id: recurringProposals.id });
+
+    await recurringLearningProcessor(mockJob());
+
+    const [after] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, row.id));
+
+    expect(after?.status).toBe("pending");
+  });
+
+  it("does NOT expire a pending amount_update proposal whose payload is missing newAmountCents", async () => {
+    const [row] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringAId,
+        proposalType: "amount_update",
+        payload: {
+          oldAmountCents: "-42000",
+          currency: "COP",
+          observationCount: 2,
+          // newAmountCents deliberately omitted.
+        },
+        status: "pending",
+      })
+      .returning({ id: recurringProposals.id });
+
+    await recurringLearningProcessor(mockJob());
+
+    const [after] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, row.id));
+
+    expect(after?.status).toBe("pending");
+  });
+
+  it("does NOT expire a still-valid pending amount_update proposal (same currency, changed amount)", async () => {
+    const [validRow] = await db
+      .insert(recurringProposals)
+      .values({
+        userId: userAId,
+        recurringId: recurringAId,
+        proposalType: "amount_update",
+        payload: {
+          newAmountCents: "-44900",
+          oldAmountCents: "-42000",
+          currency: "COP",
+          observationCount: 2,
+        },
+        status: "pending",
+      })
+      .returning({ id: recurringProposals.id });
+
+    await recurringLearningProcessor(mockJob());
+
+    const [valid] = await db
+      .select({ status: recurringProposals.status })
+      .from(recurringProposals)
+      .where(eq(recurringProposals.id, validRow.id));
+
+    expect(valid?.status).toBe("pending");
+  });
+
   it("does NOT emit when no proposals are created (observations below threshold)", async () => {
     // Only 1 observation — below MIN_OBSERVATIONS_FOR_AMOUNT_UPDATE (2).
     const tx1 = await seedTx(userAId, accountAId, BigInt(-44900));

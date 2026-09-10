@@ -87,6 +87,94 @@ export async function recurringLearningProcessor(
   );
   await job.log(`expired: stale proposals expired=${expired.length}`);
 
+  // Step 0b (#870): expire pending amount_update proposals that are already
+  // stale, REGARDLESS OF AGE — deliberately not folded into the 30-day
+  // cutoff above. Either the recurring's currency has since diverged from
+  // the currency the proposal was computed in (recurring migrated
+  // USD -> COP after the worker ran), or newAmountCents already equals the
+  // recurring's current estimate (accepting would be a no-op). A proposal
+  // already known to be wrong or redundant shouldn't sit pending for up to
+  // 30 days waiting on the age-based sweep — expire it the moment this
+  // worker run can prove it's stale. Scoped to amount_update —
+  // variable_flag proposals carry no such staleness.
+  //
+  // IS NOT NULL guards: a payload missing `currency` or `newAmountCents`
+  // makes its OR-branch evaluate to NULL/false, so the row is left
+  // untouched (not errored, not force-expired) — see
+  // recurring-learning.test.ts's "malformed payload" coverage.
+  const staleExpired = await db.execute<{ id: number }>(sql`
+    UPDATE recurring_proposals rp
+    SET status = 'expired', decided_at = NOW()
+    FROM recurring_transactions rt
+    WHERE rp.recurring_id = rt.id
+      AND rp.user_id = rt.user_id
+      AND rp.status = 'pending'
+      AND rp.proposal_type = 'amount_update'
+      AND rt.deleted_at IS NULL
+      AND (
+        (
+          rp.payload->>'currency' IS NOT NULL
+          AND rp.payload->>'currency' <> rt.currency::text
+        )
+        OR (
+          rp.payload->>'newAmountCents' IS NOT NULL
+          AND (rp.payload->>'newAmountCents')::bigint = rt.amount_cents
+        )
+      )
+    RETURNING rp.id
+  `);
+  log.info(
+    { event: "recurring_learning_stale_expired", count: staleExpired.length },
+    "expired stale amount_update proposals (currency mismatch or no-op)",
+  );
+  await job.log(`expired: stale amount_update proposals expired=${staleExpired.length}`);
+
+  // Step 1a (#870): surface — but never aggregate — observation groups whose
+  // real_currency disagrees with the recurring's current currency. This is a
+  // data problem (a COP recurring re-pointed at a USD account, or vice
+  // versa), not something the worker should paper over by drift-comparing
+  // across currencies (that's what produced the nonsense proposals in #870).
+  const mismatched = await db.execute<{
+    user_id: number;
+    recurring_id: number;
+    observed_currency: string;
+    recurring_currency: string;
+    obs_count: number;
+  }>(sql`
+    SELECT
+      obs.user_id,
+      obs.recurring_id,
+      obs.real_currency AS observed_currency,
+      rt.currency AS recurring_currency,
+      COUNT(*)::int AS obs_count
+    FROM recurring_link_observations obs
+    INNER JOIN recurring_transactions rt
+      ON rt.id = obs.recurring_id
+      AND rt.user_id = obs.user_id
+    WHERE
+      obs.manual = true
+      AND obs.applied = false
+      AND rt.deleted_at IS NULL
+      AND rt.active = true
+      AND rt.amount_type != 'variable'
+      AND obs.real_currency != rt.currency
+    GROUP BY obs.user_id, obs.recurring_id, obs.real_currency, rt.currency
+  `);
+
+  for (const row of mismatched) {
+    log.warn(
+      {
+        event: "recurring_learning_currency_mismatch_skipped",
+        userId: Number(row.user_id),
+        recurringId: Number(row.recurring_id),
+        observedCurrency: row.observed_currency,
+        recurringCurrency: row.recurring_currency,
+        obsCount: Number(row.obs_count),
+      },
+      "skipped observation group — real_currency disagrees with the recurring's currency (data problem, not a bug)",
+    );
+  }
+
   // Step 1: find all (user_id, recurring_id) pairs with unapplied manual observations.
   // We use a raw SQL aggregation to get per-group stats efficiently.
   const groups = await db.execute<{
@@ -116,6 +204,10 @@ export async function recurringLearningProcessor(
       AND rt.deleted_at IS NULL
       AND rt.active = true
       AND rt.amount_type != 'variable'
+      -- #870: same-currency guard — an observation recorded in a different
+      -- currency than the recurring's current currency must never be
+      -- drift-compared against rt.amount_cents (see mismatch query above).
+      AND obs.real_currency = rt.currency
     GROUP BY obs.user_id, obs.recurring_id, obs.real_currency, rt.amount_cents, rt.amount_type
   `);
 

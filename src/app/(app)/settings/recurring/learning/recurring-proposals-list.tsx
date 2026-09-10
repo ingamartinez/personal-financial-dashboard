@@ -5,6 +5,8 @@
 
 import { useState, useTransition } from "react";
 import { CheckIcon, XIcon, TrendingUpIcon, ActivityIcon } from "lucide-react";
+import { formatMoney } from "@/lib/money";
+import type { Currency } from "@/lib/types";
 import { acceptProposal, rejectProposal } from "./actions";
 
 type Proposal = {
@@ -22,15 +24,12 @@ type ProposalCardProps = {
   onDecided: (id: number) => void;
 };
 
-function formatCents(cents: string | undefined): string {
+// #870: currency MUST come from the proposal payload, not a hardcoded COP —
+// a proposal generated while a recurring lived in USD (later migrated to
+// COP) still carries its original currency in payload.currency.
+function formatCents(cents: string | undefined, currency: Currency): string {
   if (!cents) return "—";
-  const n = Number(BigInt(cents));
-  const abs = Math.abs(n);
-  return new Intl.NumberFormat("es-CO", {
-    style: "currency",
-    currency: "COP",
-    maximumFractionDigits: 0,
-  }).format(abs / 100);
+  return formatMoney(BigInt(cents), currency);
 }
 
 function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
@@ -63,6 +62,16 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
 
   const isAmountUpdate = proposal.proposalType === "amount_update";
   const p = proposal.payload;
+  // #870: proposal currency is authoritative for the amounts on this card —
+  // it may disagree with the account's own currency (a COP recurring can
+  // sit on a USD account), so it's surfaced explicitly rather than assumed.
+  // Real runtime narrowing, NOT a blind `as Currency` cast: `p` is
+  // `Record<string, unknown>` (raw jsonb), so any unexpected value here
+  // (hand-edited row, a future payload shape) must degrade to a rendered
+  // amount rather than reach `formatMoney`'s `Intl.NumberFormat`, which
+  // throws a synchronous RangeError on an invalid ISO code — taking down
+  // the whole proposals page, not just this card.
+  const proposalCurrency: Currency = p.currency === "USD" ? "USD" : "COP";
 
   return (
     <article
@@ -82,19 +91,28 @@ function ProposalCard({ proposal, onDecided }: ProposalCardProps) {
           <div className="flex flex-wrap items-center gap-2">
             <strong className="font-medium">{proposal.label}</strong>
             <span className="text-ink-muted text-xs">{proposal.accountLabel}</span>
+            <span
+              className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300"
+              data-testid="proposal-currency"
+            >
+              {proposalCurrency}
+            </span>
           </div>
 
           {isAmountUpdate ? (
             <p className="text-sm">
-              Detectamos que pagaste <strong>{formatCents(p.newAmountCents as string)}</strong> los
+              Detectamos que pagaste{" "}
+              <strong>{formatCents(p.newAmountCents as string, proposalCurrency)}</strong> los
               últimos {p.observationCount as number} meses (estimado:{" "}
-              {formatCents(p.oldAmountCents as string)}).{" "}
+              {formatCents(p.oldAmountCents as string, proposalCurrency)}).{" "}
               <span className="text-ink-muted">¿Actualizar el estimado?</span>
             </p>
           ) : (
             <p className="text-sm">
               Pagaste montos distintos en los últimos {p.observationCount as number} meses (
-              {(p.detectedAmounts as string[]).map(formatCents).join(", ")}
+              {(p.detectedAmounts as string[])
+                .map((c) => formatCents(c, proposalCurrency))
+                .join(", ")}
               ). <span className="text-ink-muted">¿Marcar como monto variable?</span>
             </p>
           )}

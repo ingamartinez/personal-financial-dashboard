@@ -58,21 +58,59 @@ export async function acceptProposal(input: ProposalActionInput): Promise<Propos
 
       // 2. Apply the change to the recurring.
       if (proposal.proposalType === "amount_update") {
-        const p = proposal.payload as { newAmountCents: string };
+        const p = proposal.payload as { newAmountCents: string; currency?: string };
         if (!p.newAmountCents) throw new Error("Payload inválido: falta newAmountCents");
 
-        await trx
-          .update(recurringTransactions)
-          .set({
-            amountCents: BigInt(p.newAmountCents),
+        // #870: fetch the recurring's CURRENT currency + amount — both may
+        // have drifted since the worker computed this proposal (the
+        // recurring can be re-pointed to a different-currency account, or a
+        // prior accept/edit may have already landed the same value).
+        const [recurring] = await trx
+          .select({
+            currency: recurringTransactions.currency,
+            amountCents: recurringTransactions.amountCents,
           })
+          .from(recurringTransactions)
           .where(
             and(
               eq(recurringTransactions.userId, session.id),
               eq(recurringTransactions.id, proposal.recurringId),
               notDeleted(recurringTransactions.deletedAt),
             ),
+          )
+          .limit(1);
+
+        if (!recurring) throw new Error("Recurrente no encontrado");
+
+        // Cross-currency guard: never write an amount computed in one
+        // currency onto a recurring that now lives in another. The
+        // proposal is stale — the worker's next run will expire it.
+        if (p.currency && p.currency !== recurring.currency) {
+          throw new Error(
+            `Propuesta en ${p.currency} pero el recurrente ahora está en ${recurring.currency} — descartala`,
           );
+        }
+
+        const newAmountCents = BigInt(p.newAmountCents);
+
+        // No-op guard: the recurring's estimate already matches the
+        // proposed value (e.g. a prior accept already applied it, or the
+        // currency migration coincidentally left the same figure). Treat
+        // as decided without rewriting anything.
+        if (newAmountCents !== recurring.amountCents) {
+          await trx
+            .update(recurringTransactions)
+            .set({
+              amountCents: newAmountCents,
+            })
+            .where(
+              and(
+                eq(recurringTransactions.userId, session.id),
+                eq(recurringTransactions.id, proposal.recurringId),
+                notDeleted(recurringTransactions.deletedAt),
+              ),
+            );
+        }
       } else if (proposal.proposalType === "variable_flag") {
         await trx
           .update(recurringTransactions)
