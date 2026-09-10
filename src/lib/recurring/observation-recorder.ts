@@ -205,7 +205,7 @@ async function shouldLearnPattern(
   recurringId: number,
   pattern: string,
   tx: { amountCents: bigint; currency: string },
-  database: DB,
+  database: DbOrTrx,
 ): Promise<boolean> {
   const others = await database
     .select({ observationCount: recurringDescriptionPatterns.observationCount })
@@ -261,6 +261,8 @@ async function rederivePatternsFromObservations(
     .select({
       descriptionRaw: recurringLinkObservations.descriptionRaw,
       observedAt: recurringLinkObservations.observedAt,
+      realAmountCents: recurringLinkObservations.realAmountCents,
+      realCurrency: recurringLinkObservations.realCurrency,
     })
     .from(recurringLinkObservations)
     .where(
@@ -274,6 +276,22 @@ async function rederivePatternsFromObservations(
   for (const row of remaining) {
     const token = tokeniseDescription(row.descriptionRaw);
     if (token === null) continue;
+    // #864 recompute-from-observations, but each token must still pass the
+    // same foreign-owner check as first-learn. The raw observation row is
+    // always kept (audit); only the fingerprint is gated. Without this, a
+    // previously-blocked COLMEDICA observation would be silently re-taught
+    // the next time any other observation on this recurring is retracted.
+    if (
+      !(await shouldLearnPattern(
+        userId,
+        recurringId,
+        token,
+        { amountCents: row.realAmountCents, currency: row.realCurrency },
+        database,
+      ))
+    ) {
+      continue;
+    }
     const existing = acc.get(token);
     if (!existing) {
       acc.set(token, { count: 1, lastObservedAt: row.observedAt });

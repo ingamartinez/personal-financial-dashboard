@@ -486,4 +486,61 @@ describe("retractRecurringLinkObservation #873", () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  it("does not re-teach a previously blocked foreign-owned token when another observation is retracted", async () => {
+    const colmedicaId = await seedRecurring(userAId, accountAId);
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: userAId,
+      recurringId: colmedicaId,
+      pattern: "COLMEDICA",
+      observationCount: 6,
+    });
+
+    const poisonTx = await seedTx(userAId, accountAId, "COLMEDICA PREPAGADA", BigInt(-11702));
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: poisonTx,
+      yearMonth: "2026-05",
+      manual: false,
+    });
+    const netflixTx = await seedTx(userAId, accountAId, "NETFLIX*DL");
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: netflixTx,
+      yearMonth: "2026-04",
+      manual: true,
+    });
+
+    await retractRecurringLinkObservation({
+      userId: userAId,
+      txId: netflixTx,
+      recurringId: recurringAId,
+    });
+
+    const stolen = await db
+      .select({ pattern: recurringDescriptionPatterns.pattern })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "COLMEDICA"),
+        ),
+      );
+    expect(stolen).toHaveLength(0);
+
+    const poisonObs = await db
+      .select({ id: recurringLinkObservations.id })
+      .from(recurringLinkObservations)
+      .where(
+        and(
+          eq(recurringLinkObservations.userId, userAId),
+          eq(recurringLinkObservations.recurringId, recurringAId),
+          eq(recurringLinkObservations.txId, poisonTx),
+        ),
+      );
+    expect(poisonObs).toHaveLength(1);
+  });
 });

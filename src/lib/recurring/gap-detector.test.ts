@@ -1530,6 +1530,81 @@ describe("detectGapsForMonth #873 — proven-sibling cross-account", () => {
     expect(result.autoLinked).toBe(0);
     expect(result.gapsCreated).toBe(1);
   });
+
+  it("does not link either of two cross-account recurrings that share amount and a generic sibling token", async () => {
+    // Mirrors auto-link.test.ts's two-recurring single-charge shape, but the
+    // proven-sibling path must NOT pick a winner: TRANSFERENCIA is generic
+    // ("Transferencia a cuenta *XXXX") and both leftover recurrings own it.
+    // Bijective/exact-near group by accountId, so they cannot see this.
+    const arq = await seedAccount("_873_amb_arq");
+    const other = await seedAccount("_873_amb_other");
+    const bancolombia = await seedAccount("_873_amb_banco");
+    const recA = await seedRecurring(arq, {
+      label: "__gap_test 873 amb A",
+      amountCents: RENT_AMOUNT,
+      dayOfMonth: 1,
+    });
+    const recB = await seedRecurring(other, {
+      label: "__gap_test 873 amb B",
+      amountCents: RENT_AMOUNT,
+      dayOfMonth: 1,
+    });
+
+    const juneA = await seedTx(bancolombia, {
+      occurredOn: "2026-06-05",
+      amountCents: RENT_AMOUNT,
+      description: "Transferencia a cuenta *111111111",
+      recurringId: recA,
+      recurringYearMonth: "2026-06",
+    });
+    const juneB = await seedTx(bancolombia, {
+      occurredOn: "2026-06-06",
+      amountCents: RENT_AMOUNT,
+      description: "Transferencia a cuenta *222222222",
+      recurringId: recB,
+      recurringYearMonth: "2026-06",
+    });
+    await db.insert(recurringLinkObservations).values([
+      {
+        userId: TEST_USER_ID,
+        recurringId: recA,
+        txId: juneA,
+        yearMonth: "2026-06",
+        realAmountCents: RENT_AMOUNT,
+        realCurrency: "COP",
+        descriptionRaw: "Transferencia a cuenta *111111111",
+        accountId: bancolombia,
+        manual: true,
+      },
+      {
+        userId: TEST_USER_ID,
+        recurringId: recB,
+        txId: juneB,
+        yearMonth: "2026-06",
+        realAmountCents: RENT_AMOUNT,
+        realCurrency: "COP",
+        descriptionRaw: "Transferencia a cuenta *222222222",
+        accountId: bancolombia,
+        manual: true,
+      },
+    ]);
+
+    const julyTx = await seedTx(bancolombia, {
+      occurredOn: "2026-07-07",
+      amountCents: RENT_AMOUNT,
+      description: "Transferencia a cuenta *333333333",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(0);
+    expect(result.gapsCreated).toBe(2);
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, julyTx));
+    expect(row.recurringId).toBeNull();
+  });
 });
 
 // Keep the `and` import live — drizzle barrel exports trip tree-shakers.
