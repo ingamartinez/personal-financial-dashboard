@@ -1219,6 +1219,43 @@ describe("detectGapsForMonth #857 — drifted amount with shared fingerprint", (
     expect(driftRow.recurringId).toBe(aidaId);
   });
 
+  it("twins 0.5% apart: a 0.40% drift sits in both 1% balls and still does NOT auto-link", async () => {
+    // Spacing is not the invariant. If blockedTxIds / degree>=2 abstain is
+    // removed, unique-token in the per-recurring loop steals this for the
+    // lower id (closerTwin, seeded first). Unbounded nearest would too.
+    const accountId = await seedAccount("_857_close");
+    const closerId = await seedRecurring(accountId, {
+      label: "__gap_test close twin a",
+      amountCents: BigInt(-10050000),
+      dayOfMonth: 1,
+    });
+    const fartherId = await seedRecurring(accountId, {
+      label: "__gap_test close twin b",
+      amountCents: BigInt(-10000000),
+      dayOfMonth: 1,
+    });
+    expect(closerId).toBeLessThan(fartherId);
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: closerId, pattern: "PAGO", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: fartherId, pattern: "PAGO", observationCount: 2 },
+    ]);
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-07-19",
+      amountCents: BigInt(-10040000),
+      description: DESC,
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-07");
+    expect(result.autoLinked).toBe(0);
+    expect(result.gapsCreated).toBe(2);
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(row.recurringId).toBeNull();
+  });
+
   it("a tx within 1% of two still-available recurrings does NOT auto-link", async () => {
     // Lowest-id and nearest both pick Aida. Ambiguity must still abstain.
     // If unique-token in the per-recurring loop stole it for Aida (lowest

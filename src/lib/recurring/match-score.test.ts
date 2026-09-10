@@ -304,26 +304,11 @@ describe("scoreMatchCandidates", () => {
         patterns: ["PAGO"],
       });
 
-    it("unique in-tolerance leftover wins even when that recurring has the higher id", () => {
-      // Alejo is first in the array AND has the lower id. Aida is the unique
-      // candidate inside 1% of tx 2460's -50_110_000. If lowest-id or array
-      // order carried this, Alejo would win.
-      const result = scoreMatchCandidates(
-        tx({
-          descriptionRaw: "Pago a APORTES EN LINEA",
-          amountCents: BigInt(-50110000),
-          accountId: 1,
-        }),
-        [alejo(1), aida(99)],
-      );
-      expect(result.winner?.recurringId).toBe(99);
-      expect(result.ambiguous).toBe(false);
-    });
-
     it("a tx within 1% of two still-available recurrings abstains — neither lowest-id nor nearest", () => {
       // -50_350_000 is 0.88% from Aida and 0.94% from Alejo — both inside
       // 1%. Lowest-id and nearest both pick Aida (id 1, slightly closer).
-      // Ambiguity must abstain anyway.
+      // If inTolerance>=2 abstain is removed, unbounded nearest yields 1
+      // and this test stays green for the wrong reason.
       const result = scoreMatchCandidates(
         tx({
           descriptionRaw: "Pago a APORTES EN LINEA",
@@ -331,6 +316,35 @@ describe("scoreMatchCandidates", () => {
           accountId: 1,
         }),
         [aida(1), alejo(99)],
+      );
+      expect(result.winner).toBeNull();
+      expect(result.ambiguous).toBe(true);
+    });
+
+    it("twins 0.5% apart: a 0.40% drift sits in both 1% balls and still abstains", () => {
+      // Spacing is not the invariant. Twin B is 0.5% above A; the tx is
+      // 0.40% above A (and 0.10% below B). Unbounded nearest AND lowest-id
+      // both pick B (id 1, closer). Removing inTolerance>=2 abstain leaves
+      // this green. The gate is what makes it red.
+      const twinA = candidate({
+        recurringId: 99,
+        accountId: 1,
+        amountCents: BigInt(-10000000),
+        patterns: ["PAGO"],
+      });
+      const twinB = candidate({
+        recurringId: 1,
+        accountId: 1,
+        amountCents: BigInt(-10050000),
+        patterns: ["PAGO"],
+      });
+      const result = scoreMatchCandidates(
+        tx({
+          descriptionRaw: "Pago a APORTES EN LINEA",
+          amountCents: BigInt(-10040000),
+          accountId: 1,
+        }),
+        [twinB, twinA],
       );
       expect(result.winner).toBeNull();
       expect(result.ambiguous).toBe(true);
@@ -347,7 +361,9 @@ describe("isWithinAmountTolerance", () => {
     expect(isWithinAmountTolerance(rec, rec - onePct - BigInt(1), "COP", "COP")).toBe(false);
   });
 
-  it("covers the 0.40% Aida July drift and does not span the 1.84% twin gap", () => {
+  it("covers the 0.40% Aida July drift; Alejo's exact amount is outside Aida's 1% ball", () => {
+    // Fact about these two rows, not a model invariant — twins 0.5% apart
+    // do overlap (see the scorer abstain test). Safety is degree>=2, not gap.
     const aida = BigInt(-49910000);
     expect(isWithinAmountTolerance(aida, BigInt(-50110000), "COP", "COP")).toBe(true);
     expect(isWithinAmountTolerance(aida, BigInt(-50830000), "COP", "COP")).toBe(false);

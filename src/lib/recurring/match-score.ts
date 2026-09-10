@@ -79,10 +79,12 @@ function absCents(n: bigint): bigint {
  *   - Prod Aida July (#857) drifted 0.40% (200_000 cents on 49_910_000).
  *     1% leaves ~2.5× headroom for a slightly larger IBC / late-interest
  *     tweak without treating it as a different obligation.
- *   - The Aida/Alejo twin gap is 1.84%. 1% does not span it, so a payment
- *     sitting on one twin is not "within tolerance" of the other.
- *   - 2% WOULD span that gap (Aida 2% = 998_200 > 920_000), making both
- *     twins plausible for the same leftover — the guess this issue forbids.
+ *   - Twin spacing is NOT the safety invariant. 1.84% is this user's two
+ *     rows, not a model property: twins 0.5% apart put a 0.40% drift inside
+ *     both 1% balls. The guarantee is abstain-on-degree>=2 (inTolerance
+ *     length >= 2 here; txDegree >= 2 + blockedTxIds in gap-detector).
+ *     Bumping the fraction to "cover more drift" does not turn overlap
+ *     into a nearest-guess — overlap still abstains.
  *   - #852 EPM swings tens of percent; 1% cannot swallow them. Opposite fix.
  *   - Price-hike detection fires at 15%. Orthogonal.
  *   - Existing unbounded token+amount-nearest cases (Google Play ~9%,
@@ -268,8 +270,11 @@ export function scoreMatchCandidates(tx: MatchTx, candidates: MatchCandidate[]):
 // ---------------------------------------------------------------------------
 // Inverse direction — one recurring, many candidate transactions. Used by the
 // monthly gap-closing cron (gap-detector.ts), which iterates per-recurring
-// rather than per-transaction. Shares the exact same token → amount → account
-// decision rules so the two directions never disagree on a given pair.
+// rather than per-transaction. Token → exact-amount → account rules match
+// scoreMatchCandidates; the #857 1% leftover path does NOT. A single
+// recurring cannot see sibling recurrings, so unique-near here would steal
+// a tx that is also within 1% of a twin. That assignment lives in
+// gap-detector.ts (global exact-then-near + blockedTxIds), not here.
 // ---------------------------------------------------------------------------
 
 export type TxCandidate = {
