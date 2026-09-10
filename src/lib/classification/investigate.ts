@@ -89,6 +89,7 @@ export const INVESTIGATOR_TIMEOUT_MS = 45_000;
 export const INVESTIGATOR_MAIL_WINDOW_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAIL_SNIPPET_MAX_CHARS = 400;
 export const CANONICAL_MERCHANT_MAX_CHARS = 80;
+export const BUSINESS_TYPE_MAX_CHARS = 80;
 export const MAIL_RESULT_LIMIT = 8;
 export const HISTORY_RESULT_LIMIT = 15;
 // Local cost model for the guardrail, not a billing source of truth.
@@ -281,27 +282,41 @@ export function snippetFromHtml(rawHtml: string): string {
   return text.slice(0, MAIL_SNIPPET_MAX_CHARS);
 }
 
-const CANONICAL_MERCHANT_ALLOWED = /^[\p{L}\p{N} .&'\-,_]+$/u;
+const INVESTIGATOR_FREE_TEXT_ALLOWED = /^[\p{L}\p{N} .&'\-,_]+$/u;
 
-const INSTRUCTION_SHAPED_MERCHANT =
+const INSTRUCTION_SHAPED_TEXT =
   /ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions|\bignora(?:r)?\s+(?:todas\s+)?(?:las\s+)?instrucciones\b|\bsystem\s+prompt\b|\bprompt\s+del\s+sistema\b|\byou\s+are\s+now\b|\bcategorySlug\b|\bcanonicalMerchant\b|\bset\s+category\b/i;
 
 /**
- * Persist-path guard. categorySlug is already a whitelist in sanitizeConclude;
- * canonicalMerchant was only opaque-gateway-checked. A hostile conclude can
- * otherwise write instruction-shaped text into merchant_knowledge, which is
- * shared across all of this user's future transactions.
- *
- * Nulls (does not strip-and-keep) so a poisoned string never becomes a KB key.
+ * Persist-path guard for free-text the investigator may write into
+ * merchant_knowledge. Nulls (does not strip-and-keep) so poisoned text
+ * never becomes a KB key or a value lookup_merchant_kb will replay.
  */
-export function sanitizeInvestigatorMerchant(raw: string | null | undefined): string | null {
+function sanitizeInvestigatorFreeText(
+  raw: string | null | undefined,
+  maxChars: number,
+): string | null {
   if (raw == null) return null;
   const trimmed = raw.trim().replace(/\s+/g, " ");
   if (!trimmed) return null;
-  if (trimmed.length > CANONICAL_MERCHANT_MAX_CHARS) return null;
-  if (!CANONICAL_MERCHANT_ALLOWED.test(trimmed)) return null;
-  if (INSTRUCTION_SHAPED_MERCHANT.test(trimmed)) return null;
+  if (trimmed.length > maxChars) return null;
+  if (!INVESTIGATOR_FREE_TEXT_ALLOWED.test(trimmed)) return null;
+  if (INSTRUCTION_SHAPED_TEXT.test(trimmed)) return null;
   return trimmed;
+}
+
+/** Persist-path guard for the KB key. categorySlug is already a whitelist. */
+export function sanitizeInvestigatorMerchant(raw: string | null | undefined): string | null {
+  return sanitizeInvestigatorFreeText(raw, CANONICAL_MERCHANT_MAX_CHARS);
+}
+
+/**
+ * Persist-path guard for businessType. lookup_merchant_kb returns this
+ * field into a later model context, so it is the same inbound hole as
+ * canonicalMerchant, reached by a second door.
+ */
+export function sanitizeInvestigatorBusinessType(raw: string | null | undefined): string | null {
+  return sanitizeInvestigatorFreeText(raw, BUSINESS_TYPE_MAX_CHARS);
 }
 
 /**
@@ -752,7 +767,7 @@ function sanitizeConclude(
     receiptId: raw.receiptId,
     confidence,
     reason: raw.reason.slice(0, 500),
-    businessType: raw.businessType?.trim() || null,
+    businessType: sanitizeInvestigatorBusinessType(raw.businessType),
   };
 }
 
