@@ -2,8 +2,9 @@
 // Runs against findash_test (forced by vitest.setup.ts).
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { notDeleted } from "@/lib/db/helpers";
 import {
   accounts,
   recurringDescriptionPatterns,
@@ -61,6 +62,7 @@ async function seedTx(
   accountId: number,
   descriptionRaw = `${TAG}-tx`,
   amountCents: bigint = BigInt(-44900),
+  recurringId?: number,
 ): Promise<number> {
   const [row] = await db
     .insert(transactions)
@@ -73,9 +75,57 @@ async function seedTx(
       descriptionRaw,
       classificationMethod: "unclassified",
       source: "manual",
+      ...(recurringId !== undefined ? { recurringId } : {}),
     })
     .returning({ id: transactions.id });
   return row.id;
+}
+
+/** Distinct tx ids in observations ∪ non-deleted linked txs, minus excludeTxId. */
+async function unionTokenCounts(
+  userId: number,
+  recurringId: number,
+  excludeTxId: number,
+): Promise<Map<string, number>> {
+  const obs = await db
+    .select({
+      txId: recurringLinkObservations.txId,
+      descriptionRaw: recurringLinkObservations.descriptionRaw,
+    })
+    .from(recurringLinkObservations)
+    .where(
+      and(
+        eq(recurringLinkObservations.userId, userId),
+        eq(recurringLinkObservations.recurringId, recurringId),
+        ne(recurringLinkObservations.txId, excludeTxId),
+      ),
+    );
+  const linked = await db
+    .select({
+      txId: transactions.id,
+      descriptionRaw: transactions.descriptionRaw,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.recurringId, recurringId),
+        notDeleted(transactions.deletedAt),
+        ne(transactions.id, excludeTxId),
+      ),
+    );
+  const byTxId = new Map<number, string | null | undefined>();
+  for (const row of obs) byTxId.set(row.txId, row.descriptionRaw);
+  for (const row of linked) {
+    if (!byTxId.has(row.txId)) byTxId.set(row.txId, row.descriptionRaw);
+  }
+  const counts = new Map<string, number>();
+  for (const descriptionRaw of byTxId.values()) {
+    const token = tokeniseDescription(descriptionRaw);
+    if (token === null) continue;
+    counts.set(token, (counts.get(token) ?? 0) + 1);
+  }
+  return counts;
 }
 
 async function cleanup() {
@@ -589,5 +639,140 @@ describe("retractRecurringLinkObservation #873", () => {
         ),
       );
     expect(poisonObs).toHaveLength(1);
+  });
+
+  it("#880: retracting one of N linked txs with a single observation leaves count at N-1, not 0", async () => {
+    const txIds = [
+      await seedTx(userAId, accountAId, "NETFLIX*DL", BigInt(-44900), recurringAId),
+      await seedTx(userAId, accountAId, "NETFLIX*HD", BigInt(-44900), recurringAId),
+      await seedTx(userAId, accountAId, "NETFLIX*4K", BigInt(-44900), recurringAId),
+      await seedTx(userAId, accountAId, "NETFLIX*STD", BigInt(-44900), recurringAId),
+    ];
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: txIds[0],
+      yearMonth: "2026-04",
+      manual: true,
+    });
+    await db
+      .update(recurringDescriptionPatterns)
+      .set({ observationCount: 4 })
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "NETFLIX"),
+        ),
+      );
+
+    // Leave txIds[0] linked — production unlink clears recurring_id first,
+    // but retract itself must still drop this pair from the tx union leg.
+    await retractRecurringLinkObservation({
+      userId: userAId,
+      txId: txIds[0],
+      recurringId: recurringAId,
+    });
+
+    const [pattern] = await db
+      .select({ observationCount: recurringDescriptionPatterns.observationCount })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "NETFLIX"),
+        ),
+      );
+    expect(pattern?.observationCount).toBe(3);
+
+    const expected = await unionTokenCounts(userAId, recurringAId, txIds[0]);
+    expect(pattern?.observationCount).toBe(expected.get("NETFLIX"));
+    expect(expected.get("NETFLIX")).toBe(3);
+  });
+
+  it("#880: after retract, stored observation_count equals distinct union tx ids per token", async () => {
+    const netflixA = await seedTx(userAId, accountAId, "NETFLIX*DL", BigInt(-44900), recurringAId);
+    await seedTx(userAId, accountAId, "NETFLIX*HD", BigInt(-44900), recurringAId);
+    const spotify = await seedTx(userAId, accountAId, "SPOTIFY P 1", BigInt(-44900), recurringAId);
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: netflixA,
+      yearMonth: "2026-03",
+      manual: true,
+    });
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: spotify,
+      yearMonth: "2026-04",
+      manual: true,
+    });
+
+    await retractRecurringLinkObservation({
+      userId: userAId,
+      txId: spotify,
+      recurringId: recurringAId,
+    });
+
+    const stored = await db
+      .select({
+        pattern: recurringDescriptionPatterns.pattern,
+        observationCount: recurringDescriptionPatterns.observationCount,
+      })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+        ),
+      );
+    const expected = await unionTokenCounts(userAId, recurringAId, spotify);
+    expect(stored).toHaveLength(expected.size);
+    for (const row of stored) {
+      expect(row.observationCount).toBe(expected.get(row.pattern ?? ""));
+    }
+    expect(expected.get("NETFLIX")).toBe(2);
+    expect(expected.has("SPOTIFY")).toBe(false);
+    expect(stored.some((r) => r.pattern === "SPOTIFY")).toBe(false);
+  });
+
+  it("#880: retract does not resurrect a foreign-owned token from a linked tx with no observation", async () => {
+    const colmedicaId = await seedRecurring(userAId, accountAId);
+    await db.insert(recurringDescriptionPatterns).values({
+      userId: userAId,
+      recurringId: colmedicaId,
+      pattern: "COLMEDICA",
+      observationCount: 6,
+    });
+
+    await seedTx(userAId, accountAId, "COLMEDICA PREPAGADA", BigInt(-11702), recurringAId);
+    const netflixTx = await seedTx(userAId, accountAId, "NETFLIX*DL");
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId: netflixTx,
+      yearMonth: "2026-04",
+      manual: true,
+    });
+
+    await retractRecurringLinkObservation({
+      userId: userAId,
+      txId: netflixTx,
+      recurringId: recurringAId,
+    });
+
+    const stolen = await db
+      .select({ pattern: recurringDescriptionPatterns.pattern })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+          eq(recurringDescriptionPatterns.pattern, "COLMEDICA"),
+        ),
+      );
+    expect(stolen).toHaveLength(0);
   });
 });

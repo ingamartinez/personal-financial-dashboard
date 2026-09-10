@@ -266,9 +266,16 @@ async function rederivePatternsFromObservations(
   userId: number,
   recurringId: number,
   database: DbOrTrx,
+  excludeTxId: number,
 ): Promise<void> {
+  // #880: same union as loadSources() in rebuild-description-patterns.ts —
+  // remaining observations ∪ non-deleted linked transactions — minus the
+  // retracted (recurring_id, tx_id) pair. Observations alone are incomplete
+  // (they start at #633; linked txs go further back). Counting distinct tx
+  // ids matches computePatternsFromSources.
   const remaining = await database
     .select({
+      txId: recurringLinkObservations.txId,
       descriptionRaw: recurringLinkObservations.descriptionRaw,
       observedAt: recurringLinkObservations.observedAt,
       realAmountCents: recurringLinkObservations.realAmountCents,
@@ -279,11 +286,55 @@ async function rederivePatternsFromObservations(
       and(
         eq(recurringLinkObservations.userId, userId),
         eq(recurringLinkObservations.recurringId, recurringId),
+        ne(recurringLinkObservations.txId, excludeTxId),
       ),
     );
 
-  const acc = new Map<string, { count: number; lastObservedAt: Date }>();
+  const linkedTxs = await database
+    .select({
+      txId: transactions.id,
+      descriptionRaw: transactions.descriptionRaw,
+      occurredAt: transactions.occurredAt,
+      amountCents: transactions.amountCents,
+      currency: transactions.currency,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.recurringId, recurringId),
+        notDeleted(transactions.deletedAt),
+        ne(transactions.id, excludeTxId),
+      ),
+    );
+
+  type Source = {
+    descriptionRaw: string | null | undefined;
+    at: Date;
+    amountCents: bigint;
+    currency: string;
+  };
+  const byTxId = new Map<number, Source>();
   for (const row of remaining) {
+    byTxId.set(row.txId, {
+      descriptionRaw: row.descriptionRaw,
+      at: row.observedAt,
+      amountCents: row.realAmountCents,
+      currency: row.realCurrency,
+    });
+  }
+  for (const row of linkedTxs) {
+    if (byTxId.has(row.txId)) continue;
+    byTxId.set(row.txId, {
+      descriptionRaw: row.descriptionRaw,
+      at: row.occurredAt,
+      amountCents: row.amountCents,
+      currency: row.currency,
+    });
+  }
+
+  const acc = new Map<string, { count: number; lastObservedAt: Date }>();
+  for (const row of byTxId.values()) {
     const token = tokeniseDescription(row.descriptionRaw);
     if (token === null) continue;
     // #864 recompute-from-observations, but each token must still pass the
@@ -296,7 +347,7 @@ async function rederivePatternsFromObservations(
         userId,
         recurringId,
         token,
-        { amountCents: row.realAmountCents, currency: row.realCurrency },
+        { amountCents: row.amountCents, currency: row.currency },
         database,
       ))
     ) {
@@ -304,12 +355,12 @@ async function rederivePatternsFromObservations(
     }
     const existing = acc.get(token);
     if (!existing) {
-      acc.set(token, { count: 1, lastObservedAt: row.observedAt });
+      acc.set(token, { count: 1, lastObservedAt: row.at });
       continue;
     }
     existing.count += 1;
-    if (row.observedAt.getTime() > existing.lastObservedAt.getTime()) {
-      existing.lastObservedAt = row.observedAt;
+    if (row.at.getTime() > existing.lastObservedAt.getTime()) {
+      existing.lastObservedAt = row.at;
     }
   }
 
@@ -338,8 +389,13 @@ async function rederivePatternsFromObservations(
 /**
  * #873: reverse a link's teaching. Deletes the observation for this
  * (user, recurring, tx) and re-derives that recurring's fingerprints from
- * whatever observations remain, so a "Deshacer match" actually undoes the
+ * the remaining evidence, so a "Deshacer match" actually undoes the
  * count-1 COLMEDICA poison instead of leaving it behind.
+ *
+ * #880: remaining evidence is observations ∪ non-deleted linked
+ * transactions, minus this tx — not observations alone. unlinkTransaction
+ * clears recurring_id before calling us; excludeTxId still drops this tx
+ * from the union if a caller retracts while the row is still linked.
  *
  * Idempotent: no matching observation is a no-op besides the re-derive.
  */
@@ -360,7 +416,7 @@ export async function retractRecurringLinkObservation(
     )
     .returning({ id: recurringLinkObservations.id });
 
-  await rederivePatternsFromObservations(userId, recurringId, database);
+  await rederivePatternsFromObservations(userId, recurringId, database, txId);
 
   if (deleted.length === 0) {
     log.info(
