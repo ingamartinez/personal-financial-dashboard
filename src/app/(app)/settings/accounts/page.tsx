@@ -52,6 +52,7 @@ export default async function SettingsAccountsPage() {
 
   const cycleFlags = await Promise.all(
     rows.map(async (r) => {
+      if (r.type !== "credit_card") return false;
       const cycles = await recentCycles({
         accountId: r.id,
         userId: session.id,
