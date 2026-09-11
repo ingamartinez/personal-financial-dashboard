@@ -24,6 +24,7 @@
     "intereses:run": "bun run scripts/run-intereses-causados.ts",
     "backfill:arq-snapshots": "bun run scripts/backfill-arq-snapshots.ts",
     "backfill:email-arq-counterparties": "bun run scripts/backfill-email-arq-counterparties.ts",
+    "backfill:gmail-arq-greetings": "bun run scripts/backfill-gmail-arq-greeting-counterparties.ts",
     "statement:parse": "bun run scripts/parse-bancolombia-statement.ts",
     "statement:apply": "bun run scripts/consolidate-statement.ts",
     "db:bootstrap:invites": "bun run scripts/bootstrap-invites.ts",
