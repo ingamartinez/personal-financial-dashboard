@@ -70,6 +70,11 @@ jobs:
       GMAIL_OAUTH_REDIRECT_URI: https://ci.findash.local/api/integrations/gmail/oauth/callback
       # BullMQ queue backend — points at the redis service container above.
       REDIS_URL: redis://localhost:6379
+      # Vitest worker-pool size (#912). Pinned rather than derived from the
+      # runner so the number of per-worker databases globalSetup clones stays
+      # fixed if GitHub changes the default runner size. ubuntu-latest is
+      # 4 vCPU for public repos. See vitest.workers.ts.
+      VITEST_MAX_WORKERS: 4
 
     steps:
       - uses: actions/checkout@v7
