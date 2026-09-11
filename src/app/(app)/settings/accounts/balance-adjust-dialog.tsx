@@ -527,6 +527,12 @@ function SingleCurrencyDebtForm({
         </div>
       ) : null}
 
+      {hasDiff &&
+      target.hasUnconsolidatedCycle &&
+      isSignificantBalanceDrift(target.currency, diffCents) ? (
+        <StatementFirstNotice accountId={target.id} />
+      ) : null}
+
       <ReasonField reason={reason} setReason={setReason} />
       <Actions pending={pending} canSubmit={canSubmit} onClose={onClose} />
     </form>
@@ -749,6 +755,13 @@ function DualDebtForm({
         </div>
       ) : null}
 
+      {hasChange &&
+      target.hasUnconsolidatedCycle &&
+      (isSignificantBalanceDrift("COP", copDiffCents) ||
+        isSignificantBalanceDrift("USD", usdDiffCents)) ? (
+        <StatementFirstNotice accountId={target.id} />
+      ) : null}
+
       <ReasonField reason={reason} setReason={setReason} />
       <Actions pending={pending} canSubmit={canSubmit} onClose={onClose} />
     </form>
@@ -908,6 +921,12 @@ function SharedCupoForm({
             (categorizado como <strong>Ajuste</strong>, fuera de spend/insights).
           </div>
         </div>
+      ) : null}
+
+      {hasDiff &&
+      target.hasUnconsolidatedCycle &&
+      isSignificantBalanceDrift(target.currency, diffCents) ? (
+        <StatementFirstNotice accountId={target.id} />
       ) : null}
 
       <ReasonField reason={reason} setReason={setReason} />

@@ -1,5 +1,6 @@
 import type { Currency } from "@/lib/types";
 
+export const STATEMENT_BALANCE_WINDOW_DAYS = 30;
 const STATEMENT_DRIFT_THRESHOLD_CENTS = { COP: BigInt(500_000_00), USD: BigInt(125_00) } as const;
 
 export function isSignificantBalanceDrift(currency: Currency, driftCents: bigint | null): boolean {

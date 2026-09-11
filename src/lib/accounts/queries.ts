@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, physicalCards, statementImports, type AccountMetadata } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import type { AccountType, Currency } from "@/lib/types";
+import { STATEMENT_BALANCE_WINDOW_DAYS } from "./balance-drift";
 
 /**
  * Derived balance — snapshot-anchored since #562(c).
@@ -90,14 +91,26 @@ export type AccountDetail = {
   statementDriftCents?: bigint | null;
 };
 
-async function listLatestStatementBalances(userId: number): Promise<Map<number, bigint>> {
+export async function listLatestStatementBalances(
+  userId: number,
+  asOf: Date = new Date(),
+): Promise<Map<number, bigint>> {
+  const windowStart = new Date(asOf.getTime() - STATEMENT_BALANCE_WINDOW_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
   const rows = await db
     .select({
       accountId: statementImports.accountId,
       balanceCents: statementImports.balanceAtEndCents,
     })
     .from(statementImports)
-    .where(and(eq(statementImports.userId, userId), isNotNull(statementImports.balanceAtEndCents)))
+    .where(
+      and(
+        eq(statementImports.userId, userId),
+        gte(statementImports.periodEnd, windowStart),
+        isNotNull(statementImports.balanceAtEndCents),
+      ),
+    )
     .orderBy(desc(statementImports.periodEnd));
   const latest = new Map<number, bigint>();
   for (const row of rows) {
