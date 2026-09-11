@@ -10,6 +10,7 @@ import {
   users,
 } from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
+import { notDeleted } from "@/lib/db/helpers";
 import { commitReconciliation, hashFileBuffer, recordReconciliationDecision } from "./commit";
 import type { ParsedStatement, ParsedStatementRow } from "./parsers/types";
 import type { MatchingPlan } from "./engine/types";
@@ -473,7 +474,7 @@ describe("recordReconciliationDecision — merge_into path", () => {
     await cleanupUser(userId);
   });
 
-  it("merges flagged into target: flagged survives with statement data, target is deleted", async () => {
+  it("merges flagged into target: flagged survives with statement data, target is retired", async () => {
     // Set up: one flagged row (with its category) and one statement-imported target.
     const flaggedDate = new Date("2026-04-10T05:00:00Z");
     const [flaggedRow] = await db
@@ -541,20 +542,32 @@ describe("recordReconciliationDecision — merge_into path", () => {
     expect(survivor.statementImportId).toBe(imp.id);
     expect(survivor.categorySlug).toBe("mercado");
 
-    // Target was deleted.
-    const targetAfter = await db
+    // Target was retired via soft delete: the row survives for the audit trail
+    // but carries deleted_at.
+    const [targetAfter] = await db
       .select()
       .from(transactions)
       .where(eq(transactions.id, targetRow.id));
-    expect(targetAfter).toHaveLength(0);
+    expect(targetAfter).toBeDefined();
+    expect(targetAfter.deletedAt).not.toBeNull();
 
-    // Decision row recorded. mergedIntoTxnId is now NULL because of ON DELETE SET NULL.
+    // …and is invisible to every query that filters deleted rows, which is
+    // every listing, balance and search path. This is what makes the soft
+    // delete equivalent to the old hard delete from the product's side.
+    const visible = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(and(eq(transactions.id, targetRow.id), notDeleted(transactions.deletedAt)));
+    expect(visible).toHaveLength(0);
+
+    // Decision row recorded. mergedIntoTxnId SURVIVES — the old hard delete
+    // nulled it through ON DELETE SET NULL, losing the merge target forever.
     const [decision] = await db
       .select()
       .from(reconciliationDecisions)
       .where(eq(reconciliationDecisions.txnId, flaggedRow.id));
     expect(decision.action).toBe("merged_into");
-    expect(decision.mergedIntoTxnId).toBeNull();
+    expect(decision.mergedIntoTxnId).toBe(targetRow.id);
     expect(decision.note).toBe("FX rounding on intl txn");
   });
 

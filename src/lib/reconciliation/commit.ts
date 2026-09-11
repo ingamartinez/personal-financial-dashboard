@@ -299,9 +299,11 @@ export async function recordReconciliationDecision(input: ReviewInput): Promise<
         .returning({ id: transactions.id });
       if (updated.length === 0) throw new Error("flagged_txn_not_found");
 
-      // Record the decision before deleting the target so the FK is populated.
-      // mergedIntoTxnId has ON DELETE SET NULL — acceptable loss of detail on
-      // the audit row in exchange for no duplicate txn in balance queries.
+      // Record the decision, then retire the target. Soft delete, not hard:
+      // every listing, balance and search path filters deleted_at, so the row
+      // disappears from the product exactly as a hard delete would — but
+      // mergedIntoTxnId stays populated instead of being nulled by
+      // ON DELETE SET NULL, which keeps the audit row complete. See #922.
       await tx.insert(reconciliationDecisions).values({
         userId: input.userId,
         txnId: input.txnId,
@@ -310,15 +312,9 @@ export async function recordReconciliationDecision(input: ReviewInput): Promise<
         note: input.note ?? null,
       });
 
-      // Deliberate hard delete, see the comment above: the merge trades the
-      // audit link for a clean balance query. Worth revisiting — `transactions`
-      // carries deleted_at and every balance query already filters on
-      // notDeleted(), so soft-deleting the merged row would keep
-      // mergedIntoTxnId populated at no cost. That is a behaviour change with
-      // its own tests, not a lint fixup (#922 task 9).
-      // eslint-disable-next-line no-restricted-syntax
       await tx
-        .delete(transactions)
+        .update(transactions)
+        .set({ deletedAt: new Date(), updatedAt: new Date() })
         .where(and(eq(transactions.id, targetId), eq(transactions.userId, input.userId)));
       return;
     }
