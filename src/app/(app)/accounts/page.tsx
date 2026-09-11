@@ -458,6 +458,9 @@ function AccountCard({ account, muted }: { account: AccountDetail; muted?: boole
           <span className="truncate">{account.institution}</span>
           <span className="shrink-0 text-[10px] tracking-wide uppercase">{account.currency}</span>
         </CardDescription>
+        {/* eslint-disable-next-line no-restricted-syntax -- the card already
+            renders institution, currency and *last4 as separate fields above
+            and below; formatAccountLabel would print all three again. */}
         <CardTitle className="truncate text-base">{account.name}</CardTitle>
         {meta.length > 0 ? (
           <div className="text-muted-foreground text-xs">{meta.join(" · ")}</div>
