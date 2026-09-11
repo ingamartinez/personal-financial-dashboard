@@ -8,7 +8,8 @@
 >
 > **Status 2026-09-11:** the profitable-product goal was dropped. The seams below
 > are documented history, not an active roadmap. See issue #922 task 12 for the
-> audit of what the seam still costs.
+> audit. What is left of them, what it costs, and why it is not being dropped:
+> [`phase-7-seam-audit.md`](./phase-7-seam-audit.md).
 
 ## Business Model & Pricing (Deferred — gated by validation)
 

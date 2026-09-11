@@ -129,6 +129,7 @@ sobrevivió está acá, por tema:
 | [`docs/ai-strategy.md`](./docs/ai-strategy.md)                           | Pipeline de clasificación, learning loop, dónde manda AI vs regex    |
 | [`docs/roadmap.md`](./docs/roadmap.md)                                   | Qué significa cada fase y qué la destraba. Estado vivo: el board.    |
 | [`docs/business-model.md`](./docs/business-model.md)                     | Seams de monetización (deferred), closed beta, validation triggers   |
+| [`docs/phase-7-seam-audit.md`](./docs/phase-7-seam-audit.md)             | Qué queda del seam de Fase 7, qué cuesta, y por qué no se dropea     |
 | [`docs/telemetry-slos.md`](./docs/telemetry-slos.md)                     | SLOs del parser Bancolombia y telemetría per-user                    |
 | [`docs/gmail-integration.md`](./docs/gmail-integration.md)               | Epic G — gateway opacity, Canal 6b, multi-tenant safety              |
 | [`docs/native-clients.md`](./docs/native-clients.md)                     | Estrategia iOS/Android (deferred), research de captura de SMS        |
