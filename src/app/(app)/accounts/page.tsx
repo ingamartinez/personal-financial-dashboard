@@ -11,6 +11,7 @@ import {
   type AccountDetail,
   type PhysicalCardSummary,
 } from "@/lib/accounts/queries";
+import { isSignificantBalanceDrift } from "@/lib/accounts/balance-drift";
 import { computeNextPayment } from "@/lib/accounts/next-payment";
 import { computeUsedPct, isHeavyUsage } from "@/lib/accounts/meter";
 import { safeLimitCents } from "@/lib/accounts/limit";
@@ -294,6 +295,9 @@ function CreditCardTile({
   const network = isShared && pc ? pc.network : (primary.metadata.network ?? null);
   const last4 = isShared && pc ? pc.last4 : (primary.metadata.last4s?.[0] ?? null);
   const title = (isShared && pc?.name) || primary.name;
+  const driftedAccount = subs.find((account) =>
+    isSignificantBalanceDrift(account.currency, account.statementDriftCents ?? null),
+  );
   const metaParts: string[] = [];
   if (network) metaParts.push(network.toUpperCase());
   if (last4) metaParts.push(`*${last4}`);
@@ -326,6 +330,13 @@ function CreditCardTile({
           currency={meterCurrency}
           fxFallback={isShared && fxFallback && hasUsd}
         />
+        {driftedAccount ? (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+            El extracto de {driftedAccount.currency} difiere por{" "}
+            <Money cents={driftedAccount.statementDriftCents!} currency={driftedAccount.currency} />
+            . Revisá el extracto antes de ajustar el saldo.
+          </div>
+        ) : null}
         <FooterMeta
           nextPaymentDate={nextPaymentDate}
           showTRM={isShared && hasUsd}
@@ -475,6 +486,13 @@ function AccountCard({ account, muted }: { account: AccountDetail; muted?: boole
         >
           <Money cents={account.balanceCents} currency={account.currency} />
         </div>
+        {isSignificantBalanceDrift(account.currency, account.statementDriftCents ?? null) ? (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+            El extracto difiere por{" "}
+            <Money cents={account.statementDriftCents!} currency={account.currency} />. Revisá el
+            extracto antes de ajustar el saldo.
+          </div>
+        ) : null}
         {account.type === "loan" && loanRemaining ? (
           <div className="text-muted-foreground text-xs">
             Remaining: <Money cents={BigInt(loanRemaining)} currency={account.currency} />

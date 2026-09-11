@@ -7,10 +7,16 @@ import {
   accounts,
   categories,
   physicalCards,
+  statementImports,
   transactions,
   users,
 } from "@/lib/db/schema";
-import { getAvailableCreditCOP, listAccountsDetailed } from "./queries";
+import {
+  getAvailableCreditCOP,
+  listAccountsDetailed,
+  listLatestStatementBalances,
+} from "./queries";
+import { isSignificantBalanceDrift } from "./balance-drift";
 
 // #368: balance is now derived from SUM(transactions.amount_cents). Tests
 // that want a specific opening balance must insert a tx — the stored
@@ -55,6 +61,9 @@ let USER_A = 0;
 let USER_B = 0;
 
 async function cleanup() {
+  await db.execute(
+    sql`DELETE FROM statement_imports WHERE account_id IN (SELECT id FROM accounts WHERE name LIKE ${MARKER + "%"})`,
+  );
   // Transactions reference accounts via ON DELETE RESTRICT FK — purge every
   // tx on any MARKER account (opening-balance #368 + ledger fixtures) before
   // the accounts themselves.
@@ -258,6 +267,72 @@ describe("listAccountsDetailed: derived balance (#368, #370)", () => {
     expect(found).toBeDefined();
     // Balance is derived from the ledger: SUM(txs) = -3_000.
     expect(found!.balanceCents).toBe(BigInt(-3000));
+  });
+});
+
+describe("balance drift", () => {
+  afterEach(cleanup);
+
+  it("uses signed bigint absolute thresholds", () => {
+    expect(isSignificantBalanceDrift("COP", BigInt(500_000_00))).toBe(true);
+    expect(isSignificantBalanceDrift("COP", BigInt(-500_000_00))).toBe(true);
+    expect(isSignificantBalanceDrift("COP", BigInt(499_999_99))).toBe(false);
+    expect(isSignificantBalanceDrift("USD", BigInt(12_500))).toBe(true);
+    expect(isSignificantBalanceDrift("USD", null)).toBe(false);
+  });
+
+  it("returns only the requested user's latest statement balances", async () => {
+    const [accountA] = await db
+      .insert(accounts)
+      .values({
+        userId: USER_A,
+        name: `${MARKER}-stmt-a`,
+        institution: "Test",
+        type: "savings",
+        currency: "COP",
+      })
+      .returning({ id: accounts.id });
+    const [accountB] = await db
+      .insert(accounts)
+      .values({
+        userId: USER_B,
+        name: `${MARKER}-stmt-b`,
+        institution: "Test",
+        type: "savings",
+        currency: "COP",
+      })
+      .returning({ id: accounts.id });
+    await db.insert(statementImports).values([
+      {
+        userId: USER_A,
+        accountId: accountA.id,
+        fileHash: "a".repeat(64),
+        periodStart: "2026-09-01",
+        periodEnd: "2026-09-10",
+        txnCount: 0,
+        balanceAtEndCents: BigInt(100),
+      },
+      {
+        userId: USER_A,
+        accountId: accountA.id,
+        fileHash: "b".repeat(64),
+        periodStart: "2026-09-11",
+        periodEnd: "2026-09-11",
+        txnCount: 0,
+        balanceAtEndCents: BigInt(200),
+      },
+      {
+        userId: USER_B,
+        accountId: accountB.id,
+        fileHash: "c".repeat(64),
+        periodStart: "2026-09-11",
+        periodEnd: "2026-09-11",
+        txnCount: 0,
+        balanceAtEndCents: BigInt(999),
+      },
+    ]);
+    const result = await listLatestStatementBalances(USER_A, new Date("2026-09-12T12:00:00Z"));
+    expect(result).toEqual(new Map([[accountA.id, BigInt(200)]]));
   });
 });
 

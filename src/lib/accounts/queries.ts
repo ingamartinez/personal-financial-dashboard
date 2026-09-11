@@ -1,9 +1,10 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { accounts, physicalCards, type AccountMetadata } from "@/lib/db/schema";
+import { accounts, physicalCards, statementImports, type AccountMetadata } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { toCop } from "@/lib/money";
 import type { AccountType, Currency } from "@/lib/types";
+import { STATEMENT_BALANCE_WINDOW_DAYS } from "./balance-drift";
 
 /**
  * Derived balance — snapshot-anchored since #562(c).
@@ -86,61 +87,102 @@ export type AccountDetail = {
   metadata: AccountMetadata;
   physicalCardId: string | null;
   physicalCard: PhysicalCardSummary | null;
+  statementBalanceCents?: bigint | null;
+  statementDriftCents?: bigint | null;
 };
 
-export async function listAccountsDetailed(userId: number): Promise<AccountDetail[]> {
+export async function listLatestStatementBalances(
+  userId: number,
+  asOf: Date = new Date(),
+): Promise<Map<number, bigint>> {
+  const windowStart = new Date(asOf.getTime() - STATEMENT_BALANCE_WINDOW_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
   const rows = await db
     .select({
-      id: accounts.id,
-      name: accounts.name,
-      institution: accounts.institution,
-      type: accounts.type,
-      currency: accounts.currency,
-      balanceCents: derivedBalanceCentsSql,
-      active: accounts.active,
-      metadata: accounts.metadata,
-      physicalCardId: accounts.physicalCardId,
-      pcId: physicalCards.id,
-      pcName: physicalCards.name,
-      pcCreditLimitCents: physicalCards.creditLimitCents,
-      pcStatementCutoffDay: physicalCards.statementCutoffDay,
-      pcNetwork: physicalCards.network,
-      pcLast4: physicalCards.last4,
+      accountId: statementImports.accountId,
+      balanceCents: statementImports.balanceAtEndCents,
     })
-    .from(accounts)
-    .leftJoin(
-      physicalCards,
+    .from(statementImports)
+    .where(
       and(
-        eq(physicalCards.id, accounts.physicalCardId),
-        // Tenancy guard: never join across users even if a FK were ever corrupted
-        // (see engram `per-user-table-join-tenant-safety`).
-        eq(physicalCards.userId, accounts.userId),
+        eq(statementImports.userId, userId),
+        gte(statementImports.periodEnd, windowStart),
+        isNotNull(statementImports.balanceAtEndCents),
       ),
     )
-    .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)))
-    .orderBy(asc(accounts.type), asc(accounts.institution), asc(accounts.name));
+    .orderBy(desc(statementImports.periodEnd));
+  const latest = new Map<number, bigint>();
+  for (const row of rows) {
+    if (row.balanceCents !== null && !latest.has(row.accountId))
+      latest.set(row.accountId, row.balanceCents);
+  }
+  return latest;
+}
 
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    institution: r.institution,
-    type: r.type,
-    currency: r.currency,
-    balanceCents: BigInt(r.balanceCents),
-    active: r.active,
-    metadata: r.metadata,
-    physicalCardId: r.physicalCardId,
-    physicalCard: r.pcId
-      ? {
-          id: r.pcId,
-          name: r.pcName,
-          creditLimitCents: r.pcCreditLimitCents!,
-          statementCutoffDay: r.pcStatementCutoffDay,
-          network: r.pcNetwork,
-          last4: r.pcLast4,
-        }
-      : null,
-  }));
+export async function listAccountsDetailed(userId: number): Promise<AccountDetail[]> {
+  const [rows, latestStatements] = await Promise.all([
+    db
+      .select({
+        id: accounts.id,
+        name: accounts.name,
+        institution: accounts.institution,
+        type: accounts.type,
+        currency: accounts.currency,
+        balanceCents: derivedBalanceCentsSql,
+        active: accounts.active,
+        metadata: accounts.metadata,
+        physicalCardId: accounts.physicalCardId,
+        pcId: physicalCards.id,
+        pcName: physicalCards.name,
+        pcCreditLimitCents: physicalCards.creditLimitCents,
+        pcStatementCutoffDay: physicalCards.statementCutoffDay,
+        pcNetwork: physicalCards.network,
+        pcLast4: physicalCards.last4,
+      })
+      .from(accounts)
+      .leftJoin(
+        physicalCards,
+        and(
+          eq(physicalCards.id, accounts.physicalCardId),
+          // Tenancy guard: never join across users even if a FK were ever corrupted
+          // (see engram `per-user-table-join-tenant-safety`).
+          eq(physicalCards.userId, accounts.userId),
+        ),
+      )
+      .where(and(eq(accounts.userId, userId), notDeleted(accounts.deletedAt)))
+      .orderBy(asc(accounts.type), asc(accounts.institution), asc(accounts.name)),
+    listLatestStatementBalances(userId),
+  ]);
+
+  return rows.map((r) => {
+    const balanceCents = BigInt(r.balanceCents);
+    const statementBalanceCents = latestStatements.get(r.id) ?? null;
+    return {
+      id: r.id,
+      name: r.name,
+      institution: r.institution,
+      type: r.type,
+      currency: r.currency,
+      balanceCents,
+      active: r.active,
+      metadata: r.metadata,
+      physicalCardId: r.physicalCardId,
+      physicalCard: r.pcId
+        ? {
+            id: r.pcId,
+            name: r.pcName,
+            creditLimitCents: r.pcCreditLimitCents!,
+            statementCutoffDay: r.pcStatementCutoffDay,
+            network: r.pcNetwork,
+            last4: r.pcLast4,
+          }
+        : null,
+      statementBalanceCents,
+      statementDriftCents:
+        statementBalanceCents === null ? null : balanceCents - statementBalanceCents,
+    };
+  });
 }
 
 /**

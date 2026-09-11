@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
+import Link from "next/link";
 import { WrenchIcon } from "lucide-react";
 import {
   Dialog,
@@ -16,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Money } from "@/components/display/money";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { convertCents } from "@/lib/money";
+import { isSignificantBalanceDrift } from "@/lib/accounts/balance-drift";
 import type { AccountRow, AccountRowPhysicalCard } from "./accounts-manager";
 import type { AdjustBalanceInput } from "./actions";
 
@@ -153,6 +155,12 @@ function BalanceForm({
           </span>{" "}
           marcada como <strong>Ajuste</strong>. Queda fuera de spend / insights / budgets.
         </div>
+      ) : null}
+
+      {hasDiff &&
+      target.hasUnconsolidatedCycle &&
+      isSignificantBalanceDrift(target.currency, diffCents) ? (
+        <StatementFirstNotice accountId={target.id} />
       ) : null}
 
       <ReasonField reason={reason} setReason={setReason} />
@@ -316,6 +324,13 @@ function CreditCardFormInner({
             marcada como <strong>Ajuste</strong>. Queda fuera de spend / insights / budgets.
           </div>
         </div>
+      ) : null}
+
+      {hasDiff &&
+      target.hasUnconsolidatedCycle &&
+      !exceedsLimit &&
+      isSignificantBalanceDrift(target.currency, diffCents) ? (
+        <StatementFirstNotice accountId={target.id} />
       ) : null}
 
       <ReasonField reason={reason} setReason={setReason} />
@@ -510,6 +525,12 @@ function SingleCurrencyDebtForm({
           </span>{" "}
           marcada como <strong>Ajuste</strong>. Queda fuera de spend / insights / budgets.
         </div>
+      ) : null}
+
+      {hasDiff &&
+      target.hasUnconsolidatedCycle &&
+      isSignificantBalanceDrift(target.currency, diffCents) ? (
+        <StatementFirstNotice accountId={target.id} />
       ) : null}
 
       <ReasonField reason={reason} setReason={setReason} />
@@ -734,6 +755,13 @@ function DualDebtForm({
         </div>
       ) : null}
 
+      {hasChange &&
+      target.hasUnconsolidatedCycle &&
+      (isSignificantBalanceDrift("COP", copDiffCents) ||
+        isSignificantBalanceDrift("USD", usdDiffCents)) ? (
+        <StatementFirstNotice accountId={target.id} />
+      ) : null}
+
       <ReasonField reason={reason} setReason={setReason} />
       <Actions pending={pending} canSubmit={canSubmit} onClose={onClose} />
     </form>
@@ -895,9 +923,30 @@ function SharedCupoForm({
         </div>
       ) : null}
 
+      {hasDiff &&
+      target.hasUnconsolidatedCycle &&
+      isSignificantBalanceDrift(target.currency, diffCents) ? (
+        <StatementFirstNotice accountId={target.id} />
+      ) : null}
+
       <ReasonField reason={reason} setReason={setReason} />
       <Actions pending={pending} canSubmit={canSubmit} onClose={onClose} />
     </form>
+  );
+}
+
+function StatementFirstNotice({ accountId }: { accountId: number }) {
+  return (
+    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+      Este ajuste es grande y hay un ciclo de tarjeta sin consolidar. Importá primero el extracto
+      para recuperar transacciones faltantes y evitar enterrar la diferencia.
+      <Link
+        className="mt-2 block font-medium underline"
+        href={`/imports?hint_account_id=${accountId}`}
+      >
+        Importar extracto primero
+      </Link>
+    </div>
   );
 }
 
