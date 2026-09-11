@@ -165,7 +165,7 @@ export async function restoreUserPayload(
     await tx.execute(sql`
       INSERT INTO ${sql.raw(table)}
       SELECT * FROM jsonb_populate_recordset(NULL::${sql.raw(table)}, ${jsonLiteral}::jsonb) r
-      WHERE r.user_id = ${userId}
+       WHERE r.user_id = ${userId}
     `);
 
     // Bump the id sequence past the highest restored id — otherwise the
@@ -210,7 +210,12 @@ export async function restoreUserPayload(
         SELECT * FROM jsonb_populate_recordset(
           NULL::gmail_pull_cursors, ${pullCursorsJson}::jsonb
         ) r
-        WHERE r.user_id = ${userId}
+       WHERE r.user_id = ${userId}
+         AND EXISTS (
+           SELECT 1
+           FROM gmail_connections c
+           WHERE c.id = r.connection_id AND c.user_id = ${userId}
+         )
       `);
       // Same sequence bump as the tables loop — the restored ids may exceed
       // the current sequence value.

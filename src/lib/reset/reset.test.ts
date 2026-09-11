@@ -140,6 +140,19 @@ async function countWhere(userId: number, tableSql: ReturnType<typeof sql.raw>):
   return rows[0].c;
 }
 
+async function runCursorBackfill(): Promise<void> {
+  const migrationSql = readFileSync(
+    fileURLToPath(new URL("../../../drizzle/0085_real_mimic.sql", import.meta.url)),
+    "utf8",
+  );
+  for (const statement of migrationSql
+    .split("--> statement-breakpoint")
+    .map((s) => s.trim())
+    .filter((s) => s.includes("INSERT INTO"))) {
+    await db.execute(sql.raw(statement));
+  }
+}
+
 describe("#472 reset user transactional data", () => {
   let userA: number;
   let userB: number;
@@ -296,6 +309,21 @@ describe("#472 reset user transactional data", () => {
       expect(cursor.lastPullAt).toEqual(new Date("2026-04-02T00:00:00Z"));
     });
 
+    it("the #511 upgrade seeds a live gateway cursor with the connection watermark", async () => {
+      await db.delete(gmailPullCursors).where(eq(gmailPullCursors.connectionId, connA));
+
+      await runCursorBackfill();
+
+      const [cursor] = await db
+        .select({ gateway: gmailPullCursors.gateway, lastPullAt: gmailPullCursors.lastPullAt })
+        .from(gmailPullCursors)
+        .where(eq(gmailPullCursors.connectionId, connA));
+      expect(cursor).toEqual({
+        gateway: "mercado_pago",
+        lastPullAt: new Date("2026-04-01T00:00:00Z"),
+      });
+    });
+
     it("the #511 upgrade leaves snapshot-only evidence unbackfilled", async () => {
       // A reset leaves a pre-reset snapshot, but a user may delete it before
       // the upgrade. More importantly, a later snapshot can contain a
@@ -318,16 +346,7 @@ describe("#472 reset user transactional data", () => {
       // The 0085 backfill, verbatim. It is idempotent (ON CONFLICT DO
       // NOTHING), so re-running it here must not infer a cursor from the
       // snapshot payload.
-      const migrationSql = readFileSync(
-        fileURLToPath(new URL("../../../drizzle/0085_real_mimic.sql", import.meta.url)),
-        "utf8",
-      );
-      for (const statement of migrationSql
-        .split("--> statement-breakpoint")
-        .map((s) => s.trim())
-        .filter((s) => s.includes("INSERT INTO"))) {
-        await db.execute(sql.raw(statement));
-      }
+      await runCursorBackfill();
 
       const cursors = await db
         .select({ gateway: gmailPullCursors.gateway, lastPullAt: gmailPullCursors.lastPullAt })
