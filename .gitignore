@@ -64,3 +64,6 @@ MovimientosTusCuentasBancolombia*.xlsx
 .private/
 *.csv
 !**/fixtures/**/*.csv
+
+# gentle-ai / opencode skill-registry cache — machine-local, regenerated per checkout
+.atl/
