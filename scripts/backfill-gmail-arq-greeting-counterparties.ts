@@ -1,9 +1,7 @@
 // #921 Part B: repair gmail_arq rows whose merchant is the account owner's greeting.
 //
-// The ARQ statement reconciler stores the authoritative statement recipient in
-// raw_data.merged_statement.recipient_name_from_statement. This backfill only
-// touches known-corrupted, live gmail_arq rows that have that evidence; it does
-// not infer matches from same-day/amount collisions.
+// Re-parse the original ARQ email to recover the counterparty. The statement
+// reconciler may not have paired these rows with their statement counterparts.
 
 import { sql } from "drizzle-orm";
 
@@ -11,6 +9,7 @@ import { db } from "../src/lib/db";
 import { resolveCounterpartyByKey } from "../src/lib/ingestion/sms-pipeline";
 import { normalizeName } from "../src/lib/counterparties/alias-key";
 import { canonicalizeMerchant } from "../src/lib/insights/merchant-canonical";
+import { parseArqEmail } from "../src/lib/gmail/parsers/arq";
 import { createLogger } from "../src/lib/logger";
 
 const log = createLogger({ module: "backfill-gmail-arq-greeting-counterparties" });
@@ -36,49 +35,79 @@ async function main(): Promise<void> {
     user_id: number;
     merchant: string;
     amount_cents: bigint;
-    statement_counterparty: string;
+    occurred_at: Date;
+    raw_html: string;
   }>(sql`
     SELECT
       t.id,
       t.user_id,
       t.merchant,
       t.amount_cents,
-      t.raw_data->'merged_statement'->>'recipient_name_from_statement' AS statement_counterparty
+      t.occurred_at,
+      er.raw_html
     FROM transactions t
+    JOIN email_receipts er
+      ON er.id = (t.raw_data->>'email_receipt_id')::int
+     AND er.user_id = t.user_id
+     AND er.deleted_at IS NULL
     WHERE t.source = 'gmail_arq'
       AND t.deleted_at IS NULL
       AND t.merchant ~* '^hi\\s+'
-      AND t.raw_data->'merged_statement'->>'recipient_name_from_statement' IS NOT NULL
       ${userId === null ? sql`` : sql`AND t.user_id = ${userId}`}
     ORDER BY t.user_id, t.id
   `);
 
   log.info({ count: rows.length, dryRun, event: "backfill_arq_greeting_found" }, "rows to repair");
   if (userId === null && rows.length !== 0 && rows.length !== 11) {
-    throw new Error(
-      `expected exactly 11 known-corrupted rows (or 0 after backfill), found ${rows.length}`,
+    log.warn(
+      {
+        expected: 11,
+        found: rows.length,
+        event: "backfill_arq_greeting_count_unexpected",
+      },
+      "unexpected number of greeting rows — continuing with per-row safeguards",
     );
   }
+  let repaired = 0;
+  let skipped = 0;
   let errors = 0;
   for (const row of rows) {
     try {
-      const normalizedName = normalizeName(row.statement_counterparty);
+      const parsed = parseArqEmail(row.raw_html, { occurredAt: row.occurred_at });
+      if (parsed.kind !== "parsed" || parsed.counterpartyName.trim() === "") {
+        log.warn(
+          {
+            txId: row.id,
+            userId: row.user_id,
+            parseKind: parsed.kind,
+            reason: parsed.kind === "parsed" ? "empty_counterparty_name" : parsed.reason,
+            event: "backfill_arq_greeting_parse_skipped",
+          },
+          "could not recover ARQ counterparty — skipping for manual review",
+        );
+        skipped += 1;
+        continue;
+      }
+
+      const counterpartyName = parsed.counterpartyName.trim();
+      const normalizedName = normalizeName(counterpartyName);
       if (dryRun) {
         log.info(
           {
             txId: row.id,
             oldMerchant: row.merchant,
-            newMerchant: row.statement_counterparty,
+            newMerchant: counterpartyName,
             event: "backfill_arq_greeting_dry_run",
           },
           "[dry-run] would repair greeting counterparty",
         );
+        repaired += 1;
         continue;
       }
 
       const cp = await resolveCounterpartyByKey(
         row.user_id,
-        { kind: "name", value: normalizedName, initialDisplayName: row.statement_counterparty },
+        { kind: "name", value: normalizedName, initialDisplayName: counterpartyName },
         db,
       );
       if (cp.counterpartyId === null)
@@ -86,17 +115,17 @@ async function main(): Promise<void> {
 
       await db.execute(sql`
         UPDATE transactions
-        SET merchant = ${row.statement_counterparty},
-            canonical_merchant = ${canonicalizeMerchant(row.statement_counterparty)},
+        SET merchant = ${counterpartyName},
+            canonical_merchant = ${canonicalizeMerchant(counterpartyName)},
             description_raw = CASE
               WHEN raw_data->>'kind' = 'transfer_received'
-                THEN 'You received ' || abs(amount_cents)::text || ' USDc from ' || ${row.statement_counterparty}
-              ELSE 'You sent USDc to ' || ${row.statement_counterparty}
+                THEN 'You received ' || abs(amount_cents)::text || ' USDc from ' || ${counterpartyName}
+              ELSE 'You sent USDc to ' || ${counterpartyName}
             END,
             raw_data = jsonb_set(
               raw_data,
               '{arq,recipient_name}',
-              to_jsonb(${row.statement_counterparty}::text),
+              to_jsonb(${counterpartyName}::text),
               true
             ),
             counterparty_id = ${cp.counterpartyId},
@@ -116,6 +145,7 @@ async function main(): Promise<void> {
         },
         "repaired greeting counterparty",
       );
+      repaired += 1;
     } catch (err) {
       errors += 1;
       log.error(
@@ -124,8 +154,12 @@ async function main(): Promise<void> {
       );
     }
   }
+  log.info(
+    { dryRun, repaired, skipped, errors, event: "backfill_arq_greeting_summary" },
+    "greeting counterparty backfill complete",
+  );
   await db.$client.end({ timeout: 1 });
-  if (errors > 0) process.exit(1);
+  if (errors > 0 || skipped > 0) process.exit(1);
 }
 
 main().catch((err) => {
