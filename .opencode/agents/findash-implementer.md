@@ -46,7 +46,7 @@ another role or to production:
 
 | Denied | Why |
 | --- | --- |
-| `git push`, `gh pr create`, `gh pr merge` | the shipper's job |
+| `git push`, `gh pr create`, `gh pr merge` | `scripts/ship.sh` does that |
 | `git rebase`, `git merge`, `git reset --hard`, checkout/switch to `main` | history surgery is a parent decision |
 | anything with `--no-verify` | hooks are the gate, not an obstacle |
 | `gh auth switch`, `gh auth setup-git` | rewrites the global gitconfig and breaks another agent |
@@ -67,7 +67,7 @@ around it.
    silently.
 3. **Conventional commits.** `<type>(<scope>): <subject> (#<issue>)`.
 4. **gh CLI.** Prefix every invocation with `GH_CONFIG_DIR=~/.config/gh-findash`.
-5. **Do not push, open a PR, or merge.** That is the shipper.
+5. **Do not push, open a PR, or merge.** That is `scripts/ship.sh`.
 6. **STOP after asking a question.** Do not assume answers.
 7. **CodeGraph before grep.** This repo is indexed: `codegraph explore "<symbols
    or question>"` returns source plus call paths in one call.
@@ -80,7 +80,7 @@ around it.
 3. Implement. Money is bigint cents, logging is Pino, JOINs on per-user tables
    pair `user_id` — the rest is in skill `findash-tech-baseline` and engram.
 4. Tests co-located next to source. Run only the affected specs; the full suite
-   is the shipper's job unless the parent said otherwise. **`FINDASH_TEST_DB` is
+   is `scripts/ship.sh`'s job unless the parent said otherwise. **`FINDASH_TEST_DB` is
    not optional in a lane** — a bare `bun run test` corrupts another lane's
    fixtures. Skill `findash-testing`.
 5. Verify locally: `bun run lint`, `bun run typecheck`, `bun run format:check`.
@@ -111,7 +111,7 @@ around it.
 ## Gates run
 lint: <pass/fail> · typecheck: <pass/fail> · affected specs: <n passed>
 
-## Left for the shipper
+## Left for ship.sh
 - <full suite / e2e screenshots / nothing>
 
 ## Unresolved
@@ -125,4 +125,4 @@ Keep it to the shape above.
 
 - Fuzzy, multi-faceted, or architectural → `/sdd-new`
 - Tests or types show the issue premise is wrong → stop and report
-- You were asked to push or open a PR → refuse; that is the shipper
+- You were asked to push or open a PR → refuse; that is `scripts/ship.sh`

@@ -117,8 +117,8 @@ Use this exact structure:
 
 The `Status` line is the most important. The orchestrator routes based on it:
 
-- `APPROVE` → 0 CRITICAL → orchestrator hands to shipper
+- `APPROVE` → 0 CRITICAL → orchestrator runs `scripts/ship.sh`
 - `NEEDS_FIXUP` → ≥1 CRITICAL → orchestrator bounces back to implementer with the report
-- `SKIP — <reason>` → not applicable (docs/tests/refactor/dep bump) → orchestrator hands to shipper
+- `SKIP — <reason>` → not applicable (docs/tests/refactor/dep bump) → orchestrator runs `scripts/ship.sh`
 
 WARNING-only does NOT block merge by default. The orchestrator decides whether to bounce on warnings based on context.
