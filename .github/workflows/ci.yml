@@ -1,5 +1,19 @@
 name: CI
 
+# Three independent jobs rather than one serial chain (#912). They run in
+# parallel, so wall-clock is the slowest job rather than the sum of all work.
+#
+# The split is drawn along one line: whether the job needs a database.
+# `static` and `build` do not, so they skip the ~21s `Initialize containers`
+# step that the old single job paid on every run even to lint. Measured on the
+# old workflow: containers 21s, lint 26s, format 17s, typecheck 26s, test 99s,
+# build 73s, install 4s — a 4m36s chain whose critical path, split, is the
+# ~2min test job.
+#
+# This repo is public, so runners are free and unlimited: parallel jobs cost
+# nothing but wall-clock saved. On a private repo the same split would trade
+# billable minutes for latency and would need a second look.
+
 on:
   pull_request:
     branches: [main]
@@ -13,9 +27,62 @@ concurrency:
 permissions:
   contents: read
 
+# Shared by every job. Next.js collects page data during `next build`, which
+# imports route modules, so the build job needs the same stubs the test job
+# does — a module-level env throw in anything a route imports fails the build.
+env:
+  # NextAuth requires AUTH_SECRET at build/runtime. CI uses a dummy value;
+  # real secrets live in production env files.
+  AUTH_SECRET: ci-dummy-secret-not-used-in-production
+  # Seeds the bootstrap user (id=1) that every tenant table's user_id
+  # column defaults to. Without it the FK in #183's migrations fails.
+  BOOTSTRAP_USER_EMAIL: ci@findash.local
+  BOOTSTRAP_USER_NAME: CI Bootstrap
+  # Required by src/lib/crypto/symmetric.ts at module-load time — Next.js
+  # page-data collection imports the webhook route (#185) during `next build`.
+  # 32 zero bytes base64. Real key lives in prod findash.env.
+  TELEGRAM_TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  # Same pattern for Gmail integration (Epic G — #459). Real key lives in
+  # /srv/findash/env/findash.env on the droplet.
+  GMAIL_TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  # OAuth callback URL — read by /api/integrations/gmail/oauth/start to
+  # build the Google authorization URL. Build-time stub; real value set
+  # per-environment.
+  GMAIL_OAUTH_REDIRECT_URI: https://ci.findash.local/api/integrations/gmail/oauth/callback
+
 jobs:
-  ci:
-    name: lint + typecheck + test + build
+  static:
+    name: lint + format + typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Format check
+        run: bun run format:check
+
+      - name: Typecheck
+        run: bun run typecheck
+
+  test:
+    name: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -50,24 +117,6 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE: findash_test
-      # NextAuth requires AUTH_SECRET at build/runtime. CI uses a dummy value;
-      # real secrets live in production env files.
-      AUTH_SECRET: ci-dummy-secret-not-used-in-production
-      # Seeds the bootstrap user (id=1) that every tenant table's user_id
-      # column defaults to. Without it the FK in #183's migrations fails.
-      BOOTSTRAP_USER_EMAIL: ci@findash.local
-      BOOTSTRAP_USER_NAME: CI Bootstrap
-      # Required by src/lib/crypto/symmetric.ts at module-load time — Next.js
-      # page-data collection imports the webhook route (#185) during `next build`.
-      # 32 zero bytes base64. Real key lives in prod findash.env.
-      TELEGRAM_TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      # Same pattern for Gmail integration (Epic G — #459). Real key lives in
-      # /srv/findash/env/findash.env on the droplet.
-      GMAIL_TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      # OAuth callback URL — read by /api/integrations/gmail/oauth/start to
-      # build the Google authorization URL. Build-time stub; real value set
-      # per-environment.
-      GMAIL_OAUTH_REDIRECT_URI: https://ci.findash.local/api/integrations/gmail/oauth/callback
       # BullMQ queue backend — points at the redis service container above.
       REDIS_URL: redis://localhost:6379
       # Vitest worker-pool size (#912). Pinned rather than derived from the
@@ -92,23 +141,47 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Migrates and seeds the BASE database. vitest.global-setup.ts clones it
+      # into one database per worker (#912), so this runs once, not per worker.
       - name: Apply migrations to test DB
         run: bun run db:migrate:test
 
       - name: Seed test DB
         run: bun run db:seed:test
 
-      - name: Lint
-        run: bun run lint
-
-      - name: Format check
-        run: bun run format:check
-
-      - name: Typecheck
-        run: bun run typecheck
-
       - name: Test
         run: bun run test
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # `next build` never queries Postgres — postgres.js connects lazily and
+      # nothing runs a query at module load — but src/lib/db/index.ts reads
+      # PGDATABASE when imported, so it gets a value rather than undefined.
+      # No service container here on purpose: if a future change makes the
+      # build actually connect, it should fail loudly here rather than pass
+      # against a database the production build would never have.
+      PGDATABASE: findash_test
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       - name: Build
         run: bun run build
