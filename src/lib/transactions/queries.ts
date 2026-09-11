@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, ilike, isNull, lt, lte, gte, ne, or, sql } from "drizzle-orm";
 import { notDeleted } from "@/lib/db/helpers";
+import { notMergeRetired } from "@/lib/reconciliation/merge-retired";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -79,6 +80,9 @@ export function decodeCursor(cursor: string): { occurredAt: Date; id: number } |
 export async function listTransactions(userId: number, filters: TxFilters): Promise<TxListResult> {
   const conditions = [eq(transactions.userId, userId)];
   if (!filters.includeArchived) conditions.push(notDeleted(transactions.deletedAt));
+  // A merge-retired row is soft-deleted but is NOT user-archived: showing it
+  // offers a restore that would resurrect a duplicate. See merge-retired.ts.
+  else conditions.push(notMergeRetired());
 
   if (filters.from) conditions.push(gte(transactions.occurredAt, new Date(filters.from)));
   if (filters.to) {
@@ -309,6 +313,9 @@ export async function countTotal(
 ): Promise<number> {
   const conditions = [eq(transactions.userId, userId)];
   if (!filters.includeArchived) conditions.push(notDeleted(transactions.deletedAt));
+  // A merge-retired row is soft-deleted but is NOT user-archived: showing it
+  // offers a restore that would resurrect a duplicate. See merge-retired.ts.
+  else conditions.push(notMergeRetired());
   if (filters.from) conditions.push(gte(transactions.occurredAt, new Date(filters.from)));
   if (filters.to) {
     const to = new Date(filters.to);

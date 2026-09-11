@@ -17,6 +17,7 @@ import {
   users,
 } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
+import { notMergeRetired } from "@/lib/reconciliation/merge-retired";
 import { getSessionUser } from "@/lib/auth/session";
 import { classifySingleWithAi as classifySingleWithAiLib } from "@/lib/classification/ai";
 import { MERCHANT_HINTS_MAX } from "@/lib/classification/context";
@@ -1394,6 +1395,10 @@ export async function restoreTransaction(input: { txId: number }): Promise<Archi
           eq(transactions.userId, session.id),
           eq(transactions.id, txId),
           isNotNull(transactions.deletedAt),
+          // A reconciliation merge retires its target by soft delete, so it
+          // looks archived. Restoring it would resurrect a duplicate next to
+          // the survivor and double-count the balance. See merge-retired.ts.
+          notMergeRetired(),
         ),
       )
       .limit(1);
@@ -1409,6 +1414,9 @@ export async function restoreTransaction(input: { txId: number }): Promise<Archi
             eq(transactions.userId, session.id),
             eq(transactions.transferGroupId, target.transferGroupId),
             isNotNull(transactions.deletedAt),
+            // Re-asserted: a group restore must not sweep a merge-retired leg
+            // back in alongside the survivor that absorbed it.
+            notMergeRetired(),
           ),
         )
         .returning({ id: transactions.id });
@@ -1423,6 +1431,7 @@ export async function restoreTransaction(input: { txId: number }): Promise<Archi
           eq(transactions.userId, session.id),
           eq(transactions.id, txId),
           isNotNull(transactions.deletedAt),
+          notMergeRetired(),
         ),
       )
       .returning({ id: transactions.id });

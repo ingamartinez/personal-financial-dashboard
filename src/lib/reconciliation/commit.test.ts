@@ -11,6 +11,8 @@ import {
 } from "@/lib/db/schema";
 import { copyCategorySeedsToUser } from "@/lib/auth/signup";
 import { notDeleted } from "@/lib/db/helpers";
+import { listTransactions } from "@/lib/transactions/queries";
+import { notMergeRetired } from "./merge-retired";
 import { commitReconciliation, hashFileBuffer, recordReconciliationDecision } from "./commit";
 import type { ParsedStatement, ParsedStatementRow } from "./parsers/types";
 import type { MatchingPlan } from "./engine/types";
@@ -569,6 +571,100 @@ describe("recordReconciliationDecision — merge_into path", () => {
     expect(decision.action).toBe("merged_into");
     expect(decision.mergedIntoTxnId).toBe(targetRow.id);
     expect(decision.note).toBe("FX rounding on intl txn");
+  });
+
+  // Regression for #922: the merge retires its target by soft delete, so the
+  // row is indistinguishable from a user-archived one by `deleted_at` alone.
+  // The archived view offers "restore", and restoring THIS row would resurrect
+  // a duplicate next to the survivor that absorbed it — double-counting every
+  // balance. That was impossible while the merge hard-deleted its target.
+  it("hides the merge-retired target from the archived view so it cannot be restored", async () => {
+    const [flaggedRow] = await db
+      .insert(transactions)
+      .values({
+        userId,
+        accountId,
+        occurredAt: new Date("2026-05-10T05:00:00Z"),
+        amountCents: BigInt(-11_000_00),
+        currency: "COP",
+        descriptionRaw: `${TAG} retire-flagged`,
+        source: "sms",
+        channel: "bank",
+        reconciliationStatus: "flagged",
+      })
+      .returning({ id: transactions.id });
+
+    const [imp] = await db
+      .insert(statementImports)
+      .values({
+        userId,
+        accountId,
+        fileHash: hashFileBuffer(Buffer.from(`${TAG}-retire`)),
+        periodStart: "2026-05-01",
+        periodEnd: "2026-05-18",
+        txnCount: 1,
+      })
+      .returning({ id: statementImports.id });
+
+    const [targetRow] = await db
+      .insert(transactions)
+      .values({
+        userId,
+        accountId,
+        occurredAt: new Date("2026-05-10T05:00:00Z"),
+        amountCents: BigInt(-11_050_00),
+        currency: "COP",
+        descriptionRaw: `${TAG} retire-target`,
+        source: "csv_reconcile",
+        channel: "bank",
+        statementImportId: imp.id,
+        reconciliationStatus: "imported_from_statement",
+      })
+      .returning({ id: transactions.id });
+
+    // A separate row the user archived themselves — the control. It MUST stay
+    // restorable, or the fix has thrown out the feature it was protecting.
+    const [userArchived] = await db
+      .insert(transactions)
+      .values({
+        userId,
+        accountId,
+        occurredAt: new Date("2026-05-11T05:00:00Z"),
+        amountCents: BigInt(-9_000_00),
+        currency: "COP",
+        descriptionRaw: `${TAG} user-archived`,
+        source: "sms",
+        channel: "bank",
+        deletedAt: new Date(),
+      })
+      .returning({ id: transactions.id });
+
+    await recordReconciliationDecision({
+      userId,
+      txnId: flaggedRow.id,
+      action: "merged_into",
+      mergedIntoTxnId: targetRow.id,
+    });
+
+    // The predicate itself: the retired target is excluded, the user-archived
+    // row is not.
+    const restorable = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          inArray(transactions.id, [targetRow.id, userArchived.id]),
+          notMergeRetired(),
+        ),
+      );
+    expect(restorable.map((r) => r.id)).toEqual([userArchived.id]);
+
+    // …and the archived view, which is where the restore button lives.
+    const archived = await listTransactions(userId, { includeArchived: true });
+    const archivedIds = archived.rows.map((r) => r.id);
+    expect(archivedIds).toContain(userArchived.id);
+    expect(archivedIds).not.toContain(targetRow.id);
   });
 
   it("rejects merge when target is not imported_from_statement", async () => {
