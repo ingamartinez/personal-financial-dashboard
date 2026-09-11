@@ -6,8 +6,8 @@ import { extractVisibleText } from "./_text";
 // ARQ sends transactional emails from @arqfinance.com (current) and
 // @dolarapp.com (legacy). Three template variants are handled here:
 //
-//   1. "no-title" transfer_sent: h1="COP transfer sent", h2=RecipientName,
-//      body contains "We've debited X.XX USDc from your balance" and
+//   1. "no-title" transfer_sent: a "Recipient name" paragraph followed by
+//      its value, body contains "We've debited X.XX USDc from your balance" and
 //      "Amount sent: 1,234,567 COP". No <title> tag or empty title.
 //
 //   2. "titled" transfer_sent: <title>You sent {amount} COP to {name}</title>
@@ -101,6 +101,19 @@ function extractRawTitle(rawHtml: string): string | null {
   return t.length > 0 ? t : null;
 }
 
+/**
+ * Extract visible paragraph text in document order. The no-title ARQ template
+ * renders detail labels and values as adjacent paragraphs.
+ */
+function extractParagraphTexts(rawHtml: string): string[] {
+  const paragraphs: string[] = [];
+  for (const match of rawHtml.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p\s*>/gi)) {
+    const text = extractVisibleText(match[1]);
+    if (text) paragraphs.push(text);
+  }
+  return paragraphs;
+}
+
 // ---------------------------------------------------------------------------
 // Regex patterns
 // ---------------------------------------------------------------------------
@@ -129,13 +142,13 @@ const NO_TITLE_SENT_MARKER = /COP\s+transfer\s+sent/i;
  * Parse template 1 — the "no-title" COP transfer sent variant.
  *
  * Expected visible-text structure:
- *   "... COP transfer sent [RecipientName] Amount sent ... [copAmount] COP
- *    We've debited [usdcAmount] USDc from your balance ..."
+ *   "... COP transfer sent ... Recipient name [RecipientName]
+ *    Amount sent ... [copAmount] COP We've debited [usdcAmount] USDc ..."
  *
- * Recipient name: text immediately after "COP transfer sent" and before
- * the next structural keyword or amount block.
+ * Recipient name is taken from the paragraph immediately following the
+ * `Recipient name` label.
  */
-function parseNoTitleSent(visibleText: string, occurredAt: Date): ArqParseResult {
+function parseNoTitleSent(visibleText: string, rawHtml: string, occurredAt: Date): ArqParseResult {
   // USDc debited is the authoritative ledger amount.
   const debitedMatch = visibleText.match(DEBITED_RE);
   if (!debitedMatch) {
@@ -146,20 +159,22 @@ function parseNoTitleSent(visibleText: string, occurredAt: Date): ArqParseResult
     return { kind: "needs_review", reason: "invalid_usdc_amount", raw: visibleText };
   }
 
-  // Recipient name: slice the window after "COP transfer sent".
-  const markerIdx = visibleText.search(NO_TITLE_SENT_MARKER);
-  if (markerIdx === -1) {
-    return { kind: "needs_review", reason: "no_transfer_sent_marker", raw: visibleText };
-  }
-  const afterMarker = visibleText.slice(markerIdx).replace(NO_TITLE_SENT_MARKER, "").trim();
-
-  // Name ends at first multi-space gap, structural keyword, or digit run.
-  const nameEnd = afterMarker.search(
-    /\s{2,}|Amount\s+sent|We['’]ve\s+(?:debited|credited)|\d{4,}/i,
+  // Real ARQ emails render the detail labels and values as adjacent paragraphs:
+  // "Recipient name", then the actual recipient. This avoids depending on the
+  // greeting's language or markup (which varies between templates).
+  const paragraphs = extractParagraphTexts(rawHtml);
+  const recipientLabelIndex = paragraphs.findIndex((paragraph) =>
+    /^Recipient\s+name$/i.test(paragraph),
   );
-  const rawName =
-    nameEnd > 0 ? afterMarker.slice(0, nameEnd).trim() : afterMarker.slice(0, 80).trim();
-  const counterpartyName = rawName.replace(/\s+/g, " ").trim();
+  const labeledRecipient =
+    recipientLabelIndex >= 0 ? paragraphs[recipientLabelIndex + 1] : undefined;
+
+  // Fail closed when the known detail structure is absent. Falling back to
+  // text after the template marker would reintroduce the greeting bug.
+  if (!labeledRecipient) {
+    return { kind: "needs_review", reason: "no_recipient_name", raw: visibleText };
+  }
+  const counterpartyName = labeledRecipient.replace(/\s+/g, " ").trim();
 
   if (!counterpartyName) {
     return { kind: "needs_review", reason: "no_recipient_name", raw: visibleText };
@@ -325,7 +340,7 @@ export function parseArqEmail(rawHtml: string, opts: { occurredAt: Date }): ArqP
 
   // Template 1: no-title COP transfer sent (47% of corpus — dominant case)
   if (NO_TITLE_SENT_MARKER.test(visibleText)) {
-    return parseNoTitleSent(visibleText, occurredAt);
+    return parseNoTitleSent(visibleText, rawHtml, occurredAt);
   }
 
   // Unrecognised — leave pending for manual review or future parser extension.

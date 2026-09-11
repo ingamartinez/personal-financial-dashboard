@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { parseArqEmail } from "./arq";
 
 // ---------------------------------------------------------------------------
@@ -6,7 +7,7 @@ import { parseArqEmail } from "./arq";
 //
 // All fixtures are REDACTED — no real PII, account numbers, or exact
 // counterparty names from prod. They preserve the structural markers the
-// parser depends on (title tag, h1/h2 ladder, USDc lines, COP lines).
+// parser depends on (title tag, paragraph labels/values, USDc lines, COP lines).
 // ---------------------------------------------------------------------------
 
 const RECEIVED_AT = new Date("2026-04-13T21:40:00Z");
@@ -78,9 +79,10 @@ function makeNoTitleSentEmail(
 </head>
 <body>
   <table>
-    <tr><td><h1>COP transfer sent</h1></td></tr>
-    <tr><td><h2>${counterparty}</h2></td></tr>
-    <tr><td><h3>Amount sent</h3></td></tr>
+    <tr><td><p>COP transfer sent</p></td></tr>
+    <tr><td><p>Recipient name</p></td></tr>
+    <tr><td><p>${counterparty}</p></td></tr>
+    <tr><td><p>Amount sent</p></td></tr>
     <tr><td><p>${copAmount} COP</p></td></tr>
     <tr><td><p>We&#39;ve debited ${usdcDebited} USDc from your balance</p></td></tr>
     <tr><td><p>Amount sent: ${copAmount} COP</p></td></tr>
@@ -184,8 +186,8 @@ describe("parseArqEmail — transfer_sent (template 2 — titled)", () => {
   });
 });
 
-describe("parseArqEmail — transfer_sent (template 1 — no-title h1/h2 ladder)", () => {
-  it("parses no-title sent: h1=COP transfer sent + h2=RecipientName", () => {
+describe("parseArqEmail — transfer_sent (template 1 — no-title paragraph labels)", () => {
+  it("parses no-title sent: Recipient name label followed by its value", () => {
     const html = makeNoTitleSentEmail("REDACTED RECIPIENT", "2,104,000", "563.81");
     const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
     if (r.kind !== "parsed")
@@ -198,6 +200,16 @@ describe("parseArqEmail — transfer_sent (template 1 — no-title h1/h2 ladder)
     expect(r.copAmountCents).toBe(BigInt(210400000));
     // implied TRM: 210_400_000 / 56_381 ≈ 3731 (realistic for COP/USD)
     expect(r.impliedTrmCopPerUsdc).toBeCloseTo(210400000 / 56381, 0);
+  });
+
+  it("uses the recipient value instead of the account owner's greeting", () => {
+    const html = readFileSync(
+      new URL("./fixtures/arq-transfer-greeting.html", import.meta.url),
+      "utf8",
+    );
+    const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
+    if (r.kind !== "parsed") throw new Error(`expected parsed, got ${r.kind}`);
+    expect(r.counterpartyName).toBe("SYNTHETIC RECIPIENT");
   });
 
   it("returns needs_review when USDc debited line is missing in no-title template", () => {
