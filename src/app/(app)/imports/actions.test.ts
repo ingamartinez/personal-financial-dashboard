@@ -411,6 +411,92 @@ describe("previewIngestion", () => {
 // Gen 2: commitIngestion
 // ---------------------------------------------------------------------------
 
+describe("previewIngestion — manual format pick (#906)", () => {
+  function sessionA() {
+    mockGetSessionUser.mockResolvedValue({
+      id: userA,
+      email: `${TAG}-a@test.local`,
+      name: TAG,
+      role: "user",
+      active: true,
+    });
+  }
+
+  function tcDetalladoDispatchResult() {
+    return {
+      kind: "bancolombia-tc-detallado" as const,
+      parsedSheets: [
+        {
+          period: { startDate: new Date("2026-01-01"), endDate: new Date("2026-01-31") },
+          moneda: "PESOS",
+          transactions: [],
+        },
+      ],
+      multiCurrencySheets: false,
+      cycleHint: { cycle: "2026-01", source: "file-period" as const },
+      accountHint: null,
+    };
+  }
+
+  it("forwards the picked kind to the dispatcher as forceKind", async () => {
+    sessionA();
+    mockParseAndHint.mockResolvedValue(makeArqDispatchResult());
+    mockResolveAccountHint.mockResolvedValue({ accountId: accountA, source: "file-header" });
+    mockParseArqStatementPdf.mockResolvedValue(makeRawStatement());
+
+    await previewIngestion(makeFormData(makeFakePdf(), { manual_kind: "arq-pdf" }));
+
+    expect(mockParseAndHint).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forceKind: "arq-pdf" }),
+    );
+  });
+
+  it("leaves forceKind undefined when nothing was picked", async () => {
+    sessionA();
+    mockParseAndHint.mockResolvedValue(makeArqDispatchResult());
+    mockResolveAccountHint.mockResolvedValue({ accountId: accountA, source: "file-header" });
+    mockParseArqStatementPdf.mockResolvedValue(makeRawStatement());
+
+    await previewIngestion(makeFormData(makeFakePdf()));
+
+    expect(mockParseAndHint).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forceKind: undefined }),
+    );
+  });
+
+  it("refuses a credit-card format forced onto a savings account", async () => {
+    // The guard this covers did not exist before #906. consolidateCycleFromStatement
+    // reads account.type for date tolerances and credit context but never refuses,
+    // so without this the force is accepted and consolidates credit-card semantics
+    // against an account that has none.
+    sessionA();
+    mockParseAndHint.mockResolvedValue(tcDetalladoDispatchResult());
+    mockResolveAccountHint.mockResolvedValue({ accountId: accountA, source: "file-header" });
+
+    await expect(
+      previewIngestion(makeFormData(makeFakePdf(), { manual_kind: "bancolombia-tc-detallado" })),
+    ).rejects.toThrow(/tarjeta de cr[eé]dito/i);
+  });
+
+  it("rejects a manual_kind outside the known set instead of passing it through", async () => {
+    sessionA();
+    mockParseAndHint.mockResolvedValue(makeArqDispatchResult());
+    mockResolveAccountHint.mockResolvedValue({ accountId: accountA, source: "file-header" });
+    mockParseArqStatementPdf.mockResolvedValue(makeRawStatement());
+
+    await previewIngestion(makeFormData(makeFakePdf(), { manual_kind: "not-a-real-format" }));
+
+    // The zod enum drops it, so detection runs normally rather than a bogus
+    // string reaching the dispatcher as a kind.
+    expect(mockParseAndHint).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forceKind: undefined }),
+    );
+  });
+});
+
 describe("commitIngestion", () => {
   it("AC-11: expired token → { status: 'expired' }", async () => {
     mockGetSessionUser.mockResolvedValue({

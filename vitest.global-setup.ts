@@ -43,6 +43,12 @@ function connect(database: string) {
     password: process.env.PGPASSWORD,
     max: 1,
     prepare: false,
+    // `DROP DATABASE IF EXISTS` on a database that is not there emits a NOTICE,
+    // and postgres.js prints the whole struct. With one per worker slot that is
+    // a wall of noise on top of every test run, hiding real output. Introduced
+    // by #913's teardown; silenced here rather than by dropping the IF EXISTS,
+    // which is what makes the teardown idempotent in the first place.
+    onnotice: () => {},
   });
 }
 

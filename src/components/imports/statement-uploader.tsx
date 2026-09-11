@@ -551,7 +551,7 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
   const [_isPending, startTransition] = useTransition();
 
   const triggerPreview = useCallback(
-    (file: File, overrideAccountId?: number | null) => {
+    (file: File, overrideAccountId?: number | null, overrideKind?: IngestionKind | null) => {
       setPendingFile(file);
       setPhase({ kind: "previewing" });
 
@@ -566,6 +566,14 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
           }
           if (cycleInput) {
             formData.append("hint_cycle", cycleInput);
+          }
+          // #906 — the manual pick has to reach the server or the picker is
+          // decorative: it used to set local state and stop there, so choosing
+          // a format changed nothing on screen and read as a second failure.
+          // Passed as an argument rather than read from state so the re-preview
+          // fired from onChange cannot see a stale value.
+          if (overrideKind) {
+            formData.append("manual_kind", overrideKind);
           }
 
           const result = await previewIngestion(formData);
@@ -590,12 +598,14 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
   const handleAccountChange = useCallback(
     (newAccountId: number | null) => {
       setSelectedAccountId(newAccountId);
-      // Re-preview with new account hint if we already have a file
+      // Re-preview with new account hint if we already have a file. Carry the
+      // manual pick through (#906) — changing the account must not silently
+      // drop it and fall back to the detection that was wrong in the first place.
       if (pendingFile) {
-        triggerPreview(pendingFile, newAccountId);
+        triggerPreview(pendingFile, newAccountId, manualKind);
       }
     },
-    [pendingFile, triggerPreview],
+    [pendingFile, triggerPreview, manualKind],
   );
 
   const handleConfirm = useCallback(() => {
@@ -758,8 +768,11 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
             previewData.kind !== "arq-pdf" &&
             previewData.multiCurrency && <MultiCurrencyBanner info={previewData.multiCurrency} />}
 
-          {/* Manual kind picker for format_unknown */}
-          {isFormatUnknown && (
+          {/* Manual kind picker for format_unknown — and it stays visible once a
+              pick succeeds (#906). A forced kind that parses is not proof it was
+              the right kind, so the control that got the user here has to remain
+              reachable for a second guess. */}
+          {(isFormatUnknown || manualKind !== null) && (
             <div className="flex flex-col gap-1">
               <label htmlFor="uploader-manual-kind" className="text-sm font-medium">
                 Seleccioná el formato manualmente
@@ -767,7 +780,15 @@ export function StatementUploader({ accounts, initialHint }: UploaderProps) {
               <select
                 id="uploader-manual-kind"
                 value={manualKind ?? ""}
-                onChange={(e) => setManualKind((e.target.value as IngestionKind) || null)}
+                onChange={(e) => {
+                  const picked = (e.target.value as IngestionKind) || null;
+                  setManualKind(picked);
+                  // Re-preview immediately with detection forced to the pick.
+                  // Selecting the placeholder clears back to plain detection.
+                  if (pendingFile) {
+                    triggerPreview(pendingFile, undefined, picked);
+                  }
+                }}
                 className="bg-background focus:ring-ring w-full rounded-md border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
               >
                 <option value="">Seleccioná un formato...</option>

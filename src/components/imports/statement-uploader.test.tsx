@@ -259,6 +259,89 @@ describe("StatementUploader", () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // #906 — the manual format picker actually re-previews
+  // -------------------------------------------------------------------------
+
+  describe("manual format picker (#906)", () => {
+    it("sends the picked format to the server and re-previews", async () => {
+      // First call: detection gives up. Second: the forced kind parses.
+      mockPreviewIngestion
+        .mockResolvedValueOnce(makeFormatUnknownResult())
+        .mockResolvedValueOnce(makeSavingsPreviewResult());
+
+      const user = userEvent.setup();
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakeXlsx());
+
+      const picker = await screen.findByLabelText(/seleccioná el formato manualmente/i);
+      await user.selectOptions(picker, "bancolombia-savings");
+
+      // The bug this covers: the picker used to set local state and stop, so
+      // previewIngestion was never called a second time and the screen never
+      // changed — indistinguishable from a failed parse.
+      await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(2));
+
+      const secondCall = mockPreviewIngestion.mock.calls[1]![0] as FormData;
+      expect(secondCall.get("manual_kind")).toBe("bancolombia-savings");
+      expect(secondCall.get("file")).toBeInstanceOf(File);
+    });
+
+    it("does not send manual_kind on the initial preview", async () => {
+      mockPreviewIngestion.mockResolvedValueOnce(makeFormatUnknownResult());
+
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakeXlsx());
+
+      await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(1));
+      const firstCall = mockPreviewIngestion.mock.calls[0]![0] as FormData;
+      expect(firstCall.get("manual_kind")).toBeNull();
+    });
+
+    it("keeps the picker reachable after a forced pick succeeds", async () => {
+      mockPreviewIngestion
+        .mockResolvedValueOnce(makeFormatUnknownResult())
+        .mockResolvedValueOnce(makeSavingsPreviewResult());
+
+      const user = userEvent.setup();
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakeXlsx());
+
+      const picker = await screen.findByLabelText(/seleccioná el formato manualmente/i);
+      await user.selectOptions(picker, "bancolombia-savings");
+      await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(2));
+
+      // Parsing under a forced kind is not proof the kind was right, so the
+      // control has to survive its own success for a second guess.
+      expect(
+        await screen.findByLabelText(/seleccioná el formato manualmente/i),
+      ).toBeInTheDocument();
+    });
+
+    it("carries the picked format through an account change", async () => {
+      mockPreviewIngestion
+        .mockResolvedValueOnce(makeFormatUnknownResult())
+        .mockResolvedValue(makeSavingsPreviewResult());
+
+      const user = userEvent.setup();
+      render(<StatementUploader accounts={TEST_ACCOUNTS} />);
+      simulateFileSelect(makeFakeXlsx());
+
+      const picker = await screen.findByLabelText(/seleccioná el formato manualmente/i);
+      await user.selectOptions(picker, "bancolombia-savings");
+      await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(2));
+
+      await user.selectOptions(screen.getByLabelText(/cuenta/i), "1");
+      await waitFor(() => expect(mockPreviewIngestion).toHaveBeenCalledTimes(3));
+
+      // Dropping the pick here would silently fall back to the detection that
+      // was wrong to begin with.
+      const thirdCall = mockPreviewIngestion.mock.calls[2]![0] as FormData;
+      expect(thirdCall.get("manual_kind")).toBe("bancolombia-savings");
+      expect(thirdCall.get("hint_account_id")).toBe("1");
+    });
+  });
+
   it("account override → previewIngestion called again with new hint", async () => {
     mockPreviewIngestion.mockResolvedValue(makeArqPreviewResult());
 

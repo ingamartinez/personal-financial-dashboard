@@ -25,9 +25,63 @@ export const hintSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === "1"),
+  // #906 — the format the user picked by hand after detection returned
+  // format_unknown. An enum, not a free string: this value selects a parser, so
+  // anything outside the known set is rejected here rather than reaching
+  // parseAndHint as an unhandled kind.
+  manual_kind: z
+    .enum([
+      "arq-pdf",
+      "bancolombia-savings",
+      "bancolombia-extracto",
+      "bancolombia-tc-legacy",
+      "bancolombia-tc-detallado",
+    ])
+    .optional(),
 });
 
 export type HintParams = z.infer<typeof hintSchema>;
+
+// ---------------------------------------------------------------------------
+// Manual-kind compatibility (#906)
+// ---------------------------------------------------------------------------
+
+/**
+ * The account type each kind can be committed against, for a **manually
+ * forced** kind only.
+ *
+ * Why forced-only: auto-detected kinds have always been allowed through
+ * whatever account the user picked, and tightening that here would reject
+ * imports that work today. The force path is new, so it gets the strict rule
+ * without breaking anything behind it.
+ *
+ * Why it needs a rule at all: `bancolombia-tc-detallado` routes to
+ * `consolidateCycleFromStatement`, which reads `account.type` to choose date
+ * tolerances and credit context but — verified while writing #906 — never
+ * *refuses* a savings account. So without this, forcing a TC format onto a
+ * savings account is accepted and silently consolidates with credit-card
+ * semantics against an account that has none.
+ *
+ * `arq-pdf` is unconstrained on purpose: ARQ accounts resolve by institution,
+ * not by type, and there is no equivalent mis-route to guard against.
+ */
+export const MANUAL_KIND_ACCOUNT_TYPES: Record<
+  IngestionKindValue,
+  readonly ("savings" | "credit_card" | "loan")[] | null
+> = {
+  "arq-pdf": null,
+  "bancolombia-savings": ["savings"],
+  "bancolombia-extracto": ["savings"],
+  "bancolombia-tc-legacy": ["credit_card"],
+  "bancolombia-tc-detallado": ["credit_card"],
+};
+
+type IngestionKindValue =
+  | "arq-pdf"
+  | "bancolombia-savings"
+  | "bancolombia-extracto"
+  | "bancolombia-tc-legacy"
+  | "bancolombia-tc-detallado";
 
 // ---------------------------------------------------------------------------
 // ImportPreviewResultV2 — discriminated union by kind

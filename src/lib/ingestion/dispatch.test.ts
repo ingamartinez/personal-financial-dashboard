@@ -7,7 +7,13 @@
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 
-import { detectKind, parseAndHint, resolveAccountHint, UnsupportedFileKindError } from "./dispatch";
+import {
+  detectKind,
+  ForcedKindMismatchError,
+  parseAndHint,
+  resolveAccountHint,
+  UnsupportedFileKindError,
+} from "./dispatch";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -541,5 +547,69 @@ describe("resolveAccountHint — cross-tenant isolation (integration)", () => {
     expect(hintD!.accountId).not.toBe(tcAcctC);
 
     await cleanupUsers([EMAIL_C, EMAIL_D]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #906 — forceKind (the manual format picker)
+// ---------------------------------------------------------------------------
+
+/**
+ * A savings file that the TC-detallado probe wrongly claims.
+ *
+ * `tryDetectTcDetallado` is substring-greedy: the word "tarjeta" anywhere in a
+ * sheet's first rows is enough — including inside a transaction description.
+ * A savings account with one debit-card purchase near the top of the export is
+ * therefore claimed as a credit-card statement, which is exactly the
+ * misdetection the manual picker exists to undo.
+ */
+function buildSavingsXlsxMisdetectedAsTc(): Buffer {
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["Fecha", "Descripción", "Referencia", "Valor"],
+    [46127.20833, "COMPRA TARJETA DEBITO EXITO", "0012345", -50000],
+    [46128.20833, "ABONO INTERESES", "0012346", 100],
+  ]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Hoja 1");
+  return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+}
+
+describe("#906 — forceKind", () => {
+  it("rescues a file the greedy TC probe misdetects", async () => {
+    const buf = buildSavingsXlsxMisdetectedAsTc();
+
+    // Guard the premise: if this stops being misdetected the test is worthless,
+    // so fail loudly here rather than silently passing the rescue below.
+    expect(detectKind(buf)).toBe("bancolombia-tc-detallado");
+
+    const forced = await parseAndHint(buf, { forceKind: "bancolombia-savings" });
+    expect(forced.kind).toBe("bancolombia-savings");
+  });
+
+  it("routes a format_unknown file to the forced parser instead of giving up", async () => {
+    const buf = buildUnrecognizedXlsx();
+    expect(detectKind(buf)).toBe("format_unknown");
+
+    // The savings parser rejects it — that is a real, reportable outcome. What
+    // must NOT happen is silently returning format_unknown again, which is what
+    // the picker did before it was wired.
+    await expect(parseAndHint(buf, { forceKind: "bancolombia-savings" })).rejects.toThrow();
+  });
+
+  it("refuses a forced kind whose container does not match — xlsx forced to pdf", async () => {
+    await expect(parseAndHint(buildSavingsXlsx(), { forceKind: "arq-pdf" })).rejects.toBeInstanceOf(
+      ForcedKindMismatchError,
+    );
+  });
+
+  it("refuses a forced kind whose container does not match — pdf forced to xlsx", async () => {
+    await expect(
+      parseAndHint(makePdfBuffer(), { forceKind: "bancolombia-savings" }),
+    ).rejects.toBeInstanceOf(ForcedKindMismatchError);
+  });
+
+  it("leaves detection alone when no kind is forced", async () => {
+    const result = await parseAndHint(buildSavingsXlsx());
+    expect(result.kind).toBe("bancolombia-savings");
   });
 });
