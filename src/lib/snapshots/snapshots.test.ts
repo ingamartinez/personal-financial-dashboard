@@ -5,6 +5,7 @@ import {
   accounts,
   emailReceipts,
   gmailConnections,
+  gmailPullCursors,
   merchantKnowledge,
   merchantKnowledgeHints,
   transactions,
@@ -296,6 +297,97 @@ describe("#471 user snapshots", () => {
       `);
       expect(catsAfter).toBe(catsBefore);
       expect(rulesAfter).toBe(rulesBefore);
+    });
+  });
+
+  // #511 — the per-gateway pull cursors are NOT in SNAPSHOT_TABLES (the reset
+  // flow must preserve them, #498), so they travel in the payload's
+  // `gmailPullCursors` section and the restore replaces them explicitly.
+  describe("gmail pull cursors (#511)", () => {
+    // connA is created in the outer beforeAll and never deleted, so its
+    // cursor rows would leak across tests — clear them here.
+    beforeEach(async () => {
+      await db.delete(gmailPullCursors).where(eq(gmailPullCursors.userId, userA));
+    });
+
+    it("restore rolls the per-gateway cursors back to the snapshot's state", async () => {
+      await createEmailReceipt(userA, connA, `${TAG}-cur-1`);
+      const t1 = new Date("2026-04-02T00:00:00Z");
+      await db
+        .insert(gmailPullCursors)
+        .values({ userId: userA, connectionId: connA, gateway: "mercado_pago", lastPullAt: t1 });
+
+      const snap = await createSnapshotForUser({ userId: userA, name: "t-cursors" });
+
+      // Post-snapshot activity: the cron advances mercado_pago and pulls
+      // payu for the first time (a cursor row that did not exist at
+      // snapshot time).
+      const t2 = new Date("2026-04-24T12:00:00Z");
+      await db
+        .update(gmailPullCursors)
+        .set({ lastPullAt: t2 })
+        .where(eq(gmailPullCursors.connectionId, connA));
+      await db
+        .insert(gmailPullCursors)
+        .values({ userId: userA, connectionId: connA, gateway: "payu", lastPullAt: t2 });
+
+      const result = await restoreSnapshotForUser({ userId: userA, snapshotId: snap.id });
+      expect(result.ok).toBe(true);
+
+      const rows = await db
+        .select({ gateway: gmailPullCursors.gateway, lastPullAt: gmailPullCursors.lastPullAt })
+        .from(gmailPullCursors)
+        .where(eq(gmailPullCursors.userId, userA))
+        .orderBy(gmailPullCursors.gateway);
+      // payu's post-snapshot row is gone; mercado_pago is back at t1. Were
+      // the cursors left advanced, the next pull would skip the receipts
+      // pulled after the snapshot — they were just wiped by the restore.
+      expect(rows).toEqual([{ gateway: "mercado_pago", lastPullAt: t1 }]);
+    });
+
+    it("legacy payload without gmailPullCursors derives cursors from the restored receipts", async () => {
+      await createEmailReceipt(userA, connA, `${TAG}-cur-2`);
+      const snap = await createSnapshotForUser({ userId: userA, name: "t-cursors-legacy" });
+
+      // Simulate a pre-#511 v1 payload: strip the section from the stored
+      // jsonb. The restore must derive cursors instead of trusting the
+      // (more advanced) current rows.
+      await db.execute(sql`
+        UPDATE user_snapshots
+        SET payload = payload - 'gmailPullCursors'
+        WHERE id = ${snap.id}
+      `);
+
+      // Post-snapshot: the cron created a cursor the legacy payload cannot
+      // know about.
+      await db.insert(gmailPullCursors).values({
+        userId: userA,
+        connectionId: connA,
+        gateway: "payu",
+        lastPullAt: new Date("2026-04-24T12:00:00Z"),
+      });
+
+      const result = await restoreSnapshotForUser({ userId: userA, snapshotId: snap.id });
+      expect(result.ok).toBe(true);
+
+      const rows = await db
+        .select({
+          connectionId: gmailPullCursors.connectionId,
+          gateway: gmailPullCursors.gateway,
+          lastPullAt: gmailPullCursors.lastPullAt,
+        })
+        .from(gmailPullCursors)
+        .where(eq(gmailPullCursors.userId, userA));
+      // Derived: the (connA, mercado_pago) pair from the restored receipts,
+      // with the connection's restored last_pull_at (the beforeEach value,
+      // put back by the gmailCursors loop). The payu row is gone.
+      expect(rows).toEqual([
+        {
+          connectionId: connA,
+          gateway: "mercado_pago",
+          lastPullAt: new Date("2026-04-01T00:00:00Z"),
+        },
+      ]);
     });
   });
 

@@ -15,8 +15,10 @@ export type ResetResult = {
 };
 
 // Wipes the user's transactional data (transactions, imports, ingestion
-// history, observability, all children of those) and nulls the Gmail pull
-// cursor so they can re-ingest the same messages. OAuth tokens, categories,
+// history, observability, all children of those). The Gmail pull cursors —
+// the connection-level columns and the per-gateway `gmail_pull_cursors` rows
+// (#511) — are preserved so the next cron tick resumes where it left off
+// instead of re-ingesting historical emails (#498). OAuth tokens, categories,
 // rules, budgets, accounts — all config — stay untouched.
 //
 // Takes an auto-snapshot BEFORE the wipe, inside the same transaction, so

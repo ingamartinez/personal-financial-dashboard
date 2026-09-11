@@ -30,6 +30,17 @@ export type SnapshotTxn =
 // Shape of a serialized user snapshot. `version` exists to let future
 // migrations of the payload format stay forward-compatible without breaking
 // existing snapshots (we only support v1 right now).
+export type GmailPullCursorRow = {
+  id: number;
+  user_id: number;
+  connection_id: number;
+  gateway: string;
+  last_pull_at: string | null;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type SnapshotPayload = {
   version: 1;
   tables: Record<SnapshotTable, unknown[]>;
@@ -38,6 +49,11 @@ export type SnapshotPayload = {
     last_pull_at: string | null;
     last_pull_history_id: string | null;
   }>;
+  // #511 — per-gateway pull cursors. Optional so v1 payloads written before
+  // #511 still restore: when absent, restoreUserPayload derives cursors from
+  // the restored receipts + the connection-level last_pull_at (the same rule
+  // as the #511 data migration).
+  gmailPullCursors?: GmailPullCursorRow[];
 };
 
 // Postgres `jsonb_agg(row_to_json(t))` handles type conversion natively:
@@ -75,6 +91,22 @@ export async function dumpUserPayload(
     WHERE user_id = ${userId}
   `);
 
+  // #511 — per-gateway pull cursors. Dumped as whole rows (ids included, same
+  // as the SNAPSHOT_TABLES entries) so the restore can reinflate them exactly.
+  const pullCursorRows = await executor.execute<GmailPullCursorRow>(sql`
+    SELECT
+      id,
+      user_id,
+      connection_id,
+      gateway::text AS gateway,
+      last_pull_at::text AS last_pull_at,
+      deleted_at::text AS deleted_at,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+    FROM gmail_pull_cursors
+    WHERE user_id = ${userId}
+  `);
+
   return {
     version: 1,
     tables: tables as SnapshotPayload["tables"],
@@ -83,6 +115,7 @@ export async function dumpUserPayload(
       last_pull_at: r.last_pull_at,
       last_pull_history_id: r.last_pull_history_id,
     })),
+    gmailPullCursors: pullCursorRows,
   };
 }
 
@@ -159,8 +192,66 @@ export async function restoreUserPayload(
     `);
   }
 
+  // #511 — roll the per-gateway pull cursors back to the snapshot's state.
+  // This table is deliberately NOT in SNAPSHOT_TABLES (see tables.ts): the
+  // reset flow must preserve it (#498), so the wipe above never touches it.
+  // A restore, however, reinflates `email_receipts` as they were at snapshot
+  // time — leaving the (more advanced) current cursors in place would make
+  // the next pull skip the receipts pulled after the snapshot. Hence:
+  // delete the current rows, then reinflate the snapshot's.
+  await tx.execute(sql`
+    DELETE FROM gmail_pull_cursors WHERE user_id = ${userId}
+  `);
+  if (payload.gmailPullCursors) {
+    if (payload.gmailPullCursors.length > 0) {
+      const pullCursorsJson = JSON.stringify(payload.gmailPullCursors);
+      await tx.execute(sql`
+        INSERT INTO gmail_pull_cursors
+        SELECT * FROM jsonb_populate_recordset(
+          NULL::gmail_pull_cursors, ${pullCursorsJson}::jsonb
+        ) r
+        WHERE r.user_id = ${userId}
+      `);
+      // Same sequence bump as the tables loop — the restored ids may exceed
+      // the current sequence value.
+      await tx.execute(sql`
+        SELECT setval(
+          pg_get_serial_sequence('gmail_pull_cursors', 'id'),
+          GREATEST(
+            (SELECT COALESCE(MAX(id), 0) FROM gmail_pull_cursors),
+            1
+          )
+        )
+      `);
+    }
+  } else {
+    // Legacy v1 payload (pre-#511): no per-gateway cursors existed. Derive
+    // them exactly like the #511 data migration — one row per (connection,
+    // gateway) pair present in the restored receipts, with the connection's
+    // restored last_pull_at (set by the gmailCursors loop above) as the
+    // watermark. Pairs without receipts stay absent: no row = bootstrap.
+    await tx.execute(sql`
+      INSERT INTO gmail_pull_cursors (user_id, connection_id, gateway, last_pull_at, created_at, updated_at)
+      SELECT c.user_id, c.id, er.gateway, c.last_pull_at, NOW(), NOW()
+      FROM gmail_connections c
+      JOIN (
+        SELECT DISTINCT gmail_connection_id, gateway
+        FROM email_receipts
+        WHERE user_id = ${userId}
+      ) er ON er.gmail_connection_id = c.id
+      WHERE c.user_id = ${userId}
+        AND c.deleted_at IS NULL
+        AND c.last_pull_at IS NOT NULL
+    `);
+  }
+
   log.info(
-    { userId, tables: RESTORE_ORDER.length, cursors: payload.gmailCursors.length },
+    {
+      userId,
+      tables: RESTORE_ORDER.length,
+      cursors: payload.gmailCursors.length,
+      pullCursors: payload.gmailPullCursors?.length ?? 0,
+    },
     "restore complete",
   );
 }
@@ -193,6 +284,11 @@ export function validatePayloadShape(value: unknown): asserts value is SnapshotP
   }
   if (!Array.isArray(p.gmailCursors)) {
     throw new Error("snapshot.payload.invalid: gmailCursors is not an array");
+  }
+  // #511 — optional (legacy v1 payloads predate it), but when present it
+  // must be an array.
+  if (p.gmailPullCursors !== undefined && !Array.isArray(p.gmailPullCursors)) {
+    throw new Error("snapshot.payload.invalid: gmailPullCursors is not an array");
   }
 }
 

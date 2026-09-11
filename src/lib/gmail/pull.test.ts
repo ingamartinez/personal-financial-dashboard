@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { emailReceipts, gmailConnections, users } from "@/lib/db/schema";
+import { emailReceipts, gmailConnections, gmailPullCursors, users } from "@/lib/db/schema";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
 import type { AuthedGmailClient } from "./client";
 import { GmailConnectionUnusableError, GmailNotConnectedError } from "./client";
@@ -44,6 +44,24 @@ async function seedActiveConnection(
     })
     .returning({ id: gmailConnections.id });
   return row.id;
+}
+
+async function seedPullCursor(
+  userId: number,
+  connectionId: number,
+  gateway: "mercado_pago" | "payu",
+  lastPullAt: Date,
+): Promise<void> {
+  await db.insert(gmailPullCursors).values({ userId, connectionId, gateway, lastPullAt });
+}
+
+// Extracts the `after:<unix-seconds>` fragment from a Gmail list q. The
+// since-date is the thing under test in the #511 specs; the sender-query
+// prefix is covered by the registry tests, so a substring check for the
+// gateway's domain + this extraction pins the watermark exactly.
+function afterSecondsOf(q: string | undefined): number | null {
+  const match = q?.match(/after:(\d+)/);
+  return match ? Number(match[1]) : null;
 }
 
 // Build a fake message payload with a single text/html part. Body is
@@ -424,6 +442,265 @@ describe("gmail/pull", () => {
       .from(gmailConnections)
       .where(eq(gmailConnections.id, connId));
     expect(conn.lastPullAt).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Per-gateway pull cursors (#511). The since-date comes from the gateway's
+  // own cursor row, not from the connection's shared last_pull_at.
+  // -------------------------------------------------------------------------
+
+  it("advances the per-gateway cursor on a clean pull and upserts (not duplicates) on the next", async () => {
+    const connId = await seedActiveConnection(userA);
+    const { authed } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: (call) =>
+        call.q?.includes("mercadopago.com.co") ? { messageIds: ["mp-c-1"] } : { messageIds: [] },
+    });
+
+    const now1 = new Date("2026-04-24T12:00:00Z");
+    await pullForUser(
+      userA,
+      { gateways: ["mercado_pago"] },
+      { getClient: async () => authed, now: () => now1 },
+    );
+
+    let rows = await db
+      .select()
+      .from(gmailPullCursors)
+      .where(eq(gmailPullCursors.connectionId, connId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].gateway).toBe("mercado_pago");
+    expect(rows[0].userId).toBe(userA);
+    expect(rows[0].lastPullAt?.getTime()).toBe(now1.getTime());
+
+    // Second pull: the (connection_id, gateway) unique index is PARTIAL
+    // (WHERE deleted_at IS NULL), so the ON CONFLICT needs targetWhere — a
+    // bare target fails at runtime (engram: gotchas/drizzle-on-conflict-
+    // partial-index). This exercises that path: UPDATE, not a second row.
+    const now2 = new Date("2026-04-24T13:00:00Z");
+    await pullForUser(
+      userA,
+      { gateways: ["mercado_pago"] },
+      { getClient: async () => authed, now: () => now2 },
+    );
+    rows = await db
+      .select()
+      .from(gmailPullCursors)
+      .where(eq(gmailPullCursors.connectionId, connId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].lastPullAt?.getTime()).toBe(now2.getTime());
+  });
+
+  it("bootstraps a gateway without a cursor row from bootstrapSinceDate, not the connection watermark", async () => {
+    // The connection's legacy last_pull_at is deliberately set: if the pull
+    // (wrongly) still read it, the q would carry after:2026-04-20 instead of
+    // the bootstrap window.
+    const connId = await seedActiveConnection(userA, {
+      lastPullAt: new Date("2026-04-20T00:00:00Z"),
+    });
+    const bootstrap = new Date("2026-03-01T00:00:00Z");
+    await db
+      .update(gmailConnections)
+      .set({ bootstrapSinceDate: bootstrap })
+      .where(eq(gmailConnections.id, connId));
+    const { authed, listCalls } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: () => ({ messageIds: [] }),
+    });
+
+    const now = new Date("2026-04-24T12:00:00Z");
+    await pullForUser(
+      userA,
+      { gateways: ["mercado_pago"] },
+      { getClient: async () => authed, now: () => now },
+    );
+
+    expect(listCalls).toHaveLength(1);
+    expect(listCalls[0].q).toContain("mercadopago.com.co");
+    expect(afterSecondsOf(listCalls[0].q)).toBe(Math.floor(bootstrap.getTime() / 1000));
+
+    // And the successful (if empty) pull creates the cursor row: the next
+    // tick resumes from the watermark instead of re-bootstrapping.
+    const [cursor] = await db
+      .select({ lastPullAt: gmailPullCursors.lastPullAt })
+      .from(gmailPullCursors)
+      .where(eq(gmailPullCursors.connectionId, connId));
+    expect(cursor.lastPullAt?.getTime()).toBe(now.getTime());
+  });
+
+  it("uses the gateway cursor's watermark (with 30-min overlap) when a cursor row exists", async () => {
+    const connId = await seedActiveConnection(userA, {
+      lastPullAt: new Date("2026-04-20T00:00:00Z"),
+    });
+    const cursorT = new Date("2026-04-23T10:00:00Z");
+    await seedPullCursor(userA, connId, "mercado_pago", cursorT);
+    const { authed, listCalls } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: () => ({ messageIds: [] }),
+    });
+
+    await pullForUser(
+      userA,
+      { gateways: ["mercado_pago"] },
+      { getClient: async () => authed, now: () => new Date("2026-04-24T12:00:00Z") },
+    );
+
+    expect(listCalls).toHaveLength(1);
+    // WATERMARK_OVERLAP_SECONDS = 30 min.
+    expect(afterSecondsOf(listCalls[0].q)).toBe(
+      Math.floor((cursorT.getTime() - 30 * 60 * 1000) / 1000),
+    );
+  });
+
+  it("sinceDays overrides the gateway cursor, and the cursor still advances after", async () => {
+    const connId = await seedActiveConnection(userA);
+    await seedPullCursor(userA, connId, "mercado_pago", new Date("2026-04-23T10:00:00Z"));
+    const { authed, listCalls } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: () => ({ messageIds: [] }),
+    });
+
+    const now = new Date("2026-04-24T12:00:00Z");
+    await pullForUser(
+      userA,
+      { gateways: ["mercado_pago"], sinceDays: 2 },
+      { getClient: async () => authed, now: () => now },
+    );
+
+    expect(listCalls).toHaveLength(1);
+    expect(afterSecondsOf(listCalls[0].q)).toBe(
+      Math.floor((now.getTime() - 2 * 86_400_000) / 1000),
+    );
+
+    const [cursor] = await db
+      .select({ lastPullAt: gmailPullCursors.lastPullAt })
+      .from(gmailPullCursors)
+      .where(eq(gmailPullCursors.connectionId, connId));
+    expect(cursor.lastPullAt?.getTime()).toBe(now.getTime());
+  });
+
+  it("a failing gateway does not hold other gateways' cursors back", async () => {
+    const connId = await seedActiveConnection(userA);
+    const { authed } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: (call) => {
+        if (call.q?.includes("mercadopago.com.co")) return { messageIds: ["mp-err-1"] };
+        if (call.q?.includes("payu.com") || call.q?.includes("payulatam.com")) {
+          return { messageIds: ["payu-ok-1"] };
+        }
+        return { messageIds: [] };
+      },
+      onGet: (call) => {
+        // Plain Error → no code → not retryable → surfaces immediately.
+        if (call.id === "mp-err-1") throw new Error("boom");
+        return fakeMessage(call.id, "<html><body>x</body></html>");
+      },
+    });
+
+    const now = new Date("2026-04-24T12:00:00Z");
+    const result = await pullForUser(
+      userA,
+      { gateways: ["mercado_pago", "payu"] },
+      { getClient: async () => authed, now: () => now },
+    );
+    expect(result.errors.length).toBeGreaterThan(0);
+
+    const rows = await db
+      .select()
+      .from(gmailPullCursors)
+      .where(eq(gmailPullCursors.connectionId, connId));
+    // mercado_pago failed → no cursor. payu succeeded → advanced. Under the
+    // old per-connection watermark, payu's progress would have been lost.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].gateway).toBe("payu");
+    expect(rows[0].lastPullAt?.getTime()).toBe(now.getTime());
+  });
+
+  it("historical pulls (preserveCursor) leave the gateway cursors untouched", async () => {
+    const connId = await seedActiveConnection(userA);
+    const since = new Date("2026-01-01T00:00:00Z");
+    const until = new Date("2026-02-01T00:00:00Z");
+    const expectedQ = jetsmartHistoricalQuery(since, until);
+    const { authed } = fakeAuthed({
+      userId: userA,
+      connectionId: connId,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: (call) => (call.q === expectedQ ? { messageIds: ["js-hist-2"] } : { messageIds: [] }),
+    });
+
+    const result = await pullForUser(
+      userA,
+      { senders: ["jetsmart.com"], overrideSince: since, until, preserveCursor: true },
+      { getClient: async () => authed, now: () => new Date("2026-09-09T16:00:00Z") },
+    );
+    expect(result.pulled).toBe(1);
+    expect(result.errors).toHaveLength(0);
+
+    const rows = await db
+      .select()
+      .from(gmailPullCursors)
+      .where(eq(gmailPullCursors.connectionId, connId));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("cursors are per-connection: two users' pulls coexist and a connection delete cascades", async () => {
+    const connA = await seedActiveConnection(userA);
+    const connB = await seedActiveConnection(userB);
+    const fakeA = fakeAuthed({
+      userId: userA,
+      connectionId: connA,
+      gmailEmail: `${TAG}-${userA}@example.com`,
+      onList: () => ({ messageIds: ["shared-a-1"] }),
+    });
+    const fakeB = fakeAuthed({
+      userId: userB,
+      connectionId: connB,
+      gmailEmail: `${TAG}-${userB}@example.com`,
+      onList: () => ({ messageIds: ["shared-b-1"] }),
+    });
+
+    await pullForUser(
+      userA,
+      { gateways: ["mercado_pago"] },
+      { getClient: async () => fakeA.authed },
+    );
+    await pullForUser(
+      userB,
+      { gateways: ["mercado_pago"] },
+      { getClient: async () => fakeB.authed },
+    );
+
+    const rows = await db
+      .select()
+      .from(gmailPullCursors)
+      .where(inArray(gmailPullCursors.connectionId, [connA, connB]))
+      .orderBy(gmailPullCursors.id);
+    // Both users pulled the same gateway — the unique index is per-connection,
+    // so both rows coexist, each scoped to its own user_id.
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.gateway)).toEqual(["mercado_pago", "mercado_pago"]);
+    expect(rows.map((r) => r.userId).sort()).toEqual([userA, userB].sort());
+    expect(rows.map((r) => r.connectionId).sort()).toEqual([connA, connB].sort());
+
+    // Deleting a connection cascades to its cursors — and only its cursors.
+    await db.delete(gmailConnections).where(eq(gmailConnections.id, connA));
+    const after = await db
+      .select()
+      .from(gmailPullCursors)
+      .where(inArray(gmailPullCursors.connectionId, [connA, connB]));
+    expect(after).toHaveLength(1);
+    expect(after[0].connectionId).toBe(connB);
+    expect(after[0].userId).toBe(userB);
   });
 
   // -------------------------------------------------------------------------
