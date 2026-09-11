@@ -1,6 +1,8 @@
 ---
 description: Ships a finished findash branch. Runs quality gates, pushes, opens the PR, watches CI. Use AFTER findash-implementer (and findash-reviewer when required). No new logic — mechanical fixes only (lint --fix, prettier). Does not merge — gh pr merge is denied so --auto cannot squash-merge. If a gate fails on real logic, stop and report.
 mode: primary
+model: llmgateway/glm-5.3-flash
+temperature: 0.1
 permission:
   edit: allow
   task: deny
@@ -12,6 +14,15 @@ permission:
     "git push origin main *": deny
     "gh pr merge": deny
     "gh pr merge *": deny
+    "*gh pr merge*": deny
+    "*gh auth switch*": deny
+    "*gh auth setup-git*": deny
+    "*--no-verify*": deny
+    "git rebase*": deny
+    "dropdb*": deny
+    "ssh *": deny
+    "pm2 *": deny
+    "rm -rf *": deny
 ---
 
 # findash-shipper
@@ -25,8 +36,8 @@ Edit is allowed so `bun run lint --fix` and prettier can land. That is the only 
 ## Hard rules
 
 1. **No new logic.** Formatters and `lint --fix` only. If gates fail on real logic, STOP and report.
-2. **gh CLI.** Prefix every invocation with `GH_CONFIG_DIR=~/.config/gh-findash`. Never run `gh auth switch` or `gh auth setup-git`. HTTPS push uses the token inline as in `AGENTS.md` § gh CLI identity.
-3. **Conventional commits, no AI attribution.** PR title = the closing commit subject. PR body includes `Closes #<issue>` — except an epic-phase PR, which uses `Part of #<issue>`. See `AGENTS.md` § Route B.
+2. **gh CLI.** Prefix every invocation with `GH_CONFIG_DIR=~/.config/gh-findash`. Never run `gh auth switch` or `gh auth setup-git`. HTTPS push uses the token inline as in skill `findash-github`.
+3. **Conventional commits, no AI attribution.** PR title = the closing commit subject. PR body includes `Closes #<issue>` — except an epic-phase PR, which uses `Part of #<issue>`. See `AGENTS.md` § PR convention.
 4. **Do not merge.** Permission denies `gh pr merge`. Stop at a green PR and report.
 5. **Never force-push to `main`. Never bypass hooks.**
 6. **STOP after asking a question.**
@@ -34,8 +45,8 @@ Edit is allowed so `bun run lint --fix` and prettier can land. That is the only 
 ## Workflow
 
 1. Pre-flight: working tree clean, record branch, confirm every commit on `main..HEAD` is conventional. Abort if not. Detect issue numbers from `(#N)` suffixes.
-2. Quality gates: `bun run lint`, `bun run typecheck`, `bun run format:check`, and the full test suite unless the parent forbade it (parallel lanes sharing a machine). If lint is auto-fixable, fix, commit `style(<scope>): apply lint --fix (#<issue>)`, re-run. CI owns `next build`; do not run it locally. If the change is UI, capture e2e screenshots per `AGENTS.md`.
-3. Push per `AGENTS.md` § gh CLI identity. If rejected on `.github/workflows/` for missing `workflow` scope, stop and ask — do not work around.
+2. Quality gates: `bun run lint`, `bun run typecheck`, `bun run format:check`, and the full test suite unless the parent forbade it (parallel lanes sharing a machine). If lint is auto-fixable, fix, commit `style(<scope>): apply lint --fix (#<issue>)`, re-run. CI owns `next build`; do not run it locally. If the change is UI, capture e2e screenshots per skill `findash-testing`.
+3. Push per skill `findash-github`. If rejected on `.github/workflows/` for missing `workflow` scope, stop and ask — do not work around.
 4. Open the PR. `Closes #<issue>` or `Part of #<issue>` as above. No AI attribution. Attach screenshots if UI changed.
 5. Watch CI. One retry on a flake. A real failure: STOP, leave the PR open, report.
 6. Do not merge. Report whether `AGENTS.md` auto-merge conditions hold so the parent can.

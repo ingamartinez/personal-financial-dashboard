@@ -1,84 +1,86 @@
 ---
 name: findash-orchestration
-description: How work reaches main in findash — the four agent roles and their trigger criteria, launching opencode lanes over herdr with worktree + per-lane database + model routing, deny-first permissions per role, prompt design (objective not route), running parallel lanes, and the herdr event-subscription gotchas. Load ONLY when orchestrating delegated lanes. A worker agent executing a task does not need this.
+description: How work reaches main in findash — the four roles and their trigger criteria, launching opencode lanes over herdr with a worktree, a per-lane database and a pinned model, deny-first permissions per role, why the reviewer must differ from the implementer, prompt design (objective not route), running parallel lanes, and the herdr event-subscription gotchas. Load ONLY when orchestrating delegated lanes. A worker agent executing a task does not need this.
 ---
 
 # Findash agent orchestration
 
+**The orchestrator does not write code.** It delegates, then reviews what came
+back. Work reaches `main` through opencode lanes launched over herdr, one role
+per lane. Claude Code is the orchestrator and nothing else — it is the most
+expensive model per token in the system, so it spends its budget on judgement,
+not on volume.
 
-Work reaches `main` through one of **two sanctioned routes**. Both obey the
-same contract — issue-first, branch naming, commit format, PR/CI gate, gh
-identity, test database. Pick by what you have available, not by preference.
+There used to be a second route (Claude Code sub-agents in `.claude/agents/`).
+It is gone as of #922: the two sets of definitions had drifted to 590 lines
+versus 274 with no body matching its twin, only the opencode half was in git, and
+a sub-agent runs on the same subscription as the orchestrator — which is the
+budget this architecture exists to protect.
 
-**The orchestrator does not write code directly.** It delegates, then reviews
-what came back. That rule is route-independent.
+## The four roles
 
-### Route A — Claude Code sub-agents
-
-The four roles and their trigger criteria apply to **both** routes. Route A
-invokes them as Claude Code sub-agents in `.claude/agents/`. Route B launches
-them as opencode primary agents via `--agent`. The table below is the shared
-contract.
-
-Claude Code on this repo runs project-scoped sub-agents in `.claude/agents/`.
-Each one knows the conventions, reads engram (50+ documented gotchas) at
-start, and follows `AGENTS.md`.
-
-| Agent                 | Role                                               | When to invoke                                                                                                                                                                        |
-| --------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `findash-explorer`    | Read-only digest                                   | BEFORE implementer when the task touches 4+ files, requires mapping affected modules, needs prior art from engram, or the issue scope is unclear. Skip for obvious tasks.             |
-| `findash-implementer` | Code + tests + lint+typecheck + commit             | For EVERY code change. Turns a claimed issue into a branch ready to ship. Does NOT push, does NOT open PRs.                                                                           |
-| `findash-reviewer`    | Read-only review (CRITICAL / WARNING / SUGGESTION) | BETWEEN implementer and shipper for non-trivial changes: db schema, queries, server actions, money logic, tenant-scoped data. Skip for docs-only, test-only, or mechanical refactors. |
-| `findash-shipper`     | Push + PR + CI watch + auto-merge                  | AFTER implementer (and reviewer if applicable). Mechanical only — no new logic. Auto-merge per § "PR convention" rules.                                                               |
-
-#### Standard flow
+| Agent | Role | When to invoke |
+| --- | --- | --- |
+| `findash-explorer` | Read-only digest | BEFORE implementer when the task touches 4+ files, needs a module map, needs prior art from engram, or the issue scope is unclear. Skip for obvious tasks. |
+| `findash-implementer` | Code + tests + lint/typecheck + commit | For EVERY code change. Turns a claimed issue into a branch ready to ship. Does NOT push, does NOT open PRs. |
+| `findash-reviewer` | Read-only review (CRITICAL / WARNING / SUGGESTION) | BETWEEN implementer and shipper for non-trivial changes: db schema, queries, server actions, money logic, tenant-scoped data. Skip for docs-only, test-only, or mechanical refactors. |
+| `scripts/ship.sh` | Push + PR + CI watch | AFTER implementer (and reviewer if applicable). A deterministic bash script, not a model — a model cannot wait for CI, and waiting is the whole job. |
 
 ```
-gh issue (claim) → findash-explorer  (if 4+ files or scope unclear)
-                 → findash-implementer  (ALWAYS — do not write code directly)
-                 → findash-reviewer     (non-trivial: db, money, tenant, server actions)
-                 → findash-shipper      (ALWAYS — push + PR + merge)
+gh issue (claim) → findash-explorer      (if 4+ files or scope unclear)
+                 → findash-implementer   (ALWAYS — do not write code directly)
+                 → findash-reviewer      (non-trivial: db, money, tenant, server actions)
+                 → scripts/ship.sh       (push + PR + CI; merge is a parent/human action)
 ```
 
-#### Why this flow
+Why: **the orchestrator does not know the 50+ gotchas** documented in engram for
+this repo. The lanes do — they `mem_search` first thing and load the matching
+skill. Bypassing them re-introduces bugs already paid for.
 
-- **The orchestrator does not know the 50+ gotchas** documented in engram for this repo. The sub-agents do — they `mem_search` first thing. Bypassing them = re-introducing bugs already paid for.
-- **Role separation** keeps implementer out of architectural design (use `/sdd-new` for that) and keeps shipper out of logic changes.
-- **Reviewer between implementer and shipper** catches semantic bugs that lint/typecheck/tests miss: tenant safety on JOINs, soft-delete pattern, money as bigint cents, Next.js 16 server-action quirks.
+## Model routing (task 8 of #922)
 
-### Route B — delegated agents over Herdr
+Definitions pin `model:` in their own frontmatter. Do not leave it unset and do
+not rely on the operator's profile — the profile is what silently reintroduced
+the blindness this table exists to prevent.
 
-Claude Code runs inside a Herdr pane (`HERDR_ENV=1`) and
-can spawn sibling agents of other models — opencode, codex, gemini and others —
-each in its own tab, its own worktree, and its own database. On 2026-09-09
-eleven issues went from claim to merged `main` this way, with opencode running
-the Grok 4.6 profile doing the implementing and shipping.
+| Role | Model | Lineage | ~$/task |
+| --- | --- | --- | ---: |
+| Orchestrator | Claude Code, Sonnet | Anthropic | subscription |
+| `findash-explorer` | `llmgateway/gpt-5.6-luna` | OpenAI | ~$0.10 |
+| `findash-implementer` | `llmgateway/glm-5.3-flash` | Zhipu | ~$0.20 |
+| `findash-reviewer` | `llmgateway/muse-spark-1.3` | Meta | ~$0.55 |
+| Reviewer ceiling | `llmgateway/claude-opus-5` | Anthropic | ~$6 |
+| Overflow | `deepseek/deepseek-v4-flash` | DeepSeek | ~$0.20 |
 
-Use this route when you want lanes running in parallel, or a second model's
-judgement on a design. Route A remains valid and is simpler for a single lane.
+**The rule is not "the reviewer uses muse-spark". It is "the reviewer must differ
+from the implementer's lineage."** A reviewer sharing the implementer's model
+shares its blind spots and confirms what it already judged correct once. Assert
+this at launch: if you override either model with `-m`, check the pair.
 
-#### Launch role-specialized
+Raise the reviewer to `claude-opus-5` for diffs touching money, schema, or a
+tenant boundary. It is ~11× the cost of the default reviewer and still cheaper
+than the bug.
 
-Route B lanes launch already wearing a role. The prompt then carries only the
-objective, per § "Prompt design" below. Do not smuggle the role into the prompt
-— that is the "map" that section measures as producing a worse result.
+`gpt-6-astra` is deliberately not used: on DevPass it is priced at exactly 2×
+Opus 5 on every axis, and premium fair-use is the binding constraint — Lite
+grants premium only ~12% of monthly credits on a fixed 7-day window.
+
+## Launch role-specialized
+
+Lanes launch already wearing a role. The prompt then carries only the objective,
+per § Prompt design. Do not smuggle the role into the prompt — that is the "map"
+that section measures as producing a worse result.
 
 ```bash
 herdr agent start <lane> --kind opencode --pane <pane_id> -- --agent findash-implementer
 ```
 
 Definitions live in `.opencode/agents/findash-{explorer,implementer,reviewer,shipper}.md`
-and are committed. `.opencode/` is deliberately **not** gitignored (unlike
-`.claude/`, which is per-user Claude Code config). A worktree does not contain
-`.claude/agents/` — `.gitignore` drops it — so Route B cannot read Route A's
-files without an `external_directory` grant. Do not add that grant. Use the
-committed opencode definitions.
+and are committed. `.opencode/` is deliberately not gitignored. `.claude/` is
+ignored **except `.claude/skills/`**, which every lane needs — opencode reads
+`.claude/skills/*/SKILL.md` natively, so one directory serves both runtimes.
 
-Leave `model` unset on these agents so the operator's profile applies. Do not
-put them in `~/.config/opencode/opencode.json` — that file is the gentle-ai
-base layer and `gentle-ai sync` overwrites it.
-
-#### `--auto` plus deny-first
+## `--auto` plus deny-first
 
 `opencode --auto` auto-approves anything **not explicitly denied**. Alone that
 is wrong: a shipper lane would merge without asking. Each `findash-*`
@@ -93,50 +95,44 @@ surfaces that role must not touch. Herdr forwards native args after `--`:
 herdr agent start <lane> --kind opencode --pane <pane_id> -- --auto --agent findash-reviewer
 ```
 
-What each role denies (last matching bash rule wins):
+What each role allows and denies (last matching bash rule wins — verified on
+opencode 1.18.30 by launching a lane and watching a denied command come back
+with *"The user has specified a rule which prevents you from using this specific
+tool call"*, under `--auto`):
 
-| Role               | Denied                                                                   | Why                                                                                                                                                  |
-| ------------------ | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| explorer, reviewer | `edit`, mutating git/gh (`commit`/`push`/`merge`/`pr create`/`pr merge`) | Read-only. `edit: deny` also blocks the `write` and `apply_patch` tools (verified on opencode 1.18.30: there is no separate `write` permission key). |
-| implementer        | `git push`, `gh pr create`, `gh pr merge`                                | Commits only. Shipper pushes.                                                                                                                        |
-| shipper            | `gh pr merge`, force-push, `git push origin main`                        | Push + PR + CI are its job. Merge stays a deliberate parent/human action so `--auto` cannot squash-merge.                                            |
+| Role | `bash` default | Shape |
+| --- | --- | --- |
+| explorer, reviewer | **`"*": deny`** | Allow-list of read-only commands: `rg`/`fd`/`bat`/`eza`/`jq`, `codegraph`, read-only `git`, read-only `gh`. `edit: deny` also blocks `write` and `apply_patch` — there is no separate `write` permission key. |
+| implementer | `"*": allow` | Denies push/PR/merge (the shipper's job), history surgery (`rebase`, `reset --hard`, checkout to `main`), anything with `--no-verify`, `gh auth switch`/`setup-git`, `dropdb`, `psql -d findash`, `ssh`, `pm2`, `rm -rf`. |
+| shipper | `"*": allow` | Denies `gh pr merge` and force-push so `--auto` cannot squash-merge, plus the same production and hook-bypass surfaces. |
+
+The two read-only roles get a deny-default because their command set is small
+and enumerable. The two writing roles do not: an allow-list there breaks a lane
+on the first legitimate command nobody anticipated, and a blocked lane under
+`--auto` is a pane that looks alive and is not. Bound them by denying what is
+out of remit instead.
 
 `read` is a separate key from `edit`, so `edit: deny` leaves reading intact.
 Definitions do not set `external_directory` and do not hardcode operator
 paths. Once the files are in the worktree, a lane should never leave it.
 
-#### Same chain, orchestrator-driven
+## Review gate is not automatic
 
-The orchestrator launches each stage as its own lane (same worktree, a new
-`--agent`). It does not write code.
-
-```
-gh issue (claim) → findash-explorer  (if 4+ files or scope unclear)
-                 → findash-implementer  (ALWAYS — do not write code directly)
-                 → findash-reviewer     (non-trivial: db, money, tenant, server actions)
-                 → findash-shipper      (ALWAYS — push + PR + CI; merge is a parent/human action)
-```
-
-Trigger criteria are the Route A table's. `findash-implementer` commits and
-stops. It does not push or open PRs.
-
-#### Review gate is not automatic
-
-A Route B lane told to go "end to end" will skip the reviewer unless the
+A lane told to go "end to end" will skip the reviewer unless the
 orchestrator inserts it. For non-trivial changes (db schema/queries, server
 actions, money logic, tenant-scoped data) the orchestrator MUST insert a
 reviewer stage before merge, and the implementing lane MUST stop at PR-open
 rather than auto-merge. Mechanical refactors, docs-only, and test-only changes
-keep skipping the reviewer, same as Route A.
+keep skipping the reviewer.
 
-#### Epic-phase PRs do not close the epic
+## Epic-phase PRs do not close the epic
 
 A PR delivering one phase of a multi-phase epic uses `Part of #N`, never
 `Closes #N` — otherwise the epic dies with remaining phases unwritten. That
 PR also fails auto-merge condition (b) ("PR closes a single issue"), so it
 stops at PR-open and waits for a human.
 
-#### One lane, end to end
+## One lane, end to end
 
 ```bash
 # 1. Worktree, its own workspace, its first tab and a root pane — one call.
@@ -149,7 +145,7 @@ herdr worktree create --cwd "$PWD" \
 # .env.local is gitignored — without this copy the worktree fails at runtime
 cp .env.local ~/projects/personal-financial-dashboard-worktrees/<lane>/.env.local
 
-# 2. Its own database — the timezone step is NOT optional (see § Test database)
+# 2. Its own database — the timezone step is NOT optional (see skill findash-testing)
 createdb findash_test_<lane>
 psql -d postgres -c "ALTER DATABASE findash_test_<lane> SET timezone TO 'UTC';"
 FINDASH_TEST_DB=findash_test_<lane> bun run db:migrate:test
@@ -196,13 +192,13 @@ which returns **new** ids. Removing the checkout stays an explicit
 > check `drizzle.__drizzle_migrations` against `drizzle/meta/_journal.json`
 > before debugging any code.
 
-#### Prompt design: give the objective, not the route
+## Prompt design: give the objective, not the route
 
 Do **not** hand a delegated agent the repo's conventions. Measured on this repo:
 an agent asked only _"what are this repo's conventions?"_, with no pointers,
-independently read `AGENTS.md`, `PLAN.md`, `CLAUDE.md` and `docs/`, **queried
+independently read `AGENTS.md`, `CLAUDE.md` and `docs/`, **queried
 engram on its own**, and surfaced tenant safety, the money convention and the
-gotchas — plus caught that `PLAN.md` is stale on auth and cron. The same agent
+gotchas. The same agent
 given a map produced a worse answer.
 
 Pass only what cannot be derived from the repo:
@@ -218,7 +214,7 @@ implementing"). That invitation has paid for itself: a delegated agent caught
 that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
 2-second budget, and that issue #816's stated cache minimum was out of date.
 
-#### Operating parallel lanes
+## Operating parallel lanes
 
 - **Cap at ~3 concurrent lanes on a dev Mac.** Lanes are RAM-bound, not
   isolation-bound. Isolation works — worktrees and per-lane databases produced
@@ -246,15 +242,15 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
   terminal's alternate screen, so rows that scroll away never reach herdr's host
   scrollback and no `--lines` value brings them back. Ask for the final report —
   but **how depends on the role**:
-  - `findash-explorer` and `findash-implementer` can write it to a file
-    (`/tmp/<lane>-digest.md`); read the file.
-  - `findash-reviewer` **cannot**. Its definition sets `edit: deny`, which also
-    blocks `write` (§ `--auto` plus deny-first). Asking one for a file leaves it
+  - `findash-implementer` can write it to a file (`/tmp/<lane>-digest.md`);
+    read the file.
+  - `findash-explorer` and `findash-reviewer` **cannot**. Both set `edit: deny`,
+    which also blocks `write` and `apply_patch`. Asking one for a file leaves it
     at a permission dialog with `agent_status: blocked`, holding a finished
-    review it cannot deliver. Do not relax the denial — a reviewer that can
-    write files is not read-only. Ask it instead for a compact verdict in the
-    pane: status line, surviving CRITICAL/WARNING/SUGGESTION counts, one line
-    per finding. Short output never hits the scrollback problem. If one is
+    report it cannot deliver. Do not relax the denial — a read-only role that
+    can write files is not read-only. Both definitions therefore cap their own
+    output (350 words for the explorer digest, 400 for the review) and deliver
+    it in the pane. Short output never hits the scrollback problem. If one is
     already blocked, `herdr agent send-keys <name> esc`, then re-prompt.
 - **A tab is not ready the moment `tab create` returns.** `herdr agent start`
   needs the target pane's shell at its interactive prompt. Called immediately
@@ -338,15 +334,6 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
   `state: "COMMENTED"`. Symptom: pane says "posted", herdr says `done`,
   comments array empty — check the reviews endpoint before re-prompting.
 
-#### Which route for what
-
-| Situation                                 | Route                                  |
-| ----------------------------------------- | -------------------------------------- |
-| Single lane, ordinary issue               | A or B — A is less setup               |
-| Several independent issues at once        | B, one lane each                       |
-| Want a second model to challenge a design | B — ask for the proposal, not the code |
-| Architectural design from scratch         | `/sdd-new`, either route after         |
-
-Other agents (Codex, etc.) driving this repo directly can ignore the routing
-above — the rules elsewhere in this file (issue-first, branch naming, commits,
+Other agents (Codex, etc.) driving this repo directly can ignore the lane
+mechanics above — the rules in `AGENTS.md` (issue-first, branch naming, commits,
 PRs, gh identity, testing) still apply to all agents equally.
