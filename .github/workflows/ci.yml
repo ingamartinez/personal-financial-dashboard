@@ -185,3 +185,26 @@ jobs:
 
       - name: Build
         run: bun run build
+
+      # #915: the deploy workflow reuses this exact output instead of rebuilding
+      # the same commit, which cost 74s of every deploy. Only for pushes to
+      # main — a PR build has nothing to deploy, so uploading it would be pure
+      # storage.
+      #
+      # `.next/standalone` + `.next/static` is precisely what deploy's
+      # "Package release tarball" step consumes. 115MB of output compresses to
+      # ~21MB, measured, so the round trip costs far less than the rebuild.
+      #
+      # Retention is short on purpose: the deploy consumes this within minutes.
+      # If it ever expires or goes missing, deploy falls back to building —
+      # see the `reuse` step there.
+      - name: Upload standalone build for deploy
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-${{ github.sha }}
+          path: |
+            .next/standalone
+            .next/static
+          retention-days: 5
+          if-no-files-found: error

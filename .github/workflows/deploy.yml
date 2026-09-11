@@ -18,6 +18,10 @@ concurrency:
 
 permissions:
   contents: read
+  # #915: needed to download the build artifact from the CI run that triggered
+  # this deploy. Reading another workflow run's artifacts is not covered by
+  # `contents: read`.
+  actions: read
 
 jobs:
   deploy:
@@ -68,7 +72,34 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # #915: CI already built this exact commit — deploy runs on `workflow_run`
+      # of a CI success, so the artifact is for the same SHA. Rebuilding it cost
+      # 74s of every deploy.
+      #
+      # Verified before adopting this, because it changes the provenance of what
+      # reaches production: CI and CD pass different build-time env stubs
+      # (ci-dummy-… vs build-dummy-…, ci.findash.local vs build.findash.local).
+      # None carry a NEXT_PUBLIC_ prefix, and a build with CI's values was
+      # grepped for all four — zero occurrences in `.next/standalone`,
+      # `.next/static` or `public/`. They are read from findash.env at process
+      # start, never inlined, so the two builds are equivalent artifacts.
+      - name: Download build from CI
+        id: reuse
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-${{ steps.sha.outputs.sha }}
+          path: .next
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fallback, and it must stay. `workflow_dispatch` of an arbitrary ref has
+      # no CI artifact at all, and an artifact can expire or fail to download.
+      # `outcome` is "skipped" in the first case and "failure" in the second —
+      # both land here, so the deploy builds rather than failing.
       - name: Build standalone artifact
+        if: steps.reuse.outcome != 'success'
         env:
           # Build-time stubs only. Real secrets live on the droplet in
           # /srv/findash/env/findash.env and are read by systemd at process start.
