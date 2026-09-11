@@ -66,7 +66,7 @@ más común:
   un módulo HTTP nativo — necesitás Tasker de todas formas para el fetch.
 - **HTTP Shortcuts**: apto para probar el endpoint manualmente, pero no
   expone Scenes al home screen.
-- **App nativa Android**: está en el roadmap (Fase 6, ver `PLAN.md`), pero
+- **App nativa Android**: está en el roadmap (Fase 6, ver `docs/roadmap.md`), pero
   requiere una cadena de validación larga antes de empezar.
 
 El paso intermedio más productivo hoy es Tasker. Si alguien tiene ganas de

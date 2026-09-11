@@ -20,7 +20,7 @@ export interface GatewayConfig {
   // plausibly corresponds to a receipt from this gateway. `null` for
   // `ingest` and `evidence` gateways: the matcher never tries to pair their
   // receipts with a bank tx, so no regex is needed. Values sourced from
-  // PLAN.md §Gateway opacity table. Word boundaries on each pattern so
+  // docs/gmail-integration.md §Gateway opacity table. Word boundaries on each pattern so
   // they only match whole tokens in the bank's description line.
   bankDescriptionRegex: RegExp | null;
   // `enrich`: receipts are matched back to bank transactions and used to
@@ -33,7 +33,7 @@ export interface GatewayConfig {
   mode: GatewayMode;
 }
 
-// Source: PLAN.md §6b + §Gateway opacity table. Senders investigated from
+// Source: docs/gmail-integration.md §6b + §Gateway opacity table. Senders investigated from
 // real inbox samples; domain-anchored to avoid spoof matches.
 export const GATEWAYS: readonly GatewayConfig[] = [
   {

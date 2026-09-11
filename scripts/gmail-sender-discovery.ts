@@ -32,7 +32,7 @@ const AUTH_TAG_BYTES = 16;
 const MAX_METADATA_FETCHES_PER_DOMAIN = 200;
 
 // Seed domains to probe. Grouped by gateway so the output is organized.
-// This list comes from PLAN.md + a first-pass keyword-search discovery
+// This list comes from docs/gmail-integration.md + a first-pass keyword-search discovery
 // that surfaced the wider constellation of domains each gateway uses.
 // When a new domain surfaces in prod, add it here and rerun.
 const DOMAINS_BY_GATEWAY: Record<string, string[]> = {
