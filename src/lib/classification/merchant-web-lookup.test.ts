@@ -273,9 +273,17 @@ describe("fillMerchantKnowledgeFromWeb", () => {
       "Alejo",
       "accountId",
       "amountCents",
-      String(userId),
+      "userId",
     ]) {
       expect(visible).not.toContain(needle);
+    }
+    // The user id is checked separately and only when it is long enough to be
+    // distinctive. `createUser` returns a serial, so on a fresh database it can
+    // be a single digit — and "4" is a substring of "claude-haiku-4-5" and of
+    // "max_tokens":512. A one-character needle asserts nothing and fails every
+    // new clone or lane worktree, which is how this surfaced (#511).
+    if (String(userId).length >= 3) {
+      expect(visible).not.toContain(String(userId));
     }
   });
 
