@@ -208,3 +208,10 @@ jobs:
             .next/static
           retention-days: 5
           if-no-files-found: error
+          # MANDATORY, and the reason the first attempt at this broke production.
+          # upload-artifact excludes dotfiles by default, and the standalone
+          # bundle carries its own `.next/` inside it — BUILD_ID and every server
+          # chunk. Without this the artifact uploads happily, 880 files short,
+          # and the release crash-loops on boot with "Could not find a production
+          # build in the './.next' directory". Nothing before that point fails.
+          include-hidden-files: true

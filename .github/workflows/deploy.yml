@@ -94,12 +94,37 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Fallback, and it must stay. `workflow_dispatch` of an arbitrary ref has
-      # no CI artifact at all, and an artifact can expire or fail to download.
-      # `outcome` is "skipped" in the first case and "failure" in the second —
-      # both land here, so the deploy builds rather than failing.
+      # A download that SUCCEEDS can still hand over an incomplete build, and
+      # that is not theoretical: the first version of this reuse shipped without
+      # `include-hidden-files: true` on the upload, so the artifact arrived 880
+      # files short — no `.next/BUILD_ID`, no server chunks — and every deploy
+      # step after it passed. The release was packaged, uploaded, extracted,
+      # migrated and symlinked, and only then crash-looped on boot. Production
+      # was down until the health probe gave up and rollback fired.
+      #
+      # So trust is not "the download step went green". Prove the artifact is a
+      # build before anything touches the droplet. Failing here costs a rebuild;
+      # failing after the symlink flip costs an outage.
+      - name: Verify reused build is complete
+        id: verify
+        if: steps.reuse.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -eu
+          test -f .next/standalone/server.js
+          test -f .next/standalone/.next/BUILD_ID
+          test -d .next/standalone/.next/server
+          test -d .next/static
+          echo "reused build verified: $(cat .next/standalone/.next/BUILD_ID)"
+
+      # Fallback, and it must stay. Three ways to land here, all of them real:
+      # `workflow_dispatch` of an arbitrary ref has no CI artifact (reuse
+      # skipped), the artifact can expire or fail to download (reuse failure),
+      # or it can arrive incomplete (verify failure). `outcome` is "skipped" or
+      # "failure" in each case and never "success", so the deploy builds instead
+      # of shipping something broken.
       - name: Build standalone artifact
-        if: steps.reuse.outcome != 'success'
+        if: steps.verify.outcome != 'success'
         env:
           # Build-time stubs only. Real secrets live on the droplet in
           # /srv/findash/env/findash.env and are read by systemd at process start.
@@ -118,7 +143,12 @@ jobs:
           # BullMQ queue backend — build-time stub. Real Redis URL lives in
           # /srv/findash/env/findash.env on the droplet (see docs/deploy.md §13).
           REDIS_URL: redis://localhost:6379
-        run: bun run build
+        # Clear whatever the download left behind first. Reaching this step
+        # after a failed verify means `.next` holds a partial extraction, and
+        # building on top of that is how a half-good bundle ships.
+        run: |
+          rm -rf .next
+          bun run build
 
       - name: Package release tarball
         env:
