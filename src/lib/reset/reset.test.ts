@@ -296,14 +296,12 @@ describe("#472 reset user transactional data", () => {
       expect(cursor.lastPullAt).toEqual(new Date("2026-04-02T00:00:00Z"));
     });
 
-    it("the #511 upgrade backfills cursors for a previously-reset connection from its pre-reset snapshot", async () => {
-      // The upgrade state, produced here by the reset itself: the connection
-      // keeps its watermark, the receipts are wiped, and the ONLY surviving
-      // memory of which gateways it pulled is the pre-reset auto-snapshot.
-      // The 0085 backfill must reconstruct the cursors from that snapshot —
-      // the live receipts are gone, so a backfill that only reads
-      // email_receipts yields nothing and the next pull falls back to the
-      // bootstrap window, re-ingesting the wiped history (#498).
+    it("the #511 upgrade leaves snapshot-only evidence unbackfilled", async () => {
+      // A reset leaves a pre-reset snapshot, but a user may delete it before
+      // the upgrade. More importantly, a later snapshot can contain a
+      // gateway that never coexisted with the older snapshot's watermark.
+      // Snapshot payloads therefore cannot safely establish a cursor. The
+      // recoverable outcome is bootstrap rather than skipping history.
       await resetUserData({ userId: userA });
 
       expect(await countWhere(userA, sql.raw("email_receipts"))).toBe(0);
@@ -318,8 +316,8 @@ describe("#472 reset user transactional data", () => {
       await db.delete(gmailPullCursors).where(eq(gmailPullCursors.connectionId, connA));
 
       // The 0085 backfill, verbatim. It is idempotent (ON CONFLICT DO
-      // NOTHING), so re-running it here — after it already applied to this
-      // database — only fills the fixture's missing pairs.
+      // NOTHING), so re-running it here must not infer a cursor from the
+      // snapshot payload.
       const migrationSql = readFileSync(
         fileURLToPath(new URL("../../../drizzle/0085_real_mimic.sql", import.meta.url)),
         "utf8",
@@ -331,15 +329,11 @@ describe("#472 reset user transactional data", () => {
         await db.execute(sql.raw(statement));
       }
 
-      const [cursor] = await db
+      const cursors = await db
         .select({ gateway: gmailPullCursors.gateway, lastPullAt: gmailPullCursors.lastPullAt })
         .from(gmailPullCursors)
         .where(eq(gmailPullCursors.connectionId, connA));
-      // The pair lives only in the pre-reset snapshot's payload; the
-      // watermark is the preserved #498 boundary, so the next pull resumes
-      // from it instead of re-ingesting.
-      expect(cursor.gateway).toBe("mercado_pago");
-      expect(cursor.lastPullAt).toEqual(new Date("2026-04-01T00:00:00Z"));
+      expect(cursors).toEqual([]);
     });
   });
 

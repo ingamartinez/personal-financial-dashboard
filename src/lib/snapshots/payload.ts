@@ -226,30 +226,19 @@ export async function restoreUserPayload(
     }
   } else {
     // Legacy v1 payload (pre-#511): no per-gateway cursors existed. Derive
-    // them with the same rule as the #511 data migration (0085): one row per
-    // (connection, gateway) pair the DB still remembers — the restored
-    // receipts PLUS the receipts frozen in the user's other snapshots (a
-    // pre-#511 reset wiped the live ones; its pre-reset auto-snapshot
-    // remembers them, #498) — with the connection's restored last_pull_at
-    // (set by the gmailCursors loop above) as the watermark. Earlier
-    // snapshots' pulls happened before this snapshot, so the restored
-    // watermark covers them. A pair remembered nowhere stays absent: no row
-    // = bootstrap, the #510 late-registered-gateway case. Soft-deleted
-    // receipts count: a deleted receipt still proves the pull happened, and
-    // filtering it would resurrect the archived row on the next bootstrap
-    // (the partial unique index ignores deleted rows).
+    // them from the restored receipts only. Do not inspect the user's other
+    // snapshots: a later snapshot may contain a gateway pulled after this
+    // snapshot, while this snapshot restores an older connection watermark.
+    // Pairing those two facts would skip receipts that never coexisted with
+    // the restored watermark. A gateway absent from the restored receipts
+    // stays absent and bootstraps, which is the recoverable direction.
     await tx.execute(sql`
       INSERT INTO gmail_pull_cursors (user_id, connection_id, gateway, last_pull_at, created_at, updated_at)
       SELECT DISTINCT
         c.user_id, c.id, remembered.gateway::email_receipt_gateway, c.last_pull_at, NOW(), NOW()
       FROM gmail_connections c
       JOIN (
-        SELECT (r->>'gmail_connection_id')::int AS connection_id, r->>'gateway' AS gateway
-        FROM user_snapshots s
-        CROSS JOIN LATERAL jsonb_array_elements(s.payload->'tables'->'email_receipts') AS r
-        WHERE s.user_id = ${userId}
-        UNION
-        SELECT gmail_connection_id, gateway::text
+        SELECT gmail_connection_id AS connection_id, gateway::text AS gateway
         FROM email_receipts
         WHERE user_id = ${userId}
       ) remembered ON remembered.connection_id = c.id
