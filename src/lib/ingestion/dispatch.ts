@@ -89,30 +89,72 @@ export function detectKind(buffer: Buffer): IngestionKind | "format_unknown" {
 
   // --- Step 2: XLSX ZIP magic ---
   if (magic.compare(XLSX_MAGIC) === 0) {
-    // a. TC detallado probe (most distinctive structural signature)
-    if (tryDetectTcDetallado(buffer)) {
-      return "bancolombia-tc-detallado";
-    }
-
-    // b. Reconciliation format probe
-    const detected = tryDetectFormat(buffer);
-    if (detected) {
-      switch (detected.format) {
-        case "bancolombia_savings":
-          return "bancolombia-savings";
-        case "bancolombia_savings_extracto":
-          return "bancolombia-extracto";
-        case "bancolombia_tc":
-          return "bancolombia-tc-legacy";
-      }
-    }
-
-    // c. Fall through — valid XLSX but no format matched
-    return "format_unknown";
+    return detectXlsxKind(buffer);
   }
 
   // --- Step 3: Unsupported file kind ---
   throw new UnsupportedFileKindError("Tipo de archivo no soportado.");
+}
+
+/**
+ * The XLSX probe chain, shared by `detectKind` and `parseAndHint` (#906).
+ *
+ * These two used to run the probes separately, which meant a file was sniffed
+ * twice per request and — worse — that the two could drift apart. Forcing a
+ * kind (below) only works if there is exactly one place detection happens.
+ *
+ * Order matters and is not alphabetical: `tryDetectTcDetallado` is
+ * substring-greedy (it claims the file if any sheet's first rows mention
+ * "tarjeta" or "estado de cuenta", or if both PESOS and DOLARES sheets exist)
+ * and deliberately runs before the column-count matchers. That greediness is
+ * why misdetection is reachable in both directions, and why the manual picker
+ * exists at all.
+ */
+function detectXlsxKind(buffer: Buffer): IngestionKind | "format_unknown" {
+  // a. TC detallado probe (most distinctive structural signature)
+  if (tryDetectTcDetallado(buffer)) {
+    return "bancolombia-tc-detallado";
+  }
+
+  // b. Reconciliation format probe
+  const detected = tryDetectFormat(buffer);
+  if (detected) {
+    switch (detected.format) {
+      case "bancolombia_savings":
+        return "bancolombia-savings";
+      case "bancolombia_savings_extracto":
+        return "bancolombia-extracto";
+      case "bancolombia_tc":
+        return "bancolombia-tc-legacy";
+    }
+  }
+
+  // c. Fall through — valid XLSX but no format matched
+  return "format_unknown";
+}
+
+/**
+ * The container each kind requires (#906).
+ *
+ * A forced kind may override the *probe*, never this. Forcing `arq-pdf` onto a
+ * spreadsheet is not a preference the user is entitled to — it is a category
+ * error, and letting it through buys an opaque parser crash instead of a
+ * sentence the user can act on.
+ */
+const KIND_CONTAINER: Record<IngestionKind, "pdf" | "xlsx"> = {
+  "arq-pdf": "pdf",
+  "bancolombia-savings": "xlsx",
+  "bancolombia-extracto": "xlsx",
+  "bancolombia-tc-legacy": "xlsx",
+  "bancolombia-tc-detallado": "xlsx",
+};
+
+/** Thrown when a manually forced kind cannot apply to the uploaded file. */
+export class ForcedKindMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ForcedKindMismatchError";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,10 +170,30 @@ export function detectKind(buffer: Buffer): IngestionKind | "format_unknown" {
  */
 export async function parseAndHint(
   buffer: Buffer,
-  opts?: { userId?: number },
+  opts?: { userId?: number; forceKind?: IngestionKind },
 ): Promise<DispatchResult> {
   const userId = opts?.userId;
+  const forceKind = opts?.forceKind;
   const magic = buffer.subarray(0, 4);
+
+  // #906 — a forced kind replaces the probe, not the container check. Reject
+  // the mismatch here, before any size limit or parser runs, so the user gets
+  // "that is a spreadsheet, not a PDF" instead of a parser stack trace.
+  if (forceKind) {
+    const isPdf = magic.compare(PDF_MAGIC) === 0;
+    const required = KIND_CONTAINER[forceKind];
+    if ((required === "pdf") !== isPdf) {
+      log.info(
+        { event: "forced_kind_container_mismatch", forceKind, required, userId },
+        "forced kind does not match the uploaded file's container",
+      );
+      throw new ForcedKindMismatchError(
+        required === "pdf"
+          ? "Ese formato espera un PDF y el archivo no lo es."
+          : "Ese formato espera un archivo de Excel y el archivo no lo es.",
+      );
+    }
+  }
 
   // --- Step 1: PDF ---
   if (magic.compare(PDF_MAGIC) === 0) {
@@ -179,8 +241,18 @@ export async function parseAndHint(
       );
     }
 
+    // #906 — one detection call, or the manual override. Everything below
+    // branches on `kind`; nothing probes the buffer again.
+    const kind = forceKind ?? detectXlsxKind(buffer);
+    if (forceKind) {
+      log.info(
+        { event: "ingestion_kind_forced", kind: forceKind, userId },
+        "manual format pick overrode detection",
+      );
+    }
+
     // a. TC detallado
-    if (tryDetectTcDetallado(buffer)) {
+    if (kind === "bancolombia-tc-detallado") {
       log.debug(
         { event: "ingestion_parse_start", kind: "bancolombia-tc-detallado", userId },
         "parsing bancolombia tc detallado",
@@ -219,62 +291,59 @@ export async function parseAndHint(
       };
     }
 
-    // b. Reconciliation format probe
-    const detected = tryDetectFormat(buffer);
-    if (detected) {
-      if (detected.format === "bancolombia_savings") {
-        log.debug(
-          { event: "ingestion_parse_start", kind: "bancolombia-savings", userId },
-          "parsing bancolombia savings",
+    // b. Reconciliation formats
+    if (kind === "bancolombia-savings") {
+      log.debug(
+        { event: "ingestion_parse_start", kind: "bancolombia-savings", userId },
+        "parsing bancolombia savings",
+      );
+      let parsed;
+      try {
+        parsed = parseBancolombiaSavings(buffer);
+      } catch (err) {
+        log.error(
+          { err, event: "parse_failed", kind: "bancolombia-savings", userId },
+          "bancolombia savings parse failed",
         );
-        let parsed;
-        try {
-          parsed = parseBancolombiaSavings(buffer);
-        } catch (err) {
-          log.error(
-            { err, event: "parse_failed", kind: "bancolombia-savings", userId },
-            "bancolombia savings parse failed",
-          );
-          throw err;
-        }
-        return { kind: "bancolombia-savings", parsed, accountHint: null };
+        throw err;
       }
+      return { kind: "bancolombia-savings", parsed, accountHint: null };
+    }
 
-      if (detected.format === "bancolombia_savings_extracto") {
-        log.debug(
-          { event: "ingestion_parse_start", kind: "bancolombia-extracto", userId },
-          "parsing bancolombia extracto mensual",
+    if (kind === "bancolombia-extracto") {
+      log.debug(
+        { event: "ingestion_parse_start", kind: "bancolombia-extracto", userId },
+        "parsing bancolombia extracto mensual",
+      );
+      let parsed;
+      try {
+        parsed = parseBancolombiaSavingsExtracto(buffer);
+      } catch (err) {
+        log.error(
+          { err, event: "parse_failed", kind: "bancolombia-extracto", userId },
+          "bancolombia extracto parse failed",
         );
-        let parsed;
-        try {
-          parsed = parseBancolombiaSavingsExtracto(buffer);
-        } catch (err) {
-          log.error(
-            { err, event: "parse_failed", kind: "bancolombia-extracto", userId },
-            "bancolombia extracto parse failed",
-          );
-          throw err;
-        }
-        return { kind: "bancolombia-extracto", parsed, accountHint: null };
+        throw err;
       }
+      return { kind: "bancolombia-extracto", parsed, accountHint: null };
+    }
 
-      if (detected.format === "bancolombia_tc") {
-        log.debug(
-          { event: "ingestion_parse_start", kind: "bancolombia-tc-legacy", userId },
-          "parsing bancolombia tc legacy",
+    if (kind === "bancolombia-tc-legacy") {
+      log.debug(
+        { event: "ingestion_parse_start", kind: "bancolombia-tc-legacy", userId },
+        "parsing bancolombia tc legacy",
+      );
+      let parsed;
+      try {
+        parsed = parseBancolombiaTc(buffer);
+      } catch (err) {
+        log.error(
+          { err, event: "parse_failed", kind: "bancolombia-tc-legacy", userId },
+          "bancolombia tc legacy parse failed",
         );
-        let parsed;
-        try {
-          parsed = parseBancolombiaTc(buffer);
-        } catch (err) {
-          log.error(
-            { err, event: "parse_failed", kind: "bancolombia-tc-legacy", userId },
-            "bancolombia tc legacy parse failed",
-          );
-          throw err;
-        }
-        return { kind: "bancolombia-tc-legacy", parsed, accountHint: null };
+        throw err;
       }
+      return { kind: "bancolombia-tc-legacy", parsed, accountHint: null };
     }
 
     // c. Fall through — valid XLSX but no format matched

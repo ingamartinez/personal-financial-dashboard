@@ -43,6 +43,7 @@ import {
   parseAndHint,
   resolveAccountHint,
   UnsupportedFileKindError,
+  ForcedKindMismatchError,
 } from "@/lib/ingestion/dispatch";
 import { hashFileBuffer } from "@/lib/reconciliation/commit";
 import { commitReconciliation, type CommitResult } from "@/lib/reconciliation/commit";
@@ -55,7 +56,7 @@ import {
   consolidateCycleFromStatement,
   hashStatementBuffer,
 } from "@/lib/ingestion/bancolombia-statement/consolidate";
-import { hintSchema, type HintParams } from "./_dispatch-ui-types";
+import { hintSchema, MANUAL_KIND_ACCOUNT_TYPES, type HintParams } from "./_dispatch-ui-types";
 
 import type { IngestionKind, ReconciliationParsedStatement } from "@/lib/ingestion/dispatch-types";
 import type { ExistingTxnForMatch, MatchingPlan } from "@/lib/reconciliation/engine/types";
@@ -230,9 +231,11 @@ export async function previewIngestion(formData: FormData): Promise<ImportPrevie
   // --- Parse hints from FormData ---
   const rawHintAccountId = formData.get("hint_account_id");
   const rawHintCycle = formData.get("hint_cycle");
+  const rawManualKind = formData.get("manual_kind");
   const hintParse = hintSchema.safeParse({
     hint_account_id: rawHintAccountId ?? undefined,
     hint_cycle: rawHintCycle ?? undefined,
+    manual_kind: rawManualKind ?? undefined,
   });
   const hints: HintParams = hintParse.success ? hintParse.data : { force: false };
 
@@ -252,13 +255,31 @@ export async function previewIngestion(formData: FormData): Promise<ImportPrevie
   }
 
   // --- Detect + parse ---
+  // #906 — `manual_kind` forces detection to the user's pick. It is the only
+  // escape hatch a misdetected file has, and `tryDetectTcDetallado` is
+  // substring-greedy enough that misdetection is reachable in both directions.
+  const forceKind = hints.manual_kind;
   let dispatchResult;
   try {
-    dispatchResult = await parseAndHint(buffer, { userId });
+    dispatchResult = await parseAndHint(buffer, { userId, forceKind });
   } catch (err) {
+    if (err instanceof ForcedKindMismatchError) {
+      log.info({ event: "forced_kind_rejected", forceKind, userId }, err.message);
+      throw new Error(err.message);
+    }
     if (err instanceof UnsupportedFileKindError) {
       log.warn({ event: "unsupported_file_kind", userId }, err.message);
       throw new Error(err.message);
+    }
+    // A forced kind that reaches the parser and dies there is the user's pick
+    // being wrong, not the file being unreadable. Say which, or they will retry
+    // the same wrong format.
+    if (forceKind) {
+      log.info(
+        { err, event: "forced_kind_parse_failed", forceKind, userId },
+        "parse failed under a manually forced kind",
+      );
+      throw new Error("El archivo no pudo leerse con ese formato. Probá con otro de la lista.");
     }
     log.error({ err, event: "parse_failed", userId }, "parseAndHint failed");
     throw new Error("No se pudo procesar el archivo. Verificá que sea un extracto válido.");
@@ -274,6 +295,33 @@ export async function previewIngestion(formData: FormData): Promise<ImportPrevie
 
   // Account resolution priority: file header → url hint → required user selection
   const resolvedAccountId = fileAccountHint?.accountId ?? validatedHintAccountId ?? null;
+
+  // #906 — a forced kind overrides detection, never the account it lands on.
+  // Forcing a TC format onto a savings account routes it to
+  // consolidateCycleFromStatement, which reads account.type for tolerances and
+  // credit context but does not itself refuse — so the refusal has to be here.
+  if (forceKind && resolvedAccountId) {
+    const allowedTypes = MANUAL_KIND_ACCOUNT_TYPES[forceKind];
+    if (allowedTypes) {
+      const targetAccount = await loadAccountOwned(userId, resolvedAccountId);
+      if (targetAccount && !allowedTypes.includes(targetAccount.type)) {
+        log.info(
+          {
+            event: "forced_kind_account_type_mismatch",
+            forceKind,
+            accountType: targetAccount.type,
+            userId,
+          },
+          "forced kind rejected for this account type",
+        );
+        throw new Error(
+          allowedTypes.includes("credit_card")
+            ? "Ese formato es de tarjeta de crédito y la cuenta seleccionada no lo es."
+            : "Ese formato es de cuenta de ahorros y la cuenta seleccionada no lo es.",
+        );
+      }
+    }
+  }
 
   evictExpired();
   const token = crypto.randomUUID();
