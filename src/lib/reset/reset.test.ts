@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -9,6 +11,7 @@ import {
   counterparties,
   emailReceipts,
   gmailConnections,
+  gmailPullCursors,
   ingestionLogs,
   recurringTransactions,
   transactions,
@@ -23,8 +26,9 @@ import { buildPreResetName, resetUserData } from "./reset";
 //   1. Wipe scope — transactional tables are emptied, config survives.
 //   2. Auto-snapshot — a `pre-reset-*` row lands in user_snapshots BEFORE
 //      the wipe so the user can roll back.
-//   3. Gmail cursor — last_pull_history_id is nulled out (config is kept,
-//      but ingestion state is treated as transactional).
+//   3. Gmail cursor — the connection-level columns AND the per-gateway
+//      `gmail_pull_cursors` rows (#511) survive: ingestion state is preserved
+//      so the next cron tick resumes where it left off (#498).
 //   4. Tenant isolation — resetUserData for user A does not touch user B's
 //      data or snapshots.
 
@@ -134,6 +138,19 @@ async function countWhere(userId: number, tableSql: ReturnType<typeof sql.raw>):
     SELECT COUNT(*)::int AS c FROM ${tableSql} WHERE user_id = ${userId}
   `);
   return rows[0].c;
+}
+
+async function runCursorBackfill(): Promise<void> {
+  const migrationSql = readFileSync(
+    fileURLToPath(new URL("../../../drizzle/0085_real_mimic.sql", import.meta.url)),
+    "utf8",
+  );
+  for (const statement of migrationSql
+    .split("--> statement-breakpoint")
+    .map((s) => s.trim())
+    .filter((s) => s.includes("INSERT INTO"))) {
+    await db.execute(sql.raw(statement));
+  }
 }
 
 describe("#472 reset user transactional data", () => {
@@ -250,6 +267,18 @@ describe("#472 reset user transactional data", () => {
     it("preserves the Gmail ingestion cursor and connection on reset", async () => {
       // #498 — reset must NOT null the cursor. Nulling caused unintended mass
       // re-ingestion on the next cron tick after a data reset.
+      // #511 — the same contract covers the per-gateway cursor rows: they are
+      // deliberately not in SNAPSHOT_TABLES, so the wipe cannot touch them.
+      // Seed one here (the connection is never deleted in this suite, so the
+      // row would otherwise leak — this test owns its own fixture).
+      await db.delete(gmailPullCursors).where(eq(gmailPullCursors.connectionId, connA));
+      await db.insert(gmailPullCursors).values({
+        userId: userA,
+        connectionId: connA,
+        gateway: "mercado_pago",
+        lastPullAt: new Date("2026-04-02T00:00:00Z"),
+      });
+
       await resetUserData({ userId: userA });
 
       const [conn] = await db
@@ -270,6 +299,60 @@ describe("#472 reset user transactional data", () => {
       // Cursor preserved — matches the values seeded in beforeEach.
       expect(conn.lastPullAt).toEqual(new Date("2026-04-01T00:00:00Z"));
       expect(conn.lastPullHistoryId).toBe("hist-reset-123");
+
+      // Per-gateway cursors preserved too — the next pull must NOT re-ingest
+      // historical emails after a data reset.
+      const [cursor] = await db
+        .select({ lastPullAt: gmailPullCursors.lastPullAt })
+        .from(gmailPullCursors)
+        .where(eq(gmailPullCursors.connectionId, connA));
+      expect(cursor.lastPullAt).toEqual(new Date("2026-04-02T00:00:00Z"));
+    });
+
+    it("the #511 upgrade seeds a live gateway cursor with the connection watermark", async () => {
+      await db.delete(gmailPullCursors).where(eq(gmailPullCursors.connectionId, connA));
+
+      await runCursorBackfill();
+
+      const [cursor] = await db
+        .select({ gateway: gmailPullCursors.gateway, lastPullAt: gmailPullCursors.lastPullAt })
+        .from(gmailPullCursors)
+        .where(eq(gmailPullCursors.connectionId, connA));
+      expect(cursor).toEqual({
+        gateway: "mercado_pago",
+        lastPullAt: new Date("2026-04-01T00:00:00Z"),
+      });
+    });
+
+    it("the #511 upgrade leaves snapshot-only evidence unbackfilled", async () => {
+      // A reset leaves a pre-reset snapshot, but a user may delete it before
+      // the upgrade. More importantly, a later snapshot can contain a
+      // gateway that never coexisted with the older snapshot's watermark.
+      // Snapshot payloads therefore cannot safely establish a cursor. The
+      // recoverable outcome is bootstrap rather than skipping history.
+      await resetUserData({ userId: userA });
+
+      expect(await countWhere(userA, sql.raw("email_receipts"))).toBe(0);
+      const [preReset] = await db
+        .select({ id: userSnapshots.id })
+        .from(userSnapshots)
+        .where(and(eq(userSnapshots.userId, userA), sql`name LIKE 'pre-reset-%'`));
+      expect(preReset).toBeDefined();
+
+      // Fresh #511 state: no cursors yet (the earlier test's row would
+      // otherwise win the ON CONFLICT and this test would pass vacuously).
+      await db.delete(gmailPullCursors).where(eq(gmailPullCursors.connectionId, connA));
+
+      // The 0085 backfill, verbatim. It is idempotent (ON CONFLICT DO
+      // NOTHING), so re-running it here must not infer a cursor from the
+      // snapshot payload.
+      await runCursorBackfill();
+
+      const cursors = await db
+        .select({ gateway: gmailPullCursors.gateway, lastPullAt: gmailPullCursors.lastPullAt })
+        .from(gmailPullCursors)
+        .where(eq(gmailPullCursors.connectionId, connA));
+      expect(cursors).toEqual([]);
     });
   });
 

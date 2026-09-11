@@ -57,3 +57,13 @@ export const RESTORE_ORDER: readonly SnapshotTable[] = [...SNAPSHOT_TABLES].reve
 export const GMAIL_CURSOR_COLUMNS = ["last_pull_at", "last_pull_history_id"] as const;
 
 export type GmailCursorColumn = (typeof GMAIL_CURSOR_COLUMNS)[number];
+
+// #511 — the per-gateway pull cursors (`gmail_pull_cursors`) are the third
+// piece of cursor state. They are deliberately NOT in SNAPSHOT_TABLES: the
+// reset flow must preserve them (#498 — no re-ingestion after a data reset)
+// and everything in SNAPSHOT_TABLES gets wiped by reset. They travel in the
+// payload's `gmailPullCursors` section instead: dumpUserPayload captures
+// them, restoreUserPayload deletes + reinflates them so a restore rolls the
+// watermarks back to the snapshot's state (a restore reinflates
+// `email_receipts` as they were, so cursors left advanced would silently
+// skip the receipts pulled after the snapshot).

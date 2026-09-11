@@ -1683,6 +1683,50 @@ export const emailReceipts = pgTable(
   ],
 );
 
+// #511 — per-(connection, gateway) pull watermark. `gmail_connections.last_pull_at`
+// is per-connection, so a gateway registered after the connection's first pull
+// (e.g. ARQ, #510) never gets pulled: the shared watermark is already past its
+// bootstrap window. Each gateway gets its own watermark here. Absence of a row
+// means "never pulled" → bootstrap; a row with a NULL last_pull_at means the
+// same thing, so NULL rows are never materialised (the data migration only
+// backfills pairs that already have email_receipts).
+//
+// `gmail_connections.last_pull_at` stays as a legacy column: still written on
+// clean pulls (the settings UI reads it) but no longer read by the pull path.
+// `last_pull_history_id` remains per-connection — it is a Gmail mailbox
+// history pointer, not a per-sender one.
+export const gmailPullCursors = pgTable(
+  "gmail_pull_cursors",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    connectionId: integer("connection_id")
+      .notNull()
+      .references(() => gmailConnections.id, { onDelete: "cascade" }),
+    gateway: emailReceiptGateway("gateway").notNull(),
+    // Watermark for this (connection, gateway) pair. NULL = never pulled.
+    lastPullAt: timestamp("last_pull_at", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One live cursor per (connection, gateway). Partial unique index — the
+    // repo convention for soft-delete tables. Note: ON CONFLICT against it
+    // needs `targetWhere` (a bare column target fails with "ON CONFLICT
+    // specification does not match any index" — see engram
+    // gotchas/drizzle-on-conflict-partial-index).
+    uniqueIndex("gmail_pull_cursors_conn_gateway_unique")
+      .on(t.connectionId, t.gateway)
+      .where(sql`${t.deletedAt} IS NULL`),
+    index("gmail_pull_cursors_user_idx")
+      .on(t.userId)
+      .where(sql`${t.deletedAt} IS NULL`),
+  ],
+);
+
 // #471 — Per-user snapshots of transactional data. Payload is a JSON dump of
 // every user-owned table that gets wiped by the reset flow (#472). Config
 // tables (accounts, categories, rules, budgets, tokens, etc.) are NOT

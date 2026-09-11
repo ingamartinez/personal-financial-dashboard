@@ -1,7 +1,7 @@
 import type { gmail_v1 } from "googleapis";
 import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { emailReceipts, gmailConnections } from "@/lib/db/schema";
+import { emailReceipts, gmailConnections, gmailPullCursors } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import {
@@ -1076,7 +1076,9 @@ async function maybePushDisambiguationPrompt(userId: number): Promise<void> {
 
 /**
  * Pull new Gmail messages for one user, store them in `email_receipts`, and
- * update the connection's `last_pull_at` watermark.
+ * advance the per-gateway pull cursors (#511). Also updates the connection's
+ * legacy `last_pull_at` (settings UI + snapshot/restore still read it; the
+ * pull path itself no longer does).
  *
  * Tenant isolation: every DB read/write is scoped by `userId`. A caller that
  * hands a userId from one request context cannot accidentally ingest into
@@ -1160,21 +1162,24 @@ export async function pullForUser(
     throw err;
   }
 
-  // Read watermark + bootstrap window for the since-date computation.
+  // Read the bootstrap window + the per-gateway cursors (#511). One query —
+  // the table holds at most one row per (connection, gateway). A gateway
+  // without a row was never pulled: absence = bootstrap.
   const [connRow] = await db
-    .select({
-      lastPullAt: gmailConnections.lastPullAt,
-      bootstrapSinceDate: gmailConnections.bootstrapSinceDate,
-    })
+    .select({ bootstrapSinceDate: gmailConnections.bootstrapSinceDate })
     .from(gmailConnections)
     .where(eq(gmailConnections.id, authed.connection.id));
-  const since = computeSinceDate({
-    now,
-    lastPullAt: connRow?.lastPullAt ?? null,
-    bootstrapSinceDate: connRow?.bootstrapSinceDate ?? null,
-    sinceDays: opts.sinceDays,
-    overrideSince: opts.overrideSince,
-  });
+  const cursorRows = await db
+    .select({ gateway: gmailPullCursors.gateway, lastPullAt: gmailPullCursors.lastPullAt })
+    .from(gmailPullCursors)
+    .where(
+      and(
+        eq(gmailPullCursors.connectionId, authed.connection.id),
+        eq(gmailPullCursors.userId, userId),
+        notDeleted(gmailPullCursors.deletedAt),
+      ),
+    );
+  const cursorByGateway = new Map(cursorRows.map((r) => [r.gateway, r.lastPullAt]));
 
   const plans = selectPullPlans(opts);
   const maxPages = opts.maxPages ?? (opts.preserveCursor ? 100 : MAX_PAGES_PER_GATEWAY);
@@ -1183,6 +1188,18 @@ export async function pullForUser(
   let totalSkipped = 0;
   try {
     for (const plan of plans) {
+      // #511 — the since-date is computed per gateway: each gateway's
+      // watermark comes from its own cursor, not from the connection's
+      // shared last_pull_at. A gateway registered after the connection's
+      // first pull (no cursor row) bootstraps instead of inheriting the
+      // stale shared watermark.
+      const since = computeSinceDate({
+        now,
+        lastPullAt: cursorByGateway.get(plan.gateway.id) ?? null,
+        bootstrapSinceDate: connRow?.bootstrapSinceDate ?? null,
+        sinceDays: opts.sinceDays,
+        overrideSince: opts.overrideSince,
+      });
       const res = await pullGateway({
         userId,
         connectionId: authed.connection.id,
@@ -1199,6 +1216,28 @@ export async function pullForUser(
       totalPulled += res.pulled;
       totalSkipped += res.skipped;
       errors.push(...res.errors);
+      // #511 — advance THIS gateway's cursor only when its own pull was
+      // clean: a failing gateway no longer holds the other gateways'
+      // watermarks back. Historical pulls (preserveCursor) keep every
+      // watermark frozen — a bounded window must not jump the cron cursor.
+      // targetWhere is required: the (connection_id, gateway) unique index is
+      // partial (WHERE deleted_at IS NULL) and a bare target fails (engram
+      // gotchas/drizzle-on-conflict-partial-index).
+      if (res.errors.length === 0 && !opts.preserveCursor) {
+        await db
+          .insert(gmailPullCursors)
+          .values({
+            userId,
+            connectionId: authed.connection.id,
+            gateway: plan.gateway.id,
+            lastPullAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [gmailPullCursors.connectionId, gmailPullCursors.gateway],
+            targetWhere: sql`${gmailPullCursors.deletedAt} IS NULL`,
+            set: { lastPullAt: now, updatedAt: now },
+          });
+      }
     }
   } catch (err) {
     if (isInvalidGrantError(err)) {
@@ -1256,9 +1295,11 @@ export async function pullForUser(
     await processGatewayAfterPull(userId, plan.gateway);
   }
 
-  // Only advance the watermark on fully successful incremental pulls —
-  // partial failures leave last_pull_at alone so the next run retries the
-  // same window. Historical fetch (#849) passes preserveCursor so a
+  // Legacy: advance the connection-level watermark on fully successful
+  // incremental pulls. #511 moved the authoritative watermarks to the
+  // per-gateway cursors (advanced inside the loop above); this column stays
+  // written for the settings UI and the snapshot/restore path until the
+  // soak week ends. Historical fetch (#849) passes preserveCursor so a
   // sender-scoped window cannot jump the cron cursor past other gateways.
   // The DB unique index on (user_id, gmail_msg_id) keeps retries safe.
   if (errors.length === 0 && !opts.preserveCursor) {
