@@ -177,6 +177,32 @@ Sequence:
 12. **Rollback on failure**: gated on step 8's output, **not** on the flip — otherwise a failure between the unit install and the symlink flip would skip rollback and leave unit and release skewed. Restores the previous unit if it changed, then the symlink, then restarts once.
 13. **Prune**: on success, removes all but the 5 most recent release dirs.
 
+### One-shot backfill steps: give them a removal condition
+
+Some fixes need a data repair that a drizzle migration cannot do — most often
+because the DML depends on an enum value added in the same batch, which
+Postgres rejects as "unsafe use of new value". The escape hatch is a script in
+`scripts/` invoked from `deploy.yml` right after **Run migrations**.
+
+That escape hatch has a failure mode worth naming. A backfill repairs rows
+written *before* its fix shipped. Once the fix is deployed nothing new
+accumulates, so the step has no work left — but it keeps running on every
+deploy, SSHing to the droplet and scanning to write nothing. #915 found two of
+them costing 22s and 27s of every single deploy, together 26% of the run.
+
+So when adding one:
+
+- **Record its removal condition in the issue**, not just what it does. Usually
+  "the query it runs matches zero rows in production, and the ingestion path
+  that produced those rows now sets the value itself".
+- **Verify before removing, do not assume.** Prefer a `--dry-run` flag on the
+  script. Where there is none — `backfill-atm-channel.ts` has no flags at all —
+  run its predicate as a read-only `SELECT count(*)` against production and put
+  the number in the issue.
+- **Delete the step, keep the script.** It stays the recovery path if
+  production is ever restored from a backup predating the fix. It just is not
+  part of a normal deploy.
+
 ---
 
 ## 5. Manual deploy (workflow_dispatch)

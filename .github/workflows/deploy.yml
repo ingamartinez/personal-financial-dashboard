@@ -141,8 +141,9 @@ jobs:
           # paths — that only happened to work before because the few
           # modules the allow-list copied didn't need it. Bun resolves `@/*`
           # only when a tsconfig.json with that `paths` entry is present at
-          # (or above) the cwd it's invoked from; migrate-prod and the
-          # backfills below all run via `cd "$RELEASE_DIR"; bun scripts/x.ts`,
+          # (or above) the cwd it's invoked from; migrate-prod — and any
+          # backfill run by hand on the droplet (#915 removed the automatic
+          # ones) — all run via `cd "$RELEASE_DIR"; bun scripts/x.ts`,
           # so tsconfig.json must ship at the release root. Verified: the
           # identical script/import pair fails with "Cannot find module
           # '@/...'" without this file present and resolves cleanly with it.
@@ -312,37 +313,19 @@ jobs:
             sudo -n -u findash /usr/local/bin/bun scripts/migrate-prod.ts
           "
 
-      # Data backfill that depends on a newly-added enum value cannot run in the
-      # same drizzle batch as the ALTER TYPE — Postgres rejects "unsafe use of
-      # new value" in the same transaction. The ATM channel backfill is idempotent:
-      # re-running after the first successful pass is a no-op. See #766 hotfix.
-      - name: Run #766 ATM channel backfill
-        env:
-          GIT_SHA: ${{ steps.sha.outputs.sha }}
-        run: |
-          set -eu
-          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
-            set -eu
-            cd '$RELEASE_DIR'
-            sudo -n -u findash /usr/local/bin/bun scripts/backfill-atm-channel.ts
-          "
-
-      # #852: rebuild description fingerprints from description_raw after the
-      # PAGO-prefix tokenizer change, then auto-link orphans (tx 2652).
-      # Idempotent (#864): a second deploy writes nothing; relink is still
-      # attempted, then observation_count is re-derived from sources.
-      - name: Run #852 description-pattern rebuild
-        env:
-          GIT_SHA: ${{ steps.sha.outputs.sha }}
-        run: |
-          set -eu
-          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
-            set -eu
-            cd '$RELEASE_DIR'
-            sudo -n -u findash /usr/local/bin/bun scripts/backfill-retokenize-patterns.ts
-          "
+      # One-shot data backfills used to run here: #766's ATM channel repair and
+      # #852's description-pattern rebuild. Both finished long ago and were
+      # removed in #915 after dry-run evidence against production showed each
+      # writing nothing while costing 22s and 27s of every deploy.
+      #
+      # The scripts stay in scripts/ — they are the recovery path if production
+      # is ever restored from a backup that predates their fix. They are not
+      # part of a normal deploy.
+      #
+      # Adding another one here: give it an owner and a removal condition in its
+      # issue, or it becomes permanent the same way these two did. A backfill
+      # repairs rows written before a fix shipped; once the fix is deployed,
+      # nothing new accumulates and the step is pure tax.
 
       # ---------------------------------------------------------------------
       # #799. Everything below this line is rollback-protected.
