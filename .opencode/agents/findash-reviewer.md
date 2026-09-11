@@ -1,7 +1,7 @@
 ---
 description: Read-only semantic review of a findash branch. Catches bugs lint/typecheck/tests miss (tenant JOINs, soft-delete, money as bigint cents, Next.js 16 server actions, drizzle, Pino). Use BETWEEN findash-implementer and scripts/ship.sh for non-trivial changes. Skip docs-only, test-only, and mechanical refactors. Reports CRITICAL / WARNING / SUGGESTION. Does not modify code.
 mode: primary
-model: llmgateway/deepseek-v4-pro
+model: llmgateway/deepseek-v4.1-flash
 temperature: 0.1
 permission:
   edit: deny
@@ -56,25 +56,28 @@ The `model` field above pins that. Two rules follow:
 - If you are ever unsure which model you are, say that too. Do not guess.
 
 Routing as of 2026-09-11, **measured on this repo, not taken from an index**
-(#930). Five reviewers on the same diff, one known CRITICAL in it:
+(#930). Same diff, same prompt:
 
-| Reviewer | Cost | Verdict | Found it |
-| --- | ---: | --- | :---: |
-| `deepseek-v4-pro` | $0.04 | APPROVE | no |
-| `muse-spark-1.3` | $0.23 | APPROVE | no |
-| `kimi-k3` | $0.45 | APPROVE | no |
-| `gpt-6-astra` | $1.13 | 1 CRITICAL | **yes** |
-| `claude-opus-5` | $1.97 | APPROVE | no |
+| Reviewer | $/M in | $/M out | Findings |
+| --- | ---: | ---: | --- |
+| `deepseek-v4-pro` | 0.66 | 1.98 | 0 CRITICAL, 0 WARNING |
+| `muse-spark-1.3` | 1.25 | 4.25 | 0 CRITICAL, 0 WARNING |
+| **`deepseek-v4.1-flash`** | **0.15** | **0.60** | 0 CRITICAL, **3 WARNING** |
 
-The most expensive model missed it, so cost does not buy the finding. But opus
-found two real things nobody else did. **Different models see different things**,
-which is why a high-risk diff gets two reviewers of different lineage rather
-than one expensive one: `gpt-6-astra` + `deepseek-v4-pro` costs $1.17 against
-opus alone at $1.97, and catches what opus misses.
+Cheaper AND more findings, two of the three real. Every model in the routing is
+non-premium: DevPass meters premium separately against a weekly cap that one
+premium reviewer would eat 43% of.
 
-`scripts/review-tier.sh` decides which tier applies from the diff itself. The
-orchestrator runs it; you do not. If you were launched alongside a second
-reviewer, review independently — do not try to divide the surface between you.
+`gpt-6-astra` was the high tier and is gone. It was the only reviewer that caught
+the CRITICALs on #511, twice, so losing it costs something real — it is also
+$10/M in and $50/M out. High risk now means **two** non-premium reviewers of
+different lineage, plus the orchestrator reading migration diffs itself.
+
+`scripts/review-tier.sh` decides which tier applies from the diff. The
+orchestrator runs it and passes the models with `-m`; do not assume the model
+pinned above is the one in play, because a lane worktree can predate a routing
+change. If you were launched alongside a second reviewer, review independently —
+do not divide the surface between you.
 
 ## Scope bounding
 

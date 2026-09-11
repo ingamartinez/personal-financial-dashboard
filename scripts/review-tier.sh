@@ -9,11 +9,18 @@
 # #498, and the CRITICAL only surfaced because a second reviewer was run on a
 # hunch. A rule that depends on someone remembering is not a gate.
 #
-# Measured on that diff (#930), five reviewers, one known CRITICAL:
-#   deepseek-v4-pro $0.04 APPROVE | muse-spark $0.23 APPROVE | kimi-k3 $0.45 APPROVE
-#   gpt-6-astra     $1.13 CRITICAL ✅ | claude-opus-5 $1.97 APPROVE
-# The most expensive model missed it. Two cheap reviewers of different lineage
-# ($1.17) beat one expensive one ($1.97) on both cost and findings.
+# Every model here is NON-PREMIUM on purpose. DevPass meters premium models
+# ($5+/M in or $15+/M out) against a separate ~$10.44/week cap, and at the 28%
+# high-tier rate this repo actually has, one premium reviewer eats 43% of it.
+#
+# `gpt-6-astra` was the high tier and is gone. It was the only reviewer that
+# caught the CRITICALs on #511, twice — so this is a real loss, not a wash. It
+# is also $10/M in and $50/M out. The compensation is that migration diffs get
+# read by the orchestrator, which runs on a subscription rather than DevPass.
+#
+# Default is `deepseek-v4.1-flash`: measured against `deepseek-v4-pro` and
+# `muse-spark-1.3` on the same diff, it costs 4x less than either and returned
+# 3 WARNINGs where both returned 0 — two of them real and fixed before merge.
 #
 # Usage:
 #   scripts/review-tier.sh                 # human-readable plan
@@ -28,8 +35,8 @@ set -uo pipefail
 # letting a broken check wave a risky diff through on the cheap reviewer.
 trap 'printf "review-tier.sh failed to classify — escalating to HIGH tier.\\n" >&2; printf "%s\\n%s\\n" "llmgateway/gpt-6-astra" "llmgateway/deepseek-v4-pro"; exit 10' ERR
 
-readonly STANDARD="llmgateway/deepseek-v4-pro"
-readonly HIGH_EXTRA="llmgateway/gpt-6-astra"
+readonly STANDARD="llmgateway/deepseek-v4.1-flash"
+readonly HIGH_EXTRA="llmgateway/muse-spark-1.3"
 
 base="origin/main"
 models_only=0

@@ -46,10 +46,10 @@ the blindness this table exists to prevent.
 | Role | Model | Lineage | ~$/task |
 | --- | --- | --- | ---: |
 | Orchestrator | Claude Code, Sonnet | Anthropic | subscription |
-| `findash-explorer` | `llmgateway/gpt-5.6-luna` | OpenAI | ~$0.10 |
-| `findash-implementer` | `llmgateway/glm-5.3-flash` | Zhipu | ~$0.20 |
-| `findash-reviewer` | `llmgateway/deepseek-v4-pro` | DeepSeek | **$0.04** |
-| Reviewer, high-risk diff | + `llmgateway/gpt-6-astra` | OpenAI | **$1.13** |
+| `findash-explorer` | `llmgateway/gpt-5.6-luna` | OpenAI | **$0.02** |
+| `findash-implementer` | `llmgateway/gpt-5.6-luna` | OpenAI | **$0.03** |
+| `findash-reviewer` | `llmgateway/deepseek-v4.1-flash` | DeepSeek | **$0.01** |
+| Reviewer, high-risk diff | + `llmgateway/muse-spark-1.3` | Meta | **$0.23** |
 | Overflow | `deepseek/deepseek-v4-flash` | DeepSeek | ~$0.20 |
 
 **The rule is not "the reviewer uses model X". It is "the reviewer must differ
@@ -71,20 +71,29 @@ scripts/review-tier.sh --models   # one model id per line; exit 10 = high tier
 It fails **closed**: a broken base ref, a failed diff, anything it cannot
 classify escalates to high tier rather than waving a risky diff through.
 
-**High tier means two reviewers of different lineage, not one expensive one.**
-Measured on #511 (#930), five reviewers against one known CRITICAL:
+**High tier means two reviewers of different lineage.** Measured on the #511
+diff, same prompt (#930):
 
-| Reviewer | Cost | Verdict | Found it |
-| --- | ---: | --- | :---: |
-| `deepseek-v4-pro` | $0.04 | APPROVE | no |
-| `muse-spark-1.3` | $0.23 | APPROVE | no |
-| `kimi-k3` | $0.45 | APPROVE | no |
-| `gpt-6-astra` | $1.13 | 1 CRITICAL | **yes** |
-| `claude-opus-5` | $1.97 | APPROVE | no |
+| Reviewer | $/M in | $/M out | Findings |
+| --- | ---: | ---: | --- |
+| `deepseek-v4-pro` | 0.66 | 1.98 | 0 CRITICAL, 0 WARNING |
+| `muse-spark-1.3` | 1.25 | 4.25 | 0 CRITICAL, 0 WARNING |
+| **`deepseek-v4.1-flash`** | **0.15** | **0.60** | 0 CRITICAL, **3 WARNING** |
 
-The most expensive model missed it. `claude-opus-5` is not in the table above
-for that reason, not for an access one — a 20-minute gateway outage once made it
-look account-blocked; it is not.
+Cheaper and more findings — two of the three real, including a restore path not
+pairing `connection_id` with `user_id`, which only `claude-opus-5` had caught
+before.
+
+**Everything in the routing is non-premium, deliberately.** DevPass meters
+premium models ($5+/M in or $15+/M out) against a separate ~$10.44/week cap.
+This repo's high tier fires on 28% of PRs; one premium reviewer at that rate is
+$4.53/week, 43% of the cap. Non-premium spends only against the $87/month.
+
+**`gpt-6-astra` is gone, and it cost something.** It was the ONLY reviewer that
+caught the CRITICALs on #511, twice, where every cheaper model said APPROVE. It
+is also $10/M in and $50/M out. Losing it means the orchestrator reads migration
+diffs itself — that runs on a subscription, not against DevPass, which is where
+the judgement should sit anyway.
 
 Launch both high-tier reviewers in their own tabs and merge the findings
 yourself. Do not tell either one that the other exists, and do not split the
@@ -92,6 +101,29 @@ diff between them — the value is that they overlap and disagree.
 
 **n=1.** One diff, one run, stochastic sampling. Re-measure opportunistically on
 the next high-risk diff rather than treating this table as settled.
+
+## Agent definitions come from the WORKTREE, not from main
+
+A lane reads `.opencode/agents/*.md` out of its own checkout. Change the routing
+on `main` and every lane whose branch predates that change keeps the old models,
+silently — `herdr agent start ... --agent findash-reviewer` with no `-m` gets
+whatever that worktree happens to pin.
+
+This has already bitten once: a reviewer launched to run `deepseek-v4-pro` ran
+`muse-spark-1.3` for a whole review because the lane branched before the routing
+landed. Nothing errors; the pane just quietly says a different model name.
+
+**So pass the models explicitly.** That is what `--models` is for:
+
+```bash
+mapfile -t models < <(scripts/review-tier.sh --models)   # or read them in a loop
+herdr agent start <lane> --kind opencode --pane <id> -- \
+  --auto --agent findash-reviewer -m "${models[0]}"
+```
+
+Read the model line back out of the pane before trusting the lane —
+`Findash-Reviewer auto · <Model Name>` — and ask the agent to end its report with
+`MODEL_IN_USE=<id>`. Both definitions already instruct it to.
 
 ## Launch role-specialized
 
