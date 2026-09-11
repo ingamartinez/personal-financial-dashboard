@@ -310,6 +310,13 @@ export async function recordReconciliationDecision(input: ReviewInput): Promise<
         note: input.note ?? null,
       });
 
+      // Deliberate hard delete, see the comment above: the merge trades the
+      // audit link for a clean balance query. Worth revisiting — `transactions`
+      // carries deleted_at and every balance query already filters on
+      // notDeleted(), so soft-deleting the merged row would keep
+      // mergedIntoTxnId populated at no cost. That is a behaviour change with
+      // its own tests, not a lint fixup (#922 task 9).
+      // eslint-disable-next-line no-restricted-syntax
       await tx
         .delete(transactions)
         .where(and(eq(transactions.id, targetId), eq(transactions.userId, input.userId)));
