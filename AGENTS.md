@@ -470,12 +470,28 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
   turn actually began before registering a watcher: `terminal_title` flips to
   `OC | <objective>` once it does, and `agent read` shows the prompt in the
   transcript. Verified on herdr 0.9.0 / opencode 1.18.30.
-- **Do not judge a reviewer from its scrollback.** A pane read mid-run surfaces
+- **Do not judge an agent from its scrollback.** A pane read mid-run surfaces
   hypotheses the agent later refutes itself. One review showed a `CRITICAL` in
-  scrollback and ended `APPROVE` with zero findings. Ask it to write the final
-  report to a file and read that — the agent runs on the terminal's alternate
-  screen, so rows that scroll away never reach herdr's host scrollback and no
-  `--lines` value brings them back.
+  scrollback and ended `APPROVE` with zero findings. The agent runs on the
+  terminal's alternate screen, so rows that scroll away never reach herdr's host
+  scrollback and no `--lines` value brings them back. Ask for the final report —
+  but **how depends on the role**:
+  - `findash-explorer` and `findash-implementer` can write it to a file
+    (`/tmp/<lane>-digest.md`); read the file.
+  - `findash-reviewer` **cannot**. Its definition sets `edit: deny`, which also
+    blocks `write` (§ `--auto` plus deny-first). Asking one for a file leaves it
+    at a permission dialog with `agent_status: blocked`, holding a finished
+    review it cannot deliver. Do not relax the denial — a reviewer that can
+    write files is not read-only. Ask it instead for a compact verdict in the
+    pane: status line, surviving CRITICAL/WARNING/SUGGESTION counts, one line
+    per finding. Short output never hits the scrollback problem. If one is
+    already blocked, `herdr agent send-keys <name> esc`, then re-prompt.
+- **A tab is not ready the moment `tab create` returns.** `herdr agent start`
+  needs the target pane's shell at its interactive prompt. Called immediately
+  after `herdr tab create` it fails with `agent_not_found` — even though the
+  pane exists and `herdr pane list` reports it. The error names the agent, not
+  the pane, so it reads like a bad `--pane`, and the identical command succeeds
+  on retry seconds later. Wait for the shell before starting the agent.
 - **Do not poll Herdr — it pushes.** Two mechanisms, both verified on herdr
   0.9.0.
 
