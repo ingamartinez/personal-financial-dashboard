@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { accounts, physicalCards } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { derivedBalanceCentsSql } from "@/lib/accounts/queries";
+import { recentCycles } from "@/lib/accounts/cycles";
 import { getSessionUser } from "@/lib/auth/session";
 import { isTcAccountingEnabled } from "@/lib/flags/tc-accounting";
 import { getCurrentFxRate } from "@/lib/fx/repo";
@@ -49,7 +50,17 @@ export default async function SettingsAccountsPage() {
     .where(and(eq(accounts.userId, session.id), notDeleted(accounts.deletedAt)))
     .orderBy(asc(accounts.type), asc(accounts.name));
 
-  const items: AccountRow[] = rows.map((r) => ({
+  const cycleFlags = await Promise.all(
+    rows.map(async (r) => {
+      const cycles = await recentCycles({
+        accountId: r.id,
+        userId: session.id,
+        metadata: r.metadata,
+      });
+      return cycles.some((cycle) => cycle.status === "pending");
+    }),
+  );
+  const items: AccountRow[] = rows.map((r, index) => ({
     id: r.id,
     name: r.name,
     institution: r.institution,
@@ -59,6 +70,7 @@ export default async function SettingsAccountsPage() {
     balanceCents: r.balanceCents.toString(),
     active: r.active,
     metadata: r.metadata,
+    hasUnconsolidatedCycle: cycleFlags[index],
     physicalCardId: r.physicalCardId,
     physicalCard: r.physicalCardId
       ? {

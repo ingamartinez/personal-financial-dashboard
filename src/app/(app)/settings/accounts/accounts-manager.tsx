@@ -76,6 +76,7 @@ export type AccountRow = {
   metadata: AccountMetadata;
   physicalCardId: string | null;
   physicalCard: AccountRowPhysicalCard | null;
+  hasUnconsolidatedCycle?: boolean;
 };
 
 const TYPE_LABEL: Record<AccountType, string> = {
