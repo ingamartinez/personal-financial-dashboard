@@ -209,6 +209,35 @@ FINDASH_TEST_DB=findash_test_x bun run test
 
 Unset, `FINDASH_TEST_DB` defaults to `findash_test` exactly as before.
 
+### Per-worker test databases (how the suite runs in parallel)
+
+The suite runs with `fileParallelism` ON. That is only safe because every
+vitest worker gets **its own database**: `vitest.global-setup.ts` clones
+`<base>_w1 … _wN` from the base database with `CREATE DATABASE … TEMPLATE`
+before the run and drops them after. A worker resolves its own name from
+`VITEST_POOL_ID` (see `vitest.test-db-name.ts`).
+
+This stacks with `FINDASH_TEST_DB` rather than replacing it — a lane pinned to
+`findash_test_818` gets `findash_test_818_w1 … _w4`. Lane teardown is unchanged:
+drop the base, the clones are already gone.
+
+Three things to know before touching this:
+
+- **The base database is the template.** `db:migrate:test` and `db:seed:test`
+  still target it, and workers never connect to it during a parallel run.
+  Postgres refuses a TEMPLATE copy while anything else is connected to the
+  template, so an open `psql` session against it fails the run with a message
+  saying exactly that.
+- **`TEMPLATE` does not copy per-database settings.** They live in
+  `pg_db_role_setting`, outside the template, so globalSetup re-applies
+  `SET timezone TO 'UTC'` on every clone. Without it the clones inherit the
+  server timezone and exactly two consolidate specs fail on a date boundary —
+  the same failure a manual `createdb` produces without the ALTER.
+- **Do NOT "fix" a flaky test by setting `fileParallelism: false`.** That was
+  the old configuration and it cost 87s serial against ~15s parallel (measured
+  in #912). It also hides real cross-test coupling instead of surfacing it. If a
+  test only passes serially, it is reading state another test owns — fix that.
+
 ## Visual verification (Playwright)
 
 For UI-affecting PRs, agents without human eyes available can capture
