@@ -156,7 +156,7 @@ export const users = pgTable(
       .notNull()
       .default({}),
     // Phase 7 (SaaS productization) seam — all nullable, no defaults. Enforcement
-    // lives in canIngest(userId) and is a no-op in v1. See PLAN.md § Business Model.
+    // lives in canIngest(userId) and is a no-op in v1. See docs/business-model.md.
     subscriptionStatus: varchar("subscription_status", { length: 20 }),
     planId: varchar("plan_id", { length: 40 }),
     trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
@@ -1387,7 +1387,7 @@ export type CaptureSources30d = Partial<Record<(typeof txSource.enumValues)[numb
 
 // AI canary — shadow-parses a deterministic 1% sample of incoming SMS via
 // Haiku and compares against the regex result. Detects Bancolombia format
-// drift before users notice. See PLAN.md § AI Strategy + issue #258.
+// drift before users notice. See docs/ai-strategy.md § AI Strategy + issue #258.
 //
 // regexResult / aiResult shape is CanaryProjection — { amountCents, currency,
 // merchant, occurredOn } — see src/lib/observability/canary.ts.

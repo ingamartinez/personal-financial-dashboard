@@ -5,7 +5,7 @@ export type CanIngestResult = { allowed: true } | { allowed: false; reason: stri
 // Phase 7 (SaaS productization) seam. v1 is a no-op — every ingest is allowed.
 // When Phase 7 flips, this reads users.subscription_status / trial_ends_at and
 // denies when the subscription is past_due or canceled past grace period.
-// See PLAN.md § Business Model & Pricing (Deferred) and issue #247.
+// See docs/business-model.md § Business Model & Pricing (Deferred) and issue #247.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function canIngest(userId: number): Promise<CanIngestResult> {
   return { allowed: true };

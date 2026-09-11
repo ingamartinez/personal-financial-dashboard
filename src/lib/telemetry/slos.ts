@@ -3,7 +3,7 @@ import { notDeleted } from "@/lib/db/helpers";
 import { db } from "@/lib/db";
 import { ingestionLogs, parserEvents, transactions } from "@/lib/db/schema";
 
-// Bancolombia Parser SLOs (PLAN.md §"Bancolombia Parser SLOs"). System-wide
+// Bancolombia Parser SLOs (docs/telemetry-slos.md). System-wide
 // aggregates across all users — NOT per-user (that is /admin/health).
 //
 // These gate Phase 8 (second bank). "Bancolombia works well" must be

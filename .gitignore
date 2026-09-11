@@ -46,8 +46,13 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# claude code per-user config — local only, absent from worktrees
-.claude/
+# claude code per-user config — local only, absent from worktrees.
+# `.claude/skills/` is the exception: skills are the on-demand half of
+# AGENTS.md (issue #922) and MUST reach every worktree, lane and runtime.
+# opencode reads `.claude/skills/*/SKILL.md` natively. Ignoring the directory
+# itself would make the negation below unreachable, hence `.claude/*`.
+.claude/*
+!.claude/skills/
 CLAUDE.md
 
 # `.opencode/` is tracked on purpose. Route B agent definitions live in
