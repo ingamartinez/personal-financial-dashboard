@@ -48,22 +48,50 @@ the blindness this table exists to prevent.
 | Orchestrator | Claude Code, Sonnet | Anthropic | subscription |
 | `findash-explorer` | `llmgateway/gpt-5.6-luna` | OpenAI | ~$0.10 |
 | `findash-implementer` | `llmgateway/glm-5.3-flash` | Zhipu | ~$0.20 |
-| `findash-reviewer` | `llmgateway/muse-spark-1.3` | Meta | ~$0.55 |
-| Reviewer ceiling | `llmgateway/claude-opus-5` | Anthropic | ~$6 |
+| `findash-reviewer` | `llmgateway/deepseek-v4-pro` | DeepSeek | **$0.04** |
+| Reviewer, high-risk diff | + `llmgateway/gpt-6-astra` | OpenAI | **$1.13** |
 | Overflow | `deepseek/deepseek-v4-flash` | DeepSeek | ~$0.20 |
 
-**The rule is not "the reviewer uses muse-spark". It is "the reviewer must differ
+**The rule is not "the reviewer uses model X". It is "the reviewer must differ
 from the implementer's lineage."** A reviewer sharing the implementer's model
 shares its blind spots and confirms what it already judged correct once. Assert
 this at launch: if you override either model with `-m`, check the pair.
 
-Raise the reviewer to `claude-opus-5` for diffs touching money, schema, or a
-tenant boundary. It is ~11× the cost of the default reviewer and still cheaper
-than the bug.
+**Do not decide the reviewer tier by hand.** #922 shipped that rule as prose —
+"raise the reviewer for diffs touching money, schema, or a tenant boundary" —
+and nothing executed it. On #511 the orchestrator nearly skipped it: the cheap
+reviewer returned APPROVE on a diff that reopened incident #498, and the
+CRITICAL surfaced only because a second reviewer was run on a hunch.
 
-`gpt-6-astra` is deliberately not used: on DevPass it is priced at exactly 2×
-Opus 5 on every axis, and premium fair-use is the binding constraint — Lite
-grants premium only ~12% of monthly credits on a fixed 7-day window.
+```bash
+scripts/review-tier.sh            # the plan, with the reasons
+scripts/review-tier.sh --models   # one model id per line; exit 10 = high tier
+```
+
+It fails **closed**: a broken base ref, a failed diff, anything it cannot
+classify escalates to high tier rather than waving a risky diff through.
+
+**High tier means two reviewers of different lineage, not one expensive one.**
+Measured on #511 (#930), five reviewers against one known CRITICAL:
+
+| Reviewer | Cost | Verdict | Found it |
+| --- | ---: | --- | :---: |
+| `deepseek-v4-pro` | $0.04 | APPROVE | no |
+| `muse-spark-1.3` | $0.23 | APPROVE | no |
+| `kimi-k3` | $0.45 | APPROVE | no |
+| `gpt-6-astra` | $1.13 | 1 CRITICAL | **yes** |
+| `claude-opus-5` | $1.97 | APPROVE | no |
+
+The most expensive model missed it. `claude-opus-5` is not in the table above
+for that reason, not for an access one — a 20-minute gateway outage once made it
+look account-blocked; it is not.
+
+Launch both high-tier reviewers in their own tabs and merge the findings
+yourself. Do not tell either one that the other exists, and do not split the
+diff between them — the value is that they overlap and disagree.
+
+**n=1.** One diff, one run, stochastic sampling. Re-measure opportunistically on
+the next high-risk diff rather than treating this table as settled.
 
 ## Launch role-specialized
 

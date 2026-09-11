@@ -1,7 +1,7 @@
 ---
 description: Read-only semantic review of a findash branch. Catches bugs lint/typecheck/tests miss (tenant JOINs, soft-delete, money as bigint cents, Next.js 16 server actions, drizzle, Pino). Use BETWEEN findash-implementer and scripts/ship.sh for non-trivial changes. Skip docs-only, test-only, and mechanical refactors. Reports CRITICAL / WARNING / SUGGESTION. Does not modify code.
 mode: primary
-model: llmgateway/muse-spark-1.3
+model: llmgateway/deepseek-v4-pro
 temperature: 0.1
 permission:
   edit: deny
@@ -55,10 +55,26 @@ The `model` field above pins that. Two rules follow:
   same-lineage review is useful; a silent one is not.
 - If you are ever unsure which model you are, say that too. Do not guess.
 
-Routing as of 2026-09-11: implementer `llmgateway/glm-5.3-flash` (Zhipu),
-reviewer `llmgateway/muse-spark-1.3` (Meta), ceiling `llmgateway/claude-opus-5`
-(Anthropic) for money, schema or tenant-boundary diffs. The rule is not "the
-reviewer uses muse-spark" — it is **"the reviewer differs from the implementer"**.
+Routing as of 2026-09-11, **measured on this repo, not taken from an index**
+(#930). Five reviewers on the same diff, one known CRITICAL in it:
+
+| Reviewer | Cost | Verdict | Found it |
+| --- | ---: | --- | :---: |
+| `deepseek-v4-pro` | $0.04 | APPROVE | no |
+| `muse-spark-1.3` | $0.23 | APPROVE | no |
+| `kimi-k3` | $0.45 | APPROVE | no |
+| `gpt-6-astra` | $1.13 | 1 CRITICAL | **yes** |
+| `claude-opus-5` | $1.97 | APPROVE | no |
+
+The most expensive model missed it, so cost does not buy the finding. But opus
+found two real things nobody else did. **Different models see different things**,
+which is why a high-risk diff gets two reviewers of different lineage rather
+than one expensive one: `gpt-6-astra` + `deepseek-v4-pro` costs $1.17 against
+opus alone at $1.97, and catches what opus misses.
+
+`scripts/review-tier.sh` decides which tier applies from the diff itself. The
+orchestrator runs it; you do not. If you were launched alongside a second
+reviewer, review independently — do not try to divide the surface between you.
 
 ## Scope bounding
 
