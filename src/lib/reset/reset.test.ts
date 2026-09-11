@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -292,6 +294,52 @@ describe("#472 reset user transactional data", () => {
         .from(gmailPullCursors)
         .where(eq(gmailPullCursors.connectionId, connA));
       expect(cursor.lastPullAt).toEqual(new Date("2026-04-02T00:00:00Z"));
+    });
+
+    it("the #511 upgrade backfills cursors for a previously-reset connection from its pre-reset snapshot", async () => {
+      // The upgrade state, produced here by the reset itself: the connection
+      // keeps its watermark, the receipts are wiped, and the ONLY surviving
+      // memory of which gateways it pulled is the pre-reset auto-snapshot.
+      // The 0085 backfill must reconstruct the cursors from that snapshot —
+      // the live receipts are gone, so a backfill that only reads
+      // email_receipts yields nothing and the next pull falls back to the
+      // bootstrap window, re-ingesting the wiped history (#498).
+      await resetUserData({ userId: userA });
+
+      expect(await countWhere(userA, sql.raw("email_receipts"))).toBe(0);
+      const [preReset] = await db
+        .select({ id: userSnapshots.id })
+        .from(userSnapshots)
+        .where(and(eq(userSnapshots.userId, userA), sql`name LIKE 'pre-reset-%'`));
+      expect(preReset).toBeDefined();
+
+      // Fresh #511 state: no cursors yet (the earlier test's row would
+      // otherwise win the ON CONFLICT and this test would pass vacuously).
+      await db.delete(gmailPullCursors).where(eq(gmailPullCursors.connectionId, connA));
+
+      // The 0085 backfill, verbatim. It is idempotent (ON CONFLICT DO
+      // NOTHING), so re-running it here — after it already applied to this
+      // database — only fills the fixture's missing pairs.
+      const migrationSql = readFileSync(
+        fileURLToPath(new URL("../../../drizzle/0085_real_mimic.sql", import.meta.url)),
+        "utf8",
+      );
+      for (const statement of migrationSql
+        .split("--> statement-breakpoint")
+        .map((s) => s.trim())
+        .filter((s) => s.includes("INSERT INTO"))) {
+        await db.execute(sql.raw(statement));
+      }
+
+      const [cursor] = await db
+        .select({ gateway: gmailPullCursors.gateway, lastPullAt: gmailPullCursors.lastPullAt })
+        .from(gmailPullCursors)
+        .where(eq(gmailPullCursors.connectionId, connA));
+      // The pair lives only in the pre-reset snapshot's payload; the
+      // watermark is the preserved #498 boundary, so the next pull resumes
+      // from it instead of re-ingesting.
+      expect(cursor.gateway).toBe("mercado_pago");
+      expect(cursor.lastPullAt).toEqual(new Date("2026-04-01T00:00:00Z"));
     });
   });
 
