@@ -23,7 +23,7 @@ budget this architecture exists to protect.
 | --- | --- | --- |
 | `findash-explorer` | Read-only digest | BEFORE implementer when the task touches 4+ files, needs a module map, needs prior art from engram, or the issue scope is unclear. Skip for obvious tasks. |
 | `findash-implementer` | Code + tests + lint/typecheck + commit | For EVERY code change. Turns a claimed issue into a branch ready to ship. Does NOT push, does NOT open PRs. |
-| `findash-reviewer` | Read-only review (CRITICAL / WARNING / SUGGESTION) | BETWEEN implementer and shipper for non-trivial changes: db schema, queries, server actions, money logic, tenant-scoped data. Skip for docs-only, test-only, or mechanical refactors. |
+| `findash-reviewer` | Read-only review (CRITICAL / WARNING / SUGGESTION) | BETWEEN implementer and ship.sh for non-trivial changes: db schema, queries, server actions, money logic, tenant-scoped data. Skip for docs-only, test-only, or mechanical refactors. |
 | `scripts/ship.sh` | Push + PR + CI watch | AFTER implementer (and reviewer if applicable). A deterministic bash script, not a model — a model cannot wait for CI, and waiting is the whole job. |
 
 ```
@@ -75,7 +75,7 @@ that section measures as producing a worse result.
 herdr agent start <lane> --kind opencode --pane <pane_id> -- --agent findash-implementer
 ```
 
-Definitions live in `.opencode/agents/findash-{explorer,implementer,reviewer,shipper}.md`
+Definitions live in `.opencode/agents/findash-{explorer,implementer,reviewer}.md`
 and are committed. `.opencode/` is deliberately not gitignored. `.claude/` is
 ignored **except `.claude/skills/`**, which every lane needs — opencode reads
 `.claude/skills/*/SKILL.md` natively, so one directory serves both runtimes.
@@ -83,7 +83,7 @@ ignored **except `.claude/skills/`**, which every lane needs — opencode reads
 ## `--auto` plus deny-first
 
 `opencode --auto` auto-approves anything **not explicitly denied**. Alone that
-is wrong: a shipper lane would merge without asking. Each `findash-*`
+is wrong: an unbounded lane could merge without asking. Each `findash-*`
 definition therefore carries a deny-first permission block so the role is
 safe unattended. `--auto` is then per-role: a reviewer in auto still cannot
 edit, because its own definition forbids it.
@@ -103,14 +103,15 @@ tool call"*, under `--auto`):
 | Role | `bash` default | Shape |
 | --- | --- | --- |
 | explorer, reviewer | **`"*": deny`** | Allow-list of read-only commands: `rg`/`fd`/`bat`/`eza`/`jq`, `codegraph`, read-only `git`, read-only `gh`. `edit: deny` also blocks `write` and `apply_patch` — there is no separate `write` permission key. |
-| implementer | `"*": allow` | Denies push/PR/merge (the shipper's job), history surgery (`rebase`, `reset --hard`, checkout to `main`), anything with `--no-verify`, `gh auth switch`/`setup-git`, `dropdb`, `psql -d findash`, `ssh`, `pm2`, `rm -rf`. |
-| shipper | `"*": allow` | Denies `gh pr merge` and force-push so `--auto` cannot squash-merge, plus the same production and hook-bypass surfaces. |
+| implementer | `"*": allow` | Denies push/PR/merge (`scripts/ship.sh`'s job), history surgery (`rebase`, `reset --hard`, checkout to `main`), anything with `--no-verify`, `gh auth switch`/`setup-git`, `dropdb`, `psql -d findash`, `ssh`, `pm2`, `rm -rf`. |
+
+There is no shipper lane. `scripts/ship.sh` does that job — see § Shipping.
 
 The two read-only roles get a deny-default because their command set is small
-and enumerable. The two writing roles do not: an allow-list there breaks a lane
-on the first legitimate command nobody anticipated, and a blocked lane under
-`--auto` is a pane that looks alive and is not. Bound them by denying what is
-out of remit instead.
+and enumerable. The implementer does not: an allow-list there breaks the lane on
+the first legitimate command nobody anticipated, and a blocked lane under
+`--auto` is a pane that looks alive and is not. Bound it by denying what is out
+of remit instead.
 
 `read` is a separate key from `edit`, so `edit: deny` leaves reading intact.
 Definitions do not set `external_directory` and do not hardcode operator
@@ -154,8 +155,8 @@ FINDASH_TEST_DB=findash_test_<lane> bun run db:seed:test
 # 3. node_modules is NOT shared between worktrees
 cd ~/projects/personal-financial-dashboard-worktrees/<lane> && bun install
 
-# 4. The root pane hosts the implementer. Every later stage — reviewer,
-#    shipper — gets its OWN tab inside that same lane workspace:
+# 4. The root pane hosts the implementer. The later stage —
+#    review — gets its OWN tab inside that same lane workspace:
 #      herdr tab create --workspace <workspace_id> --cwd "$PWD" \
 #        --label <lane>-review --no-focus
 #    Never a pane split of the orchestrator's tab.
@@ -191,6 +192,31 @@ which returns **new** ids. Removing the checkout stays an explicit
 > are green in CI. The symptom looks like a regression on `main` and is not one —
 > check `drizzle.__drizzle_migrations` against `drizzle/meta/_journal.json`
 > before debugging any code.
+
+
+## Shipping
+
+There is no shipper agent. `scripts/ship.sh` runs pre-flight, the gates, the
+push, the PR and the CI watch — every step has exactly one correct answer, and
+the step that dominates wall-clock is waiting for CI. A model cannot wait, which
+is why the agent needed the "poll `gh pr checks` inline, never `ScheduleWakeup`"
+workaround. `gh pr checks --watch` does it natively.
+
+```bash
+scripts/ship.sh                       # infer issue and link word from the commits
+scripts/ship.sh --part-of             # epic-phase PR
+scripts/ship.sh --no-test             # a parallel lane already ran the suite
+scripts/ship.sh --dry-run             # gates only, push nothing
+```
+
+It refuses to ship from `main`, refuses a dirty tree, refuses a non-conventional
+commit subject, and **never merges** — it prints whether `AGENTS.md` auto-merge
+conditions hold and stops. Multiple issue numbers across the commits
+automatically demote `Closes` to `Part of`.
+
+Run it from the lane's worktree with that lane's `FINDASH_TEST_DB` exported, or
+with `--no-test` if the implementer already ran the affected specs and no other
+lane is idle.
 
 ## Prompt design: give the objective, not the route
 
