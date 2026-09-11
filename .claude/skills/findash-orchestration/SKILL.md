@@ -49,7 +49,6 @@ the blindness this table exists to prevent.
 | `findash-explorer` | `llmgateway/gpt-5.6-luna` | OpenAI | **$0.02** |
 | `findash-implementer` | `llmgateway/gpt-5.6-luna` | OpenAI | **$0.03** |
 | `findash-reviewer` | `llmgateway/deepseek-v4.1-flash` | DeepSeek | **$0.01** |
-| Reviewer, high-risk diff | + `llmgateway/muse-spark-1.3` | Meta | **$0.23** |
 | Overflow | `deepseek/deepseek-v4-flash` | DeepSeek | ~$0.20 |
 
 **The rule is not "the reviewer uses model X". It is "the reviewer must differ
@@ -57,22 +56,25 @@ from the implementer's lineage."** A reviewer sharing the implementer's model
 shares its blind spots and confirms what it already judged correct once. Assert
 this at launch: if you override either model with `-m`, check the pair.
 
-**Do not decide the reviewer tier by hand.** #922 shipped that rule as prose —
+**Do not decide the review flag by hand.** #922 shipped that rule as prose —
 "raise the reviewer for diffs touching money, schema, or a tenant boundary" —
 and nothing executed it. On #511 the orchestrator nearly skipped it: the cheap
 reviewer returned APPROVE on a diff that reopened incident #498, and the
 CRITICAL surfaced only because a second reviewer was run on a hunch.
 
 ```bash
-scripts/review-tier.sh            # the plan, with the reasons
-scripts/review-tier.sh --models   # one model id per line; exit 10 = high tier
+scripts/review-tier.sh            # the model, plus the reasons if any
+scripts/review-tier.sh --models   # the reviewer model id, for scripting
 ```
 
-It fails **closed**: a broken base ref, a failed diff, anything it cannot
-classify escalates to high tier rather than waving a risky diff through.
+It fails **closed** in the sense that matters: a broken base ref or a failed
+diff prints an error and stops rather than silently answering "nothing to
+review."
 
-**High tier means two reviewers of different lineage.** Measured on the #511
-diff, same prompt (#930):
+**One reviewer, `deepseek-v4.1-flash`, for every diff — high-risk or not.**
+There used to be a second high-tier reviewer for risky diffs. Both attempts at
+one got cut on the same evidence: measured on the #511 diff, same prompt
+(#930):
 
 | Reviewer | $/M in | $/M out | Findings |
 | --- | ---: | ---: | --- |
@@ -80,27 +82,29 @@ diff, same prompt (#930):
 | `muse-spark-1.3` | 1.25 | 4.25 | 0 CRITICAL, 0 WARNING |
 | **`deepseek-v4.1-flash`** | **0.15** | **0.60** | 0 CRITICAL, **3 WARNING** |
 
-Cheaper and more findings — two of the three real, including a restore path not
-pairing `connection_id` with `user_id`, which only `claude-opus-5` had caught
-before.
+The cheapest reviewer found more than both of the ones it used to be paired
+with — two of the three WARNINGs real, including a restore path not pairing
+`connection_id` with `user_id`, which only `claude-opus-5` had caught before.
+`muse-spark-1.3` stayed on as a second high-tier reviewer through #930/#933
+anyway, on the theory that two reviewers of different lineage catch more than
+one; #935 dropped it once nobody could point to a diff where it actually had.
 
 **Everything in the routing is non-premium, deliberately.** DevPass meters
 premium models ($5+/M in or $15+/M out) against a separate ~$10.44/week cap.
-This repo's high tier fires on 28% of PRs; one premium reviewer at that rate is
-$4.53/week, 43% of the cap. Non-premium spends only against the $87/month.
+Non-premium spends only against the $87/month.
 
 **`gpt-6-astra` is gone, and it cost something.** It was the ONLY reviewer that
 caught the CRITICALs on #511, twice, where every cheaper model said APPROVE. It
 is also $10/M in and $50/M out. Losing it means the orchestrator reads migration
 diffs itself — that runs on a subscription, not against DevPass, which is where
-the judgement should sit anyway.
-
-Launch both high-tier reviewers in their own tabs and merge the findings
-yourself. Do not tell either one that the other exists, and do not split the
-diff between them — the value is that they overlap and disagree.
+the judgement should sit anyway. `scripts/review-tier.sh` still flags migration
+and schema diffs in its reasons for exactly this: it is telling a human to read
+carefully, not selecting a second model.
 
 **n=1.** One diff, one run, stochastic sampling. Re-measure opportunistically on
-the next high-risk diff rather than treating this table as settled.
+the next high-risk diff rather than treating this table as settled — if a
+future measurement shows a real gap the single reviewer misses, that is a new
+proposal backed by data, not a reason to keep a second model warm on spec.
 
 ## Agent definitions come from the WORKTREE, not from main
 
@@ -110,15 +114,18 @@ silently — `herdr agent start ... --agent findash-reviewer` with no `-m` gets
 whatever that worktree happens to pin.
 
 This has already bitten once: a reviewer launched to run `deepseek-v4-pro` ran
-`muse-spark-1.3` for a whole review because the lane branched before the routing
-landed. Nothing errors; the pane just quietly says a different model name.
+`muse-spark-1.3` for a whole review because the lane branched before the
+routing landed — back when the routing had two models to drift between.
+Nothing errors; the pane just quietly says a different model name. The same
+drift still applies to a single model: a stale worktree can pin a model this
+repo no longer uses at all.
 
-**So pass the models explicitly.** That is what `--models` is for:
+**So pass the model explicitly.** That is what `--models` is for:
 
 ```bash
-mapfile -t models < <(scripts/review-tier.sh --models)   # or read them in a loop
+model="$(scripts/review-tier.sh --models)"
 herdr agent start <lane> --kind opencode --pane <id> -- \
-  --auto --agent findash-reviewer -m "${models[0]}"
+  --auto --agent findash-reviewer -m "$model"
 ```
 
 Read the model line back out of the pane before trusting the lane —

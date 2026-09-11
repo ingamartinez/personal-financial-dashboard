@@ -68,16 +68,20 @@ Cheaper AND more findings, two of the three real. Every model in the routing is
 non-premium: DevPass meters premium separately against a weekly cap that one
 premium reviewer would eat 43% of.
 
-`gpt-6-astra` was the high tier and is gone. It was the only reviewer that caught
-the CRITICALs on #511, twice, so losing it costs something real — it is also
-$10/M in and $50/M out. High risk now means **two** non-premium reviewers of
-different lineage, plus the orchestrator reading migration diffs itself.
+`gpt-6-astra` was the first high tier and is gone (#930): it was the only
+reviewer that caught the CRITICALs on #511, twice, so losing it costs something
+real — it is also $10/M in and $50/M out. `muse-spark-1.3` was a second
+non-premium reviewer for high-risk diffs and is gone too (#935): on the one
+measurement above it found nothing `deepseek-v4.1-flash` alone did not, at 4x
+the cost. High risk now means the orchestrator reading migration diffs itself,
+not a second reviewer.
 
-`scripts/review-tier.sh` decides which tier applies from the diff. The
-orchestrator runs it and passes the models with `-m`; do not assume the model
-pinned above is the one in play, because a lane worktree can predate a routing
-change. If you were launched alongside a second reviewer, review independently —
-do not divide the surface between you.
+`scripts/review-tier.sh` still flags why a diff is high-risk (migration,
+schema, auth, money, tenant columns) even though it no longer selects a second
+model — that flag is for the orchestrator's attention, not for you to act on
+differently. Do not assume the model pinned above is the one in play, because a
+lane worktree can predate a routing change; the orchestrator passes the current
+model with `-m`.
 
 ## Scope bounding
 
