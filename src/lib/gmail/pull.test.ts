@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { emailReceipts, gmailConnections, gmailPullCursors, users } from "@/lib/db/schema";
 import { gmailCipher } from "@/lib/crypto/gmail-cipher";
+import { GATEWAYS, buildSenderQuery } from "./registry";
 import type { AuthedGmailClient } from "./client";
 import { GmailConnectionUnusableError, GmailNotConnectedError } from "./client";
 import { pullForUser, computeSinceDate, type PullOpts } from "./pull";
@@ -94,6 +95,10 @@ interface ListCall {
 
 interface GetCall {
   id: string;
+}
+
+function gatewayIdForListQuery(q: string | undefined): string | undefined {
+  return GATEWAYS.find((gateway) => q?.startsWith(buildSenderQuery(gateway)))?.id;
 }
 
 // Minimal Gmail API surface matching what pullForUser uses. Keeps the
@@ -594,11 +599,14 @@ describe("gmail/pull", () => {
       connectionId: connId,
       gmailEmail: `${TAG}-${userA}@example.com`,
       onList: (call) => {
-        if (call.q?.includes("mercadopago.com.co")) return { messageIds: ["mp-err-1"] };
-        if (call.q?.includes("payu.com") || call.q?.includes("payulatam.com")) {
-          return { messageIds: ["payu-ok-1"] };
+        switch (gatewayIdForListQuery(call.q)) {
+          case "mercado_pago":
+            return { messageIds: ["mp-err-1"] };
+          case "payu":
+            return { messageIds: ["payu-ok-1"] };
+          default:
+            return { messageIds: [] };
         }
-        return { messageIds: [] };
       },
       onGet: (call) => {
         // Plain Error → no code → not retryable → surfaces immediately.
