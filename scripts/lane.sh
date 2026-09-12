@@ -194,7 +194,8 @@ lane_meta() {
     command -v gh >/dev/null || die "gh is not installed — pass --slug and --phase"
     [[ -d "$GH_CFG" ]] || die "missing $GH_CFG — see skill findash-github"
     local meta
-    meta="$(gh_ issue view "$issue" --json title,labels 2>/dev/null)" \
+    meta="$(gh_ api "repos/:owner/:repo/issues/$issue" \
+      --jq '{title, labels: [.labels[].name]}' 2>/dev/null)" \
       || die "issue #$issue does not exist (or gh cannot read it)"
     if [[ -z "$slug" ]]; then
       # Drop the conventional-commit prefix and the trailing (#N) back-reference.
@@ -203,7 +204,7 @@ lane_meta() {
       [[ -n "$slug" ]] || die "could not derive a slug from the issue title — pass --slug"
     fi
     if [[ -z "$phase" ]]; then
-      phase="$(jq -r '[.labels[].name | select(startswith("phase-"))][0] // ""' <<< "$meta")"
+      phase="$(jq -r '[.labels[] | select(startswith("phase-"))][0] // ""' <<< "$meta")"
       phase="${phase#phase-}"
       [[ -n "$phase" ]] || die "issue #$issue carries no phase-N label — pass --phase"
     fi
@@ -560,7 +561,8 @@ cmd_start() {
   step "Outcome"
 
   local pr_state="" pr_url="" pr_json
-  if pr_json="$(gh_ pr view "$branch" --json state,url 2>/dev/null)"; then
+  if pr_json="$(gh_ api "repos/:owner/:repo/pulls?head=:owner:$branch&state=all" \
+    --jq '.[0] // {} | {state: (if .merged_at != null then "MERGED" else (.state // "" | ascii_upcase) end), url: (.html_url // "")}' 2>/dev/null)"; then
     pr_state="$(jq -r '.state // ""' <<< "$pr_json")"
     pr_url="$(jq -r '.url // ""' <<< "$pr_json")"
   fi
@@ -648,7 +650,8 @@ cmd_remove() {
     if (( ahead > 0 )) && (( ! force )); then
       local pr_state=""
       if command -v gh >/dev/null && [[ -d "$GH_CFG" ]]; then
-        pr_state="$(gh_ pr view "$branch" --json state --jq .state 2>/dev/null || true)"
+        pr_state="$(gh_ api "repos/:owner/:repo/pulls?head=:owner:$branch&state=all" \
+          --jq '.[0] // {} | if .merged_at != null then "MERGED" else (.state // "" | ascii_upcase) end' 2>/dev/null || true)"
       fi
       [[ "$pr_state" == "MERGED" ]] \
         || die "$branch has $ahead commit(s) not on origin/main and no merged PR (state: ${pr_state:-none}).

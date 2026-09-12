@@ -188,7 +188,7 @@ if [[ -z "$issue" ]]; then
 fi
 info "issue: #$issue ($link_word)"
 
-gh_ issue view "$issue" --json number >/dev/null 2>&1 || die "issue #$issue does not exist"
+gh_ api "repos/$REPO/issues/$issue" >/dev/null 2>&1 || die "issue #$issue does not exist"
 
 # An epic closed by its first phase dies with the remaining phases unwritten.
 #
@@ -207,7 +207,7 @@ if (( ! link_explicit )); then
   is_epic=0
   while IFS= read -r label; do
     [[ "$label" == "epic" ]] && is_epic=1
-  done < <(gh_ issue view "$issue" --json labels --jq '.labels[].name' 2>/dev/null || true)
+  done < <(gh_ api "repos/$REPO/issues/$issue" --jq '.labels[].name' 2>/dev/null || true)
   if (( is_epic )); then
     die "issue #$issue is labelled 'epic' — closing it with this PR buries the phases that are left.
      Pass --part-of (usual) or --closes (this PR really finishes it)."
@@ -260,7 +260,8 @@ info "pushed $branch"
 # ---------------------------------------------------------------- PR
 step "Pull request"
 
-pr_url="$(gh_ pr view "$branch" --json url --jq .url 2>/dev/null || true)"
+pr_url="$(gh_ api "repos/$REPO/pulls?head=$GH_USER:$branch&state=open" \
+  --jq '.[0].html_url // ""' 2>/dev/null || true)"
 
 if [[ -n "$pr_url" ]]; then
   info "PR already open: $pr_url"
@@ -346,7 +347,8 @@ fi
 mergeable="UNKNOWN"
 waited=0
 while (( waited < 90 )); do
-  mergeable="$(gh_ pr view "$pr_number" --json mergeable --jq .mergeable)"
+  mergeable="$(gh_ api "repos/$REPO/pulls/$pr_number" \
+    --jq 'if .mergeable == true then "MERGEABLE" elif .mergeable == false then "CONFLICTING" else "UNKNOWN" end')"
   [[ "$mergeable" != "UNKNOWN" ]] && break
   sleep 5
   waited=$(( waited + 5 ))
@@ -428,4 +430,3 @@ fi
 
 printf '\n  PR:     %s %sMERGED%s\n  Branch: deleted on remote\n  Local:  %s\n\n' \
   "$pr_url" "$c_grn" "$c_off" "$local_state"
-
