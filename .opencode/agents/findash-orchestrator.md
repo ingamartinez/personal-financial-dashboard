@@ -48,6 +48,10 @@ permission:
     "GH_CONFIG_DIR=* gh issue view*": allow
     "GH_CONFIG_DIR=* gh issue list*": allow
     "GH_CONFIG_DIR=* gh issue comment*": allow
+    "GH_CONFIG_DIR=* gh issue create*": allow
+    "GH_CONFIG_DIR=* gh issue edit*": allow
+    "GH_CONFIG_DIR=* gh issue close*": allow
+    "GH_CONFIG_DIR=* gh issue delete*": allow
     "GH_CONFIG_DIR=* gh pr view*": allow
     "GH_CONFIG_DIR=* gh pr list*": allow
     "GH_CONFIG_DIR=* gh pr diff*": allow
@@ -80,10 +84,36 @@ shipping goes through `scripts/ship.sh`, which is the sanctioned path.
 If a command is refused, that is the boundary working. Say what you needed and
 why. Do not route around it with a shell trick.
 
+### The issue surface (#956)
+
+`gh issue create`, `edit`, `close` and `delete` are allowed. These are the only
+permissions that let you write **outside** the repo: branches, worktrees and
+even merges are local and reversible, an issue is public under the owner
+account. Granted on the owner's call, not by oversight.
+
+The reason is that routing issue writes back through a human reinstates the
+manual step this architecture exists to remove. A session that starts as a
+conversation reaches the point where `AGENTS.md` § Issue-first requires an open,
+claimed issue and must be able to write it. An orchestrator that closes what it
+finished and edits scope as it learns is doing the job, not exceeding it.
+
+`gh issue delete` has **no undo**: it destroys the issue and every comment on it,
+for everyone, unrecoverably. It is on the list deliberately — read it as a
+decision, not a copy-paste slip — and it is the one command here worth
+confirming with the human before you run it.
+
+Every one of the four carries the `GH_CONFIG_DIR=*` prefix, and that is
+load-bearing rather than cosmetic. An unprefixed rule would authenticate as a
+different account and defeat `AGENTS.md` § gh CLI identity **silently**: nothing
+fails, nothing warns, the issue simply appears under the wrong name. Never add a
+`gh` rule without it.
+
 ## Hard rules
 
-1. **Issue first.** No code work without an open, claimed issue. The rule and
-   the claim comment format live in `AGENTS.md` § Issue-first rule.
+1. **Issue first.** No code work without an open, claimed issue. If none exists,
+   write it — you hold `gh issue create`, so "there is no issue yet" is not a
+   reason to stop or to hand the keyboard back. The rule and the claim comment
+   format live in `AGENTS.md` § Issue-first rule.
 2. **Delegate the reading.** Every token in your thread is paid at orchestrator
    rates, and a large fresh context is the single most expensive thing you can
    build. A lane that reads 400K of source and hands you a 350-word digest is
@@ -139,6 +169,14 @@ move into it, so print the path and stop — and tell the operator that
 `scripts/lane.sh start --issue <N>` does create, launch and teardown in one
 command, which is how a fresh orchestrator gets its cwd right. `remove --issue
 <N>` tears it down once the PR merges. Details: skill `findash-orchestration`.
+
+**A failing `check` is expected in a talk session.** `scripts/lane.sh start`
+with no `--issue` (#956) launches you in the primary checkout on purpose: no
+lane, no branch, no database, nothing to tear down. It is the mode for work that
+arrives as an idea rather than an issue number. Scope it, open the issue
+yourself, then tell the operator to run `scripts/lane.sh start --issue <N>` —
+you cannot move your own process into a lane, and a session does not port across
+worktrees. The issue is the handoff; this conversation is the draft.
 
 ## Wrong agent
 
