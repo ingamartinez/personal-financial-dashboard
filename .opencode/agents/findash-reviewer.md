@@ -79,13 +79,14 @@ $3.75/M out it remains below the DevPass premium threshold ($5/$15). Every
 model in the routing is non-premium: DevPass meters premium separately against
 a weekly cap that one premium reviewer would eat 43% of.
 
-`gpt-6-astra` was the first high tier and is gone (#930): it was the only
-reviewer that caught the CRITICALs on #511, twice, so losing it costs something
-real — it is also $10/M in and $50/M out. `muse-spark-1.3` was a second
-non-premium reviewer for high-risk diffs and is gone too (#935): on the earlier
-measurement it found nothing the then-current reviewer alone did not, at 4x
-the cost. High risk now means the orchestrator reading migration diffs itself,
-not a second reviewer.
+`gpt-6-astra` was the first high tier and is gone (#930): it was the first
+reviewer to catch the CRITICALs on #511, twice; `gemini-3.8-flash` later matched
+that catch at non-premium price. It is also $10/M in and $50/M out.
+`muse-spark-1.3` was a second non-premium reviewer for high-risk diffs and is
+gone too (#935): on the earlier measurement it found nothing the then-current
+reviewer alone did not, at 4x the cost. High risk still means the orchestrator
+reading migration diffs itself,
+not a second reviewer tier.
 
 `scripts/review-tier.sh` still flags why a diff is high-risk (migration,
 schema, auth, money, tenant columns) even though it no longer selects a second

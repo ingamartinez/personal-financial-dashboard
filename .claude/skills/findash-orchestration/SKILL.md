@@ -97,13 +97,13 @@ one; #935 dropped it once nobody could point to a diff where it actually had.
 premium models ($5+/M in or $15+/M out) against a separate ~$10.44/week cap.
 Non-premium spends only against the $87/month.
 
-**`gpt-6-astra` is gone, and it cost something.** It was the ONLY reviewer that
-caught the CRITICALs on #511, twice, where every cheaper model said APPROVE. It
-is also $10/M in and $50/M out. Losing it means the orchestrator reads migration
-diffs itself — that runs on a subscription, not against DevPass, which is where
-the judgement should sit anyway. `scripts/review-tier.sh` still flags migration
-and schema diffs in its reasons for exactly this: it is telling a human to read
-carefully, not selecting a second model.
+**`gpt-6-astra` is gone, and it cost something.** It was the first reviewer to
+catch the CRITICALs on #511, twice; `gemini-3.8-flash` later matched that catch
+at non-premium price. It is also $10/M in and $50/M out. The orchestrator still
+reads migration diffs itself — that runs on a subscription, not against DevPass,
+which is where the judgement should sit anyway. `scripts/review-tier.sh` still
+flags migration and schema diffs in its reasons for exactly this: it is telling
+a human to read carefully, not selecting a second model.
 
 **n=1.** One diff, one run, stochastic sampling. Re-measure opportunistically on
 the next high-risk diff rather than treating this table as settled — if a

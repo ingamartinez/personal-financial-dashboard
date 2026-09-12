@@ -14,8 +14,9 @@
 # Every model here is NON-PREMIUM on purpose. DevPass meters premium models
 # ($5+/M in or $15+/M out) against a separate ~$10.44/week cap.
 #
-# `gpt-6-astra` was the first high tier and is gone (#930): it was the only
-# reviewer that caught the CRITICALs on #511, twice, so that was a real loss.
+# `gpt-6-astra` was the first high tier and is gone (#930): it was the first
+# reviewer to catch the CRITICALs on #511, twice; `gemini-3.8-flash` later
+# matched that catch at non-premium price, so that was still a real loss.
 # `muse-spark-1.3` was the second (#930/#933) and is gone too (#935): measured
 # against `deepseek-v4.1-flash` on the same #511 diff, it cost 4x more and
 # returned 0 WARNINGs where that reviewer returned 3 — two of them real. The
