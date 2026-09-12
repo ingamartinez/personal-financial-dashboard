@@ -461,12 +461,47 @@ and the primary checkout went on hosting lane branches anyway.
 
 ```bash
 scripts/lane.sh remove --issue 949        # worktree, branch, database, directory
+scripts/lane.sh remove --issue 949 --force        # even with unmerged commits
+scripts/lane.sh remove --issue 949 --kill-procs   # also kill what still points at it
 ```
 
 It refuses while you are standing inside the lane, and refuses to `branch -D`
 commits not on `origin/main` unless GitHub says the PR merged — a squash rewrites
 them, so the graph alone always looks unmerged — or you pass `--force`. It also
 drops the `_wN` worker clones a killed suite leaves behind.
+
+**Leftover processes are reported, not killed.** A lane outlives its teardown in
+one place git and postgres cannot see: the processes pointed at it. After one
+lane reported done, an `opencode run` left by one of its probes was still alive
+34 minutes later, spending tokens, in no report and raising no error. So
+`remove` lists every process whose command line contains the lane path, warns
+that they outlive the worktree, and leaves them running; the final "Lane gone"
+block repeats the survivors, because by then they point at a directory that no
+longer exists. `--kill-procs` SIGTERMs them instead and SIGKILLs whatever is
+still alive two seconds later.
+
+The loud list is the default because the match is a **substring of the command
+line** — it has to be, opencode takes the lane both positionally (`opencode
+<dir>`) and as `--dir <dir>` — and a substring cannot tell a runaway agent from
+the operator's own editor, shell or `rg` with the same path on its argv. Killing
+a live session by accident is a worse failure than the leak it fixes. (The
+script's own ancestors are excluded, so the report never names the shell it is
+running in.) Read the list before you reach for the flag.
+
+### A lane can vanish under a live session
+
+`start` re-checks the worktree after opencode exits. If the directory is gone —
+removed from another shell, or by a `remove` run elsewhere — it prints **`Lane
+vanished`**, prunes the worktree list, names the `findash_test_<issue>`
+databases still on disk and **exits non-zero without running the teardown**:
+everything past that point reads git and GitHub for a branch whose checkout no
+longer exists, then decides a teardown that has nothing to tear down. Recovery
+is `scripts/lane.sh remove --issue <N>` from the primary checkout — the
+databases and the branch are still there.
+
+A watchdog runs alongside the session for the same failure: when the lane
+directory disappears mid-run it kills the `opencode` child rather than leaving
+it waiting on a path that is gone.
 
 > **The step that used to get forgotten is now automatic.** A lane that touched
 > `drizzle/` gets the **shared** `findash_test` re-migrated on removal — its own

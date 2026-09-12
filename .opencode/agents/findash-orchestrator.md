@@ -46,9 +46,10 @@ only two boundaries left.
 Everything that used to be enforced is now convention, and conventions are kept
 by the agent reading them — which is you, right now.
 
-- **Ship through `scripts/ship.sh`.** Not `gh pr merge`, not `git push`. The
-  script runs the gates, waits for CI, and merges only when `AGENTS.md`
-  auto-merge conditions hold. You can bypass it in one command. Do not.
+- **Ship through `scripts/ship.sh --merge`.** Not `gh pr merge`, not `git push`.
+  The script runs the gates, waits for CI, and merges only under `--merge` and
+  only when the `AGENTS.md` auto-merge conditions hold. You can bypass it in one
+  command. Do not.
 - **Prefix every `gh` call** with `GH_CONFIG_DIR=~/.config/gh-findash`. Nothing
   rejects an unprefixed call any more; it will simply authenticate as a
   different account and post under the wrong name, silently and publicly.
@@ -89,12 +90,33 @@ A refusal is no longer going to tell you where the edge is. Ask instead.
 ## Lane sequence
 
 ```
-scripts/lane.sh check → you are in this issue's worktree, or you do not start
-findash-explorer     → only when the task needs 4+ files, prior art, or scope clarity
-findash-implementer  → writes code and tests, commits. Does not push.
-findash-reviewer     → semantic review. CRITICAL blocks; WARNING is a judgment call.
-scripts/ship.sh      → push, PR, merge
+scripts/lane.sh check              → you are in this issue's worktree, or you do not start
+findash-explorer                   → only when the task needs 4+ files, prior art, or scope clarity
+findash-implementer                → writes code and tests, commits. Does not push.
+findash-reviewer                   → semantic review. CRITICAL blocks; WARNING is a judgment call.
+scripts/ship.sh --merge            → gates, push, PR, CI watch, then squash-merge if the gate holds
+scripts/lane.sh remove --issue <N> → after the merge, from the primary checkout
 ```
+
+**`--merge` is the flag that lands the work, and forgetting it is the default
+failure.** Bare `scripts/ship.sh` runs everything up to the verdict, prints the
+merge command and stops — the branch sits at PR-open and nothing reaches `main`.
+Passing `--merge` is not forcing a merge: it still merges only when the
+`AGENTS.md` auto-merge conditions hold (CI green, `Closes` not `Part of`,
+`mergeable == MERGEABLE`) and refuses loudly otherwise. So pass it whenever the
+intent is to land, and drop it only when you want a human to decide — an
+epic-phase PR, or a branch you expect CI to reject. `--merge` needs the CI
+watch and is refused next to `--no-watch`.
+
+Other flags worth knowing: `--part-of` for an epic-phase PR, `--no-test` when a
+lane already ran the affected specs, `--dry-run` for gates without a push.
+
+If the operator launched you with `scripts/lane.sh start --issue <N>`, the
+teardown is already wired: when you exit, `start` reads the PR state and removes
+the lane itself on `MERGED`. Run `remove` by hand only outside that flow, and
+never from inside the lane — it refuses. It reports processes still
+pointed at the lane rather than killing them; `--kill-procs` is the opt-in. Why:
+skill `findash-orchestration`.
 
 `scripts/review-tier.sh` decides the review tier from the diff and fails closed.
 Do not second-guess it by hand.
@@ -124,8 +146,9 @@ started there commits into the shared tree, which is #739/#740.
 `scripts/lane.sh create --issue <N>` builds the lane; a running process cannot
 move into it, so print the path and stop — and tell the operator that
 `scripts/lane.sh start --issue <N>` does create, launch and teardown in one
-command, which is how a fresh orchestrator gets its cwd right. `remove --issue
-<N>` tears it down once the PR merges. Details: skill `findash-orchestration`.
+command, which is how a fresh orchestrator gets its cwd right.
+`scripts/lane.sh remove --issue <N>` tears it down once the PR merges.
+Details: skill `findash-orchestration`.
 
 **A failing `check` is expected in a talk session.** `scripts/lane.sh start`
 with no `--issue` (#956) launches you in the primary checkout on purpose: no

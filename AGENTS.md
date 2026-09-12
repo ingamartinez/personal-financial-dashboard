@@ -7,13 +7,13 @@ repo. Multiple agents may run in parallel; the rules below prevent collisions.
 `.claude/skills/` — opencode reads that directory natively, so one set of
 definitions serves every runtime.
 
-| Skill                   | Load it before                                                            |
-| ----------------------- | ------------------------------------------------------------------------- |
-| `findash-tech-baseline` | writing or reviewing any code in `src/`, `scripts/`, `instrumentation.ts` |
-| `findash-testing`       | running the suite, adding a test, creating a worktree lane                |
-| `findash-github`        | any `gh` command beyond a read, pushing over HTTPS, labelling an issue    |
-| `findash-review`        | reviewing a diff, or self-reviewing before opening a PR                   |
-| `findash-orchestration` | delegating work to lanes. A worker executing a task does NOT need this.   |
+| Skill                   | Load it before                                                               |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `findash-tech-baseline` | writing or reviewing any code in `src/`, `scripts/`, `instrumentation.ts`    |
+| `findash-testing`       | running the suite, adding a test, creating a worktree lane                   |
+| `findash-github`        | any `gh` command beyond a read, pushing over HTTPS, labelling an issue       |
+| `findash-review`        | reviewing a diff, or self-reviewing before opening a PR                      |
+| `findash-orchestration` | delegating work to lanes, or any `lane.sh` / `ship.sh` flag not listed below |
 
 ## Source of truth
 
@@ -40,6 +40,29 @@ weeks. Use CodeGraph (`codegraph explore "..."`) or read the source.
 3. Claim it: `gh issue comment <N> --body "Picking this up — agent: <name>"`.
    This is the lock signal for other agents.
 4. Move it to `In Progress` on the board.
+
+## How work reaches main
+
+Code is written in a per-issue **worktree lane**, never in the primary
+checkout — parallel agents in one tree is the collision this repo has paid for
+twice.
+
+```bash
+scripts/lane.sh start --issue <N>   # create or reuse the lane, open the orchestrator in it,
+                                    # tear it down when the PR is merged
+scripts/lane.sh start               # talk mode: primary checkout, no lane, nothing to tear down.
+                                    # Scope an idea, open the issue, then start the lane.
+scripts/lane.sh check               # exit 0 only inside a usable lane — run it before writing code
+```
+
+Shipping goes through `scripts/ship.sh` — never `gh pr merge`, never `git push`
+by hand. It runs lint, typecheck, format and the suite, pushes, opens the PR
+with the right link word, and watches CI. **Bare `ship.sh` stops at the
+verdict**; `scripts/ship.sh --merge` is what squash-merges, and only when the
+auto-merge conditions below hold.
+
+Every other flag, the teardown, and what to do when a lane breaks: skill
+`findash-orchestration`.
 
 ## gh CLI identity (mandatory)
 
