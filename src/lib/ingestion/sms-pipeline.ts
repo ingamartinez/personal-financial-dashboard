@@ -1,6 +1,6 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { db, type DB } from "@/lib/db";
-import { accounts, physicalCards, transactions } from "@/lib/db/schema";
+import { accounts, physicalCards, reconciliationDecisions, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { classifyByRule } from "@/lib/classification/rules";
 import { emit } from "@/lib/events/bus";
@@ -259,6 +259,26 @@ async function ingestParsedBancolombia(
     channel: channelOverride,
   } = buildTxFields(parsed);
 
+  const gmailMatch = await findMatchingGmailTransaction(userId, account.id, parsed);
+  if (gmailMatch) {
+    const diffs = computeGmailSmsDiffs(gmailMatch, parsed);
+    await recordSmsAbsorbedByGmail({
+      userId,
+      accountId: account.id,
+      occurredAt,
+      amountCents,
+      currency: parsed.currency,
+      descriptionRaw,
+      merchant,
+      categorySlug,
+      externalId: parsed.externalId,
+      rawData: { kind: parsed.kind, sms: parsed.raw },
+      gmailTxId: gmailMatch.id,
+      diffs,
+    });
+    return { status: "duplicated", txId: gmailMatch.id, flaggedMismatch: diffs.length > 0 };
+  }
+
   const cp = await resolveCounterparty(userId, parsed, db);
 
   let finalCategory = cp.inheritedCategory ?? categorySlug;
@@ -356,6 +376,215 @@ async function ingestParsedBancolombia(
       status: "error",
       reason: err instanceof Error ? err.message : String(err),
     };
+  }
+}
+
+async function recordSmsAbsorbedByGmail(input: {
+  userId: number;
+  accountId: number;
+  occurredAt: Date;
+  amountCents: bigint;
+  currency: "COP" | "USD";
+  descriptionRaw: string;
+  merchant: string | null;
+  categorySlug: string | null;
+  externalId: string;
+  rawData: Record<string, unknown>;
+  gmailTxId: number;
+  diffs: SourceMismatchDiff[];
+}): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [absorbed] = await tx
+      .insert(transactions)
+      .values({
+        userId: input.userId,
+        accountId: input.accountId,
+        occurredAt: input.occurredAt,
+        amountCents: input.amountCents,
+        currency: input.currency,
+        descriptionRaw: input.descriptionRaw,
+        merchant: input.merchant,
+        categorySlug: input.categorySlug,
+        source: "sms",
+        externalId: input.externalId,
+        rawData: input.rawData,
+      })
+      .onConflictDoNothing({
+        target: [transactions.accountId, transactions.externalId],
+        where: sql`${transactions.externalId} IS NOT NULL`,
+      })
+      .returning({ id: transactions.id });
+    if (!absorbed) {
+      const [existing] = await tx
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, input.userId),
+            eq(transactions.accountId, input.accountId),
+            eq(transactions.externalId, input.externalId),
+          ),
+        )
+        .limit(1);
+      if (!existing) throw new Error("sms_gmail_absorption_row_not_found");
+      return;
+    }
+
+    await tx
+      .update(transactions)
+      .set({
+        secondarySource: "sms",
+        sourceMismatch: input.diffs.length > 0,
+        sourceMismatchDetails:
+          input.diffs.length > 0
+            ? { fromSource: "gmail_bancolombia", toSource: "sms", diffs: input.diffs }
+            : undefined,
+        rawData: sql`jsonb_set(COALESCE(${transactions.rawData}, '{}'::jsonb), '{merged_sms}', ${JSON.stringify({ sms_transaction_id: absorbed.id, sms_raw_data: input.rawData })}::jsonb)`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, input.gmailTxId), eq(transactions.userId, input.userId)));
+
+    await tx.insert(reconciliationDecisions).values({
+      userId: input.userId,
+      txnId: input.gmailTxId,
+      action: "merged_into",
+      mergedIntoTxnId: absorbed.id,
+      note: "#921 gmail_bancolombia ↔ sms cross-source dedup; gmail_bancolombia winner",
+    });
+
+    await tx
+      .update(transactions)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(transactions.id, absorbed.id),
+          eq(transactions.userId, input.userId),
+          notDeleted(transactions.deletedAt),
+        ),
+      );
+  });
+}
+
+function signedAmountForDedup(parsed: Exclude<ParsedSms, { kind: "cartera_tc" }>): bigint {
+  switch (parsed.kind) {
+    case "purchase":
+    case "transfer_sent":
+    case "qr_payment":
+    case "provider_payment_sent":
+    case "atm_withdrawal":
+    case "bre_b_transfer":
+      return -parsed.amountCents;
+    default:
+      return parsed.amountCents;
+  }
+}
+
+interface ExistingGmailTx {
+  id: number;
+  amountCents: bigint;
+  occurredAt: Date;
+  merchant: string | null;
+  rawData: Record<string, unknown>;
+}
+
+type SourceMismatchDiff = {
+  field: "occurredAt" | "merchant" | "kind";
+  fromValue: string | null;
+  toValue: string | null;
+};
+
+async function findMatchingGmailTransaction(
+  userId: number,
+  accountId: number,
+  parsed: Exclude<ParsedSms, { kind: "cartera_tc" }>,
+): Promise<ExistingGmailTx | null> {
+  const occurredAt = new Date(
+    `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
+  );
+  const windowStart = new Date(occurredAt.getTime() - 5 * 60 * 1000);
+  const windowEnd = new Date(occurredAt.getTime() + 5 * 60 * 1000);
+  const signedAmount = signedAmountForDedup(parsed);
+
+  const rows = await db
+    .select({
+      id: transactions.id,
+      amountCents: transactions.amountCents,
+      occurredAt: transactions.occurredAt,
+      merchant: transactions.merchant,
+      rawData: transactions.rawData,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.accountId, accountId),
+        eq(transactions.source, "gmail_bancolombia"),
+        eq(transactions.amountCents, signedAmount),
+        gte(transactions.occurredAt, windowStart),
+        lte(transactions.occurredAt, windowEnd),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
+    .limit(5);
+
+  const sameKind = rows.find((row) => {
+    const raw = (row.rawData ?? {}) as { kind?: string };
+    return raw.kind === parsed.kind;
+  });
+  const match = sameKind ?? rows[0];
+  return match
+    ? {
+        ...match,
+        rawData: (match.rawData ?? {}) as Record<string, unknown>,
+      }
+    : null;
+}
+
+function computeGmailSmsDiffs(
+  existing: ExistingGmailTx,
+  parsed: Exclude<ParsedSms, { kind: "cartera_tc" }>,
+): SourceMismatchDiff[] {
+  const diffs: SourceMismatchDiff[] = [];
+  const occurredAt = new Date(
+    `${parsed.occurredOn}T${parsed.occurredTime}:00${COP_TIMEZONE_OFFSET}`,
+  );
+  if (Math.abs(existing.occurredAt.getTime() - occurredAt.getTime()) > 60 * 1000) {
+    diffs.push({
+      field: "occurredAt",
+      fromValue: existing.occurredAt.toISOString(),
+      toValue: occurredAt.toISOString(),
+    });
+  }
+  const parsedMerchant = merchantFromParsed(parsed);
+  if (
+    parsedMerchant !== null &&
+    (existing.merchant ?? "").toLowerCase() !== parsedMerchant.toLowerCase()
+  ) {
+    diffs.push({ field: "merchant", fromValue: existing.merchant, toValue: parsedMerchant });
+  }
+  const existingKind = (existing.rawData.kind as string | undefined) ?? null;
+  if (existingKind !== null && existingKind !== parsed.kind) {
+    diffs.push({ field: "kind", fromValue: existingKind, toValue: parsed.kind });
+  }
+  return diffs;
+}
+
+function merchantFromParsed(parsed: Exclude<ParsedSms, { kind: "cartera_tc" }>): string | null {
+  switch (parsed.kind) {
+    case "purchase":
+      return parsed.merchant;
+    case "provider_payment_sent":
+      return parsed.providerName;
+    case "provider_payment":
+    case "transfer_received":
+    case "tc_credit_received":
+      return parsed.senderName;
+    case "bre_b_transfer":
+      return parsed.recipientName;
+    case "transfer_received_to_savings":
+      return parsed.originDescriptor;
+    default:
+      return null;
   }
 }
 
