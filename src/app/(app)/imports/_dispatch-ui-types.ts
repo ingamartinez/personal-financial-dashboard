@@ -172,10 +172,7 @@ export interface FormatUnknownResult {
 }
 
 export type ImportPreviewResultV2 =
-  | ArqPreviewResult
-  | BancolombiaPreviewResult
-  | TcDetalladoPreviewResult
-  | FormatUnknownResult;
+  ArqPreviewResult | BancolombiaPreviewResult | TcDetalladoPreviewResult | FormatUnknownResult;
 
 // ---------------------------------------------------------------------------
 // UnifiedCommitResult — discriminated union by kind
@@ -215,9 +212,7 @@ export interface TcDetalladoCommitResult extends UnifiedCommitResultBase {
 }
 
 export type UnifiedCommitResult =
-  | ArqCommitResult
-  | BancolombiaCommitResult
-  | TcDetalladoCommitResult;
+  ArqCommitResult | BancolombiaCommitResult | TcDetalladoCommitResult;
 
 // ---------------------------------------------------------------------------
 // SerializableConsolidationReport — JSON-safe subset of ConsolidationReport

@@ -1,8 +1,5 @@
 export type PremiumFeature =
-  | "cdt-suggestion"
-  | "fic-suggestion"
-  | "monthly-claude-report"
-  | "conversational-insights";
+  "cdt-suggestion" | "fic-suggestion" | "monthly-claude-report" | "conversational-insights";
 
 /**
  * Premium feature gating — wired here per Epic #255 plan (FIRST premium-gated sub-issue).

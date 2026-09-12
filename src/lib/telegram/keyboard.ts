@@ -17,8 +17,7 @@ export const CALLBACK = {
 } as const;
 
 export type AskCallback =
-  | { txId: number; kind: "category"; index: number }
-  | { txId: number; kind: "skip" };
+  { txId: number; kind: "category"; index: number } | { txId: number; kind: "skip" };
 
 export function askCategoryCallback(txId: number, index: number): string {
   return `${CALLBACK.ASK_PREFIX}${txId}:${index}`;

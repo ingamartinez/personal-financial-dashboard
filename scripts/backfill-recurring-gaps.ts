@@ -41,7 +41,7 @@ function monthsBetween(from: string, to: string): string[] {
   const [fy, fm] = from.split("-").map(Number);
   const [ty, tm] = to.split("-").map(Number);
   const out: string[] = [];
-  for (let y = fy, m = fm; y < ty || (y === ty && m <= tm); ) {
+  for (let y = fy, m = fm; y < ty || (y === ty && m <= tm);) {
     out.push(`${y}-${String(m).padStart(2, "0")}`);
     m++;
     if (m > 12) {

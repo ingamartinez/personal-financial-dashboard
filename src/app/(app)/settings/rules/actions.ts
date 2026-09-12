@@ -46,12 +46,10 @@ export type RulePreview = {
 export type RuleActionResult = { status: "ok" } | { status: "error"; message: string };
 
 export type RuleCreateResult =
-  | { status: "ok"; ruleId: number; preview: RulePreview }
-  | { status: "error"; message: string };
+  { status: "ok"; ruleId: number; preview: RulePreview } | { status: "error"; message: string };
 
 export type RuleApplyResult =
-  | { status: "ok"; updatedCount: number }
-  | { status: "error"; message: string };
+  { status: "ok"; updatedCount: number } | { status: "error"; message: string };
 
 function isUniqueViolation(err: unknown, constraintName: string): boolean {
   if (!err || typeof err !== "object") return false;

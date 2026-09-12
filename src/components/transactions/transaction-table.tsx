@@ -243,8 +243,7 @@ function formatDate(d: Date) {
 // ---------------------------------------------------------------------------
 
 export type MergedRow =
-  | { kind: "tx"; data: TxRow }
-  | { kind: "forecast"; data: ForecastOccurrence };
+  { kind: "tx"; data: TxRow } | { kind: "forecast"; data: ForecastOccurrence };
 
 /** Merge and sort real tx rows + forecast occurrences by date descending. */
 export function mergeRows(txRows: TxRow[], forecasts: ForecastOccurrence[]): MergedRow[] {

@@ -71,12 +71,7 @@ const SESSION_BLOCKS_ASK = new Set([
 ]);
 
 export type AskSkipReason =
-  | "no_eligible"
-  | "outstanding"
-  | "session_open"
-  | "no_channel"
-  | "send_failed"
-  | "no_categories";
+  "no_eligible" | "outstanding" | "session_open" | "no_channel" | "send_failed" | "no_categories";
 
 export type AskUserResult = {
   askedTxId: number | null;

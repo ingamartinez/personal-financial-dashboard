@@ -163,8 +163,7 @@ type Candidate = {
 };
 
 type ResolveResult =
-  | { winner: Candidate; ambiguousCount: null }
-  | { winner: null; ambiguousCount: number | null };
+  { winner: Candidate; ambiguousCount: null } | { winner: null; ambiguousCount: number | null };
 
 async function resolveCandidate(
   userId: number,

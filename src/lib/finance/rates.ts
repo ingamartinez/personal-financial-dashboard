@@ -31,8 +31,7 @@ export const MIN_NON_ZERO_EM_X10K = 5000;
 export const MAX_EM_X10K = 1_000_000;
 
 export type RateValidationResult =
-  | { ok: true }
-  | { ok: false; reason: "negative" | "too-low" | "too-high" | "not-integer" };
+  { ok: true } | { ok: false; reason: "negative" | "too-low" | "too-high" | "not-integer" };
 
 // Pure validation. Returns a specific reason so callers (server action,
 // form) can surface a useful message — not just "invalid".

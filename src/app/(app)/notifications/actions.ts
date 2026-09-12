@@ -53,21 +53,19 @@ export async function listNotifications(
   const nextCursor = hasMore ? (items[items.length - 1]?.id ?? null) : null;
 
   return {
-    items: items.map(
-      (row): NotificationRow => ({
-        id: row.id,
-        type: row.type,
-        entityId: row.entityId,
-        audience: row.audience,
-        title: row.title,
-        body: row.body,
-        actionUrl: row.actionUrl,
-        priority: row.priority,
-        metadata: (row.metadata as Record<string, unknown>) ?? {},
-        readAt: row.readAt,
-        createdAt: row.createdAt,
-      }),
-    ),
+    items: items.map((row): NotificationRow => ({
+      id: row.id,
+      type: row.type,
+      entityId: row.entityId,
+      audience: row.audience,
+      title: row.title,
+      body: row.body,
+      actionUrl: row.actionUrl,
+      priority: row.priority,
+      metadata: (row.metadata as Record<string, unknown>) ?? {},
+      readAt: row.readAt,
+      createdAt: row.createdAt,
+    })),
     nextCursor,
   };
 }

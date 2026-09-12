@@ -20,10 +20,7 @@ export interface ExistingTxnForMatch {
 
 export type MatchAction = "match" | "insert_new" | "near_match";
 export type MatchReason =
-  | "amount_date_exact"
-  | "amount_date_fuzzy_merchant"
-  | "near_match_fuzzy_amount"
-  | "no_match";
+  "amount_date_exact" | "amount_date_fuzzy_merchant" | "near_match_fuzzy_amount" | "no_match";
 
 export interface MatchDecision {
   statementRowIndex: number;

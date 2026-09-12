@@ -8,9 +8,7 @@ import { createLogger } from "../src/lib/logger";
 const log = createLogger({ module: "analyze-sms-dump" });
 
 type Source =
-  | { kind: "db" }
-  | { kind: "csv"; path: string }
-  | { kind: "imessage-dir"; path: string };
+  { kind: "db" } | { kind: "csv"; path: string } | { kind: "imessage-dir"; path: string };
 
 function parseArgs(): Source {
   const args = process.argv.slice(2);

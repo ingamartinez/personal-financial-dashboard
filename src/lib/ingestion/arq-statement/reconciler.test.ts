@@ -791,8 +791,7 @@ describe("reconcileEmailVsStatement", () => {
       expect(result.flaggedCount).toBeGreaterThanOrEqual(1);
 
       const mergeDecision = result.details.find((d) => d.kind === "merge") as
-        | { kind: "merge"; mismatchReason?: string }
-        | undefined;
+        { kind: "merge"; mismatchReason?: string } | undefined;
       expect(mergeDecision).toBeDefined();
       expect(mergeDecision!.mismatchReason).toBe("amount_diverge");
 

@@ -41,15 +41,10 @@ export type TransferLeg = {
 };
 
 export type TransferGroupValidationError =
-  | "empty"
-  | "single-leg"
-  | "unbalanced"
-  | "missing-opposite-signs"
-  | "rate-without-plan";
+  "empty" | "single-leg" | "unbalanced" | "missing-opposite-signs" | "rate-without-plan";
 
 export type TransferGroupValidationResult =
-  | { ok: true }
-  | { ok: false; reason: TransferGroupValidationError };
+  { ok: true } | { ok: false; reason: TransferGroupValidationError };
 
 // Pure. Shared by the insert helper, the manual UI action, and tests so the
 // invariant definition lives in exactly one place.

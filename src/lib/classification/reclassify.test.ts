@@ -19,12 +19,7 @@ async function createTx(overrides: {
   enrichedMerchant?: string | null;
   categorySlug?: string;
   classificationMethod?:
-    | "rule"
-    | "ai"
-    | "manual"
-    | "unclassified"
-    | "rule_retroactive"
-    | "manual_confirmed";
+    "rule" | "ai" | "manual" | "unclassified" | "rule_retroactive" | "manual_confirmed";
 }): Promise<number> {
   const [row] = await db
     .insert(transactions)

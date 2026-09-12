@@ -7,9 +7,7 @@
  */
 
 export type FinancialPeriodFallback =
-  | "no_salary_flagged"
-  | "insufficient_history"
-  | "no_recent_paycheck";
+  "no_salary_flagged" | "insufficient_history" | "no_recent_paycheck";
 
 export type FinancialPeriod = {
   start: Date;
