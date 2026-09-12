@@ -14,6 +14,13 @@
 # permission cannot read CI status: it can only allow the command and hope.
 # Without --merge the script still stops at the report, as it always did.
 #
+# This script also owns the "a human is needed" report (#953). `lane.sh start`
+# opens an interactive session and only regains control when the human quits,
+# possibly hours after the run ended — this is the code that learns CI went red
+# or that the merge was refused, at the moment it learns it. It comments on the
+# issue and fires a best-effort desktop notification. A green merge says
+# nothing: silence is the success report.
+#
 # Usage:
 #   scripts/ship.sh                       # infer everything from the branch
 #   scripts/ship.sh --issue 912           # force the issue number
@@ -23,6 +30,7 @@
 #   scripts/ship.sh --no-test             # skip the suite (parallel lanes)
 #   scripts/ship.sh --no-watch            # open the PR, do not wait for CI
 #   scripts/ship.sh --merge               # squash-merge if the auto-merge conditions hold
+#   scripts/ship.sh --no-report           # print failures, do not comment on the issue
 #   scripts/ship.sh --dry-run             # run gates, print the plan, push nothing
 #
 set -euo pipefail
@@ -45,6 +53,52 @@ info() { printf '    %s%s%s\n' "$c_dim" "$*" "$c_off"; }
 warn() { printf '%s !! %s%s\n' "$c_ylw" "$*" "$c_off"; }
 die()  { printf '%s ✗  %s%s\n' "$c_red" "$*" "$c_off" >&2; exit 1; }
 
+# ------------------------------------------------------------------ reporting
+#
+# GitHub is source of truth #1 in AGENTS.md: the comment is durable, it notifies
+# on its own, and it reads the same on the Mac and on ia-server. The desktop
+# notification is a courtesy on top and best-effort by definition — a missing
+# notifier is a silent no-op, a broken one is swallowed. Neither may fail the
+# run, and neither may come before the issue comment.
+
+# AppleScript string literals take double quotes and backslash escapes.
+osa_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+notify() {
+  local title="$1" body="$2" os
+  os="$(uname -s 2>/dev/null || printf 'unknown')"
+  case "$os" in
+    Darwin)
+      command -v osascript >/dev/null 2>&1 || return 0
+      osascript -e "display notification \"$(osa_escape "$body")\" with title \"$(osa_escape "$title")\"" \
+        >/dev/null 2>&1 || true
+      ;;
+    Linux)
+      command -v notify-send >/dev/null 2>&1 || return 0
+      notify-send "$title" "$body" >/dev/null 2>&1 || true
+      ;;
+  esac
+  return 0
+}
+
+# report <headline> [markdown detail line ...]
+# Called on the paths a human has to look at, never on a clean merge.
+report() {
+  local headline="$1"; shift
+  (( report_failures )) || return 0
+  [[ -n "$issue" ]] || return 0
+
+  if printf '%s\n' "**$headline**" "" "$@" \
+    | gh_ issue comment "$issue" --body-file - >/dev/null; then
+    info "reported on #$issue"
+  else
+    warn "could not comment on #$issue — the report above is the only copy"
+  fi
+
+  notify "findash #$issue" "$headline"
+  return 0
+}
+
 issue=""
 link_word="Closes"
 link_explicit=0
@@ -53,6 +107,7 @@ run_tests=1
 watch_ci=1
 dry_run=0
 merge_pr=0
+report_failures=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -63,6 +118,7 @@ while [[ $# -gt 0 ]]; do
     --no-test)   run_tests=0; shift ;;
     --no-watch)  watch_ci=0; shift ;;
     --merge)     merge_pr=1; shift ;;
+    --no-report) report_failures=0; shift ;;
     --dry-run)   dry_run=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *)           die "unknown flag: $1" ;;
@@ -232,8 +288,14 @@ waited=0
 while :; do
   checks_out="$(gh_ pr checks "$pr_number" 2>&1)" && break
   [[ "$checks_out" != *"no checks reported"* ]] && break
-  (( waited >= appear_timeout )) && die "no checks appeared on $branch after ${appear_timeout}s
+  if (( waited >= appear_timeout )); then
+    report "No CI checks appeared on \`$branch\` after ${appear_timeout}s." \
+      "- PR: $pr_url" \
+      "- Is \`.github/workflows/ci.yml\` triggered for this branch?" \
+      "- The PR stays open and the lane stays as it is."
+    die "no checks appeared on $branch after ${appear_timeout}s
      Is .github/workflows/ci.yml triggered for this branch? PR: $pr_url"
+  fi
   sleep 5
   waited=$(( waited + 5 ))
 done
@@ -247,6 +309,14 @@ gh_ pr checks "$pr_number" || true
 
 if (( ci_status != 0 )); then
   printf '\n  PR:    %s\n  CI:    %sRED%s\n  Merge: blocked\n\n' "$pr_url" "$c_red" "$c_off"
+  report "CI is red on \`$branch\` — the PR stays open and nothing merged." \
+    "- PR: $pr_url" \
+    "$(gh_ pr checks "$pr_number" --json name,bucket,link --jq \
+        '.[] | select(.bucket == "fail") | "- Failing: `" + .name + "` " + .link' \
+        2>/dev/null || true)" \
+    "" \
+    "Fix it on the branch and push again — the lane is still there." \
+    "Resume with \`scripts/lane.sh start --issue $issue\`."
   die "CI failed — the PR stays open. Fix it on the branch and push again."
 fi
 
@@ -260,7 +330,17 @@ printf '\n  PR:         %s\n  CI:         %sGREEN%s\n  Mergeable:  %s\n  Auto-me
 if [[ "$auto_ok" != "yes" ]]; then
   reason="$([[ "$link_word" == "Part of" ]] && echo "PR does not close a single issue" || echo "not mergeable: $mergeable")"
   printf '\n  Auto-merge conditions do NOT hold (%s) — a human decides.\n\n' "$reason"
-  (( merge_pr )) && die "refusing to merge: $reason"
+  # Only a refused --merge is a report: without it, stopping at PR-open is the
+  # documented outcome, not a surprise anybody needs waking up for.
+  if (( merge_pr )); then
+    report "Merge refused on \`$branch\` — CI is green but a human decides." \
+      "- PR: $pr_url" \
+      "- Reason: $reason" \
+      "" \
+      "The PR stays open and the lane stays as it is." \
+      "Resume with \`scripts/lane.sh start --issue $issue\`."
+    die "refusing to merge: $reason"
+  fi
   exit 0
 fi
 
@@ -270,7 +350,14 @@ if (( ! merge_pr )); then
 fi
 
 step "Merge"
-gh_ pr merge "$pr_number" --squash --delete-branch || die "merge failed — the PR stays open"
+if ! gh_ pr merge "$pr_number" --squash --delete-branch; then
+  report "Squash merge failed on \`$branch\` — CI was green, the merge call was not." \
+    "- PR: $pr_url" \
+    "" \
+    "The PR stays open and the lane stays as it is." \
+    "Resume with \`scripts/lane.sh start --issue $issue\`."
+  die "merge failed — the PR stays open"
+fi
 info "squash-merged and deleted $branch on the remote"
 
 # The local branch now tracks a ref that no longer exists. Land on a fresh main

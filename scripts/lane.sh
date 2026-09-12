@@ -22,10 +22,29 @@
 # `create` rolls back everything it made if any step fails. `remove` takes all
 # four down, plus the per-worker clones and the shared-DB re-migration.
 #
+# `start` (#953) closes the loop: create-or-reuse the lane, open the
+# orchestrator TUI with its cwd inside it, then tear the lane down or park it.
+# Resuming is the same command, on purpose: a second verb for "continue" is a
+# verb somebody has to remember.
+#
+# It launches the INTERACTIVE tui and passes no --prompt. The opening exchange
+# is the point: the human hands over the issue and verifies the scope before
+# anything is spent, which is where a badly scoped issue gets caught.
+#
+# Because of that, `start` only regains control when the human quits — possibly
+# long after the run ended. So it reports nothing: `scripts/ship.sh` owns that,
+# because it is what learns CI went red or the merge was refused at the moment
+# it learns it, and that reaches a human who walked away. Post-exit here is
+# teardown only: PR MERGED removes the lane, anything else keeps it.
+#
 # Usage:
 #   scripts/lane.sh create --issue 949                  # slug + phase from the issue
 #   scripts/lane.sh create --issue 949 --slug lane-iso  # force the slug
 #   scripts/lane.sh create --issue 949 --phase 4 --agent claude --base origin/main
+#   scripts/lane.sh start  --issue 953                  # lane + orchestrator + teardown
+#   scripts/lane.sh start  --issue 953 --dry-run        # print the launch line and the decision
+#   scripts/lane.sh start  --issue 953 --no-auto        # approve each permission by hand
+#   scripts/lane.sh start  --issue 953 -m provider/model  # override the orchestrator model
 #   scripts/lane.sh remove --issue 949                  # worktree, branch, DB, directory
 #   scripts/lane.sh remove --issue 949 --force          # even with unmerged commits
 #   scripts/lane.sh check                               # am I in a lane? exit 1 if not
@@ -101,6 +120,49 @@ worktree_for_branch() {
   return 1
 }
 
+# A branch name is not enough to find the lane: --agent and --slug are options.
+# Match on the worktree directory, which always starts <issue>-.
+worktree_for_issue() {
+  local issue="$1" primary="$2" path
+  while IFS= read -r path; do
+    [[ "$path" == "$primary" ]] && continue
+    case "$(basename "$path")" in
+      "$issue"-*) printf '%s\n' "$path"; return 0 ;;
+    esac
+  done < <(git -C "$primary" worktree list --porcelain \
+    | awk '/^worktree /{ sub(/^worktree /, ""); print }')
+  return 1
+}
+
+# Slug and phase, from the issue unless forced. One fewer thing to typo, and the
+# branch name then matches the issue it claims. Prints "<slug>\t<phase>".
+# `create` and `start` share it so a predicted lane path and a created one can
+# never disagree.
+lane_meta() {
+  local issue="$1" slug="$2" phase="$3"
+
+  if [[ -z "$slug" || -z "$phase" ]]; then
+    command -v gh >/dev/null || die "gh is not installed — pass --slug and --phase"
+    [[ -d "$GH_CFG" ]] || die "missing $GH_CFG — see skill findash-github"
+    local meta
+    meta="$(gh_ issue view "$issue" --json title,labels 2>/dev/null)" \
+      || die "issue #$issue does not exist (or gh cannot read it)"
+    if [[ -z "$slug" ]]; then
+      # Drop the conventional-commit prefix and the trailing (#N) back-reference.
+      slug="$(slugify "$(jq -r '.title' <<< "$meta" \
+        | sed -e 's/^[a-z]*([^)]*)!*: *//' -e 's/^[a-z]*!*: *//' -e 's/ *(#[0-9]*)$//')")"
+      [[ -n "$slug" ]] || die "could not derive a slug from the issue title — pass --slug"
+    fi
+    if [[ -z "$phase" ]]; then
+      phase="$(jq -r '[.labels[].name | select(startswith("phase-"))][0] // ""' <<< "$meta")"
+      phase="${phase#phase-}"
+      [[ -n "$phase" ]] || die "issue #$issue carries no phase-N label — pass --phase"
+    fi
+  fi
+
+  printf '%s\t%s\n' "$(slugify "$slug")" "$phase"
+}
+
 # --------------------------------------------------------------------- create
 
 cmd_create() {
@@ -131,27 +193,9 @@ cmd_create() {
     || die "$primary/.env.local is missing — a lane without it fails at runtime.
      Copy .env.example and fill it in before creating lanes."
 
-  # Slug and phase come from the issue unless forced. One fewer thing to typo,
-  # and the branch name then matches the issue it claims.
-  if [[ -z "$slug" || -z "$phase" ]]; then
-    command -v gh >/dev/null || die "gh is not installed — pass --slug and --phase"
-    [[ -d "$GH_CFG" ]] || die "missing $GH_CFG — see skill findash-github"
-    local meta
-    meta="$(gh_ issue view "$issue" --json title,labels 2>/dev/null)" \
-      || die "issue #$issue does not exist (or gh cannot read it)"
-    if [[ -z "$slug" ]]; then
-      # Drop the conventional-commit prefix and the trailing (#N) back-reference.
-      slug="$(slugify "$(jq -r '.title' <<< "$meta" \
-        | sed -e 's/^[a-z]*([^)]*)!*: *//' -e 's/^[a-z]*!*: *//' -e 's/ *(#[0-9]*)$//')")"
-      [[ -n "$slug" ]] || die "could not derive a slug from the issue title — pass --slug"
-    fi
-    if [[ -z "$phase" ]]; then
-      phase="$(jq -r '[.labels[].name | select(startswith("phase-"))][0] // ""' <<< "$meta")"
-      phase="${phase#phase-}"
-      [[ -n "$phase" ]] || die "issue #$issue carries no phase-N label — pass --phase"
-    fi
-  fi
-  slug="$(slugify "$slug")"
+  local meta
+  meta="$(lane_meta "$issue" "$slug" "$phase")" || exit 1
+  IFS=$'\t' read -r slug phase <<< "$meta"
 
   local branch dir db
   branch="${agent}/phase-${phase}/${issue}-${slug}"
@@ -225,6 +269,153 @@ cmd_create() {
   printf '    scripts/lane.sh remove --issue %s\n\n' "$issue"
 }
 
+# ---------------------------------------------------------------------- start
+
+cmd_start() {
+  local issue="" slug="" phase="" agent="claude" base="origin/main"
+  local model="" auto=1 dry_run=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --issue)    issue="${2:?--issue needs a number}"; shift 2 ;;
+      --slug)     slug="${2:?--slug needs a value}"; shift 2 ;;
+      --phase)    phase="${2:?--phase needs a number}"; shift 2 ;;
+      --agent)    agent="${2:?--agent needs a name}"; shift 2 ;;
+      --base)     base="${2:?--base needs a ref}"; shift 2 ;;
+      -m|--model) model="${2:?--model needs provider/model}"; shift 2 ;;
+      --no-auto)  auto=0; shift ;;
+      --dry-run)  dry_run=1; shift ;;
+      *)          die "unknown flag for start: $1" ;;
+    esac
+  done
+
+  [[ "$issue" =~ ^[0-9]+$ ]] || die "start needs --issue <number>"
+
+  step "Pre-flight"
+  command -v opencode >/dev/null || die "opencode is not on PATH — start launches it"
+
+  local primary invoked_from db
+  primary="$(primary_root)"
+  invoked_from="$(pwd -P)"
+  db="${DB_PREFIX}_${issue}"
+  info "primary checkout: $primary"
+
+  # ------------------------------------------------------------- 1. the lane
+  step "Lane"
+  local dir="" branch=""
+
+  if dir="$(worktree_for_issue "$issue" "$primary")"; then
+    branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
+    info "reusing the existing lane — resuming #$issue is the same command"
+    info "worktree: $dir"
+    info "branch:   $branch"
+
+    # A half-made lane is worse than none. Fail here rather than let the
+    # orchestrator discover it three delegations in.
+    [[ -f "$dir/.env.local" ]] \
+      || die "$dir has no .env.local — 'scripts/lane.sh remove --issue $issue' and start again"
+    [[ -d "$dir/node_modules" ]] \
+      || die "$dir has no node_modules — 'scripts/lane.sh remove --issue $issue' and start again"
+    [[ -n "$(lane_databases "$db")" ]] \
+      || die "database $db is gone — 'scripts/lane.sh remove --issue $issue' and start again"
+  else
+    # Predict the path the same way `create` derives it — same helper, so a
+    # dry run cannot print a launch line that create would not produce.
+    local meta
+    meta="$(lane_meta "$issue" "$slug" "$phase")" || exit 1
+    IFS=$'\t' read -r slug phase <<< "$meta"
+    branch="${agent}/phase-${phase}/${issue}-${slug}"
+    dir="${primary}-worktrees/${issue}-${slug}"
+
+    if (( dry_run )); then
+      info "no lane for #$issue yet — would create:"
+      info "  worktree: $dir"
+      info "  branch:   $branch"
+      info "  test DB:  $db"
+    else
+      cmd_create --issue "$issue" --slug "$slug" --phase "$phase" \
+        --agent "$agent" --base "$base"
+      # git is authoritative over the prediction above: if `create` ever changes
+      # how it names a lane, `start` follows it instead of drifting.
+      dir="$(worktree_for_issue "$issue" "$primary")" \
+        || die "created the lane for #$issue but cannot find its worktree"
+      branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
+    fi
+  fi
+
+  # ---------------------------------------------------------- 2. the process
+  step "Orchestrator"
+
+  # Stand in the PRIMARY checkout for the whole run. opencode takes the lane as
+  # its positional argument, so it does not need our cwd — and phase 3 calls
+  # `remove`, which refuses to run from inside the lane it is deleting (#949).
+  # Launching from the lane would make `start` trip its own guard.
+  cd "$primary"
+
+  # No --prompt: the opening exchange with the orchestrator is where a badly
+  # scoped issue gets caught, and it is worth more than the minute it costs.
+  local -a launch=(opencode "$dir" --agent findash-orchestrator)
+  (( auto )) && launch+=(--auto)
+  [[ -n "$model" ]] && launch+=(-m "$model")
+
+  local rc=0
+  if (( dry_run )); then
+    info "would run, with cwd $primary:"
+    printf '\n    FINDASH_TEST_DB=%s %s\n\n' "$db" "$(printf '%q ' "${launch[@]}" | sed 's/ $//')"
+  else
+    info "FINDASH_TEST_DB=$db"
+    info "opencode starts in $dir; this shell stays in $primary"
+    FINDASH_TEST_DB="$db" "${launch[@]}" || rc=$?
+    (( rc == 0 )) || warn "opencode exited $rc"
+  fi
+
+  # --------------------------------------------------------- 3. the teardown
+  #
+  # Reporting is NOT here: an interactive session hands control back whenever
+  # the human quits, which can be hours after the run ended. `scripts/ship.sh`
+  # comments and notifies at the moment it learns CI is red or the merge was
+  # refused. All that is left here is the lane itself.
+  step "Outcome"
+
+  local pr_state="" pr_url="" pr_json
+  if pr_json="$(gh_ pr view "$branch" --json state,url 2>/dev/null)"; then
+    pr_state="$(jq -r '.state // ""' <<< "$pr_json")"
+    pr_url="$(jq -r '.url // ""' <<< "$pr_json")"
+  fi
+  info "branch: $branch"
+  if [[ -n "$pr_url" ]]; then
+    info "PR:     $pr_url ($pr_state)"
+  else
+    info "PR:     none open for this branch"
+  fi
+
+  if [[ "$pr_state" == "MERGED" ]]; then
+    if (( dry_run )); then
+      info "decision: MERGED → would remove the lane"
+      return 0
+    fi
+    cmd_remove --issue "$issue"
+    if [[ "$invoked_from" == "$dir" || "$invoked_from" == "$dir"/* ]]; then
+      warn "you started this from inside the lane — that directory is gone now.
+    Run 'cd $primary' in this shell."
+    fi
+    return 0
+  fi
+
+  if (( dry_run )); then
+    info "decision: ${pr_state:-no PR} → would keep the lane parked at $dir"
+    return 0
+  fi
+
+  step "Lane parked"
+  printf '\n  The PR for #%s is %s — the lane stays exactly as it is.\n\n' \
+    "$issue" "${pr_state:-not open yet}"
+  printf '  Worktree: %s\n  Branch:   %s\n  Test DB:  %s\n' "$dir" "$branch" "$db"
+  [[ -n "$pr_url" ]] && printf '  PR:       %s\n' "$pr_url"
+  printf '\n  Resume with the same command:\n\n    scripts/lane.sh start --issue %s\n\n' "$issue"
+  return 0
+}
+
 # --------------------------------------------------------------------- remove
 
 cmd_remove() {
@@ -245,15 +436,8 @@ cmd_remove() {
   primary="$(primary_root)"
   db="${DB_PREFIX}_${issue}"
 
-  # A branch name is not enough to find the lane: --agent and --slug are
-  # options. Match on the worktree directory, which always starts <issue>-.
-  local dir="" branch="" path
-  while IFS= read -r path; do
-    [[ "$path" == "$primary" ]] && continue
-    case "$(basename "$path")" in
-      "$issue"-*) dir="$path"; break ;;
-    esac
-  done < <(git worktree list --porcelain | awk '/^worktree /{ sub(/^worktree /, ""); print }')
+  local dir="" branch=""
+  dir="$(worktree_for_issue "$issue" "$primary" || true)"
 
   if [[ -n "$dir" ]]; then
     branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
@@ -375,8 +559,9 @@ cmd_check() {
 
 case "$1" in
   create)    shift; cmd_create "$@" ;;
+  start)     shift; cmd_start "$@" ;;
   remove)    shift; cmd_remove "$@" ;;
   check)     shift; cmd_check "$@" ;;
   -h|--help) usage; exit 0 ;;
-  *)         die "unknown subcommand: $1 (create | remove | check)" ;;
+  *)         die "unknown subcommand: $1 (create | start | remove | check)" ;;
 esac
