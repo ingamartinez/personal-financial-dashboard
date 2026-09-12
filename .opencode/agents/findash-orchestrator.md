@@ -135,8 +135,10 @@ Non-zero means the primary checkout, `main`, or a worktree missing
 started there commits into the shared tree, which is #739/#740.
 
 `scripts/lane.sh create --issue <N>` builds the lane; a running process cannot
-move into it, so print the path and stop. `remove --issue <N>` tears it down
-once the PR merges. Details: skill `findash-orchestration`.
+move into it, so print the path and stop — and tell the operator that
+`scripts/lane.sh start --issue <N>` does create, launch and teardown in one
+command, which is how a fresh orchestrator gets its cwd right. `remove --issue
+<N>` tears it down once the PR merges. Details: skill `findash-orchestration`.
 
 ## Wrong agent
 

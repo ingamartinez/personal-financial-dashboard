@@ -230,6 +230,28 @@ Then start the orchestrator **inside** the path it prints, with that
 worktree, so this is the one step that happens outside the agent.
 
 ```bash
+scripts/lane.sh start --issue 953         # create-or-reuse, launch, tear down
+```
+
+`start` (#953) is the human's one command per issue: it creates the lane or
+**reuses** an existing one — resuming is the same command, not a second verb —
+opens `opencode "$dir" --agent findash-orchestrator --auto`, and when that exits
+reads the PR state for the lane branch. `MERGED` removes the lane; anything else
+leaves it exactly as it is and prints where it is parked.
+
+It launches the **interactive TUI and passes no `--prompt`**. The opening
+exchange is deliberate: the human hands over the issue and they verify the scope
+before anything is spent, which is where a badly scoped issue gets caught.
+`--dry-run` prints the exact launch line and the teardown decision without
+running either — use it instead of spending a live orchestration to check a
+change to the script.
+
+`start` runs the teardown from the **primary checkout**, not from the lane:
+`remove` refuses to delete the worktree you are standing in (#949), so a `start`
+that launched from inside the lane would trip its own guard. It stays in the
+primary checkout for the whole run and hands opencode the lane path positionally.
+
+```bash
 scripts/lane.sh check                     # before the first implementer, every time
 ```
 
@@ -288,6 +310,19 @@ orchestrator needs a fresh base for the next lane, not a checkout permission.
 Run it from the lane's worktree with that lane's `FINDASH_TEST_DB` exported, or
 with `--no-test` if the implementer already ran the affected specs and no other
 lane is idle.
+
+**`ship.sh` also owns the "a human is needed" report (#953).** `lane.sh start`
+opens an interactive session and only regains control when the human quits,
+which can be hours after the run ended — so the post-exit hook is the wrong
+place to notice trouble. `ship.sh` is the code that learns CI went red, that no
+checks ever registered, or that the merge was refused, at the moment it learns
+it. On each of those it comments on the issue (source of truth #1, durable, it
+notifies on its own, identical on the Mac and on ia-server) and fires a
+best-effort desktop notification — `osascript` on darwin, `notify-send` on
+Linux, a silent no-op anywhere else. The notifier can be missing or broken
+without failing the run or swallowing the comment. A green merge reports
+nothing: **silence is the success report.** `--no-report` suppresses both, for
+a human iterating on a red branch who does not want the issue spammed.
 
 ## Prompt design: give the objective, not the route
 
