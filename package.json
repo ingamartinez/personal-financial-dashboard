@@ -72,7 +72,7 @@
     "next": "16.2.4",
     "next-auth": "^5.0.0-beta.31",
     "next-themes": "^0.4.6",
-    "node-html-parser": "^7.1.0",
+    "node-html-parser": "^9.0.4",
     "pdfjs-dist": "^5.6.205",
     "pino": "^10.3.1",
     "postgres": "^3.4.9",
