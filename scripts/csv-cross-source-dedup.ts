@@ -31,7 +31,8 @@ export async function collapseCsvCandidate(
       SELECT id FROM transactions
       WHERE id = ${row.live_id} AND user_id = ${row.user_id}
         AND account_id = ${row.account_id} AND source = ${row.live_source}
-        AND deleted_at IS NULL AND statement_import_id IS NULL
+        AND deleted_at IS NULL
+        AND (statement_import_id IS NULL OR statement_import_id = ${row.statement_import_id})
     `);
     if (!csv || !live) return;
     await tx.execute(sql`
@@ -42,7 +43,8 @@ export async function collapseCsvCandidate(
             ${JSON.stringify({ csv_transaction_id: row.csv_id, csv_raw_data: csv.raw_data })}::jsonb),
           updated_at = now()
       WHERE id = ${row.live_id} AND user_id = ${row.user_id}
-        AND deleted_at IS NULL AND statement_import_id IS NULL
+        AND deleted_at IS NULL
+        AND (statement_import_id IS NULL OR statement_import_id = ${row.statement_import_id})
     `);
     await tx.execute(sql`
       INSERT INTO reconciliation_decisions (user_id, txn_id, action, merged_into_txn_id, note)
