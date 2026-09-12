@@ -48,7 +48,7 @@ the blindness this table exists to prevent.
 | Orchestrator | Claude Code, Sonnet | Anthropic | subscription |
 | `findash-explorer` | `llmgateway/gpt-5.6-luna` | OpenAI | **$0.02** |
 | `findash-implementer` | `llmgateway/gpt-5.6-luna` | OpenAI | **$0.03** |
-| `findash-reviewer` | `llmgateway/deepseek-v4.1-flash` | DeepSeek | **$0.01** |
+| `findash-reviewer` | `llmgateway/gemini-3.8-flash` | Google | **~$0.05 (est.)** |
 | Overflow | `deepseek/deepseek-v4-flash` | DeepSeek | ~$0.20 |
 
 **The rule is not "the reviewer uses model X". It is "the reviewer must differ
@@ -71,20 +71,24 @@ It fails **closed** in the sense that matters: a broken base ref or a failed
 diff prints an error and stops rather than silently answering "nothing to
 review."
 
-**One reviewer, `deepseek-v4.1-flash`, for every diff — high-risk or not.**
+**One reviewer, `gemini-3.8-flash`, for every diff — high-risk or not.**
 There used to be a second high-tier reviewer for risky diffs. Both attempts at
 one got cut on the same evidence: measured on the #511 diff, same prompt
-(#930):
+(#930 and #978):
 
 | Reviewer | $/M in | $/M out | Findings |
 | --- | ---: | ---: | --- |
 | `deepseek-v4-pro` | 0.66 | 1.98 | 0 CRITICAL, 0 WARNING |
 | `muse-spark-1.3` | 1.25 | 4.25 | 0 CRITICAL, 0 WARNING |
-| **`deepseek-v4.1-flash`** | **0.15** | **0.60** | 0 CRITICAL, **3 WARNING** |
+| `deepseek-v4.1-flash` (historical) | 0.15 | 0.60 | 0 CRITICAL, 3 WARNING |
+| **`gemini-3.8-flash`** | **0.75** | **3.75** | **1 CRITICAL, 3 WARNING, 1 SUGGESTION** |
 
-The cheapest reviewer found more than both of the ones it used to be paired
-with — two of the three WARNINGs real, including a restore path not pairing
-`connection_id` with `user_id`, which only `claude-opus-5` had caught before.
+`gemini-3.8-flash` is the only non-premium model in this benchmark to catch the
+exact CRITICAL previously caught only by premium `gpt-6-astra` (migration 0085
+cursor backfill reopening incident #498), while also catching the tenant-safety
+and sequencing warnings only `claude-opus-5` had seen. The earlier reviewer
+found two of its three WARNINGs real, including a restore path not pairing
+`connection_id` with `user_id`.
 `muse-spark-1.3` stayed on as a second high-tier reviewer through #930/#933
 anyway, on the theory that two reviewers of different lineage catch more than
 one; #935 dropped it once nobody could point to a diff where it actually had.
@@ -93,13 +97,13 @@ one; #935 dropped it once nobody could point to a diff where it actually had.
 premium models ($5+/M in or $15+/M out) against a separate ~$10.44/week cap.
 Non-premium spends only against the $87/month.
 
-**`gpt-6-astra` is gone, and it cost something.** It was the ONLY reviewer that
-caught the CRITICALs on #511, twice, where every cheaper model said APPROVE. It
-is also $10/M in and $50/M out. Losing it means the orchestrator reads migration
-diffs itself — that runs on a subscription, not against DevPass, which is where
-the judgement should sit anyway. `scripts/review-tier.sh` still flags migration
-and schema diffs in its reasons for exactly this: it is telling a human to read
-carefully, not selecting a second model.
+**`gpt-6-astra` is gone, and it cost something.** It was the first reviewer to
+catch the CRITICALs on #511, twice; `gemini-3.8-flash` later matched that catch
+at non-premium price. It is also $10/M in and $50/M out. The orchestrator still
+reads migration diffs itself — that runs on a subscription, not against DevPass,
+which is where the judgement should sit anyway. `scripts/review-tier.sh` still
+flags migration and schema diffs in its reasons for exactly this: it is telling
+a human to read carefully, not selecting a second model.
 
 **n=1.** One diff, one run, stochastic sampling. Re-measure opportunistically on
 the next high-risk diff rather than treating this table as settled — if a

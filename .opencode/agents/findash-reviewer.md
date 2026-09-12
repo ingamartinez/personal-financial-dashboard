@@ -1,7 +1,7 @@
 ---
 description: Read-only semantic review of a findash branch. Catches bugs lint/typecheck/tests miss (tenant JOINs, soft-delete, money as bigint cents, Next.js 16 server actions, drizzle, Pino). Use BETWEEN findash-implementer and scripts/ship.sh for non-trivial changes. Skip docs-only, test-only, and mechanical refactors. Reports CRITICAL / WARNING / SUGGESTION. Does not modify code.
 mode: all
-model: llmgateway/deepseek-v4.1-flash
+model: llmgateway/gemini-3.8-flash
 temperature: 0.1
 permission:
   edit: deny
@@ -61,26 +61,32 @@ The `model` field above pins that. Two rules follow:
   same-lineage review is useful; a silent one is not.
 - If you are ever unsure which model you are, say that too. Do not guess.
 
-Routing as of 2026-09-11, **measured on this repo, not taken from an index**
-(#930). Same diff, same prompt:
+Routing as of 2026-09-12, **measured on this repo, not taken from an index**
+(#978, using the #511 diff). Same diff, same prompt:
 
 | Reviewer | $/M in | $/M out | Findings |
 | --- | ---: | ---: | --- |
 | `deepseek-v4-pro` | 0.66 | 1.98 | 0 CRITICAL, 0 WARNING |
 | `muse-spark-1.3` | 1.25 | 4.25 | 0 CRITICAL, 0 WARNING |
-| **`deepseek-v4.1-flash`** | **0.15** | **0.60** | 0 CRITICAL, **3 WARNING** |
+| `deepseek-v4.1-flash` (historical) | 0.15 | 0.60 | 0 CRITICAL, 3 WARNING |
+| **`gemini-3.8-flash`** | **0.75** | **3.75** | **1 CRITICAL, 3 WARNING, 1 SUGGESTION** |
 
-Cheaper AND more findings, two of the three real. Every model in the routing is
-non-premium: DevPass meters premium separately against a weekly cap that one
-premium reviewer would eat 43% of.
+`gemini-3.8-flash` is the only non-premium model in this benchmark to catch the
+exact CRITICAL previously caught only by premium `gpt-6-astra` (migration 0085
+cursor backfill reopening incident #498), while also catching the tenant-safety
+and sequencing warnings only `claude-opus-5` had seen. At $0.75/M in and
+$3.75/M out it remains below the DevPass premium threshold ($5/$15). Every
+model in the routing is non-premium: DevPass meters premium separately against
+a weekly cap that one premium reviewer would eat 43% of.
 
-`gpt-6-astra` was the first high tier and is gone (#930): it was the only
-reviewer that caught the CRITICALs on #511, twice, so losing it costs something
-real — it is also $10/M in and $50/M out. `muse-spark-1.3` was a second
-non-premium reviewer for high-risk diffs and is gone too (#935): on the one
-measurement above it found nothing `deepseek-v4.1-flash` alone did not, at 4x
-the cost. High risk now means the orchestrator reading migration diffs itself,
-not a second reviewer.
+`gpt-6-astra` was the first high tier and is gone (#930): it was the first
+reviewer to catch the CRITICALs on #511, twice; `gemini-3.8-flash` later matched
+that catch at non-premium price. It is also $10/M in and $50/M out.
+`muse-spark-1.3` was a second non-premium reviewer for high-risk diffs and is
+gone too (#935): on the earlier measurement it found nothing the then-current
+reviewer alone did not, at 4x the cost. High risk still means the orchestrator
+reading migration diffs itself,
+not a second reviewer tier.
 
 `scripts/review-tier.sh` still flags why a diff is high-risk (migration,
 schema, auth, money, tenant columns) even though it no longer selects a second
