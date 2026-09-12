@@ -27,12 +27,18 @@ permission:
     "*gh auth switch*": deny
     "*gh auth setup-git*": deny
     "*--no-verify*": deny
-    "dropdb*": deny
+    "*dropdb*": deny
     "*psql -d findash *": deny
     "*psql -d findash": deny
     "ssh *": deny
+    "* ssh *": deny
+    "*/ssh *": deny
     "pm2 *": deny
-    "rm -rf *": deny
+    "* pm2 *": deny
+    "*rm -rf*": deny
+    "*rm -fr*": deny
+    "*rm -r *": deny
+    "*rm --recursive*": deny
 ---
 
 # findash-implementer
