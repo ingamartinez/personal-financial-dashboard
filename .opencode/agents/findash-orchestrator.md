@@ -56,7 +56,7 @@ permission:
     "GH_CONFIG_DIR=* gh pr list*": allow
     "GH_CONFIG_DIR=* gh pr diff*": allow
     "GH_CONFIG_DIR=* gh pr checks*": allow
-    "GH_CONFIG_DIR=* gh api *": allow
+    "GH_CONFIG_DIR=* gh api *": deny
 ---
 
 # findash-orchestrator
@@ -107,6 +107,35 @@ load-bearing rather than cosmetic. An unprefixed rule would authenticate as a
 different account and defeat `AGENTS.md` § gh CLI identity **silently**: nothing
 fails, nothing warns, the issue simply appears under the wrong name. Never add a
 `gh` rule without it.
+
+### `gh api` is denied outright (#957)
+
+`gh api` is the raw REST client. With the `repo` + `workflow` scopes on this
+account it reaches every write this block denies elsewhere — `PUT
+/pulls/{n}/merge` merges the PR the #948 gate exists to guard, `PUT
+/contents/{path}` commits without `git push`, `PATCH /git/refs/{ref}` force-moves
+a branch. One allow line made the rest of this block decorative, and it did so
+invisibly, because nothing in `gh api *` reads as "merge".
+
+There is no narrow allow-list carve-out for it, and that is a finding rather
+than an omission. An opencode `*` compiles to `.*` under a dotall regex, so it
+swallows spaces: a pattern like `gh api repos/*/pulls/*/reviews*` also matches
+`gh api repos/o/r/pulls/958/merge --method PUT -f decoy=/pulls/1/reviews`. That
+was run against a real lane — the merge call went through. A wildcard in the
+middle of a `gh api` pattern cannot be bounded to one path segment, so the
+endpoint allow-list that looks safe is not one.
+
+The one read this workflow needed has a first-class equivalent:
+
+```bash
+GH_CONFIG_DIR=~/.config/gh-findash gh pr view <n> --json reviews \
+  --jq '.reviews[]|{state,user:.author.login,body}'
+```
+
+Byte-identical output to the old `pulls/<n>/reviews` call, covered by the
+existing `gh pr view*` allow, and `gh pr view` has no flag that writes. If you
+need a GitHub read that no `gh` subcommand exposes, say so and stop. Do not
+reach for `gh api`.
 
 ## Hard rules
 
