@@ -260,7 +260,7 @@ info "pushed $branch"
 # ---------------------------------------------------------------- PR
 step "Pull request"
 
-pr_url="$(gh_ api "repos/$REPO/pulls?head=$GH_USER:$branch&state=all" \
+pr_url="$(gh_ api "repos/$REPO/pulls?head=$GH_USER:$branch&state=open" \
   --jq '.[0].html_url // ""' 2>/dev/null || true)"
 
 if [[ -n "$pr_url" ]]; then

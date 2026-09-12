@@ -204,7 +204,7 @@ lane_meta() {
       [[ -n "$slug" ]] || die "could not derive a slug from the issue title — pass --slug"
     fi
     if [[ -z "$phase" ]]; then
-      phase="$(jq -r '[.labels[].name | select(startswith("phase-"))][0] // ""' <<< "$meta")"
+      phase="$(jq -r '[.labels[] | select(startswith("phase-"))][0] // ""' <<< "$meta")"
       phase="${phase#phase-}"
       [[ -n "$phase" ]] || die "issue #$issue carries no phase-N label — pass --phase"
     fi
