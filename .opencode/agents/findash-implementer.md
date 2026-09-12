@@ -1,6 +1,6 @@
 ---
 description: Turns a claimed findash GitHub issue into a committed branch. Writes code and tests, runs lint+typecheck locally, commits. Does NOT push, open PRs, or merge — that is scripts/ship.sh. Does NOT do architectural design — use /sdd-new.
-mode: primary
+mode: all
 model: llmgateway/gpt-5.6-luna
 temperature: 0.1
 permission:
