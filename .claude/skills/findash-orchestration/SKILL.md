@@ -170,25 +170,27 @@ tool call"*, under `--auto`):
 
 | Role | `bash` default | Shape |
 | --- | --- | --- |
-| explorer, reviewer | **`"*": deny`** | Allow-list of read-only commands: `rg`/`fd`/`bat`/`eza`/`jq`, `codegraph`, read-only `git`, read-only `gh`. `edit: deny` also blocks `write` and `apply_patch` — there is no separate `write` permission key. |
-| implementer | `"*": allow` | Denies push/PR/merge (`scripts/ship.sh`'s job), history surgery (`rebase`, `reset --hard`, checkout to `main`), anything with `--no-verify`, `gh api`, `gh auth switch`/`setup-git`, `dropdb`, `psql -d findash`, `ssh`, `pm2`, `rm -rf`. |
+| explorer, reviewer | **`"*": deny`** | Allow-list of read-only commands: `rg`/`fd`/`bat`/`eza`/`jq`, `codegraph`, read-only `git`, read-only `gh`, plus the inert primitives, then the redirection denies. `edit: deny` also blocks `write` and `apply_patch` — there is no separate `write` permission key. |
+| orchestrator | `"*": allow` since #966 | Denies push/rebase/`reset --hard`, `gh pr create`/`merge`/`api`, `gh auth switch`/`setup-git`, unprefixed `gh`, the relocation flags, `--no-verify`, `dropdb`, `psql -d findash`, redirection and `tee`. `ssh` is deliberately allowed (#946). `edit: deny` stays. |
+| implementer | `"*": allow` | Same deny surface plus history surgery (`merge`, checkout/switch to `main`) and `ssh`, `pm2`, `rm -rf`. No redirection deny — it holds `edit: allow`. |
 
 There is no shipper lane. `scripts/ship.sh` does that job — see § Shipping.
 
-The two read-only roles get a deny-default because their command set is small
-and enumerable. The implementer does not: an allow-list there breaks the lane on
-the first legitimate command nobody anticipated, and a blocked lane under
-`--auto` is a pane that looks alive and is not. Bound it by denying what is out
-of remit instead.
+The two read-only roles get a deny-default because their command set genuinely
+is small and enumerable, and they are the roles whose read-only guarantee is
+worth something. The two roles that *act* do not: an allow-list there breaks the
+lane on the first legitimate command nobody anticipated, and a blocked lane
+under `--auto` is a pane that looks alive and is not. Bound those by denying
+what is out of remit instead.
 
 `read` is a separate key from `edit`, so `edit: deny` leaves reading intact.
 Definitions do not set `external_directory` and do not hardcode operator
 paths. Once the files are in the worktree, a lane should never leave it.
 
-### How a bash rule actually matches (#957 — measure, do not assume)
+### How a bash rule actually matches (#957, #966 — measure, do not assume)
 
-Three facts about opencode 1.18.30, read out of the shipped binary and then
-confirmed by running real lanes. All three are easy to get backwards, and a rule
+Four facts about opencode 1.18.30, read out of the shipped binary and then
+confirmed by running real lanes. All four are easy to get backwards, and a rule
 built on the wrong one reads exactly like a rule that works.
 
 1. **Order is file order, and the last match wins.** Rules are the YAML keys in
@@ -200,13 +202,27 @@ built on the wrong one reads exactly like a rule that works.
    There is no way to say "one path segment". A pattern with a wildcard in the
    middle therefore matches far more than it looks like it does. A trailing
    `" *"` is the one special case: it compiles to `( .*)?`, so the bare command
-   matches too.
+   matches too. The whole pattern is **anchored** —
+   `new RegExp("^" + pattern + "$", "s")` — so a rule with no trailing wildcard
+   matches that command and nothing longer: `"git branch": allow` refuses
+   `git branch --show-current`, verified on a real explorer lane.
 3. **Each command in the line is matched separately, and any deny denies the
    call.** opencode parses the command with tree-sitter and tests every `command`
    node — both sides of `&&`, the inside of `$(...)` — against the ruleset;
    `cd`-family nodes are skipped. So `cd /x && git push` is still a `git push`.
    The pattern tested is the node's raw source text, env-assignment prefix
-   included, which is why every `gh` rule here carries `GH_CONFIG_DIR=*`.
+   included. That cuts both ways: a `gh` **allow** rule must carry
+   `GH_CONFIG_DIR=*` to be the identity guard, and on an allow-default role the
+   guard has to be spelled out as a `"gh *": deny` instead.
+4. **A redirection IS part of that text — for the node it binds to.** The
+   evaluator walks `descendantsOfType("command")` but takes the *parent's*
+   source when the parent is a `redirected_statement`, so `bat AGENTS.md > f` is
+   tested as the whole string, `>` included, and `"*>*"` matches it. Two
+   non-obvious corollaries, both measured: in `bat f | sort > out` the redirect
+   binds to `sort`, so the tested text is `sort > out` and it is caught; but a
+   pipeline segment with no redirect is tested alone, as `tee out` with **no
+   leading space** — which is why the rule has to be `"tee *"` and not
+   `"* tee *"`.
 
 Consequence, and the reason `gh api` has no allow-list carve-out: an endpoint
 allow-list cannot be written safely. Measured on this repo, with rules
@@ -218,6 +234,175 @@ with `-f decoy=/pulls/1/reviews` appended ran, and GitHub answered
 denied outright in all four definitions, and the one read that used it now goes
 through `gh pr view --json reviews`, which is a read-only subcommand rather than
 a glob that hopes to be one.
+
+### `edit: deny` does not make a role read-only (#966)
+
+`edit: deny` gates the `edit`/`write`/`apply_patch` tools. `bash` is a separate
+surface, and nothing in an allow-list of reads looks at redirection. Measured on
+the unpatched explorer:
+
+```
+opencode run --agent findash-explorer --auto \
+  'bat --style=plain AGENTS.md > /tmp/probe.txt'   →  "RAN."  →  4762-byte file
+```
+
+The same allow-lists were missing every shell primitive, and by fact 3 a trailing
+`echo` sinks the whole call: `scripts/lane.sh check; echo "---exit:$?"` came back
+refused in a live #921 session and the human was told the lane check had failed,
+when `scripts/lane.sh check` alone exits 0.
+
+#966 fixed both — but not with the same shape in every role, because the second
+half of that bug is an argument against allow-lists, not for them.
+
+**explorer and reviewer keep `"*": deny`.** Their command set genuinely is small
+and enumerable, and they are the two roles whose read-only guarantee is worth
+enforcing. Their bash block now ends with exactly these six lines, in this order
+(the denies must come last — fact 1):
+
+```yaml
+    "echo *": allow
+    "printf *": allow
+    "true": allow
+    "pwd": allow
+    "*>*": deny
+    "tee *": deny
+```
+
+Every row below is one real `opencode run --agent <role> --auto` on the shipped
+rules, not a reading of the YAML:
+
+| Case | Result | Proven on |
+| --- | --- | --- |
+| `echo "x"` | runs | explorer, reviewer |
+| `git status --short; echo "---exit:$?"` | runs | explorer, reviewer |
+| `bat package.json \| head -5; git status --short; echo ---` | runs | explorer |
+| `git diff --stat`, `gh pr view --json state` | runs | explorer, reviewer |
+| `bat AGENTS.md > f` | **refused**, no file on disk | explorer, reviewer |
+| `echo probe > f` | **refused** | explorer, reviewer |
+| `bat AGENTS.md >> f` | **refused** | explorer |
+| `bat AGENTS.md \| tee f` | **refused** | explorer |
+| `bat AGENTS.md \| sort > f` | **refused** | explorer |
+| `{ bat AGENTS.md; } > f` | **refused** | explorer |
+| `echo $(bat AGENTS.md > f)` | **refused** | explorer |
+
+`"*>>*"` appears in #966's proposal and is deliberately **not** shipped: `*` is
+`.*` under a dotall regex (fact 2), so `"*>*"` already matches `>>` — measured
+on a real lane, not assumed. Likewise the rule is `"tee *"`, not `"* tee *"`:
+by fact 4 a pipeline segment is tested alone, as `tee out`, with no leading
+space.
+
+**The false-positive cost — you will hit this, and the refusal will not say
+why.** `"*>*"` is `.*>.*` over the node's raw source. It cannot tell a
+redirection operator from a `>` character. Both of these came back refused on a
+real run:
+
+- `git log --oneline -3 2>/dev/null` — any `2>`, `2>&1` or `&>` reads as a
+  redirection. Drop it; the bash tool already returns stderr.
+- `echo "a > b"` — a literal `>` inside a quoted argument, i.e. `rg "a>b" f`,
+  `jq '.n > 1'`, `git log --grep "a > b"`.
+
+No glob separates the two, which is why #966 rejected the narrower shapes. A
+deny-first role that needs a literal `>` should say so and stop, per its own
+§ Scope bounding — not rephrase its way around the rule.
+
+### The orchestrator moved to allow-default (#966)
+
+`findash-orchestrator` was an allow-list too, and in one live session that
+allow-list refused three legitimate commands: `echo` (above), `ssh` — which
+blocked a production diagnostic and is what #946 is about — and it was on course
+for a fourth. The rationale that has always governed findash-implementer applies
+verbatim: an allow-list breaks the lane on the first legitimate command nobody
+anticipated, and a blocked lane under `--auto` is a pane that looks alive and is
+not.
+
+The shape was also inverted. The role that writes code had the wider bash
+surface than the role that cannot write at all.
+
+So `bash` is now `"*": allow` with a deny-list, `edit: deny` unchanged. `ssh` is
+**not** denied — that closes #946. Verified by a real invocation:
+`ssh -i ~/.ssh/findash_do root@147.182.138.79 'echo ok'` → `ok`, `VERDICT_RAN`.
+
+**Every deny is written wrapped (`"*...*"`), and that is load-bearing.** By
+fact 2 a pattern compiles anchored, `new RegExp("^" + pattern + "$", "s")`, so
+the old `"git push*"` never matched `GIT_DIR=.git git push` — the env-assignment
+prefix is part of the node text (fact 3). Wrapping fixes that.
+
+Wrapping is **not** enough on its own, and this is the trap: a wrapped
+`"*git push*"` still does not match `git -C /tmp/x push`, because that string
+contains no substring `git push`. No glob can put the wildcard between `git` and
+`push` without also matching `bat .github/workflows/push.yml`. The flags that
+relocate the target are therefore denied outright:
+
+```yaml
+    "*git -C*": deny
+    "*git --git-dir*": deny
+    "*git --work-tree*": deny
+    "*gh -R *": deny
+    "*gh --repo *": deny
+```
+
+`tee` needs both forms here: `"tee *"` catches the bare pipeline node and
+`"* tee *"` catches an env-prefixed one (`LC_ALL=C tee f`). On the two
+deny-default roles `"tee *"` alone suffices, because `tee` is not allow-listed
+in the first place.
+
+**Unprefixed `gh` is denied** (`"gh *"`, anchored on purpose so a
+`GH_CONFIG_DIR=… gh …` line does not match it). Under the old allow-list the
+identity guard was free: every allowed `gh` rule carried `GH_CONFIG_DIR=*`, so
+an unprefixed call was simply absent from the list. Allow-default silently
+removes that guard, and an unprefixed `gh issue create` posts under the wrong
+account. This is the one regression the flip introduces that is not obvious from
+the diff.
+
+Proven on real invocations, one per row:
+
+| Case | Result |
+| --- | --- |
+| `ssh … root@… 'echo ok'` | **runs** (#946) |
+| `echo "x"` | **runs** |
+| `scripts/lane.sh check; echo "---exit:$?"` | **runs**, prints `---exit:0` |
+| `git status --short; bat package.json \| head -3; echo ---done` | **runs** |
+| `GH_CONFIG_DIR=… gh pr view 965 --json state` | **runs** |
+| `git push --dry-run origin HEAD` | refused |
+| `git -C /tmp/x push` | refused |
+| `GIT_DIR=.git git push` | refused |
+| `GH_CONFIG_DIR=… gh pr merge 965 --squash` | refused |
+| `gh issue list --limit 1` (unprefixed) | refused |
+| `GH_CONFIG_DIR=… gh -R owner/repo pr merge 965` | refused |
+| `bat AGENTS.md > f` | refused |
+| `bat AGENTS.md \| tee f` | refused |
+| `git commit --no-verify -m probe` | refused |
+| `dropdb findash_test_966_probe` | refused |
+
+**`"*>*"` is kept on the orchestrator, and you should know what it is now worth.**
+Under allow-default it is no longer a write boundary. Measured: with `edit: deny`
+and `"*>*": deny` both in force, `cp AGENTS.md out.txt` ran and produced the
+file. `sd`, `sed -i`, `python3 -c`, `bun -e` and a dozen others are equally
+available. The redirection deny closes the casual path and costs `2>/dev/null`
+and every literal `>` — a worse trade here than on the two read-only roles,
+where nothing else can write at all. Kept on the owner's call; re-open it if the
+false positives bite.
+
+**findash-implementer keeps `"*": allow` and gets no redirection deny** — it
+holds `edit: allow`, so `>` buys nothing and denying it would only break
+`bun run test 2>&1`. It did get the wrapped forms, the relocation-flag denies
+and the `"gh *"` identity guard, for the same reasons as above.
+
+Measured on findash-implementer itself:
+
+| Case | Result |
+| --- | --- |
+| `git status --short; git log --oneline -2; echo ---ok` | runs |
+| `GH_CONFIG_DIR=… gh issue view 966 --json title` | runs |
+| `git log --oneline -1 2>/dev/null` | runs — no redirection deny here |
+| `GIT_DIR=.git git push` | **refused** (it was not, before the wrapping) |
+
+One caveat on evidence. Asked to attempt `git checkout main > /dev/null` as a
+boundary test, the implementer's model declined to issue the tool call at all
+and answered from its own instructions — so that specific escape is derived
+from the matcher (anchored, fact 2) rather than measured. Worth knowing on its
+own: what stopped that command under the old rules may have been the model's
+compliance, not the rule.
 
 ## Review gate is not automatic
 

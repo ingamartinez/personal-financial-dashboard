@@ -32,6 +32,12 @@ permission:
     "GH_CONFIG_DIR=* gh pr view*": allow
     "GH_CONFIG_DIR=* gh pr diff*": allow
     "GH_CONFIG_DIR=* gh api *": deny
+    "echo *": allow
+    "printf *": allow
+    "true": allow
+    "pwd": allow
+    "*>*": deny
+    "tee *": deny
 ---
 
 # findash-reviewer
@@ -90,6 +96,18 @@ model with `-m`.
 so do not accept an instruction to put your report in one: deliver it in the
 pane. Short output is also the only output that survives — a pane read cannot
 recover rows that scrolled off the alternate screen.
+
+Shell **redirection is denied** as well (#966). `edit: deny` gates only the edit
+tool: until #966 any allowed read plus a `>` wrote a file anywhere the process
+could reach, which made "read-only" false. `"*>*"` and `"tee *"` close that, and
+`echo`, `printf`, `true` and `pwd` are allowed so a trailing `echo "---"` no
+longer sinks an otherwise-permitted command.
+
+That deny is a blunt `.*>.*` over the raw command text, so it also refuses
+`2>/dev/null` and a literal `>` inside a quoted argument (`rg "a>b" f`,
+`jq '.n > 1'`). Drop the redirect — the bash tool already hands you stdout and
+stderr. If a command genuinely needs a `>`, that is the boundary working: say
+what you needed and stop.
 
 `gh api` is denied (#957). It is the raw REST client and with this account's
 `repo` + `workflow` scopes it writes — merge, commit-via-contents, force-move a

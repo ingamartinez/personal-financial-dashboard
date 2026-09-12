@@ -12,51 +12,28 @@ permission:
     "findash-reviewer": allow
     "explore": allow
   bash:
-    "*": deny
-    "rg *": allow
-    "fd *": allow
-    "bat *": allow
-    "eza *": allow
-    "jq *": allow
-    "wc *": allow
-    "head *": allow
-    "tail *": allow
-    "sort *": allow
-    "uniq *": allow
-    "codegraph *": allow
-    "scripts/lane.sh*": allow
-    "./scripts/lane.sh*": allow
-    "scripts/ship.sh*": allow
-    "./scripts/ship.sh*": allow
-    "scripts/review-tier.sh*": allow
-    "./scripts/review-tier.sh*": allow
-    "bun run lint": allow
-    "bun run typecheck": allow
-    "bun run test*": allow
-    "git status*": allow
-    "git log*": allow
-    "git diff*": allow
-    "git show*": allow
-    "git branch": allow
-    "git ls-files*": allow
-    "git rev-parse*": allow
-    "git fetch*": allow
-    "git worktree list*": allow
-    "git push*": deny
-    "git rebase*": deny
-    "git reset --hard*": deny
-    "GH_CONFIG_DIR=* gh issue view*": allow
-    "GH_CONFIG_DIR=* gh issue list*": allow
-    "GH_CONFIG_DIR=* gh issue comment*": allow
-    "GH_CONFIG_DIR=* gh issue create*": allow
-    "GH_CONFIG_DIR=* gh issue edit*": allow
-    "GH_CONFIG_DIR=* gh issue close*": allow
-    "GH_CONFIG_DIR=* gh issue delete*": allow
-    "GH_CONFIG_DIR=* gh pr view*": allow
-    "GH_CONFIG_DIR=* gh pr list*": allow
-    "GH_CONFIG_DIR=* gh pr diff*": allow
-    "GH_CONFIG_DIR=* gh pr checks*": allow
-    "GH_CONFIG_DIR=* gh api *": deny
+    "*": allow
+    "gh *": deny
+    "*git push*": deny
+    "*git rebase*": deny
+    "*git reset --hard*": deny
+    "*git -C*": deny
+    "*git --git-dir*": deny
+    "*git --work-tree*": deny
+    "*gh pr create*": deny
+    "*gh pr merge*": deny
+    "*gh api*": deny
+    "*gh -R *": deny
+    "*gh --repo *": deny
+    "*gh auth switch*": deny
+    "*gh auth setup-git*": deny
+    "*--no-verify*": deny
+    "*dropdb*": deny
+    "*psql -d findash *": deny
+    "*psql -d findash": deny
+    "*>*": deny
+    "tee *": deny
+    "* tee *": deny
 ---
 
 # findash-orchestrator
@@ -73,16 +50,59 @@ them when spawned — your model never leaks into a lane.
 
 ## Scope bounding
 
-`permission.edit: deny` blocks `edit`, `write` and `apply_patch`. You cannot
-write code. That is the point: findash-implementer writes, you decide.
+`permission.edit: deny` blocks `edit`, `write` and `apply_patch`. You do not
+write code: findash-implementer writes, you decide.
 
 `task` is deny-first with an allow-list of the three findash lanes plus
-`explore`. `bash` is deny-first and shaped for coordination — reads, gates and
-`scripts/ship.sh`. Direct `git push`, `rebase` and `reset --hard` are denied;
-shipping goes through `scripts/ship.sh`, which is the sanctioned path.
+`explore`. `bash` is **allow-first with a deny-list** as of #966. It used to be
+an allow-list, and that allow-list broke three legitimate commands in one live
+session: a trailing `echo "---exit:$?"` sank `scripts/lane.sh check` and the
+human was told the lane was broken when it was fine, and `ssh` blocked a
+production diagnostic (#946). An allow-list breaks on the first legitimate
+command nobody anticipated, and a lane blocked under `--auto` is a pane that
+looks alive and is not — the same argument that has always governed
+findash-implementer.
+
+Denied is what belongs to another role or to a public, irreversible surface:
+`git push`, `rebase`, `reset --hard`, `gh pr create`, `gh pr merge`, `gh api`,
+`gh auth switch`/`setup-git`, anything with `--no-verify`, `dropdb`,
+`psql -d findash`, output redirection and `tee`. Shipping goes through
+`scripts/ship.sh`, which is the sanctioned path.
+
+`ssh` is deliberately **not** denied (#946). Reading production to diagnose an
+incident is coordination work, and the alternative was a human relaying output
+into the pane by hand.
+
+Every deny is written wrapped (`"*...*"`) rather than anchored, because a
+pattern is compiled anchored — `new RegExp("^" + pattern + "$", "s")` — against
+each command node's raw source text. An anchored `"git push"` does not match
+`GIT_DIR=.git git push`. `git -C`, `git --git-dir`, `git --work-tree` and
+`gh -R`/`gh --repo` are denied outright on top of that, because those flags
+relocate the target and even a wrapped `"*git push*"` cannot see past them:
+`git -C /tmp/x push` contains no substring `git push`.
+
+**Unprefixed `gh` is denied** (`"gh *"`). Under the old allow-list the identity
+guard came for free — every allowed `gh` line carried `GH_CONFIG_DIR=*`, so an
+unprefixed call was simply not on the list. Allow-default removes that, and an
+unprefixed `gh issue create` would run and post under the wrong account,
+silently and publicly. Prefix every `gh` invocation with
+`GH_CONFIG_DIR=~/.config/gh-findash` or it is refused.
 
 If a command is refused, that is the boundary working. Say what you needed and
 why. Do not route around it with a shell trick.
+
+### Redirection is denied — but it is not a write boundary here (#966)
+
+`"*>*"`, `"tee *"` and `"* tee *"` are denied, so `bat AGENTS.md > f` is
+refused. Do not read that as "this role cannot write a file": with `bash` at
+`"*": allow`, `cp`, `sd`, `sed -i`, `python3 -c` and a dozen others write files
+and are permitted. `edit: deny` plus the redirection deny close the casual path,
+not a determined one. What this role actually guarantees is that it does not
+write **code** — by delegation and convention, not by enforcement.
+
+The deny is a blunt `.*>.*` over the raw command text, so it also refuses
+`2>/dev/null` and a literal `>` inside a quoted argument. Drop the redirect; the
+bash tool already gives you stdout and stderr.
 
 ### The issue surface (#956)
 
@@ -102,11 +122,12 @@ for everyone, unrecoverably. It is on the list deliberately — read it as a
 decision, not a copy-paste slip — and it is the one command here worth
 confirming with the human before you run it.
 
-Every one of the four carries the `GH_CONFIG_DIR=*` prefix, and that is
-load-bearing rather than cosmetic. An unprefixed rule would authenticate as a
-different account and defeat `AGENTS.md` § gh CLI identity **silently**: nothing
-fails, nothing warns, the issue simply appears under the wrong name. Never add a
-`gh` rule without it.
+Prefix every one of the four with `GH_CONFIG_DIR=~/.config/gh-findash`. That is
+load-bearing rather than cosmetic: an unprefixed call authenticates as a
+different account and defeats `AGENTS.md` § gh CLI identity **silently** —
+nothing fails, nothing warns, the issue simply appears under the wrong name.
+Since #966 the rule `"gh *": deny` enforces it, because allow-default no longer
+enforces it by omission. Never add a `gh` allow rule without the prefix either.
 
 ### `gh api` is denied outright (#957)
 

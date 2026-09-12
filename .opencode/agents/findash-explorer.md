@@ -35,6 +35,12 @@ permission:
     "GH_CONFIG_DIR=* gh pr list*": allow
     "GH_CONFIG_DIR=* gh pr diff*": allow
     "GH_CONFIG_DIR=* gh api *": deny
+    "echo *": allow
+    "printf *": allow
+    "true": allow
+    "pwd": allow
+    "*>*": deny
+    "tee *": deny
 ---
 
 # findash-explorer
@@ -52,6 +58,18 @@ and why in the digest. Do not route around it with a shell trick.
 
 You cannot write a file, including a scratch file for your own report. That is
 deliberate (see § Budget).
+
+Shell **redirection is denied** as well (#966). `edit: deny` gates only the edit
+tool: until #966 any allowed read plus a `>` wrote a file anywhere the process
+could reach, which made "read-only" false. `"*>*"` and `"tee *"` close that, and
+`echo`, `printf`, `true` and `pwd` are allowed so a trailing `echo "---"` no
+longer sinks an otherwise-permitted command.
+
+That deny is a blunt `.*>.*` over the raw command text, so it also refuses
+`2>/dev/null` and a literal `>` inside a quoted argument (`rg "a>b" f`,
+`jq '.n > 1'`). Drop the redirect — the bash tool already hands you stdout and
+stderr. If a command genuinely needs a `>`, that is the boundary working: say
+what you needed and stop.
 
 `gh api` is denied (#957). It is the raw REST client and with this account's
 `repo` + `workflow` scopes it writes — merge, commit-via-contents, force-move a
