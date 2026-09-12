@@ -51,7 +51,7 @@
     "@anthropic-ai/sdk": "^0.90.0",
     "@bull-board/api": "^7.0.0",
     "@bull-board/express": "^7.0.0",
-    "@bull-board/ui": "^7.0.0",
+    "@bull-board/ui": "^9.9.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
