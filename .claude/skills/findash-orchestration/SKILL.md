@@ -519,6 +519,20 @@ the step that dominates wall-clock is waiting for CI. A model cannot wait, which
 is why the agent needed the "poll `gh pr checks` inline, never `ScheduleWakeup`"
 workaround. `gh pr checks --watch` does it natively.
 
+**Pre-flight refuses an `epic`-labelled issue** unless you say which it is. This
+fires before the gates, so it costs you nothing but it will stop a ship you
+expected to run:
+
+```
+✗ issue #776 is labelled 'epic' — closing it with this PR buries the phases
+  that are left. Pass --part-of (usual) or --closes (this PR really finishes it).
+```
+
+`--part-of` is almost always right: it links the PR to the epic without closing
+it. `--closes` is for the PR that genuinely delivers the last phase. Neither
+blocks the merge — the gate reads how many issues the commits name, not which
+word you passed.
+
 ```bash
 scripts/ship.sh                       # infer issue and link word from the commits
 scripts/ship.sh --part-of             # epic-phase PR
