@@ -3,7 +3,13 @@ import { and, eq } from "drizzle-orm";
 
 import { isStrictOneToOne } from "./csv-cross-source-dedup";
 import { db } from "../src/lib/db";
-import { accounts, reconciliationDecisions, transactions, users } from "../src/lib/db/schema";
+import {
+  accounts,
+  reconciliationDecisions,
+  statementImports,
+  transactions,
+  users,
+} from "../src/lib/db/schema";
 import { collapseCsvCandidate } from "./csv-cross-source-dedup";
 
 const row = { csv_id: 1697, live_id: 899 } as Parameters<typeof isStrictOneToOne>[0];
@@ -24,7 +30,10 @@ describe("CSV cross-source backfill candidate guard (#921)", () => {
 
 describe("CSV cross-source collapse", () => {
   const tag = "CSV_BACKFILL_921";
-  it("updates the live survivor, audits the orientation, and soft-deletes CSV", async () => {
+  async function createPair(options: {
+    liveImportId?: number | null;
+    csvImportId?: number | null;
+  }) {
     const [user] = await db
       .insert(users)
       .values({ email: `${tag}-${Date.now()}@test.local`, name: tag })
@@ -45,6 +54,7 @@ describe("CSV cross-source collapse", () => {
         merchant: "Gmail merchant",
         source: "gmail_bancolombia",
         channel: "bank",
+        statementImportId: options.liveImportId ?? null,
       })
       .returning({ id: transactions.id });
     const [csv] = await db
@@ -59,10 +69,15 @@ describe("CSV cross-source collapse", () => {
         merchant: "CSV merchant",
         source: "csv_reconcile",
         channel: "bank",
-        statementImportId: null,
+        statementImportId: options.csvImportId ?? null,
         rawData: { source: "csv" },
       })
       .returning({ id: transactions.id });
+    return { user, account, live, csv };
+  }
+
+  it("updates the live survivor, audits the orientation, and soft-deletes CSV", async () => {
+    const { user, account, live, csv } = await createPair({});
     try {
       await collapseCsvCandidate(db, {
         csv_id: csv.id,
@@ -94,6 +109,84 @@ describe("CSV cross-source collapse", () => {
         mergedIntoTxnId: csv.id,
         action: "merged_into",
       });
+    } finally {
+      await db.delete(users).where(eq(users.id, user.id));
+    }
+  });
+
+  it("collapses a same-import one-to-one pair", async () => {
+    const { user, account, live, csv } = await createPair({});
+    const [statementImport] = await db
+      .insert(statementImports)
+      .values({
+        userId: user.id,
+        accountId: account.id,
+        fileHash: `${tag}-same-${Date.now()}`,
+        periodStart: "2026-04-01",
+        periodEnd: "2026-04-30",
+      })
+      .returning({ id: statementImports.id });
+    try {
+      await db
+        .update(transactions)
+        .set({ statementImportId: statementImport.id })
+        .where(and(eq(transactions.id, live.id), eq(transactions.userId, user.id)));
+      await db
+        .update(transactions)
+        .set({ statementImportId: statementImport.id })
+        .where(and(eq(transactions.id, csv.id), eq(transactions.userId, user.id)));
+      await collapseCsvCandidate(db, {
+        csv_id: csv.id,
+        live_id: live.id,
+        user_id: user.id,
+        account_id: account.id,
+        live_source: "gmail_bancolombia",
+        statement_import_id: statementImport.id,
+      });
+      const [retired] = await db.select().from(transactions).where(eq(transactions.id, csv.id));
+      expect(retired.deletedAt).not.toBeNull();
+    } finally {
+      await db.delete(users).where(eq(users.id, user.id));
+    }
+  });
+
+  it("skips a live row matched to a different import", async () => {
+    const { user, account, live, csv } = await createPair({});
+    const [liveImport] = await db
+      .insert(statementImports)
+      .values({
+        userId: user.id,
+        accountId: account.id,
+        fileHash: `${tag}-live-${Date.now()}`,
+        periodStart: "2026-04-01",
+        periodEnd: "2026-04-30",
+      })
+      .returning({ id: statementImports.id });
+    const [candidateImport] = await db
+      .insert(statementImports)
+      .values({
+        userId: user.id,
+        accountId: account.id,
+        fileHash: `${tag}-candidate-${Date.now()}`,
+        periodStart: "2026-05-01",
+        periodEnd: "2026-05-31",
+      })
+      .returning({ id: statementImports.id });
+    try {
+      await db
+        .update(transactions)
+        .set({ statementImportId: liveImport.id })
+        .where(and(eq(transactions.id, live.id), eq(transactions.userId, user.id)));
+      await collapseCsvCandidate(db, {
+        csv_id: csv.id,
+        live_id: live.id,
+        user_id: user.id,
+        account_id: account.id,
+        live_source: "gmail_bancolombia",
+        statement_import_id: candidateImport.id,
+      });
+      const [retired] = await db.select().from(transactions).where(eq(transactions.id, csv.id));
+      expect(retired.deletedAt).toBeNull();
     } finally {
       await db.delete(users).where(eq(users.id, user.id));
     }

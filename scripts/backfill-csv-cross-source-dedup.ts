@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     FROM transactions c
     JOIN transactions l ON l.user_id = c.user_id AND l.account_id = c.account_id
       AND l.source IN ('gmail_bancolombia', 'sms') AND l.deleted_at IS NULL
-      AND l.statement_import_id IS NULL
+      AND (l.statement_import_id IS NULL OR l.statement_import_id = c.statement_import_id)
       AND l.amount_cents = c.amount_cents
       AND l.occurred_at BETWEEN c.occurred_at - interval '1 day'
                             AND c.occurred_at + interval '1 day'
