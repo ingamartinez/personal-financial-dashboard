@@ -18,10 +18,20 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts, arqStatementImports, transactions, users } from "@/lib/db/schema";
+import {
+  accounts,
+  arqStatementImports,
+  reconciliationDecisions,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 
 import type { ParsedStatementTx } from "./type-handlers";
-import { reconcileEmailVsStatement } from "./reconciler";
+import {
+  findExistingStatementMatch,
+  mergeExistingStatementIntoEmail,
+  reconcileEmailVsStatement,
+} from "./reconciler";
 
 // ---------------------------------------------------------------------------
 // Helpers & fixtures
@@ -38,6 +48,11 @@ let otherAccountId: number;
 let importId: number;
 
 async function cleanup(): Promise<void> {
+  await db
+    .delete(reconciliationDecisions)
+    .where(
+      sql`${reconciliationDecisions.userId} IN (SELECT id FROM users WHERE email LIKE ${TAG + "%"})`,
+    );
   // transactions → delete by user
   await db
     .delete(transactions)
@@ -48,6 +63,36 @@ async function cleanup(): Promise<void> {
       sql`${arqStatementImports.userId} IN (SELECT id FROM users WHERE email LIKE ${TAG + "%"})`,
     );
   await db.delete(users).where(sql`email LIKE ${TAG + "%"}`);
+}
+
+async function insertStatementTx(opts: {
+  userId: number;
+  accountId: number;
+  amountCents: bigint;
+  occurredAt: Date;
+  merchant: string;
+  externalId: string;
+  importId: number;
+}): Promise<number> {
+  const [row] = await db
+    .insert(transactions)
+    .values({
+      userId: opts.userId,
+      accountId: opts.accountId,
+      amountCents: opts.amountCents,
+      occurredAt: opts.occurredAt,
+      currency: "USD",
+      descriptionRaw: `Statement: ${opts.merchant}`,
+      merchant: opts.merchant,
+      source: "arq_statement",
+      channel: "transfer",
+      externalId: opts.externalId,
+      externalIdStatement: opts.externalId,
+      arqStatementImportId: opts.importId,
+      rawData: { kind: "transfer_sent" },
+    })
+    .returning({ id: transactions.id });
+  return row.id;
 }
 
 async function createUser(suffix: string): Promise<number> {
@@ -181,6 +226,107 @@ const PERIOD = {
   start: new Date(Date.UTC(2026, 2, 1)), // 2026-03-01
   end: new Date(Date.UTC(2026, 2, 31, 23, 59, 59)),
 };
+
+describe("reverse-order ARQ cross-source dedup (#921)", () => {
+  it("keeps the later gmail_arq row and retires the existing statement row", async () => {
+    const occurredAt = new Date("2026-03-15T10:00:00Z");
+    const statementId = await insertStatementTx({
+      userId,
+      accountId,
+      amountCents: BigInt(-33003),
+      occurredAt,
+      merchant: "Aida Mercedes Maldonado",
+      externalId: `${TAG}-statement-921`,
+      importId,
+    });
+    const emailId = await insertEmailTx({
+      userId,
+      accountId,
+      amountCents: BigInt(-33003),
+      occurredAt: new Date(occurredAt.getTime() + 60_000),
+      merchant: "Aida Mercedes Maldonado",
+      externalId: `${TAG}-email-921`,
+    });
+
+    const match = await findExistingStatementMatch(
+      {},
+      {
+        userId,
+        accountId,
+        emailAmountCents: BigInt(-33003),
+        emailOccurredAt: new Date(occurredAt.getTime() + 60_000),
+        emailMerchant: "Aida Mercedes Maldonado",
+      },
+    );
+    expect(match).toBe(statementId);
+
+    await mergeExistingStatementIntoEmail(
+      {},
+      {
+        userId,
+        accountId,
+        emailTxId: emailId,
+        statementTxId: statementId,
+        emailAmountCents: BigInt(-33003),
+        emailOccurredAt: occurredAt,
+        emailMerchant: "Aida Mercedes Maldonado",
+      },
+    );
+
+    const [email] = await db.select().from(transactions).where(eq(transactions.id, emailId));
+    const [statement] = await db
+      .select({ deletedAt: transactions.deletedAt })
+      .from(transactions)
+      .where(eq(transactions.id, statementId));
+    const [decision] = await db
+      .select()
+      .from(reconciliationDecisions)
+      .where(eq(reconciliationDecisions.txnId, emailId));
+    expect(email.secondarySource).toBe("arq_statement");
+    expect(email.externalIdStatement).toBe(`${TAG}-statement-921`);
+    expect(statement.deletedAt).not.toBeNull();
+    expect(decision.action).toBe("merged_into");
+    expect(decision.mergedIntoTxnId).toBe(statementId);
+  });
+
+  it("does not match a same-amount same-source row from another account", async () => {
+    const result = await findExistingStatementMatch(
+      {},
+      {
+        userId,
+        accountId: otherAccountId,
+        emailAmountCents: BigInt(-33003),
+        emailOccurredAt: new Date("2026-03-15T10:00:00Z"),
+        emailMerchant: "Aida Mercedes Maldonado",
+      },
+    );
+    expect(result).toBeNull();
+  });
+
+  it("coerces a raw int8 string amount and never matches the opposite sign", async () => {
+    const occurredAt = new Date("2026-03-16T10:00:00Z");
+    await insertStatementTx({
+      userId,
+      accountId,
+      amountCents: BigInt(33003),
+      occurredAt,
+      merchant: "Aida Mercedes Maldonado",
+      externalId: `${TAG}-statement-opposite-sign`,
+      importId,
+    });
+    const result = await findExistingStatementMatch(
+      {},
+      {
+        userId,
+        accountId,
+        emailAmountCents: "-33003",
+        emailOccurredAt: occurredAt,
+        emailMerchant: "Aida Mercedes Maldonado",
+      },
+    );
+    expect(result).toBeNull();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Setup / teardown

@@ -12,6 +12,10 @@ import { normalizeName } from "@/lib/counterparties/alias-key";
 import { enqueueClassification } from "@/lib/classification/enqueue";
 import type { FxMetadata } from "@/lib/types/fx-metadata";
 import { withCanonical } from "@/lib/insights/merchant-canonical";
+import {
+  findExistingStatementMatch,
+  mergeExistingStatementIntoEmail,
+} from "@/lib/ingestion/arq-statement/reconciler";
 
 const log = createLogger({ module: "ingestion/email-arq" });
 
@@ -310,14 +314,56 @@ export async function ingestArqEmail(
       .returning({ id: transactions.id });
 
     if (result.length === 0) {
+      const [existing] = await db
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, userId),
+            eq(transactions.accountId, account.id),
+            eq(transactions.externalId, externalId),
+            notDeleted(transactions.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (existing) await markReceiptMatched(receiptId, userId, existing.id, parsed);
       log.info(
-        { userId, receiptId, externalId, event: "arq_email_duplicate" },
-        "ARQ email already ingested; skipping duplicate insert",
+        { userId, receiptId, externalId, txId: existing?.id, event: "arq_email_duplicate" },
+        "ARQ email already ingested; marking receipt matched",
       );
       return { status: "duplicated" };
     }
 
     const txId = result[0].id;
+
+    const statementTxId = await findExistingStatementMatch(
+      {},
+      {
+        userId,
+        accountId: account.id,
+        emailAmountCents: signedAmountCents,
+        emailOccurredAt: parsed.occurredAt,
+        emailMerchant: parsed.counterpartyName,
+      },
+    );
+    if (statementTxId !== null) {
+      await mergeExistingStatementIntoEmail(
+        {},
+        {
+          userId,
+          accountId: account.id,
+          emailTxId: txId,
+          statementTxId,
+          emailAmountCents: signedAmountCents,
+          emailOccurredAt: parsed.occurredAt,
+          emailMerchant: parsed.counterpartyName,
+        },
+      );
+      log.info(
+        { userId, receiptId, txId, statementTxId, event: "arq_email_statement_merged" },
+        "ARQ email merged with existing statement transaction",
+      );
+    }
 
     await markReceiptMatched(receiptId, userId, txId, parsed);
     await autoLinkTransaction(userId, txId);

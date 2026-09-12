@@ -46,7 +46,10 @@ vi.mock("@/lib/db", () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: mockSelectFrom,
+        where: vi.fn((...args: unknown[]) => {
+          const query = Promise.resolve(mockSelectFrom(...args));
+          return Object.assign(query, { limit: vi.fn(() => query) });
+        }),
       })),
     })),
     insert: vi.fn(() => ({
@@ -82,6 +85,8 @@ vi.mock("@/lib/db/helpers", () => ({
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...preds) => ({ and: preds })),
   eq: vi.fn((_col, val) => ({ eq: val })),
+  gte: vi.fn((_col, val) => ({ gte: val })),
+  lte: vi.fn((_col, val) => ({ lte: val })),
   sql: new Proxy(
     (strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: strings.join("?"), values }),
     { get: (_t, p) => (p === Symbol.toPrimitive ? String : undefined) },
@@ -152,7 +157,7 @@ const ARQ_ACCOUNT = {
 function setupHappyPath(txId: number) {
   mockParseArqEmail.mockReturnValue(HAPPY_PARSED);
   // DB SELECT returns the ARQ account for this user.
-  mockSelectFrom.mockResolvedValue([ARQ_ACCOUNT]);
+  mockSelectFrom.mockResolvedValueOnce([ARQ_ACCOUNT]).mockResolvedValue([]);
   // DB INSERT returns the new tx row.
   mockInsertReturning.mockResolvedValue([{ id: txId }]);
   // UPDATE (markReceiptMatched) is a fire-and-forget side effect.
@@ -177,6 +182,8 @@ describe("ingestArqEmail — enqueue classification after insert (#645)", () => 
     setupHappyPath(42);
 
     const result = await ingestArqEmail(1, 10, "<html/>", new Date());
+
+    if (result.status === "error") throw new Error(result.reason);
 
     expect(result.status).toBe("inserted");
     if (result.status === "inserted") {
