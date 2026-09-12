@@ -222,6 +222,23 @@ fi
 step "Watching CI"
 info "this blocks until every check reports — that is the point"
 
+# `gh pr checks --watch` does NOT wait for checks to be created. When GitHub has
+# not yet registered a check run for the head commit it prints "no checks
+# reported" and exits non-zero immediately — a few-second race that reports a
+# perfectly green branch as RED, and under --merge silently skips the merge.
+# Wait for the first check to exist before watching.
+appear_timeout=180
+waited=0
+while :; do
+  checks_out="$(gh_ pr checks "$pr_number" 2>&1)" && break
+  [[ "$checks_out" != *"no checks reported"* ]] && break
+  (( waited >= appear_timeout )) && die "no checks appeared on $branch after ${appear_timeout}s
+     Is .github/workflows/ci.yml triggered for this branch? PR: $pr_url"
+  sleep 5
+  waited=$(( waited + 5 ))
+done
+(( waited > 0 )) && info "checks registered after ${waited}s"
+
 ci_status=0
 gh_ pr checks "$pr_number" --watch --interval 20 || ci_status=$?
 
