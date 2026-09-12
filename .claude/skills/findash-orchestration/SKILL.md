@@ -318,91 +318,45 @@ not.
 The shape was also inverted. The role that writes code had the wider bash
 surface than the role that cannot write at all.
 
-So `bash` is now `"*": allow` with a deny-list, `edit: deny` unchanged. `ssh` is
-**not** denied — that closes #946. Verified by a real invocation:
-`ssh -i ~/.ssh/findash_do root@147.182.138.79 'echo ok'` → `ok`, `VERDICT_RAN`.
+So `bash` is now `"*": allow` **with no denies at all** — the repo owner's
+explicit call, after weighing what it gives up. `edit: deny` and the `task`
+allow-list are the only two boundaries left on that seat.
 
-**Every deny is written wrapped (`"*...*"`), and that is load-bearing.** By
-fact 2 a pattern compiles anchored, `new RegExp("^" + pattern + "$", "s")`, so
-the old `"git push*"` never matched `GIT_DIR=.git git push` — the env-assignment
-prefix is part of the node text (fact 3). Wrapping fixes that.
+A deny-list was written first and briefly shipped (`git push`, `gh pr merge`,
+`gh api`, `dropdb`, the relocation flags, unprefixed `gh`). It was removed on
+the owner's instruction. The findings that produced it are kept below because
+they still apply to `findash-explorer` and `findash-reviewer`, which remain
+deny-first, and because anyone re-adding a deny anywhere needs them.
+
+**What the orchestrator seat now relies on.** Shipping through `scripts/ship.sh`
+rather than `gh pr merge`, prefixing every `gh` call, not writing code, not
+touching the `findash` dev database — all of it is now convention held by the
+agent, not enforcement held by the engine. Its definition states each one
+explicitly, because a rule nothing enforces has to at least be written down
+where the agent reading it will see it.
+
+The identity one is the sharpest and is not a safety rail: with no `"gh *"`
+deny, an unprefixed `gh` call authenticates as a different account and posts
+publicly under the wrong name. Nothing errors.
+
+**These facts still matter wherever a deny exists.** Every deny must be written
+wrapped (`"*...*"`): by fact 2 a pattern compiles anchored,
+`new RegExp("^" + pattern + "$", "s")`, so `"git push*"` never matched
+`GIT_DIR=.git git push` — the env-assignment prefix is part of the node text
+(fact 3).
 
 Wrapping is **not** enough on its own, and this is the trap: a wrapped
 `"*git push*"` still does not match `git -C /tmp/x push`, because that string
-contains no substring `git push`. No glob can put the wildcard between `git` and
-`push` without also matching `bat .github/workflows/push.yml`. The flags that
-relocate the target are therefore denied outright:
+contains no substring `git push`. No glob can put a wildcard between `git` and
+`push` without also matching `bat .github/workflows/push.yml`. Flags that
+relocate the target (`git -C`, `--git-dir`, `--work-tree`, `gh -R`, `gh --repo`)
+have to be denied outright, as their own rules.
 
-```yaml
-    "*git -C*": deny
-    "*git --git-dir*": deny
-    "*git --work-tree*": deny
-    "*gh -R *": deny
-    "*gh --repo *": deny
-```
-
-`tee` needs both forms here: `"tee *"` catches the bare pipeline node and
-`"* tee *"` catches an env-prefixed one (`LC_ALL=C tee f`). On the two
-deny-default roles `"tee *"` alone suffices, because `tee` is not allow-listed
-in the first place.
-
-**Unprefixed `gh` is denied** (`"gh *"`, anchored on purpose so a
-`GH_CONFIG_DIR=… gh …` line does not match it). Under the old allow-list the
-identity guard was free: every allowed `gh` rule carried `GH_CONFIG_DIR=*`, so
-an unprefixed call was simply absent from the list. Allow-default silently
-removes that guard, and an unprefixed `gh issue create` posts under the wrong
-account. This is the one regression the flip introduces that is not obvious from
-the diff.
-
-Proven on real invocations, one per row:
-
-| Case | Result |
-| --- | --- |
-| `ssh … root@… 'echo ok'` | **runs** (#946) |
-| `echo "x"` | **runs** |
-| `scripts/lane.sh check; echo "---exit:$?"` | **runs**, prints `---exit:0` |
-| `git status --short; bat package.json \| head -3; echo ---done` | **runs** |
-| `GH_CONFIG_DIR=… gh pr view 965 --json state` | **runs** |
-| `git push --dry-run origin HEAD` | refused |
-| `git -C /tmp/x push` | refused |
-| `GIT_DIR=.git git push` | refused |
-| `GH_CONFIG_DIR=… gh pr merge 965 --squash` | refused |
-| `gh issue list --limit 1` (unprefixed) | refused |
-| `GH_CONFIG_DIR=… gh -R owner/repo pr merge 965` | refused |
-| `bat AGENTS.md > f` | refused |
-| `bat AGENTS.md \| tee f` | refused |
-| `git commit --no-verify -m probe` | refused |
-| `dropdb findash_test_966_probe` | refused |
-
-**`"*>*"` is kept on the orchestrator, and you should know what it is now worth.**
-Under allow-default it is no longer a write boundary. Measured: with `edit: deny`
-and `"*>*": deny` both in force, `cp AGENTS.md out.txt` ran and produced the
-file. `sd`, `sed -i`, `python3 -c`, `bun -e` and a dozen others are equally
-available. The redirection deny closes the casual path and costs `2>/dev/null`
-and every literal `>` — a worse trade here than on the two read-only roles,
-where nothing else can write at all. Kept on the owner's call; re-open it if the
-false positives bite.
-
-**findash-implementer keeps `"*": allow` and gets no redirection deny** — it
-holds `edit: allow`, so `>` buys nothing and denying it would only break
-`bun run test 2>&1`. It did get the wrapped forms, the relocation-flag denies
-and the `"gh *"` identity guard, for the same reasons as above.
-
-Measured on findash-implementer itself:
-
-| Case | Result |
-| --- | --- |
-| `git status --short; git log --oneline -2; echo ---ok` | runs |
-| `GH_CONFIG_DIR=… gh issue view 966 --json title` | runs |
-| `git log --oneline -1 2>/dev/null` | runs — no redirection deny here |
-| `GIT_DIR=.git git push` | **refused** (it was not, before the wrapping) |
-
-One caveat on evidence. Asked to attempt `git checkout main > /dev/null` as a
-boundary test, the implementer's model declined to issue the tool call at all
-and answered from its own instructions — so that specific escape is derived
-from the matcher (anchored, fact 2) rather than measured. Worth knowing on its
-own: what stopped that command under the old rules may have been the model's
-compliance, not the rule.
+And a redirection deny is only a write boundary on a deny-default role. On an
+allow-default one it stops nothing — `cp`, `sd`, `sed -i`, `python3 -c` all
+write and are permitted — while still refusing `2>/dev/null`. Explorer and
+reviewer keep `"*>*"` for exactly that reason: their allow-lists contain
+nothing else that can write.
 
 ## Review gate is not automatic
 
