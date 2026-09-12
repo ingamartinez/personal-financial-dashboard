@@ -18,8 +18,7 @@ const log = createLogger({ module: "worker/classify-tx" });
 const MAX_DRAIN_ITERATIONS = 100;
 
 export type ClassifyTxJobData =
-  | { userId: number; mode: "specific"; txIds: number[] }
-  | { userId: number; mode: "drain-pending" };
+  { userId: number; mode: "specific"; txIds: number[] } | { userId: number; mode: "drain-pending" };
 
 /**
  * Core processor: classifies transactions for a user.

@@ -1507,8 +1507,7 @@ const manualTransferGroupSchema = z
 
 export type ManualTransferGroupInput = z.input<typeof manualTransferGroupSchema>;
 export type ManualTransferGroupResult =
-  | { status: "ok"; transferGroupId: string; txIds: number[] }
-  | { status: "error"; message: string };
+  { status: "ok"; transferGroupId: string; txIds: number[] } | { status: "error"; message: string };
 
 export async function createManualTransferGroup(
   input: ManualTransferGroupInput,

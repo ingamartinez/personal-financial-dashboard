@@ -139,8 +139,7 @@ export function IconPicker({ value, onChange, id }: IconPickerProps) {
   }, [query]);
 
   const Selected = (value && CURATED_ICONS[value]) as
-    | ComponentType<{ className?: string }>
-    | undefined;
+    ComponentType<{ className?: string }> | undefined;
 
   return (
     <div className="flex items-center gap-2">

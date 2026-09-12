@@ -17,8 +17,7 @@ export const linkTxToRecurringSchema = z.object({
 export type LinkTxToRecurringInput = z.input<typeof linkTxToRecurringSchema>;
 
 export type LinkTxToRecurringResult =
-  | { ok: true; yearMonth: string }
-  | { ok: false; error: string };
+  { ok: true; yearMonth: string } | { ok: false; error: string };
 
 export const unlinkTxFromRecurringSchema = z.object({
   txId: z.coerce.number().int().positive(),

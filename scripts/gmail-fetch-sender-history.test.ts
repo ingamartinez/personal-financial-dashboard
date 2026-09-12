@@ -77,16 +77,14 @@ describe("runFetchSenderHistory", () => {
   });
 
   it("calls pullForUser with preserveCursor and the parsed window", async () => {
-    const pull = vi.fn(
-      async (): Promise<PullResult> => ({
-        userId: 1,
-        pulled: 1,
-        skipped: 0,
-        byGateway: {} as PullResult["byGateway"],
-        errors: [],
-        connectionId: 9,
-      }),
-    );
+    const pull = vi.fn(async (): Promise<PullResult> => ({
+      userId: 1,
+      pulled: 1,
+      skipped: 0,
+      byGateway: {} as PullResult["byGateway"],
+      errors: [],
+      connectionId: 9,
+    }));
 
     await runFetchSenderHistory(
       {
@@ -108,16 +106,14 @@ describe("runFetchSenderHistory", () => {
   });
 
   it("fails the run when pullForUser reports errors", async () => {
-    const pull = vi.fn(
-      async (): Promise<PullResult> => ({
-        userId: 1,
-        pulled: 0,
-        skipped: 0,
-        byGateway: {} as PullResult["byGateway"],
-        errors: [{ gateway: "jetsmart", phase: "list", message: "hit page cap (1)" }],
-        connectionId: 9,
-      }),
-    );
+    const pull = vi.fn(async (): Promise<PullResult> => ({
+      userId: 1,
+      pulled: 0,
+      skipped: 0,
+      byGateway: {} as PullResult["byGateway"],
+      errors: [{ gateway: "jetsmart", phase: "list", message: "hit page cap (1)" }],
+      connectionId: 9,
+    }));
 
     await expect(
       runFetchSenderHistory(

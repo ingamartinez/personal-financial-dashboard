@@ -115,9 +115,7 @@ export type NeedsReviewBancolombiaMessage = {
 };
 
 export type BancolombiaParseResult =
-  | ParsedBancolombiaTx
-  | SkippedBancolombiaMessage
-  | NeedsReviewBancolombiaMessage;
+  ParsedBancolombiaTx | SkippedBancolombiaMessage | NeedsReviewBancolombiaMessage;
 
 // -----------------------------------------------------------------------------
 // Universal skip patterns

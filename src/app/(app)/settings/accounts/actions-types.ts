@@ -55,8 +55,7 @@ export type AccountUpsertInput = {
 // ---------------------------------------------------------------------------
 
 export type UpsertAccountResult =
-  | { ok: true; propagatedToSiblings: number }
-  | { ok: false; message: string };
+  { ok: true; propagatedToSiblings: number } | { ok: false; message: string };
 
 // ---------------------------------------------------------------------------
 // UpdatePhysicalCardInput

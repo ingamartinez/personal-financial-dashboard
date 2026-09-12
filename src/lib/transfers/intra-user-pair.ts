@@ -541,8 +541,7 @@ export function extractArqMeta(rawData: Record<string, unknown> | null): ArqMeta
   const arqBlock = rawData.arq as Record<string, unknown> | undefined;
   // Merged statement arq override (statement-side recipient_name).
   const mergedArqBlock = (rawData.merged_statement as Record<string, unknown> | undefined)?.arq as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
 
   const recipientName =
     (mergedArqBlock?.recipient_name_from_statement as string | undefined) ??
@@ -555,8 +554,7 @@ export function extractArqMeta(rawData: Record<string, unknown> | null): ArqMeta
   // but partial (e.g. has copAmountCents only — legacy test shape or early writes),
   // fall back to direct property access to preserve backward compatibility.
   const mergedFxRaw = (rawData.merged_statement as Record<string, unknown> | undefined)?.fx as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const primaryFxRaw = rawData.fx as Record<string, unknown> | undefined;
 
   const mergedFx = mergedFxRaw !== undefined ? parseFxMetadata(mergedFxRaw) : null;

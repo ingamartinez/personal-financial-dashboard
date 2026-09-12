@@ -198,9 +198,7 @@ export async function reorderCategories(
 }
 
 export type ArchiveResult =
-  | { status: "ok" }
-  | { status: "blocked"; reason: string }
-  | { status: "error"; message: string };
+  { status: "ok" } | { status: "blocked"; reason: string } | { status: "error"; message: string };
 
 export async function archiveCategory(
   input: z.input<typeof archiveSchema>,

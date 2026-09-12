@@ -38,14 +38,7 @@ import { createLogger } from "@/lib/logger";
 const log = createLogger({ module: "telegram/commands" });
 
 export type CommandName =
-  | "/start"
-  | "/help"
-  | "/cancel"
-  | "/enriquecer"
-  | "/backfill"
-  | "/si"
-  | "/revisar"
-  | "/omitir";
+  "/start" | "/help" | "/cancel" | "/enriquecer" | "/backfill" | "/si" | "/revisar" | "/omitir";
 
 // Maps aliases to canonical command names. `/enrich` is the English alias
 // requested by #452. `/backfill-gmail` maps to the canonical `/backfill`.

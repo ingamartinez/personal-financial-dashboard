@@ -878,9 +878,7 @@ async function _commitBancolombia(
 ): Promise<UnifiedCommitResult> {
   const { parsed, plan } = entry.bancolombiaData!;
   const kind = entry.kind as
-    | "bancolombia-savings"
-    | "bancolombia-extracto"
-    | "bancolombia-tc-legacy";
+    "bancolombia-savings" | "bancolombia-extracto" | "bancolombia-tc-legacy";
 
   log.info(
     { event: "commit_bancolombia", kind, userId, accountId },

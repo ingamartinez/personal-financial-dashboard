@@ -459,11 +459,7 @@ describe("doors: residue eligibility", () => {
 describe("doors: tools and context", () => {
   it("tool names cannot grow a native web_search without this test turning red", () => {
     type Allowed =
-      | "search_mail"
-      | "query_history"
-      | "lookup_merchant_kb"
-      | "web_lookup_merchant"
-      | "conclude";
+      "search_mail" | "query_history" | "lookup_merchant_kb" | "web_lookup_merchant" | "conclude";
     type Extra = Exclude<(typeof INVESTIGATOR_TOOL_NAMES)[number], Allowed>;
     const extra: Extra extends never ? true : Extra = true;
     expect(extra).toBe(true);

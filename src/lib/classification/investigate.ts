@@ -109,8 +109,7 @@ export const SONNET_OUTPUT_CENTS_PER_MTOK = 1500;
 export type ResiduePopulation = "opaque_abstained" | "swept";
 
 export type ResidueEligibility =
-  | { ok: true; population: ResiduePopulation }
-  | { ok: false; reason: ResidueIneligibleReason };
+  { ok: true; population: ResiduePopulation } | { ok: false; reason: ResidueIneligibleReason };
 
 export type ResidueIneligibleReason =
   | "unclassified"
