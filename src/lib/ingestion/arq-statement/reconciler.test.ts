@@ -25,6 +25,8 @@ import {
   transactions,
   users,
 } from "@/lib/db/schema";
+import { notMergeRetired } from "@/lib/reconciliation/merge-retired";
+import { listTransactions } from "@/lib/transactions/queries";
 
 import type { ParsedStatementTx } from "./type-handlers";
 import {
@@ -171,6 +173,32 @@ async function insertEmailTx(opts: {
           trmSource: "email_implied",
         },
       },
+    })
+    .returning({ id: transactions.id });
+  return row.id;
+}
+
+async function insertTelegramTx(opts: {
+  userId: number;
+  accountId: number;
+  amountCents: bigint;
+  occurredAt: Date;
+  merchant: string;
+}): Promise<number> {
+  const [row] = await db
+    .insert(transactions)
+    .values({
+      userId: opts.userId,
+      accountId: opts.accountId,
+      occurredAt: opts.occurredAt,
+      amountCents: opts.amountCents,
+      currency: "USD",
+      descriptionRaw: opts.merchant,
+      merchant: opts.merchant,
+      source: "telegram",
+      channel: "manual",
+      externalId: `tg:test:${crypto.randomUUID()}`,
+      rawData: { source: "telegram", merchant: opts.merchant },
     })
     .returning({ id: transactions.id });
   return row.id;
@@ -352,6 +380,177 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("reconcileEmailVsStatement", () => {
+  describe("ARQ statement vs Telegram dedup (#921)", () => {
+    it("keeps the statement row, appends Telegram merchant data, and retires Telegram", async () => {
+      const occurredAt = new Date(Date.UTC(2026, 2, 6, 12, 0, 0));
+      const amountCents = BigInt(-18000);
+      const telegramId = await insertTelegramTx({
+        userId,
+        accountId,
+        amountCents,
+        occurredAt: new Date(occurredAt.getTime() + 60 * 60 * 1000),
+        merchant: "Telegram Rich Counterparty",
+      });
+      const result = await reconcileEmailVsStatement(
+        { db },
+        {
+          userId,
+          accountId,
+          importId,
+          period: PERIOD,
+          parsedTxs: [
+            makePurchaseTx({
+              occurredAt,
+              amountUsdc: amountCents,
+              merchant: "Telegram Rich Counterparty",
+              externalId: "arq-stmt-telegram-merge-921",
+            }),
+          ],
+        },
+      );
+
+      expect(result.insertedCount).toBe(1);
+      const inserted = result.details.find((detail) => detail.kind === "insert");
+      expect(inserted?.kind).toBe("insert");
+      if (inserted?.kind !== "insert") throw new Error("expected statement insert");
+      const statement = await db.query.transactions.findFirst({
+        where: eq(transactions.id, inserted.newTxId),
+      });
+      const telegram = await db.query.transactions.findFirst({
+        where: eq(transactions.id, telegramId),
+      });
+      const [decision] = await db
+        .select()
+        .from(reconciliationDecisions)
+        .where(eq(reconciliationDecisions.txnId, inserted.newTxId));
+
+      expect(statement?.source).toBe("arq_statement");
+      expect(statement?.merchant).toBe("Telegram Rich Counterparty");
+      expect((statement?.rawData as Record<string, unknown>).merged_telegram).toMatchObject({
+        telegram_transaction_id: telegramId,
+        arq_statement_import_id: importId,
+      });
+      expect(telegram?.deletedAt).not.toBeNull();
+      expect(decision.action).toBe("merged_into");
+      expect(decision.mergedIntoTxnId).toBe(telegramId);
+
+      const archived = await listTransactions(userId, { includeArchived: true });
+      expect(archived.rows.map((row) => row.id)).toContain(inserted.newTxId);
+      expect(archived.rows.map((row) => row.id)).not.toContain(telegramId);
+      const mergeRetired = await db
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(and(eq(transactions.id, telegramId), notMergeRetired()));
+      expect(mergeRetired).toHaveLength(0);
+    });
+
+    it("excludes statement rows, out-of-window rows, and wrong-account rows", async () => {
+      const occurredAt = new Date(Date.UTC(2026, 2, 7, 12, 0, 0));
+      const amountCents = BigInt(-19000);
+      const sameSourceId = await insertStatementTx({
+        userId,
+        accountId,
+        amountCents,
+        occurredAt,
+        merchant: "Existing Statement",
+        externalId: "arq-stmt-existing-telegram-exclusion-921",
+        importId,
+      });
+      const outOfWindowId = await insertTelegramTx({
+        userId,
+        accountId,
+        amountCents,
+        occurredAt: new Date(occurredAt.getTime() + 25 * 60 * 60 * 1000),
+        merchant: "Out of Window",
+      });
+      const wrongAccountId = await insertTelegramTx({
+        userId,
+        accountId: otherAccountId,
+        amountCents,
+        occurredAt,
+        merchant: "Wrong Account",
+      });
+
+      const result = await reconcileEmailVsStatement(
+        { db },
+        {
+          userId,
+          accountId,
+          importId,
+          period: PERIOD,
+          parsedTxs: [
+            makePurchaseTx({
+              occurredAt,
+              amountUsdc: amountCents,
+              merchant: "New Statement",
+              externalId: "arq-stmt-telegram-exclusions-921",
+            }),
+          ],
+        },
+      );
+
+      expect(result.insertedCount).toBe(1);
+      const inserted = result.details.find((detail) => detail.kind === "insert");
+      if (inserted?.kind !== "insert") throw new Error("expected statement insert");
+      expect(inserted.newTxId).not.toBe(sameSourceId);
+      const excluded = await db
+        .select({ id: transactions.id, deletedAt: transactions.deletedAt })
+        .from(transactions)
+        .where(sql`${transactions.id} IN (${outOfWindowId}, ${wrongAccountId})`);
+      expect(excluded).toHaveLength(2);
+      expect(excluded.every((row) => row.deletedAt === null)).toBe(true);
+    });
+
+    it("prefers the existing Gmail ARQ match when Telegram also has a candidate", async () => {
+      const occurredAt = new Date(Date.UTC(2026, 2, 9, 12, 0, 0));
+      const amountCents = BigInt(-20000);
+      const emailId = await insertEmailTx({
+        userId,
+        accountId,
+        amountCents,
+        occurredAt,
+        merchant: "Shared Counterparty",
+        externalId: "arq-email-telegram-precedence-921",
+      });
+      const telegramId = await insertTelegramTx({
+        userId,
+        accountId,
+        amountCents,
+        occurredAt,
+        merchant: "Telegram Candidate",
+      });
+
+      const result = await reconcileEmailVsStatement(
+        { db },
+        {
+          userId,
+          accountId,
+          importId,
+          period: PERIOD,
+          parsedTxs: [
+            makeTransferSentTx({
+              occurredAt,
+              amountUsdc: amountCents,
+              recipientName: "Shared Counterparty",
+              externalId: "arq-stmt-telegram-precedence-921",
+            }),
+          ],
+        },
+      );
+
+      expect(result.mergedCount).toBe(1);
+      expect(result.insertedCount).toBe(0);
+      const email = await db.query.transactions.findFirst({
+        where: eq(transactions.id, emailId),
+      });
+      const telegram = await db.query.transactions.findFirst({
+        where: eq(transactions.id, telegramId),
+      });
+      expect(email?.secondarySource).toBe("arq_statement");
+      expect(telegram?.deletedAt).toBeNull();
+    });
+  });
+
   describe("MERGE — matching email + statement tx", () => {
     it("updates existing gmail_arq tx with statement metadata; primary source unchanged", async () => {
       const occurredAt = new Date(Date.UTC(2026, 2, 5, 12, 0, 0));

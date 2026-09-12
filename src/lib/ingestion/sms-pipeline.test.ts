@@ -7,6 +7,7 @@ import {
   counterparties,
   counterpartyAliases,
   parserEvents,
+  reconciliationDecisions,
   recurringTransactions,
   transactions,
   users,
@@ -88,6 +89,32 @@ async function cleanup() {
   await db.delete(parserEvents).where(inArray(parserEvents.userId, ids));
   await db.delete(accounts).where(inArray(accounts.userId, ids));
   await db.delete(users).where(inArray(users.id, ids));
+}
+
+async function insertGmailBancolombiaTx(opts: {
+  userId: number;
+  accountId: number;
+  amountCents: bigint;
+  occurredAt: Date;
+  merchant: string;
+  kind?: string;
+}): Promise<number> {
+  const [row] = await db
+    .insert(transactions)
+    .values({
+      userId: opts.userId,
+      accountId: opts.accountId,
+      occurredAt: opts.occurredAt,
+      amountCents: opts.amountCents,
+      currency: "COP",
+      descriptionRaw: `Email: ${opts.merchant}`,
+      merchant: opts.merchant,
+      source: "gmail_bancolombia",
+      externalId: `gmail-test-${crypto.randomUUID()}`,
+      rawData: { kind: opts.kind ?? "purchase" },
+    })
+    .returning({ id: transactions.id });
+  return row.id;
 }
 
 const rawSms =
@@ -302,6 +329,130 @@ describe("ingestParsed — parse outcome telemetry (#329 PR1)", () => {
     const events = await db.select().from(parserEvents).where(eq(parserEvents.userId, userId));
     expect(events).toHaveLength(1);
     expect(events[0].eventKind).toBe("parse_outcome_success");
+  });
+});
+
+describe("SMS reverse-order Gmail Bancolombia dedup (#921)", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  function purchase(
+    overrides: Partial<Extract<ParseResult, { kind: "purchase" }>> = {},
+  ): ParseResult {
+    return {
+      kind: "purchase",
+      amountCents: BigInt(4500000),
+      currency: "COP",
+      merchant: "RAPPI",
+      cardLast4: "2575",
+      cardKind: "credit",
+      occurredOn: "2026-04-15",
+      occurredTime: "19:30",
+      externalId: `bcol-sms:dedup-${crypto.randomUUID()}`,
+      raw: "Bancolombia purchase test",
+      ...overrides,
+    };
+  }
+
+  it("returns duplicated with the live Gmail row id and inserts no SMS row", async () => {
+    const { userId, accountId } = await setupUserWithAccount(undefined);
+    const gmailId = await insertGmailBancolombiaTx({
+      userId,
+      accountId,
+      amountCents: BigInt(-4500000),
+      occurredAt: new Date("2026-04-15T19:32:00-05:00"),
+      merchant: "RAPPI",
+    });
+
+    const outcome = await ingestParsed(userId, purchase());
+
+    expect(outcome).toMatchObject({ status: "duplicated", txId: gmailId });
+    const rows = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.deletedAt === null)).toHaveLength(1);
+    expect(rows.find((row) => row.id === gmailId)?.source).toBe("gmail_bancolombia");
+    const decision = await db.query.reconciliationDecisions.findFirst({
+      where: eq(reconciliationDecisions.txnId, gmailId),
+    });
+    expect(decision?.mergedIntoTxnId).not.toBeNull();
+  });
+
+  it("returns duplicated when the same SMS external id is replayed", async () => {
+    const { userId, accountId } = await setupUserWithAccount(undefined);
+    await insertGmailBancolombiaTx({
+      userId,
+      accountId,
+      amountCents: BigInt(-4500000),
+      occurredAt: new Date("2026-04-15T19:32:00-05:00"),
+      merchant: "RAPPI",
+    });
+    const input = purchase({ externalId: "bcol-sms:replay-test" });
+
+    const first = await ingestParsed(userId, input);
+    const second = await ingestParsed(userId, input);
+
+    expect(first.status).toBe("duplicated");
+    expect(second.status).toBe("duplicated");
+  });
+
+  it("inserts normally when no live Gmail row is in range", async () => {
+    const { userId, accountId } = await setupUserWithAccount(undefined);
+    await insertGmailBancolombiaTx({
+      userId,
+      accountId,
+      amountCents: BigInt(-4500000),
+      occurredAt: new Date("2026-04-15T19:36:00-05:00"),
+      merchant: "RAPPI",
+    });
+
+    const outcome = await ingestParsed(userId, purchase());
+
+    expect(outcome.status).toBe("inserted");
+    const rows = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("does not match an opposite-sign Gmail amount of equal magnitude", async () => {
+    const { userId, accountId } = await setupUserWithAccount(undefined);
+    await insertGmailBancolombiaTx({
+      userId,
+      accountId,
+      amountCents: BigInt(4500000),
+      occurredAt: new Date("2026-04-15T19:30:00-05:00"),
+      merchant: "RAPPI",
+    });
+
+    const outcome = await ingestParsed(userId, purchase());
+
+    expect(outcome.status).toBe("inserted");
+    const rows = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("records divergent fields on the Gmail winner", async () => {
+    const { userId, accountId } = await setupUserWithAccount(undefined);
+    const gmailId = await insertGmailBancolombiaTx({
+      userId,
+      accountId,
+      amountCents: BigInt(-4500000),
+      occurredAt: new Date("2026-04-15T19:32:00-05:00"),
+      merchant: "EMAIL MERCHANT",
+      kind: "transfer_sent",
+    });
+
+    const outcome = await ingestParsed(
+      userId,
+      purchase({ merchant: "SMS MERCHANT", occurredTime: "19:34" }),
+    );
+
+    expect(outcome).toMatchObject({ status: "duplicated", txId: gmailId, flaggedMismatch: true });
+    const [winner] = await db.select().from(transactions).where(eq(transactions.id, gmailId));
+    expect(winner.sourceMismatch).toBe(true);
+    expect(winner.sourceMismatchDetails?.fromSource).toBe("gmail_bancolombia");
+    expect(winner.sourceMismatchDetails?.toSource).toBe("sms");
+    expect(winner.sourceMismatchDetails?.diffs.map((diff) => diff.field)).toEqual(
+      expect.arrayContaining(["occurredAt", "merchant", "kind"]),
+    );
   });
 });
 

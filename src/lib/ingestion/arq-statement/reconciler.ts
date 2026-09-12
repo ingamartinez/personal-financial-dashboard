@@ -275,6 +275,14 @@ interface ExistingEmailTx {
   rawData: Record<string, unknown>;
 }
 
+interface ExistingTelegramTx {
+  id: number;
+  amountCents: bigint;
+  occurredAt: Date;
+  merchant: string | null;
+  rawData: Record<string, unknown>;
+}
+
 /** Extract the counterparty string from a non-skip ParsedStatementTx. */
 function counterpartyFromStatement(tx: ParsedStatementTx): string | null {
   if (tx.kind === "skip") return null;
@@ -466,6 +474,136 @@ async function findEmailCandidates(
     arqStatementImportId: r.arqStatementImportId,
     rawData: (r.rawData ?? {}) as Record<string, unknown>,
   }));
+}
+
+async function findTelegramCandidate(
+  dbc: typeof db,
+  userId: number,
+  accountId: number,
+  occurredAt: Date,
+  amountCents: bigint,
+  counterparty: string | null,
+): Promise<{ tx: ExistingTelegramTx; ambiguous: boolean } | null> {
+  const windowStart = new Date(occurredAt.getTime() - DATE_WINDOW_MS);
+  const windowEnd = new Date(occurredAt.getTime() + DATE_WINDOW_MS);
+  const absAmount = amountCents < BigInt(0) ? -amountCents : amountCents;
+  const rows = await dbc
+    .select({
+      id: transactions.id,
+      amountCents: transactions.amountCents,
+      occurredAt: transactions.occurredAt,
+      merchant: transactions.merchant,
+      rawData: transactions.rawData,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.accountId, accountId),
+        eq(transactions.source, "telegram"),
+        notDeleted(transactions.deletedAt),
+        sql`sign(${transactions.amountCents}) = sign(${amountCents})`,
+        gte(transactions.occurredAt, windowStart),
+        lte(transactions.occurredAt, windowEnd),
+        sql`abs(${transactions.amountCents}) BETWEEN ${absAmount - AMOUNT_SEARCH_WINDOW_CENTS} AND ${absAmount + AMOUNT_SEARCH_WINDOW_CENTS}`,
+      ),
+    )
+    .limit(10);
+
+  const eligible = rows
+    .map((row) => ({
+      row,
+      timeDelta: Math.abs(row.occurredAt.getTime() - occurredAt.getTime()),
+      ratio: counterparty === null ? 1 : levenshteinRatio(counterparty, row.merchant ?? ""),
+    }))
+    .filter((candidate) => counterparty === null || candidate.ratio >= COUNTERPARTY_MATCH_THRESHOLD)
+    .sort((a, b) => a.timeDelta - b.timeDelta || b.ratio - a.ratio);
+  const best = eligible[0];
+  if (!best) return null;
+  return {
+    tx: { ...best.row, rawData: (best.row.rawData ?? {}) as Record<string, unknown> },
+    ambiguous: eligible.length > 1 && eligible[1].timeDelta === best.timeDelta,
+  };
+}
+
+async function retireTelegramIntoStatement(
+  dbc: typeof db,
+  input: {
+    userId: number;
+    accountId: number;
+    telegramTxId: number;
+    statementTxId: number;
+    importId: number;
+  },
+): Promise<void> {
+  await dbc.transaction(async (tx) => {
+    const [telegram] = await tx
+      .select({ rawData: transactions.rawData, merchant: transactions.merchant })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.id, input.telegramTxId),
+          eq(transactions.userId, input.userId),
+          eq(transactions.accountId, input.accountId),
+          eq(transactions.source, "telegram"),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!telegram) throw new Error("arq_statement_telegram_merge_row_not_found");
+
+    const [statement] = await tx
+      .select({ merchant: transactions.merchant, rawData: transactions.rawData })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.id, input.statementTxId),
+          eq(transactions.userId, input.userId),
+          eq(transactions.source, "arq_statement"),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!statement) throw new Error("arq_statement_telegram_statement_row_not_found");
+
+    await tx
+      .update(transactions)
+      .set({
+        secondarySource: "telegram",
+        rawData: {
+          ...((statement.rawData ?? {}) as Record<string, unknown>),
+          merged_telegram: {
+            telegram_transaction_id: input.telegramTxId,
+            telegram_raw_data: telegram.rawData,
+            arq_statement_import_id: input.importId,
+          },
+        },
+        merchant: telegram.merchant ?? statement.merchant,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, input.statementTxId), eq(transactions.userId, input.userId)));
+
+    await tx.insert(reconciliationDecisions).values({
+      userId: input.userId,
+      txnId: input.statementTxId,
+      action: "merged_into",
+      mergedIntoTxnId: input.telegramTxId,
+      note: "#921 arq_statement ↔ telegram cross-source dedup; arq_statement winner",
+    });
+
+    await tx
+      .update(transactions)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(transactions.id, input.telegramTxId),
+          eq(transactions.userId, input.userId),
+          eq(transactions.accountId, input.accountId),
+          eq(transactions.source, "telegram"),
+          notDeleted(transactions.deletedAt),
+        ),
+      );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -859,9 +997,35 @@ export async function reconcileEmailVsStatement(
 
     if (!match.found) {
       // No email counterpart — INSERT as new arq_statement tx.
-      const newTxId = await insertStatementTx(dbc, userId, accountId, importId, tx);
+      const telegramMatch = await findTelegramCandidate(
+        dbc,
+        userId,
+        accountId,
+        tx.occurredAt,
+        tx.amountUsdc,
+        statementCounterparty,
+      );
+      const newTxId = await insertStatementTx(
+        dbc,
+        userId,
+        accountId,
+        importId,
+        tx,
+        telegramMatch?.ambiguous
+          ? { reason: "ambiguous_telegram_match", fromSource: "arq_statement" }
+          : undefined,
+      );
 
       if (newTxId !== null) {
+        if (telegramMatch && !telegramMatch.ambiguous) {
+          await retireTelegramIntoStatement(dbc, {
+            userId,
+            accountId,
+            telegramTxId: telegramMatch.tx.id,
+            statementTxId: newTxId,
+            importId,
+          });
+        }
         details.push({ kind: "insert", statementTx: tx, newTxId });
         insertedCount++;
         // #518: attempt pairing for transfer_sent/transfer_received statement txs.
