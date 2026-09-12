@@ -102,6 +102,9 @@ report() {
 issue=""
 link_word="Closes"
 link_explicit=0
+# Set only when pre-flight had to GUESS which issue this PR belongs to.
+# That, not the link word, is the ambiguity AGENTS.md condition (b) is about.
+multi_issue=0
 body_file=""
 run_tests=1
 watch_ci=1
@@ -179,6 +182,7 @@ if [[ -z "$issue" ]]; then
     1) issue="${issues[0]}" ;;
     *) issue="${issues[0]}"
        link_word="Part of"
+       multi_issue=1
        warn "commits reference issues: ${issues[*]} — using #$issue with 'Part of'" ;;
   esac
 fi
@@ -196,8 +200,8 @@ if (( ! link_explicit )); then
   fi
 fi
 
-if [[ "$link_word" == "Part of" ]]; then
-  info "auto-merge conditions will NOT hold (PR does not close a single issue)"
+if (( multi_issue )); then
+  info "auto-merge conditions will NOT hold (commits reference several issues)"
 fi
 
 # ---------------------------------------------------------------- gates
@@ -321,14 +325,24 @@ if (( ci_status != 0 )); then
 fi
 
 mergeable="$(gh_ pr view "$pr_number" --json mergeable --jq .mergeable)"
+# AGENTS.md condition (b) is "the PR closes a single issue" — a statement about
+# SCOPE, not about the link word. `Part of` is the correct word for one phase of
+# an epic and closes nothing, so it cannot orphan the remaining phases; refusing
+# it punished authors for choosing the safe word (#964). What genuinely has
+# ambiguous scope is a PR whose commits name several issues, where pre-flight
+# picked one by guessing — that is what `multi_issue` marks.
 auto_ok="no"
-[[ "$link_word" == "Closes" && "$mergeable" == "MERGEABLE" ]] && auto_ok="yes"
+(( ! multi_issue )) && [[ "$mergeable" == "MERGEABLE" ]] && auto_ok="yes"
 
 printf '\n  PR:         %s\n  CI:         %sGREEN%s\n  Mergeable:  %s\n  Auto-merge: %s\n' \
   "$pr_url" "$c_grn" "$c_off" "$mergeable" "$auto_ok"
 
 if [[ "$auto_ok" != "yes" ]]; then
-  reason="$([[ "$link_word" == "Part of" ]] && echo "PR does not close a single issue" || echo "not mergeable: $mergeable")"
+  if (( multi_issue )); then
+    reason="commits reference several issues — scope is ambiguous"
+  else
+    reason="not mergeable: $mergeable"
+  fi
   printf '\n  Auto-merge conditions do NOT hold (%s) — a human decides.\n\n' "$reason"
   # Only a refused --merge is a report: without it, stopping at PR-open is the
   # documented outcome, not a surprise anybody needs waking up for.
