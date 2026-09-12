@@ -338,7 +338,21 @@ if (( ci_status != 0 )); then
   die "CI failed — the PR stays open. Fix it on the branch and push again."
 fi
 
-mergeable="$(gh_ pr view "$pr_number" --json mergeable --jq .mergeable)"
+# GitHub computes mergeability asynchronously and answers UNKNOWN until it is
+# done — which it always is right after a push, and again whenever main moves
+# under the PR. Reading it once treats "not computed yet" as "not mergeable"
+# and silently skips the merge. Same family as the CI-checks race above: ask
+# GitHub for a fact it has not derived yet and you get a confident wrong answer.
+mergeable="UNKNOWN"
+waited=0
+while (( waited < 90 )); do
+  mergeable="$(gh_ pr view "$pr_number" --json mergeable --jq .mergeable)"
+  [[ "$mergeable" != "UNKNOWN" ]] && break
+  sleep 5
+  waited=$(( waited + 5 ))
+done
+(( waited > 0 )) && info "mergeability settled after ${waited}s"
+[[ "$mergeable" == "UNKNOWN" ]] && warn "GitHub still reports UNKNOWN after ${waited}s"
 # AGENTS.md condition (b) is "the PR closes a single issue" — a statement about
 # SCOPE, not about the link word. `Part of` is the correct word for one phase of
 # an epic and closes nothing, so it cannot orphan the remaining phases; refusing
