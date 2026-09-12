@@ -1,6 +1,6 @@
 ---
 description: Read-only digest of findash context. Use BEFORE findash-implementer when the task needs 4+ files, prior art from engram, a module map, or issue-scope clarification. Returns a fixed-schema digest under 350 words. Does not modify code, branches, or PRs. Not a replacement for /sdd-explore.
-mode: primary
+mode: all
 model: llmgateway/gpt-5.6-luna
 temperature: 0.1
 permission:

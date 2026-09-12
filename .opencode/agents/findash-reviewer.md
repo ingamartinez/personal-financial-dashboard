@@ -1,6 +1,6 @@
 ---
 description: Read-only semantic review of a findash branch. Catches bugs lint/typecheck/tests miss (tenant JOINs, soft-delete, money as bigint cents, Next.js 16 server actions, drizzle, Pino). Use BETWEEN findash-implementer and scripts/ship.sh for non-trivial changes. Skip docs-only, test-only, and mechanical refactors. Reports CRITICAL / WARNING / SUGGESTION. Does not modify code.
-mode: primary
+mode: all
 model: llmgateway/deepseek-v4.1-flash
 temperature: 0.1
 permission:
