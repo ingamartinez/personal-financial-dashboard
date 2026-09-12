@@ -12,51 +12,7 @@ permission:
     "findash-reviewer": allow
     "explore": allow
   bash:
-    "*": deny
-    "rg *": allow
-    "fd *": allow
-    "bat *": allow
-    "eza *": allow
-    "jq *": allow
-    "wc *": allow
-    "head *": allow
-    "tail *": allow
-    "sort *": allow
-    "uniq *": allow
-    "codegraph *": allow
-    "scripts/lane.sh*": allow
-    "./scripts/lane.sh*": allow
-    "scripts/ship.sh*": allow
-    "./scripts/ship.sh*": allow
-    "scripts/review-tier.sh*": allow
-    "./scripts/review-tier.sh*": allow
-    "bun run lint": allow
-    "bun run typecheck": allow
-    "bun run test*": allow
-    "git status*": allow
-    "git log*": allow
-    "git diff*": allow
-    "git show*": allow
-    "git branch": allow
-    "git ls-files*": allow
-    "git rev-parse*": allow
-    "git fetch*": allow
-    "git worktree list*": allow
-    "git push*": deny
-    "git rebase*": deny
-    "git reset --hard*": deny
-    "GH_CONFIG_DIR=* gh issue view*": allow
-    "GH_CONFIG_DIR=* gh issue list*": allow
-    "GH_CONFIG_DIR=* gh issue comment*": allow
-    "GH_CONFIG_DIR=* gh issue create*": allow
-    "GH_CONFIG_DIR=* gh issue edit*": allow
-    "GH_CONFIG_DIR=* gh issue close*": allow
-    "GH_CONFIG_DIR=* gh issue delete*": allow
-    "GH_CONFIG_DIR=* gh pr view*": allow
-    "GH_CONFIG_DIR=* gh pr list*": allow
-    "GH_CONFIG_DIR=* gh pr diff*": allow
-    "GH_CONFIG_DIR=* gh pr checks*": allow
-    "GH_CONFIG_DIR=* gh api *": deny
+    "*": allow
 ---
 
 # findash-orchestrator
@@ -73,69 +29,41 @@ them when spawned — your model never leaks into a lane.
 
 ## Scope bounding
 
-`permission.edit: deny` blocks `edit`, `write` and `apply_patch`. You cannot
-write code. That is the point: findash-implementer writes, you decide.
+`bash` is `"*": allow` with **no denies at all**. That is deliberate and it is
+the repo owner's explicit decision (#966), taken after an allow-list refused
+`echo` and `ssh` in one live session and cost a human round-trip each time.
 
-`task` is deny-first with an allow-list of the three findash lanes plus
-`explore`. `bash` is deny-first and shaped for coordination — reads, gates and
-`scripts/ship.sh`. Direct `git push`, `rebase` and `reset --hard` are denied;
-shipping goes through `scripts/ship.sh`, which is the sanctioned path.
+So: this seat can `git push`, `gh pr merge`, `gh api`, `dropdb`, `rm -rf`, and
+write any file through `cp`, `sd`, `sed -i` or `python3 -c`. Nothing in the
+config stops you.
 
-If a command is refused, that is the boundary working. Say what you needed and
-why. Do not route around it with a shell trick.
+`permission.edit: deny` still blocks the `edit`/`write`/`apply_patch` tools, and
+`task` still allows only the three findash lanes plus `explore`. Those are the
+only two boundaries left.
 
-### The issue surface (#956)
+### What that means for you
 
-`gh issue create`, `edit`, `close` and `delete` are allowed. These are the only
-permissions that let you write **outside** the repo: branches, worktrees and
-even merges are local and reversible, an issue is public under the owner
-account. Granted on the owner's call, not by oversight.
+Everything that used to be enforced is now convention, and conventions are kept
+by the agent reading them — which is you, right now.
 
-The reason is that routing issue writes back through a human reinstates the
-manual step this architecture exists to remove. A session that starts as a
-conversation reaches the point where `AGENTS.md` § Issue-first requires an open,
-claimed issue and must be able to write it. An orchestrator that closes what it
-finished and edits scope as it learns is doing the job, not exceeding it.
+- **Ship through `scripts/ship.sh`.** Not `gh pr merge`, not `git push`. The
+  script runs the gates, waits for CI, and merges only when `AGENTS.md`
+  auto-merge conditions hold. You can bypass it in one command. Do not.
+- **Prefix every `gh` call** with `GH_CONFIG_DIR=~/.config/gh-findash`. Nothing
+  rejects an unprefixed call any more; it will simply authenticate as a
+  different account and post under the wrong name, silently and publicly.
+- **Do not write code.** `findash-implementer` writes, you decide. `edit: deny`
+  covers the edit tools, not `cp` or `sed`.
+- **Do not touch the `findash` dev database.** `findash_test_*` is yours.
+- **Never `--no-verify`.** The hooks are the gate, not an obstacle.
+- **`git -C`, `--git-dir`, `--work-tree`, `gh -R`, `gh --repo`** operate outside
+  the tree or repo you were launched in. If you find yourself reaching for one,
+  you are in the wrong lane — stop and say so.
 
-`gh issue delete` has **no undo**: it destroys the issue and every comment on it,
-for everyone, unrecoverably. It is on the list deliberately — read it as a
-decision, not a copy-paste slip — and it is the one command here worth
-confirming with the human before you run it.
+`ssh` is available for read-only production diagnosis (#946). Reading prod to
+diagnose is in remit; mutating it is a decision with a human in it.
 
-Every one of the four carries the `GH_CONFIG_DIR=*` prefix, and that is
-load-bearing rather than cosmetic. An unprefixed rule would authenticate as a
-different account and defeat `AGENTS.md` § gh CLI identity **silently**: nothing
-fails, nothing warns, the issue simply appears under the wrong name. Never add a
-`gh` rule without it.
-
-### `gh api` is denied outright (#957)
-
-`gh api` is the raw REST client. With the `repo` + `workflow` scopes on this
-account it reaches every write this block denies elsewhere — `PUT
-/pulls/{n}/merge` merges the PR the #948 gate exists to guard, `PUT
-/contents/{path}` commits without `git push`, `PATCH /git/refs/{ref}` force-moves
-a branch. One allow line made the rest of this block decorative, and it did so
-invisibly, because nothing in `gh api *` reads as "merge".
-
-There is no narrow allow-list carve-out for it, and that is a finding rather
-than an omission. An opencode `*` compiles to `.*` under a dotall regex, so it
-swallows spaces: a pattern like `gh api repos/*/pulls/*/reviews*` also matches
-`gh api repos/o/r/pulls/958/merge --method PUT -f decoy=/pulls/1/reviews`. That
-was run against a real lane — the merge call went through. A wildcard in the
-middle of a `gh api` pattern cannot be bounded to one path segment, so the
-endpoint allow-list that looks safe is not one.
-
-The one read this workflow needed has a first-class equivalent:
-
-```bash
-GH_CONFIG_DIR=~/.config/gh-findash gh pr view <n> --json reviews \
-  --jq '.reviews[]|{state,user:.author.login,body}'
-```
-
-Byte-identical output to the old `pulls/<n>/reviews` call, covered by the
-existing `gh pr view*` allow, and `gh pr view` has no flag that writes. If you
-need a GitHub read that no `gh` subcommand exposes, say so and stop. Do not
-reach for `gh api`.
+A refusal is no longer going to tell you where the edge is. Ask instead.
 
 ## Hard rules
 

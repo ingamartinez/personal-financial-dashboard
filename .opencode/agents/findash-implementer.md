@@ -9,25 +9,24 @@ permission:
   webfetch: allow
   bash:
     "*": allow
-    "git push": deny
-    "git push *": deny
-    "git rebase*": deny
-    "git reset --hard*": deny
-    "git checkout main": deny
-    "git switch main": deny
-    "git merge*": deny
-    "git * --no-verify*": deny
-    "*--no-verify*": deny
-    "gh pr create": deny
-    "gh pr create *": deny
-    "gh pr merge": deny
-    "gh pr merge *": deny
+    "gh *": deny
+    "*git push*": deny
+    "*git rebase*": deny
+    "*git reset --hard*": deny
+    "*git checkout main*": deny
+    "*git switch main*": deny
+    "*git merge*": deny
+    "*git -C*": deny
+    "*git --git-dir*": deny
+    "*git --work-tree*": deny
     "*gh pr create*": deny
     "*gh pr merge*": deny
-    "gh api*": deny
-    "* gh api*": deny
+    "*gh api*": deny
+    "*gh -R *": deny
+    "*gh --repo *": deny
     "*gh auth switch*": deny
     "*gh auth setup-git*": deny
+    "*--no-verify*": deny
     "dropdb*": deny
     "*psql -d findash *": deny
     "*psql -d findash": deny
@@ -53,9 +52,19 @@ another role or to production:
 | anything with `--no-verify` | hooks are the gate, not an obstacle |
 | `gh api` (any form) | raw REST reaches past every deny above — `PUT /pulls/{n}/merge`, `PUT /contents/{path}`. #957 |
 | `gh auth switch`, `gh auth setup-git` | rewrites the global gitconfig and breaks another agent |
+| `git -C`, `--git-dir`, `--work-tree`, `gh -R`, `--repo` | they relocate the target, so they walk around every rule above (#966) |
+| `gh` without the `GH_CONFIG_DIR=` prefix | it would post under the wrong account, silently and publicly |
 | `dropdb`, `psql -d findash` | you touch `findash_test*` only, never the dev database |
 | `ssh`, `pm2` | production |
 | `rm -rf` | no |
+
+Every deny is written wrapped (`"*...*"`) since #966. A pattern compiles
+anchored — `new RegExp("^" + pattern + "$", "s")` against each command node's
+raw source text — so the old anchored `"git push"` did not match
+`GIT_DIR=.git git push`, and no wrapped form can see past `git -C /tmp/x push`
+either, which is why the relocation flags are denied outright. There is no
+redirection deny here on purpose: you hold `edit: allow`, so `>` buys an
+attacker nothing and denying it would only break `bun run test 2>&1`.
 
 If a command is refused, that is the boundary working. Report it; do not route
 around it.
