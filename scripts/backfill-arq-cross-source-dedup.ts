@@ -18,6 +18,17 @@ import { createLogger } from "../src/lib/logger";
 
 const log = createLogger({ module: "backfill-arq-cross-source-dedup" });
 
+type ArqBackfillRow = {
+  email_id: number;
+  statement_id: number;
+  user_id: number;
+  account_id: number;
+  email_amount_cents: string;
+  email_occurred_at: Date | string;
+  email_merchant: string | null;
+  statement_merchant: string | null;
+};
+
 function parseArgs(argv: string[]): { apply: boolean; userId: number | null } {
   let apply = false;
   let userId: number | null = null;
@@ -34,16 +45,7 @@ function parseArgs(argv: string[]): { apply: boolean; userId: number | null } {
 
 async function main(): Promise<void> {
   const { apply, userId } = parseArgs(process.argv);
-  const rows = await db.execute<{
-    email_id: number;
-    statement_id: number;
-    user_id: number;
-    account_id: number;
-    email_amount_cents: string;
-    email_occurred_at: Date | string;
-    email_merchant: string | null;
-    statement_merchant: string | null;
-  }>(sql`
+  const rows = await db.execute<ArqBackfillRow>(sql`
     SELECT
       e.id AS email_id,
       s.id AS statement_id,
@@ -73,12 +75,14 @@ async function main(): Promise<void> {
   let merged = 0;
   let skipped = 0;
   let anomalies = 0;
-  const processedEmailIds = new Set<number>();
+  const rowsByEmail = new Map<number, ArqBackfillRow[]>();
   for (const row of rows) {
-    if (processedEmailIds.has(row.email_id)) {
-      skipped += 1;
-      continue;
-    }
+    const emailRows = rowsByEmail.get(row.email_id) ?? [];
+    emailRows.push(row);
+    rowsByEmail.set(row.email_id, emailRows);
+  }
+  for (const emailRows of rowsByEmail.values()) {
+    const row = emailRows[0];
     const statementId = await findExistingStatementMatch(
       {},
       {
@@ -89,13 +93,14 @@ async function main(): Promise<void> {
         emailMerchant: row.email_merchant,
       },
     );
-    if (statementId !== row.statement_id) {
+    const matchedRow = emailRows.find((candidate) => candidate.statement_id === statementId);
+    if (!matchedRow) {
       skipped += 1;
       anomalies += 1;
       log.warn(
         {
           emailTxId: row.email_id,
-          expectedStatementTxId: row.statement_id,
+          expectedStatementTxIds: emailRows.map((candidate) => candidate.statement_id),
           actualStatementTxId: statementId,
           event: "arq_dedup_pair_changed",
         },
@@ -103,13 +108,12 @@ async function main(): Promise<void> {
       );
       continue;
     }
-    processedEmailIds.add(row.email_id);
     log.info(
       {
         userId: row.user_id,
         accountId: row.account_id,
         emailTxId: row.email_id,
-        statementTxId: row.statement_id,
+        statementTxId: matchedRow.statement_id,
         emailMerchant: row.email_merchant,
         statementMerchant: row.statement_merchant,
         apply,
@@ -126,7 +130,7 @@ async function main(): Promise<void> {
           userId: row.user_id,
           accountId: row.account_id,
           emailTxId: row.email_id,
-          statementTxId: row.statement_id,
+          statementTxId: matchedRow.statement_id,
           emailAmountCents: BigInt(row.email_amount_cents),
           emailOccurredAt: new Date(row.email_occurred_at),
           emailMerchant: row.email_merchant,

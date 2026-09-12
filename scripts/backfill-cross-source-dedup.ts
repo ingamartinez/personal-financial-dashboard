@@ -99,7 +99,6 @@ async function main(): Promise<void> {
 
   let merged = 0;
   let skipped = 0;
-  const anomalies = 0;
   const processedGmailIds = new Set<number>();
   const gmailIdsWithMultipleMatches = new Set<number>();
   const smsIdsWithMultipleMatches = new Set<number>();
@@ -192,13 +191,11 @@ async function main(): Promise<void> {
       candidates: gmailSmsRows.length + statementRows.length,
       merged,
       skipped,
-      anomalies,
       event: "cross_source_dedup_summary",
     },
     "cross-source dedup backfill complete",
   );
   await db.$client.end({ timeout: 1 });
-  if (anomalies > 0) process.exit(1);
 }
 
 main().catch((err) => {

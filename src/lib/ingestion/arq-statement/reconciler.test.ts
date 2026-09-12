@@ -356,7 +356,7 @@ describe("reverse-order ARQ cross-source dedup (#921)", () => {
   });
 
   it("coerces a string timestamp returned by db.execute-style rows", async () => {
-    const occurredAt = new Date("2026-03-17T10:00:00Z");
+    const occurredAt = "2026-03-17T10:00:00Z";
     const fakeDb = {
       select: () => ({
         from: () => ({
@@ -364,7 +364,7 @@ describe("reverse-order ARQ cross-source dedup (#921)", () => {
             limit: async () => [
               {
                 id: 945,
-                occurredAt: occurredAt.toISOString(),
+                occurredAt,
                 merchant: "Aida Mercedes Maldonado",
               },
             ],
