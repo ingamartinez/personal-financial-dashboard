@@ -527,6 +527,67 @@ export async function findTelegramCandidate(
   };
 }
 
+export async function findStatementCandidate(
+  dbc: typeof db,
+  userId: number,
+  accountId: number,
+  occurredAt: Date,
+  amountCents: bigint,
+  counterparty: string | null,
+): Promise<{
+  tx: {
+    id: number;
+    merchant: string | null;
+    rawData: Record<string, unknown>;
+    importId: number | null;
+  };
+  ambiguous: boolean;
+} | null> {
+  const windowStart = new Date(occurredAt.getTime() - DATE_WINDOW_MS);
+  const windowEnd = new Date(occurredAt.getTime() + DATE_WINDOW_MS);
+  const rows = await dbc
+    .select({
+      id: transactions.id,
+      merchant: transactions.merchant,
+      rawData: transactions.rawData,
+      importId: transactions.arqStatementImportId,
+      occurredAt: transactions.occurredAt,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.accountId, accountId),
+        eq(transactions.source, "arq_statement"),
+        notDeleted(transactions.deletedAt),
+        sql`sign(${transactions.amountCents}) = sign(${amountCents})`,
+        sql`abs(${transactions.amountCents} - ${amountCents}) <= ${AMOUNT_SEARCH_WINDOW_CENTS}`,
+        gte(transactions.occurredAt, windowStart),
+        lte(transactions.occurredAt, windowEnd),
+      ),
+    )
+    .limit(10);
+  const eligible = rows
+    .map((row) => ({
+      row,
+      timeDelta: Math.abs(row.occurredAt.getTime() - occurredAt.getTime()),
+      ratio: counterparty === null ? 1 : levenshteinRatio(counterparty, row.merchant ?? ""),
+    }))
+    .filter((candidate) => counterparty === null || candidate.ratio >= COUNTERPARTY_MATCH_THRESHOLD)
+    .sort((a, b) => a.timeDelta - b.timeDelta || b.ratio - a.ratio);
+  const best = eligible[0];
+  if (!best) return null;
+  return {
+    tx: {
+      id: best.row.id,
+      merchant: best.row.merchant,
+      rawData: (best.row.rawData ?? {}) as Record<string, unknown>,
+      importId: best.row.importId,
+    },
+    ambiguous: eligible.length > 1 && eligible[1].timeDelta === best.timeDelta,
+  };
+}
+
 export async function retireTelegramIntoStatement(
   dbc: typeof db,
   input: {
@@ -534,7 +595,7 @@ export async function retireTelegramIntoStatement(
     accountId: number;
     telegramTxId: number;
     statementTxId: number;
-    importId: number;
+    importId: number | null;
   },
 ): Promise<void> {
   await dbc.transaction(async (tx) => {
