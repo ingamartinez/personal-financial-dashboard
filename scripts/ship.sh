@@ -8,7 +8,11 @@
 # agent needed the "poll `gh pr checks` inline, never ScheduleWakeup" workaround.
 # `gh pr checks --watch` does it natively and for free.
 #
-# This script never merges. Merging stays a deliberate human action.
+# Merging is gated, not manual. `--merge` squash-merges only when the AGENTS.md
+# auto-merge conditions hold (CI green, PR closes a single issue, mergeable).
+# The check lives here rather than in an agent's permission list because a
+# permission cannot read CI status: it can only allow the command and hope.
+# Without --merge the script still stops at the report, as it always did.
 #
 # Usage:
 #   scripts/ship.sh                       # infer everything from the branch
@@ -18,6 +22,7 @@
 #   scripts/ship.sh --body-file notes.md  # use this as the PR body
 #   scripts/ship.sh --no-test             # skip the suite (parallel lanes)
 #   scripts/ship.sh --no-watch            # open the PR, do not wait for CI
+#   scripts/ship.sh --merge               # squash-merge if the auto-merge conditions hold
 #   scripts/ship.sh --dry-run             # run gates, print the plan, push nothing
 #
 set -euo pipefail
@@ -47,6 +52,7 @@ body_file=""
 run_tests=1
 watch_ci=1
 dry_run=0
+merge_pr=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,11 +62,14 @@ while [[ $# -gt 0 ]]; do
     --body-file) body_file="${2:?--body-file needs a path}"; shift 2 ;;
     --no-test)   run_tests=0; shift ;;
     --no-watch)  watch_ci=0; shift ;;
+    --merge)     merge_pr=1; shift ;;
     --dry-run)   dry_run=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *)           die "unknown flag: $1" ;;
   esac
 done
+
+(( merge_pr && ! watch_ci )) && die "--merge needs the CI watch; drop --no-watch"
 
 # ---------------------------------------------------------------- pre-flight
 step "Pre-flight"
@@ -231,9 +240,40 @@ auto_ok="no"
 printf '\n  PR:         %s\n  CI:         %sGREEN%s\n  Mergeable:  %s\n  Auto-merge: %s\n' \
   "$pr_url" "$c_grn" "$c_off" "$mergeable" "$auto_ok"
 
-if [[ "$auto_ok" == "yes" ]]; then
-  printf '\n  AGENTS.md auto-merge conditions hold. To merge:\n    GH_CONFIG_DIR=%s gh pr merge %s --squash --delete-branch\n\n' "$GH_CFG" "$pr_number"
-else
-  printf '\n  Auto-merge conditions do NOT hold (%s) — a human decides.\n\n' \
-    "$([[ "$link_word" == "Part of" ]] && echo "PR does not close a single issue" || echo "not mergeable: $mergeable")"
+if [[ "$auto_ok" != "yes" ]]; then
+  reason="$([[ "$link_word" == "Part of" ]] && echo "PR does not close a single issue" || echo "not mergeable: $mergeable")"
+  printf '\n  Auto-merge conditions do NOT hold (%s) — a human decides.\n\n' "$reason"
+  (( merge_pr )) && die "refusing to merge: $reason"
+  exit 0
 fi
+
+if (( ! merge_pr )); then
+  printf '\n  AGENTS.md auto-merge conditions hold. To merge:\n    scripts/ship.sh --merge\n\n'
+  exit 0
+fi
+
+step "Merge"
+gh_ pr merge "$pr_number" --squash --delete-branch || die "merge failed — the PR stays open"
+info "squash-merged and deleted $branch on the remote"
+
+# The local branch now tracks a ref that no longer exists. Land on a fresh main
+# so the next lane does not branch off a stale base. This runs in bash, not in
+# an agent's permission list, for the same reason the merge gate does.
+#
+# Non-fatal on purpose: in a worktree lane `main` is checked out in the primary
+# checkout and git refuses a second one. The merge already happened; a failed
+# cleanup must not report it as a failed ship. The lane gets torn down anyway.
+step "Back to main"
+local_state="main"
+if git checkout --quiet main 2>/dev/null; then
+  git pull --quiet --ff-only origin main || warn "could not fast-forward main"
+  git branch --quiet -D "$branch" 2>/dev/null || warn "local branch $branch kept"
+  info "on main at $(git rev-parse --short HEAD)"
+else
+  local_state="$branch (worktree — main is checked out elsewhere)"
+  warn "staying on $branch; remove this worktree to clean up"
+fi
+
+printf '\n  PR:     %s %sMERGED%s\n  Branch: deleted on remote\n  Local:  %s\n\n' \
+  "$pr_url" "$c_grn" "$c_off" "$local_state"
+
