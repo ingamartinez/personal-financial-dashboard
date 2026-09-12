@@ -2,7 +2,10 @@
 //
 // Safe by default: without --apply this only prints the exact rows that would
 // be merged. It deliberately pairs only these two sources; same-source rows and
-// every other cross-source pair are untouched.
+// every other cross-source pair are untouched. A duplicate SQL join row for one
+// email is an expected 1:N protection skip, not an anomaly. This historical
+// merge also intentionally does not calculate source-mismatch metadata: its
+// SQL scope only admits exact source/amount/date candidates.
 
 import { sql } from "drizzle-orm";
 
@@ -37,7 +40,7 @@ async function main(): Promise<void> {
     user_id: number;
     account_id: number;
     email_amount_cents: string;
-    email_occurred_at: Date;
+    email_occurred_at: Date | string;
     email_merchant: string | null;
     statement_merchant: string | null;
   }>(sql`
@@ -69,6 +72,7 @@ async function main(): Promise<void> {
 
   let merged = 0;
   let skipped = 0;
+  let anomalies = 0;
   const processedEmailIds = new Set<number>();
   for (const row of rows) {
     if (processedEmailIds.has(row.email_id)) {
@@ -87,6 +91,7 @@ async function main(): Promise<void> {
     );
     if (statementId !== row.statement_id) {
       skipped += 1;
+      anomalies += 1;
       log.warn(
         {
           emailTxId: row.email_id,
@@ -131,11 +136,11 @@ async function main(): Promise<void> {
     merged += 1;
   }
   log.info(
-    { apply, candidates: rows.length, merged, skipped, event: "arq_dedup_summary" },
+    { apply, candidates: rows.length, merged, skipped, anomalies, event: "arq_dedup_summary" },
     "ARQ cross-source dedup backfill complete",
   );
   await db.$client.end({ timeout: 1 });
-  if (skipped > 0) process.exit(1);
+  if (anomalies > 0) process.exit(1);
 }
 
 main().catch((err) => {

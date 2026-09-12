@@ -147,7 +147,7 @@ export async function findExistingStatementMatch(
   const windowEnd = new Date(input.emailOccurredAt.getTime() + DATE_WINDOW_MS);
   const emailAmountCents = BigInt(input.emailAmountCents);
   const absAmount = emailAmountCents < BigInt(0) ? -emailAmountCents : emailAmountCents;
-  const rows = await dbc
+  const rows: Array<{ id: number; occurredAt: Date | string; merchant: string | null }> = await dbc
     .select({
       id: transactions.id,
       occurredAt: transactions.occurredAt,
@@ -170,7 +170,7 @@ export async function findExistingStatementMatch(
   const scored = rows
     .map((row) => ({
       ...row,
-      timeDelta: Math.abs(row.occurredAt.getTime() - input.emailOccurredAt.getTime()),
+      timeDelta: Math.abs(new Date(row.occurredAt).getTime() - input.emailOccurredAt.getTime()),
       ratio: input.emailMerchant ? levenshteinRatio(input.emailMerchant, row.merchant ?? "") : 1,
     }))
     .filter((row) => row.ratio >= COUNTERPARTY_MATCH_THRESHOLD)
