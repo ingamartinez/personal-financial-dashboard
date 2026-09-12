@@ -279,7 +279,7 @@ export function GmailCard({ state, feedback }: { state: GmailCardState; feedback
                     selected={selectedDate}
                     onSelect={onDateSelect}
                     disabled={(d) => d > new Date()}
-                    initialFocus
+                    autoFocus
                   />
                 </PopoverContent>
               </Popover>
