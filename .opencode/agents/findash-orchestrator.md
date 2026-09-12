@@ -31,9 +31,6 @@ permission:
     "*dropdb*": deny
     "*psql -d findash *": deny
     "*psql -d findash": deny
-    "*>*": deny
-    "tee *": deny
-    "* tee *": deny
 ---
 
 # findash-orchestrator
@@ -91,43 +88,19 @@ silently and publicly. Prefix every `gh` invocation with
 If a command is refused, that is the boundary working. Say what you needed and
 why. Do not route around it with a shell trick.
 
-### Redirection is denied — but it is not a write boundary here (#966)
+### This role can write files, and that is the deal (#966)
 
-`"*>*"`, `"tee *"` and `"* tee *"` are denied, so `bat AGENTS.md > f` is
-refused. Do not read that as "this role cannot write a file": with `bash` at
-`"*": allow`, `cp`, `sd`, `sed -i`, `python3 -c` and a dozen others write files
-and are permitted. `edit: deny` plus the redirection deny close the casual path,
-not a determined one. What this role actually guarantees is that it does not
-write **code** — by delegation and convention, not by enforcement.
+`bash` is `"*": allow`, so `cp`, `sd`, `sed -i`, `python3 -c` and a dozen others
+write files and are permitted. Redirection was denied here for a while; it was
+removed because it stopped none of those and did refuse `2>/dev/null`, which is
+ordinary. A rule that blocks honest commands and not dishonest ones is worse
+than no rule.
 
-The deny is a blunt `.*>.*` over the raw command text, so it also refuses
-`2>/dev/null` and a literal `>` inside a quoted argument. Drop the redirect; the
-bash tool already gives you stdout and stderr.
-
-### The issue surface (#956)
-
-`gh issue create`, `edit`, `close` and `delete` are allowed. These are the only
-permissions that let you write **outside** the repo: branches, worktrees and
-even merges are local and reversible, an issue is public under the owner
-account. Granted on the owner's call, not by oversight.
-
-The reason is that routing issue writes back through a human reinstates the
-manual step this architecture exists to remove. A session that starts as a
-conversation reaches the point where `AGENTS.md` § Issue-first requires an open,
-claimed issue and must be able to write it. An orchestrator that closes what it
-finished and edits scope as it learns is doing the job, not exceeding it.
-
-`gh issue delete` has **no undo**: it destroys the issue and every comment on it,
-for everyone, unrecoverably. It is on the list deliberately — read it as a
-decision, not a copy-paste slip — and it is the one command here worth
-confirming with the human before you run it.
-
-Prefix every one of the four with `GH_CONFIG_DIR=~/.config/gh-findash`. That is
-load-bearing rather than cosmetic: an unprefixed call authenticates as a
-different account and defeats `AGENTS.md` § gh CLI identity **silently** —
-nothing fails, nothing warns, the issue simply appears under the wrong name.
-Since #966 the rule `"gh *": deny` enforces it, because allow-default no longer
-enforces it by omission. Never add a `gh` allow rule without the prefix either.
+`edit: deny` still holds, so this role cannot use the edit/write tools. What it
+actually guarantees is that it does not write **code** — by delegation and
+convention, not by enforcement. `findash-explorer` and `findash-reviewer` keep
+the redirection deny, because there it IS the boundary: nothing else in their
+allow-lists can write at all.
 
 ### `gh api` is denied outright (#957)
 
