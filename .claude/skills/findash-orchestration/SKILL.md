@@ -171,7 +171,7 @@ tool call"*, under `--auto`):
 | Role | `bash` default | Shape |
 | --- | --- | --- |
 | explorer, reviewer | **`"*": deny`** | Allow-list of read-only commands: `rg`/`fd`/`bat`/`eza`/`jq`, `codegraph`, read-only `git`, read-only `gh`. `edit: deny` also blocks `write` and `apply_patch` — there is no separate `write` permission key. |
-| implementer | `"*": allow` | Denies push/PR/merge (`scripts/ship.sh`'s job), history surgery (`rebase`, `reset --hard`, checkout to `main`), anything with `--no-verify`, `gh auth switch`/`setup-git`, `dropdb`, `psql -d findash`, `ssh`, `pm2`, `rm -rf`. |
+| implementer | `"*": allow` | Denies push/PR/merge (`scripts/ship.sh`'s job), history surgery (`rebase`, `reset --hard`, checkout to `main`), anything with `--no-verify`, `gh api`, `gh auth switch`/`setup-git`, `dropdb`, `psql -d findash`, `ssh`, `pm2`, `rm -rf`. |
 
 There is no shipper lane. `scripts/ship.sh` does that job — see § Shipping.
 
@@ -184,6 +184,40 @@ of remit instead.
 `read` is a separate key from `edit`, so `edit: deny` leaves reading intact.
 Definitions do not set `external_directory` and do not hardcode operator
 paths. Once the files are in the worktree, a lane should never leave it.
+
+### How a bash rule actually matches (#957 — measure, do not assume)
+
+Three facts about opencode 1.18.30, read out of the shipped binary and then
+confirmed by running real lanes. All three are easy to get backwards, and a rule
+built on the wrong one reads exactly like a rule that works.
+
+1. **Order is file order, and the last match wins.** Rules are the YAML keys in
+   the order written, appended after the global config's rules; the evaluator
+   takes the *last* entry that matches. A deny placed after an allow beats it and
+   a deny placed before it does not. `opencode debug agent <name>` prints the
+   resolved list in evaluation order — read it rather than the file.
+2. **`*` is `.*` under a dotall regex — it crosses `/`, spaces and newlines.**
+   There is no way to say "one path segment". A pattern with a wildcard in the
+   middle therefore matches far more than it looks like it does. A trailing
+   `" *"` is the one special case: it compiles to `( .*)?`, so the bare command
+   matches too.
+3. **Each command in the line is matched separately, and any deny denies the
+   call.** opencode parses the command with tree-sitter and tests every `command`
+   node — both sides of `&&`, the inside of `$(...)` — against the ruleset;
+   `cd`-family nodes are skipped. So `cd /x && git push` is still a `git push`.
+   The pattern tested is the node's raw source text, env-assignment prefix
+   included, which is why every `gh` rule here carries `GH_CONFIG_DIR=*`.
+
+Consequence, and the reason `gh api` has no allow-list carve-out: an endpoint
+allow-list cannot be written safely. Measured on this repo, with rules
+`"GH_CONFIG_DIR=* gh api *": deny` followed by
+`"GH_CONFIG_DIR=* gh api repos/*/pulls/*/reviews*": allow`, the plain
+`gh api .../pulls/958/merge --method PUT` came back denied — and the same call
+with `-f decoy=/pulls/1/reviews` appended ran, and GitHub answered
+`{"merged":true}`. Fact 2 is why: the middle `*` swallows the flags. `gh api` is
+denied outright in all four definitions, and the one read that used it now goes
+through `gh pr view --json reviews`, which is a read-only subcommand rather than
+a glob that hopes to be one.
 
 ## Review gate is not automatic
 
@@ -490,9 +524,12 @@ works when you want to watch a lane run.
   PR. The lane looked silent when it was finished.
 
   ```bash
-  GH_CONFIG_DIR=~/.config/gh-findash gh api repos/<owner>/<repo>/pulls/<n>/reviews \
-    --jq '.[]|{state,user:.user.login,body}'
+  GH_CONFIG_DIR=~/.config/gh-findash gh pr view <n> --json reviews \
+    --jq '.reviews[]|{state,user:.author.login,body}'
   ```
+
+  Not `gh api .../pulls/<n>/reviews` — that is denied since #957, and this
+  returns identical output.
 
   A review posted without an explicit approve or request-changes shows
   `state: "COMMENTED"`. Symptom: pane says "posted", herdr says `done`,

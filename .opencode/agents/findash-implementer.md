@@ -24,6 +24,8 @@ permission:
     "gh pr merge *": deny
     "*gh pr create*": deny
     "*gh pr merge*": deny
+    "gh api*": deny
+    "* gh api*": deny
     "*gh auth switch*": deny
     "*gh auth setup-git*": deny
     "dropdb*": deny
@@ -49,6 +51,7 @@ another role or to production:
 | `git push`, `gh pr create`, `gh pr merge` | `scripts/ship.sh` does that |
 | `git rebase`, `git merge`, `git reset --hard`, checkout/switch to `main` | history surgery is a parent decision |
 | anything with `--no-verify` | hooks are the gate, not an obstacle |
+| `gh api` (any form) | raw REST reaches past every deny above — `PUT /pulls/{n}/merge`, `PUT /contents/{path}`. #957 |
 | `gh auth switch`, `gh auth setup-git` | rewrites the global gitconfig and breaks another agent |
 | `dropdb`, `psql -d findash` | you touch `findash_test*` only, never the dev database |
 | `ssh`, `pm2` | production |

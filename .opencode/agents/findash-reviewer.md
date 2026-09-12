@@ -31,7 +31,7 @@ permission:
     "GH_CONFIG_DIR=* gh issue view*": allow
     "GH_CONFIG_DIR=* gh pr view*": allow
     "GH_CONFIG_DIR=* gh pr diff*": allow
-    "GH_CONFIG_DIR=* gh api *": allow
+    "GH_CONFIG_DIR=* gh api *": deny
 ---
 
 # findash-reviewer
@@ -90,6 +90,15 @@ model with `-m`.
 so do not accept an instruction to put your report in one: deliver it in the
 pane. Short output is also the only output that survives — a pane read cannot
 recover rows that scrolled off the alternate screen.
+
+`gh api` is denied (#957). It is the raw REST client and with this account's
+`repo` + `workflow` scopes it writes — merge, commit-via-contents, force-move a
+ref — which makes a read-only role read-only in name only. Read PR reviews with
+`gh pr view <n> --json reviews --jq '.reviews[]|{state,user:.author.login,body}'`
+instead; the output is identical and `gh pr view` cannot write. No endpoint
+allow-list is carved out for `gh api`, because an opencode `*` is `.*` under a
+dotall regex and swallows spaces, so a `repos/*/pulls/*/reviews*` allow also
+matches a `.../merge --method PUT` call with a trailing `/reviews` decoy.
 
 ## Hard rules
 

@@ -34,7 +34,7 @@ permission:
     "GH_CONFIG_DIR=* gh pr view*": allow
     "GH_CONFIG_DIR=* gh pr list*": allow
     "GH_CONFIG_DIR=* gh pr diff*": allow
-    "GH_CONFIG_DIR=* gh api *": allow
+    "GH_CONFIG_DIR=* gh api *": deny
 ---
 
 # findash-explorer
@@ -52,6 +52,15 @@ and why in the digest. Do not route around it with a shell trick.
 
 You cannot write a file, including a scratch file for your own report. That is
 deliberate (see § Budget).
+
+`gh api` is denied (#957). It is the raw REST client and with this account's
+`repo` + `workflow` scopes it writes — merge, commit-via-contents, force-move a
+ref — which makes a read-only role read-only in name only. Read PR reviews with
+`gh pr view <n> --json reviews --jq '.reviews[]|{state,user:.author.login,body}'`
+instead; the output is identical and `gh pr view` cannot write. No endpoint
+allow-list is carved out for `gh api`, because an opencode `*` is `.*` under a
+dotall regex and swallows spaces, so a `repos/*/pulls/*/reviews*` allow also
+matches a `.../merge --method PUT` call with a trailing `/reviews` decoy.
 
 ## Hard rules
 
