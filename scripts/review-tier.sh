@@ -18,10 +18,12 @@
 # reviewer that caught the CRITICALs on #511, twice, so that was a real loss.
 # `muse-spark-1.3` was the second (#930/#933) and is gone too (#935): measured
 # against `deepseek-v4.1-flash` on the same #511 diff, it cost 4x more and
-# returned 0 WARNINGs where `deepseek-v4.1-flash` alone returned 3 — two of
-# them real. There was no evidence left to keep a second reviewer warm.
+# returned 0 WARNINGs where that reviewer returned 3 — two of them real. The
+# replacement `gemini-3.8-flash` is the only non-premium model that also caught
+# the known migration CRITICAL, while catching the tenant-safety and sequencing
+# warnings that only `claude-opus-5` had seen.
 #
-# One reviewer, `deepseek-v4.1-flash`, for every diff.
+# One reviewer, `gemini-3.8-flash`, for every diff.
 #
 # Usage:
 #   scripts/review-tier.sh                 # human-readable plan + any reasons
@@ -32,9 +34,9 @@
 #
 set -uo pipefail
 
-trap 'printf "review-tier.sh failed to classify — read the diff manually.\\n" >&2; printf "%s\\n" "llmgateway/deepseek-v4.1-flash"; exit 1' ERR
+trap 'printf "review-tier.sh failed to classify — read the diff manually.\\n" >&2; printf "%s\\n" "llmgateway/gemini-3.8-flash"; exit 1' ERR
 
-readonly MODEL="llmgateway/deepseek-v4.1-flash"
+readonly MODEL="llmgateway/gemini-3.8-flash"
 
 base="origin/main"
 models_only=0
