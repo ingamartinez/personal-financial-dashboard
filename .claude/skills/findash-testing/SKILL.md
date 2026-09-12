@@ -87,6 +87,31 @@ Three things to know before touching this:
   in #912). It also hides real cross-test coupling instead of surfacing it. If a
   test only passes serially, it is reading state another test owns — fix that.
 
+## Timers must not outlive the jsdom realm
+
+`vitest.setup.ts` ends every test file with one macrotask turn
+(`afterAll(async () => new Promise((r) => setTimeout(r, 0)))`). Do not delete
+it, and do not assume a component test is safe just because `cleanup()` ran.
+
+Vitest's jsdom environment copies the window's globals onto `globalThis` but
+skips `setTimeout`, so anything a component scheduled is a **Node** timer and
+`dom.window.close()` at teardown does not cancel it. `CustomEvent` and friends
+ARE copied, and get restored to Node's implementation on teardown. A callback
+that lands in that window builds a Node event and dispatches it on a jsdom
+element:
+
+```
+TypeError: Failed to execute 'dispatchEvent' on 'EventTarget':
+           parameter 1 is not of type 'Event'.
+```
+
+Nothing catches it, so vitest exits 1 with every test green — the failure mode
+of #954. Radix's `FocusScope` hits this because its unmount effect schedules a
+`setTimeout(..., 0)`, which means *unmounting* is what arms the timer: seven
+files ended a run with one queued. If you write a test that schedules work
+outliving the last `await`, flush it rather than reaching for fake timers —
+faking timers around a focus trap relocates the race instead of removing it.
+
 ## Visual verification (Playwright)
 
 For UI-affecting PRs, agents without human eyes available can capture

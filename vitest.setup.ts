@@ -21,6 +21,8 @@
  * time, so this file MUST run before any `import { db } from ...` happens.
  */
 
+import { afterAll } from "vitest";
+
 import { resolveTestDbName } from "./vitest.test-db-name";
 
 const TEST_DB_NAME = resolveTestDbName();
@@ -46,3 +48,39 @@ process.env.TELEGRAM_TOKEN_ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 if (!process.env.ANTHROPIC_API_KEY) {
   process.env.ANTHROPIC_API_KEY = "sk-ant-test-dummy-for-vitest-do-not-use";
 }
+
+/**
+ * #954 — drain pending macrotasks before the environment is torn down.
+ *
+ * Radix's FocusScope schedules a `setTimeout(..., 0)` in its unmount effect
+ * (`@radix-ui/react-focus-scope`, the AUTOFOCUS_ON_UNMOUNT dispatch). Testing
+ * Library's `cleanup()` unmounts the tree, so that timer is *queued by the
+ * unmount itself* — the tests are not leaving a component mounted.
+ *
+ * That timer is a Node timer, not a jsdom one: vitest's jsdom environment
+ * copies the window's globals onto `globalThis` but deliberately skips
+ * `setTimeout`, so `dom.window.close()` at teardown does not cancel it.
+ * `CustomEvent`, by contrast, IS one of the copied globals and gets restored
+ * to Node's implementation on teardown. A callback that survives into that
+ * window therefore builds a Node `CustomEvent` and dispatches it on a jsdom
+ * element, which throws:
+ *
+ *   TypeError: Failed to execute 'dispatchEvent' on 'EventTarget':
+ *              parameter 1 is not of type 'Event'.
+ *
+ * Nothing caught it by then, so it surfaces as an unhandled error and vitest
+ * exits 1 with every test green — an at-random blocked merge for the
+ * `scripts/ship.sh --merge` gate.
+ *
+ * Seven test files end with such a timer still queued; whether it fires before
+ * teardown is a race the machine's load decides. One macrotask turn settles it:
+ * timers with the same delay fire in scheduling order, so anything queued
+ * before this hook has run by the time it resolves — inside the live realm,
+ * which is exactly where those callbacks expect to be.
+ *
+ * Fake timers are NOT the fix here: they would relocate the race to whichever
+ * test forgot to restore them.
+ */
+afterAll(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
