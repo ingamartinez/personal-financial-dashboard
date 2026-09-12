@@ -10,6 +10,10 @@ import { classifyByRule } from "@/lib/classification/rules";
 import { enqueueClassification } from "@/lib/classification/enqueue";
 import { emit } from "@/lib/events/bus";
 import { insertTransferGroup } from "@/lib/transactions/transfer-groups";
+import {
+  findStatementCandidate,
+  retireTelegramIntoStatement,
+} from "@/lib/ingestion/arq-statement/reconciler";
 
 export type ConfirmResult =
   | { status: "inserted"; txId: number }
@@ -122,6 +126,23 @@ export async function insertFromDraft(opts: {
     if (result.length === 0) {
       outcome = { status: "duplicated" };
     } else {
+      const candidate = await findStatementCandidate(
+        db,
+        userId,
+        draft.accountId as number,
+        occurredAt,
+        signed,
+        draft.merchant ?? null,
+      );
+      if (candidate && !candidate.ambiguous) {
+        await retireTelegramIntoStatement(db, {
+          userId,
+          accountId: draft.accountId as number,
+          telegramTxId: result[0].id,
+          statementTxId: candidate.tx.id,
+          importId: candidate.tx.importId,
+        });
+      }
       emit({
         type: "transaction:created",
         userId,
