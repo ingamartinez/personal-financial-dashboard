@@ -30,7 +30,8 @@
 import { and, eq, gte, isNull, lte, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { transactions, type SourceMismatchDetails } from "@/lib/db/schema";
+import { notDeleted } from "@/lib/db/helpers";
+import { reconciliationDecisions, transactions, type SourceMismatchDetails } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
 import { levenshteinRatio } from "@/lib/text/levenshtein";
 import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
@@ -126,6 +127,137 @@ export interface ReconcileResult {
   emailOrphanCount: number;
   /** Per-tx decisions — used by #516 preview. */
   details: ReconcileDecision[];
+}
+
+export interface ExistingStatementMatchInput {
+  userId: number;
+  accountId: number;
+  emailTxId: number;
+  emailAmountCents: bigint | string;
+  emailOccurredAt: Date;
+  emailMerchant: string | null;
+}
+
+export async function findExistingStatementMatch(
+  deps: ReconcilerDeps,
+  input: Omit<ExistingStatementMatchInput, "emailTxId">,
+): Promise<number | null> {
+  const dbc = deps.db ?? db;
+  const windowStart = new Date(input.emailOccurredAt.getTime() - DATE_WINDOW_MS);
+  const windowEnd = new Date(input.emailOccurredAt.getTime() + DATE_WINDOW_MS);
+  const emailAmountCents = BigInt(input.emailAmountCents);
+  const absAmount = emailAmountCents < BigInt(0) ? -emailAmountCents : emailAmountCents;
+  const rows = await dbc
+    .select({
+      id: transactions.id,
+      occurredAt: transactions.occurredAt,
+      merchant: transactions.merchant,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, input.userId),
+        eq(transactions.accountId, input.accountId),
+        eq(transactions.source, "arq_statement"),
+        notDeleted(transactions.deletedAt),
+        sql`sign(${transactions.amountCents}) = sign(${emailAmountCents})`,
+        gte(transactions.occurredAt, windowStart),
+        lte(transactions.occurredAt, windowEnd),
+        sql`abs(${transactions.amountCents}) BETWEEN ${absAmount - AMOUNT_SEARCH_WINDOW_CENTS} AND ${absAmount + AMOUNT_SEARCH_WINDOW_CENTS}`,
+      ),
+    )
+    .limit(10);
+  const scored = rows
+    .map((row) => ({
+      ...row,
+      timeDelta: Math.abs(row.occurredAt.getTime() - input.emailOccurredAt.getTime()),
+      ratio: input.emailMerchant ? levenshteinRatio(input.emailMerchant, row.merchant ?? "") : 1,
+    }))
+    .filter((row) => row.ratio >= COUNTERPARTY_MATCH_THRESHOLD)
+    .sort((a, b) => a.timeDelta - b.timeDelta || b.ratio - a.ratio);
+  return scored[0]?.id ?? null;
+}
+
+/**
+ * Retire a statement row when the email arrived second.
+ *
+ * The email remains the winner (the same first-in policy used by the normal
+ * statement-first reconciler), while the statement's identifiers and payload
+ * are appended to the email row. The retired row is soft-deleted and recorded
+ * in reconciliation_decisions so it can never be restored as a duplicate.
+ */
+export async function mergeExistingStatementIntoEmail(
+  deps: ReconcilerDeps,
+  input: ExistingStatementMatchInput & { statementTxId: number },
+): Promise<void> {
+  const dbc = deps.db ?? db;
+  await dbc.transaction(async (tx) => {
+    const [email] = await tx
+      .select({ rawData: transactions.rawData })
+      .from(transactions)
+      .where(and(eq(transactions.id, input.emailTxId), eq(transactions.userId, input.userId)))
+      .limit(1);
+    const [statement] = await tx
+      .select({
+        externalId: transactions.externalId,
+        arqStatementImportId: transactions.arqStatementImportId,
+        rawData: transactions.rawData,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.id, input.statementTxId),
+          eq(transactions.userId, input.userId),
+          eq(transactions.accountId, input.accountId),
+          eq(transactions.source, "arq_statement"),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!email || !statement) throw new Error("arq_statement_merge_row_not_found");
+
+    const mergedRawData = {
+      ...((email.rawData ?? {}) as Record<string, unknown>),
+      merged_statement: {
+        arq_statement_transaction_id: input.statementTxId,
+        external_id: statement.externalId,
+        arq_statement_import_id: statement.arqStatementImportId,
+        raw_data: statement.rawData,
+      },
+    };
+
+    await tx
+      .update(transactions)
+      .set({
+        secondarySource: "arq_statement",
+        externalIdStatement: statement.externalId,
+        arqStatementImportId: statement.arqStatementImportId,
+        rawData: mergedRawData,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, input.emailTxId), eq(transactions.userId, input.userId)));
+
+    await tx.insert(reconciliationDecisions).values({
+      userId: input.userId,
+      txnId: input.emailTxId,
+      action: "merged_into",
+      mergedIntoTxnId: input.statementTxId,
+      note: "#921 arq_statement ↔ gmail_arq cross-source dedup; gmail_arq winner",
+    });
+
+    await tx
+      .update(transactions)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(transactions.id, input.statementTxId),
+          eq(transactions.userId, input.userId),
+          eq(transactions.accountId, input.accountId),
+          eq(transactions.source, "arq_statement"),
+          notDeleted(transactions.deletedAt),
+        ),
+      );
+  });
 }
 
 // ---------------------------------------------------------------------------

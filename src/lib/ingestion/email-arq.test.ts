@@ -233,6 +233,36 @@ describe("ingestArqEmail — needs_review breaks the retry loop (issue #641)", (
 });
 
 describe("ingestArqEmail — counterparty linking", () => {
+  it("marks an already-inserted receipt matched on the duplicate path", async () => {
+    const html = buildReceivedHtml("Retry Recipient", "2,180");
+    const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-duplicate-retry`, html);
+    await db.insert(transactions).values({
+      userId: USER_A,
+      accountId: ARQ_ACCOUNT_A,
+      occurredAt: NOW,
+      amountCents: BigInt(218000),
+      currency: "USD",
+      descriptionRaw: "You received 218000 USDc from Retry Recipient",
+      merchant: "Retry Recipient",
+      source: "gmail_arq",
+      channel: "transfer",
+      externalId: `arq-email-${receiptId}`,
+      rawData: { kind: "transfer_received" },
+    });
+
+    const result = await ingestArqEmail(USER_A, receiptId, html, NOW);
+    const [receipt] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        matchedTransactionId: emailReceipts.matchedTransactionId,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receiptId));
+    expect(result.status).toBe("duplicated");
+    expect(receipt.matchStatus).toBe("matched");
+    expect(receipt.matchedTransactionId).not.toBeNull();
+  });
+
   it("happy path — new ingest links counterparty (and normalizes the alias)", async () => {
     // Mixed case input: proves normalizeName uppercases the alias value
     // even though the parser preserves casing in counterpartyName.
