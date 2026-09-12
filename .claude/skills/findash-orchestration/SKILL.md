@@ -252,6 +252,32 @@ that launched from inside the lane would trip its own guard. It stays in the
 primary checkout for the whole run and hands opencode the lane path positionally.
 
 ```bash
+scripts/lane.sh start                     # talk mode: no lane, no teardown
+```
+
+`start` with **no `--issue`** (#956) is the same verb for the other half of the
+flow: work that arrives as an idea rather than an issue number. It launches the
+orchestrator in the **primary checkout** and creates nothing — no worktree, no
+branch, no database — so there is nothing to tear down and the post-exit
+teardown is not reached at all. `--dry-run`, `-m` and `--no-auto` work in both
+modes; `--slug`, `--phase`, `--agent` and `--base` shape a lane and are refused
+when there is none.
+
+Standing in the primary is safe precisely because `check` already refuses an
+implementer there: **talking in the primary breaks nothing, implementing does.**
+One verb covers both modes and degrades into the safe one on its own.
+
+A talk session does **not** carry into a lane afterwards, and is not meant to —
+`opencode debug scrap` keys projects by worktree path, so sessions do not port
+across worktrees. The issue is the handoff: written, reviewable, and source of
+truth #1. The chat is the draft. That is why #956 also widened the
+orchestrator's allow-list to `gh issue create`, `edit`, `close` and `delete`
+(every rule prefixed `GH_CONFIG_DIR=*`, which is what keeps it authenticating as
+the right account) — a talk session that cannot write its own issue dead-ends at
+the exact step `AGENTS.md` § Issue-first makes mandatory. `delete` is the one
+with no undo and was granted on the owner's call, not by oversight.
+
+```bash
 scripts/lane.sh check                     # before the first implementer, every time
 ```
 

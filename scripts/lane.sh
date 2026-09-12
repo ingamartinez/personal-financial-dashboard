@@ -37,6 +37,13 @@
 # it learns it, and that reaches a human who walked away. Post-exit here is
 # teardown only: PR MERGED removes the lane, anything else keeps it.
 #
+# `start` with NO --issue (#956) is the talk mode: the orchestrator in the
+# PRIMARY checkout, no lane, no teardown. Work does not always arrive as an
+# issue number — it arrives as an idea that has to be scoped first, and the
+# orchestrator can now open the issue itself once it is. Standing in the
+# primary is safe because `check` already refuses an implementer there: talking
+# in the primary breaks nothing, implementing does. One verb covers both modes.
+#
 # Usage:
 #   scripts/lane.sh create --issue 949                  # slug + phase from the issue
 #   scripts/lane.sh create --issue 949 --slug lane-iso  # force the slug
@@ -45,6 +52,8 @@
 #   scripts/lane.sh start  --issue 953 --dry-run        # print the launch line and the decision
 #   scripts/lane.sh start  --issue 953 --no-auto        # approve each permission by hand
 #   scripts/lane.sh start  --issue 953 -m provider/model  # override the orchestrator model
+#   scripts/lane.sh start                               # talk mode: primary checkout, no lane
+#   scripts/lane.sh start  --dry-run                    # print the talk-mode launch line
 #   scripts/lane.sh remove --issue 949                  # worktree, branch, DB, directory
 #   scripts/lane.sh remove --issue 949 --force          # even with unmerged commits
 #   scripts/lane.sh check                               # am I in a lane? exit 1 if not
@@ -269,25 +278,104 @@ cmd_create() {
   printf '    scripts/lane.sh remove --issue %s\n\n' "$issue"
 }
 
+# ----------------------------------------------------------------- start: talk
+#
+# `start` with no --issue (#956). A conversation, not a lane: explore the idea,
+# agree the scope, and let the orchestrator write the issue the work then needs
+# — its allow-list carries `gh issue create` as of #956, so the flow no longer
+# dead-ends at the one step `AGENTS.md` § Issue-first makes mandatory.
+#
+# It owns NOTHING: no worktree, no branch, no database, so there is nothing to
+# tear down and no `remove` call anywhere in this function. That is deliberate
+# rather than incidental — see the dispatch comment in cmd_start.
+#
+# A talk session does not carry into a lane afterwards and is not meant to:
+# `opencode debug scrap` keys projects by worktree path, so sessions do not port
+# across worktrees. The issue IS the handoff — written, reviewable, and source
+# of truth #1. Chat history is the draft.
+start_talk() {
+  local model="$1" auto="$2" dry_run="$3"
+
+  step "Pre-flight"
+  command -v opencode >/dev/null || die "opencode is not on PATH — start launches it"
+
+  local primary
+  primary="$(primary_root)"
+  info "primary checkout: $primary"
+
+  step "Talk session"
+  info "no --issue: no worktree, no branch, no database — and nothing to tear down"
+  info "the orchestrator opens the issue itself once the scope is agreed"
+  info "it cannot implement here: 'scripts/lane.sh check' refuses the primary checkout"
+
+  # No FINDASH_TEST_DB: a talk session owns no database, and exporting the
+  # shared one would invite a bare `bun run test` onto another lane's fixtures.
+  local -a launch=(opencode "$primary" --agent findash-orchestrator)
+  (( auto )) && launch+=(--auto)
+  [[ -n "$model" ]] && launch+=(-m "$model")
+
+  if (( dry_run )); then
+    info "would run, with cwd $primary:"
+    printf '\n    %s\n\n' "$(printf '%q ' "${launch[@]}" | sed 's/ $//')"
+    step "Outcome"
+    info "decision: no lane → nothing to create, nothing to tear down"
+    return 0
+  fi
+
+  cd "$primary"
+  local rc=0
+  "${launch[@]}" || rc=$?
+  (( rc == 0 )) || warn "opencode exited $rc"
+
+  step "Nothing to tear down"
+  printf '\n  A talk session owns no lane. Once the scope is an issue, open its lane:\n\n'
+  printf '    scripts/lane.sh start --issue <N>\n\n'
+  return 0
+}
+
 # ---------------------------------------------------------------------- start
 
 cmd_start() {
   local issue="" slug="" phase="" agent="claude" base="origin/main"
   local model="" auto=1 dry_run=0
+  # --agent and --base carry defaults, so "was it passed?" cannot be read back
+  # off the variable. Record the lane-shaping flags as they arrive instead.
+  local -a lane_flags=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --issue)    issue="${2:?--issue needs a number}"; shift 2 ;;
-      --slug)     slug="${2:?--slug needs a value}"; shift 2 ;;
-      --phase)    phase="${2:?--phase needs a number}"; shift 2 ;;
-      --agent)    agent="${2:?--agent needs a name}"; shift 2 ;;
-      --base)     base="${2:?--base needs a ref}"; shift 2 ;;
+      --slug)     slug="${2:?--slug needs a value}"; lane_flags+=(--slug); shift 2 ;;
+      --phase)    phase="${2:?--phase needs a number}"; lane_flags+=(--phase); shift 2 ;;
+      --agent)    agent="${2:?--agent needs a name}"; lane_flags+=(--agent); shift 2 ;;
+      --base)     base="${2:?--base needs a ref}"; lane_flags+=(--base); shift 2 ;;
       -m|--model) model="${2:?--model needs provider/model}"; shift 2 ;;
+      --auto)     auto=1; shift ;;
       --no-auto)  auto=0; shift ;;
       --dry-run)  dry_run=1; shift ;;
       *)          die "unknown flag for start: $1" ;;
     esac
   done
+
+  # ---------------------------------------------------------------- the fork
+  #
+  # Two modes, and the split is a hard fork rather than a branch inside one
+  # body: with no --issue, start_talk runs and cmd_start RETURNS here. Every
+  # line below this block — create-or-reuse, and the teardown that calls
+  # `remove` — is unreachable without an issue number.
+  #
+  # That matters asymmetrically. Falling through to create-or-reuse would be
+  # merely wrong; falling through to the teardown would call `remove --issue ""`
+  # and start deleting worktrees and dropping databases on an empty match. So
+  # the talk path is not allowed to be *in* that body at all. Anything that
+  # needs both modes goes in a helper both call, never in the fallthrough.
+  if [[ -z "$issue" ]]; then
+    (( ${#lane_flags[@]} == 0 )) \
+      || die "${lane_flags[*]} shape a lane, and 'start' with no --issue creates none.
+     Pass --issue <number> to open a lane, or drop those flags to talk."
+    start_talk "$model" "$auto" "$dry_run"
+    return
+  fi
 
   [[ "$issue" =~ ^[0-9]+$ ]] || die "start needs --issue <number>"
 
