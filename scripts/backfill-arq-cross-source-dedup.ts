@@ -69,14 +69,19 @@ async function main(): Promise<void> {
 
   let merged = 0;
   let skipped = 0;
+  const processedEmailIds = new Set<number>();
   for (const row of rows) {
+    if (processedEmailIds.has(row.email_id)) {
+      skipped += 1;
+      continue;
+    }
     const statementId = await findExistingStatementMatch(
       {},
       {
         userId: row.user_id,
         accountId: row.account_id,
         emailAmountCents: BigInt(row.email_amount_cents),
-        emailOccurredAt: row.email_occurred_at,
+        emailOccurredAt: new Date(row.email_occurred_at),
         emailMerchant: row.email_merchant,
       },
     );
@@ -93,6 +98,7 @@ async function main(): Promise<void> {
       );
       continue;
     }
+    processedEmailIds.add(row.email_id);
     log.info(
       {
         userId: row.user_id,
@@ -117,7 +123,7 @@ async function main(): Promise<void> {
           emailTxId: row.email_id,
           statementTxId: row.statement_id,
           emailAmountCents: BigInt(row.email_amount_cents),
-          emailOccurredAt: row.email_occurred_at,
+          emailOccurredAt: new Date(row.email_occurred_at),
           emailMerchant: row.email_merchant,
         },
       );

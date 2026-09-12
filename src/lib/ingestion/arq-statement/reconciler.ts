@@ -275,7 +275,7 @@ interface ExistingEmailTx {
   rawData: Record<string, unknown>;
 }
 
-interface ExistingTelegramTx {
+export interface ExistingTelegramTx {
   id: number;
   amountCents: bigint;
   occurredAt: Date;
@@ -476,7 +476,7 @@ async function findEmailCandidates(
   }));
 }
 
-async function findTelegramCandidate(
+export async function findTelegramCandidate(
   dbc: typeof db,
   userId: number,
   accountId: number,
@@ -526,7 +526,7 @@ async function findTelegramCandidate(
   };
 }
 
-async function retireTelegramIntoStatement(
+export async function retireTelegramIntoStatement(
   dbc: typeof db,
   input: {
     userId: number;
