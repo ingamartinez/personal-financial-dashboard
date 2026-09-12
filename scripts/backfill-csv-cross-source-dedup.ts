@@ -10,7 +10,7 @@ import { collapseCsvCandidate, isStrictOneToOne } from "./csv-cross-source-dedup
 
 const log = createLogger({ module: "backfill-csv-cross-source-dedup" });
 
-type Candidate = {
+export type Candidate = {
   csv_id: number;
   live_id: number;
   user_id: number;
@@ -40,9 +40,11 @@ function parseArgs(argv: string[]): { apply: boolean; userId: number | null } {
   return { apply, userId };
 }
 
-async function main(): Promise<void> {
-  const { apply, userId } = parseArgs(process.argv);
-  const rows = await db.execute<Candidate>(sql`
+export async function findCsvCandidates(
+  database: typeof db,
+  userId: number | null,
+): Promise<Candidate[]> {
+  const rows = await database.execute<Candidate>(sql`
     SELECT c.id AS csv_id, l.id AS live_id, c.user_id, c.account_id,
            l.source AS live_source, c.amount_cents::text AS csv_amount_cents,
            l.amount_cents::text AS live_amount_cents, c.occurred_at AS csv_occurred_at,
@@ -59,6 +61,12 @@ async function main(): Promise<void> {
       ${userId === null ? sql`` : sql`AND c.user_id = ${userId}`}
     ORDER BY c.user_id, c.occurred_at, c.id
   `);
+  return Array.from(rows);
+}
+
+async function main(): Promise<void> {
+  const { apply, userId } = parseArgs(process.argv);
+  const rows = await findCsvCandidates(db, userId);
   const csvCounts = new Map<number, number>();
   const liveCounts = new Map<number, number>();
   for (const row of rows) {
@@ -92,7 +100,9 @@ async function main(): Promise<void> {
   await db.$client.end({ timeout: 1 });
 }
 
-main().catch((err) => {
-  log.error({ err, event: "csv_dedup_fatal" }, "CSV cross-source dedup backfill failed");
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    log.error({ err, event: "csv_dedup_fatal" }, "CSV cross-source dedup backfill failed");
+    process.exit(1);
+  });
+}
