@@ -1,13 +1,13 @@
 ---
 name: findash-orchestration
-description: How work reaches main in findash — the four roles and their trigger criteria, launching opencode lanes over herdr with a worktree, a per-lane database and a pinned model, deny-first permissions per role, why the reviewer must differ from the implementer, prompt design (objective not route), running parallel lanes, and the herdr event-subscription gotchas. Load ONLY when orchestrating delegated lanes. A worker agent executing a task does not need this.
+description: How work reaches main in findash — the four roles and their trigger criteria, scripts/lane.sh for the per-issue worktree and its database, why the isolated unit is the orchestrator process rather than the lane, a pinned model per role, deny-first permissions, why the reviewer must differ from the implementer, prompt design (objective not route), and the herdr gotchas for the pane route. Load ONLY when orchestrating delegated lanes. A worker agent executing a task does not need this.
 ---
 
 # Findash agent orchestration
 
 **The orchestrator does not write code.** It delegates, then reviews what came
-back. Work reaches `main` through opencode lanes launched over herdr, one role
-per lane. Claude Code is the orchestrator and nothing else — it is the most
+back. Work reaches `main` through opencode lanes, one role per lane, spawned
+in-process since #944. Claude Code is the orchestrator and nothing else — it is the most
 expensive model per token in the system, so it spends its budget on judgement,
 not on volume.
 
@@ -128,15 +128,18 @@ herdr agent start <lane> --kind opencode --pane <id> -- \
   --auto --agent findash-reviewer -m "$model"
 ```
 
-Read the model line back out of the pane before trusting the lane —
-`Findash-Reviewer auto · <Model Name>` — and ask the agent to end its report with
-`MODEL_IN_USE=<id>`. Both definitions already instruct it to.
+In-process there is no pane to read `Findash-Reviewer auto · <Model Name>` out
+of, so ask for `MODEL_IN_USE=<id>` at the end of the report. Both definitions
+already instruct it to.
 
 ## Launch role-specialized
 
 Lanes launch already wearing a role. The prompt then carries only the objective,
 per § Prompt design. Do not smuggle the role into the prompt — that is the "map"
 that section measures as producing a worse result.
+
+The default route is in-process `task`. `mode: all` keeps direct launch working,
+so the same role still starts in a herdr pane when you want to watch it run:
 
 ```bash
 herdr agent start <lane> --kind opencode --pane <pane_id> -- --agent findash-implementer
@@ -156,11 +159,9 @@ safe unattended. `--auto` is then per-role: a reviewer in auto still cannot
 edit, because its own definition forbids it.
 
 Do not run a lane with `--auto` unless its definition already denies the
-surfaces that role must not touch. Herdr forwards native args after `--`:
-
-```bash
-herdr agent start <lane> --kind opencode --pane <pane_id> -- --auto --agent findash-reviewer
-```
+surfaces that role must not touch. Herdr forwards native args after `--`, so
+`-- --auto --agent findash-reviewer`. In-process there is no `--auto` flag: the
+same deny-first block is what bounds a spawned lane.
 
 What each role allows and denies (last matching bash rule wins — verified on
 opencode 1.18.30 by launching a lane and watching a denied command come back
@@ -202,63 +203,56 @@ stops at PR-open and waits for a human.
 
 ## One lane, end to end
 
+Since #944 the lanes are spawned **in-process**, and an in-process subagent
+inherits the parent's cwd — opencode 1.18.30 has no `directory:`/`cwd:`
+frontmatter key, and the definitions deliberately do not set
+`external_directory`.
+
+So **the isolated unit is the orchestrator process, not the lane.** Lanes within
+one issue run sequentially on one branch: they *should* share a tree. What
+collides is two issues at once. One orchestrator per issue, launched with its cwd
+inside that issue's worktree, and everything it spawns inherits the right tree.
+
+`scripts/lane.sh` owns the four things a lane is — all four or none:
+
 ```bash
-# 1. Worktree, its own workspace, its first tab and a root pane — one call.
-#    Read workspace_id, tab_id and root_pane.pane_id out of the JSON it
-#    returns. Never assume a wN:pM: ids are not stable across a close.
-herdr worktree create --cwd "$PWD" \
-  --branch claude/phase-4/<issue>-<slug> --base main \
-  --path ~/projects/personal-financial-dashboard-worktrees/<lane> \
-  --label <lane> --no-focus
-# .env.local is gitignored — without this copy the worktree fails at runtime
-cp .env.local ~/projects/personal-financial-dashboard-worktrees/<lane>/.env.local
-
-# 2. Its own database — the timezone step is NOT optional (see skill findash-testing)
-createdb findash_test_<lane>
-psql -d postgres -c "ALTER DATABASE findash_test_<lane> SET timezone TO 'UTC';"
-FINDASH_TEST_DB=findash_test_<lane> bun run db:migrate:test
-FINDASH_TEST_DB=findash_test_<lane> bun run db:seed:test
-
-# 3. node_modules is NOT shared between worktrees
-cd ~/projects/personal-financial-dashboard-worktrees/<lane> && bun install
-
-# 4. The root pane hosts the implementer. The later stage —
-#    review — gets its OWN tab inside that same lane workspace:
-#      herdr tab create --workspace <workspace_id> --cwd "$PWD" \
-#        --label <lane>-review --no-focus
-#    Never a pane split of the orchestrator's tab.
-herdr agent start <lane> --kind opencode --pane <root_pane_id> --timeout 240000 \
-  -- --auto --agent findash-implementer
-herdr agent prompt <lane> "<objective>"
-
-# 5. Teardown the moment it merges — workspace, worktree, branch, database
-herdr workspace close <workspace_id>   # closes every tab of the lane at once
-git worktree remove ~/projects/personal-financial-dashboard-worktrees/<lane> --force
-git branch -D claude/phase-4/<issue>-<slug>
-dropdb findash_test_<lane>
-
-# 6. If the lane shipped a migration, re-migrate the SHARED test database.
-#    The lane's own database had it; you just dropped that one.
-bun run db:migrate:test
+scripts/lane.sh create --issue 949        # slug and phase read off the issue
 ```
 
-`herdr worktree create` replaces the old `git worktree add` +
-`herdr tab create` pair. It isolates per workspace rather than per tab, so a
-lane's three stages live together and teardown is one call. `herdr worktree
-list` reports each worktree with its `open_workspace_id`, which makes a lane's
-workspace discoverable instead of remembered.
+Plain `git worktree`; #944 took herdr off this path. Worktree and branch off
+`origin/main`, a copy of the gitignored `.env.local` (the lane fails at runtime
+without it), `bun install` (`node_modules` is not shared), and
+`findash_test_<issue>` **with the UTC `ALTER`** — not optional, skill
+`findash-testing` — migrated and seeded. Any failure rolls the whole lane back.
 
-Closing a lane workspace does **not** touch the checkout — the worktree stays on
-disk with its branch, and `open_workspace_id` goes to `null`. Reopen it with
-`herdr worktree open --cwd <repo> --path <path> --label <lane> --no-focus`,
-which returns **new** ids. Removing the checkout stays an explicit
-`git worktree remove`, which is why step 5 keeps both.
+Then start the orchestrator **inside** the path it prints, with that
+`FINDASH_TEST_DB` exported. A running process cannot move itself into a
+worktree, so this is the one step that happens outside the agent.
 
-> **Step 6 is the easy one to forget.** Skipping it leaves `findash_test`
-> running the pre-merge schema, and the next full-suite run fails on tests that
-> are green in CI. The symptom looks like a regression on `main` and is not one —
-> check `drizzle.__drizzle_migrations` against `drizzle/meta/_journal.json`
-> before debugging any code.
+```bash
+scripts/lane.sh check                     # before the first implementer, every time
+```
+
+Non-zero in the primary checkout, on `main`, or in a worktree missing
+`.env.local` or `node_modules`. `findash-orchestrator` runs it before delegating
+an implementer and stops if it fails: #944 shipped the isolation rule as prose
+and the primary checkout went on hosting lane branches anyway.
+
+```bash
+scripts/lane.sh remove --issue 949        # worktree, branch, database, directory
+```
+
+It refuses while you are standing inside the lane, and refuses to `branch -D`
+commits not on `origin/main` unless GitHub says the PR merged — a squash rewrites
+them, so the graph alone always looks unmerged — or you pass `--force`. It also
+drops the `_wN` worker clones a killed suite leaves behind.
+
+> **The step that used to get forgotten is now automatic.** A lane that touched
+> `drizzle/` gets the **shared** `findash_test` re-migrated on removal — its own
+> database had the migration and you just dropped it. Left undone, the next full
+> suite fails on tests that are green in CI, which looks like a regression on
+> `main` and is not one: check `drizzle.__drizzle_migrations` against
+> `drizzle/meta/_journal.json` before debugging any code.
 
 
 ## Shipping
@@ -319,7 +313,13 @@ that moving `DEFAULT_MODEL` to Sonnet 5 would silently break the SMS fallback's
 
 ## Operating parallel lanes
 
-- **Cap at ~3 concurrent lanes on a dev Mac.** Lanes are RAM-bound, not
+Parallel means parallel **issues**: one orchestrator process per issue in its own
+`scripts/lane.sh` worktree. Lanes inside an issue are sequential and in-process —
+`task` blocks until the lane returns, so no pane, no watcher, no scrollback.
+Everything from **A killed watcher** down is the herdr pane route, which still
+works when you want to watch a lane run.
+
+- **Cap at ~3 concurrent issues on a dev Mac.** Lanes are RAM-bound, not
   isolation-bound. Isolation works — worktrees and per-lane databases produced
   zero conflicts across five lanes — but five simultaneous Vitest suites
   exhausted memory and the OS started killing processes.
