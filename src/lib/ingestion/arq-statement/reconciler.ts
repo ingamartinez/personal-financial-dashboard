@@ -134,7 +134,7 @@ export interface ExistingStatementMatchInput {
   accountId: number;
   emailTxId: number;
   emailAmountCents: bigint | string;
-  emailOccurredAt: Date;
+  emailOccurredAt: Date | string;
   emailMerchant: string | null;
 }
 
@@ -143,11 +143,12 @@ export async function findExistingStatementMatch(
   input: Omit<ExistingStatementMatchInput, "emailTxId">,
 ): Promise<number | null> {
   const dbc = deps.db ?? db;
-  const windowStart = new Date(input.emailOccurredAt.getTime() - DATE_WINDOW_MS);
-  const windowEnd = new Date(input.emailOccurredAt.getTime() + DATE_WINDOW_MS);
+  const emailOccurredAt = new Date(input.emailOccurredAt);
+  const windowStart = new Date(emailOccurredAt.getTime() - DATE_WINDOW_MS);
+  const windowEnd = new Date(emailOccurredAt.getTime() + DATE_WINDOW_MS);
   const emailAmountCents = BigInt(input.emailAmountCents);
   const absAmount = emailAmountCents < BigInt(0) ? -emailAmountCents : emailAmountCents;
-  const rows = await dbc
+  const rows: Array<{ id: number; occurredAt: Date | string; merchant: string | null }> = await dbc
     .select({
       id: transactions.id,
       occurredAt: transactions.occurredAt,
@@ -170,7 +171,7 @@ export async function findExistingStatementMatch(
   const scored = rows
     .map((row) => ({
       ...row,
-      timeDelta: Math.abs(row.occurredAt.getTime() - input.emailOccurredAt.getTime()),
+      timeDelta: Math.abs(new Date(row.occurredAt).getTime() - emailOccurredAt.getTime()),
       ratio: input.emailMerchant ? levenshteinRatio(input.emailMerchant, row.merchant ?? "") : 1,
     }))
     .filter((row) => row.ratio >= COUNTERPARTY_MATCH_THRESHOLD)
@@ -275,7 +276,7 @@ interface ExistingEmailTx {
   rawData: Record<string, unknown>;
 }
 
-interface ExistingTelegramTx {
+export interface ExistingTelegramTx {
   id: number;
   amountCents: bigint;
   occurredAt: Date;
@@ -476,7 +477,7 @@ async function findEmailCandidates(
   }));
 }
 
-async function findTelegramCandidate(
+export async function findTelegramCandidate(
   dbc: typeof db,
   userId: number,
   accountId: number,
@@ -526,7 +527,7 @@ async function findTelegramCandidate(
   };
 }
 
-async function retireTelegramIntoStatement(
+export async function retireTelegramIntoStatement(
   dbc: typeof db,
   input: {
     userId: number;

@@ -354,6 +354,38 @@ describe("reverse-order ARQ cross-source dedup (#921)", () => {
     );
     expect(result).toBeNull();
   });
+
+  it("coerces a string timestamp returned by db.execute-style rows", async () => {
+    const occurredAt = "2026-03-17T10:00:00Z";
+    const fakeDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                id: 945,
+                occurredAt,
+                merchant: "Aida Mercedes Maldonado",
+              },
+            ],
+          }),
+        }),
+      }),
+    } as unknown as typeof db;
+
+    await expect(
+      findExistingStatementMatch(
+        { db: fakeDb },
+        {
+          userId,
+          accountId,
+          emailAmountCents: BigInt(-33003),
+          emailOccurredAt: occurredAt,
+          emailMerchant: "Aida Mercedes Maldonado",
+        },
+      ),
+    ).resolves.toBe(945);
+  });
 });
 
 // ---------------------------------------------------------------------------
