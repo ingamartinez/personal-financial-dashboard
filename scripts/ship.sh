@@ -25,7 +25,7 @@
 #   scripts/ship.sh                       # infer everything from the branch
 #   scripts/ship.sh --issue 912           # force the issue number
 #   scripts/ship.sh --part-of             # `Part of #N` instead of `Closes #N`
-#   scripts/ship.sh --closes               # force `Closes #N` on a checklist issue
+#   scripts/ship.sh --closes              # force `Closes #N` on an epic issue
 #   scripts/ship.sh --body-file notes.md  # use this as the PR body
 #   scripts/ship.sh --no-test             # skip the suite (parallel lanes)
 #   scripts/ship.sh --no-watch            # open the PR, do not wait for CI
@@ -191,11 +191,25 @@ info "issue: #$issue ($link_word)"
 gh_ issue view "$issue" --json number >/dev/null 2>&1 || die "issue #$issue does not exist"
 
 # An epic closed by its first phase dies with the remaining phases unwritten.
-# A checklist in the issue body is the tell: make the caller say which it is.
+#
+# Counting `- [ ]` boxes in the body could not tell an epic's phase list apart
+# from an ordinary Acceptance section, and findash issues carry four or five
+# acceptance criteria as a matter of course: the guard fired on every ship of
+# the #948→#966 run and every one of them answered `--closes` (#970). A guard
+# that is always wrong is a guard nobody reads.
+#
+# The repo already marks the real thing with the `epic` label (#776, #254).
+# Labelling is a deliberate act about what the issue IS; a checklist is
+# punctuation. The cost is an unlabelled epic slipping through on `Closes` —
+# cheaper than the alternative, which was teaching every author to wave the
+# guard away by reflex.
 if (( ! link_explicit )); then
-  boxes="$(gh_ issue view "$issue" --json body --jq .body | awk '/^[[:space:]]*- \[[ xX]\]/ { n++ } END { print n + 0 }')"
-  if (( boxes >= 3 )); then
-    die "issue #$issue has $boxes checklist items — it looks like an epic.
+  is_epic=0
+  while IFS= read -r label; do
+    [[ "$label" == "epic" ]] && is_epic=1
+  done < <(gh_ issue view "$issue" --json labels --jq '.labels[].name' 2>/dev/null || true)
+  if (( is_epic )); then
+    die "issue #$issue is labelled 'epic' — closing it with this PR buries the phases that are left.
      Pass --part-of (usual) or --closes (this PR really finishes it)."
   fi
 fi
