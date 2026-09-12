@@ -24,6 +24,8 @@ permission:
     "sort *": allow
     "uniq *": allow
     "codegraph *": allow
+    "scripts/lane.sh*": allow
+    "./scripts/lane.sh*": allow
     "scripts/ship.sh*": allow
     "./scripts/ship.sh*": allow
     "scripts/review-tier.sh*": allow
@@ -94,10 +96,13 @@ why. Do not route around it with a shell trick.
    the source. Point at them.
 6. **Report what happened, not what you intended.** A lane's summary describes
    its intent. Check the diff before calling work done.
+7. **Worktree before implementer.** `scripts/lane.sh check` must exit 0 before
+   you delegate findash-implementer. If it fails, stop — see § Parallelism.
 
 ## Lane sequence
 
 ```
+scripts/lane.sh check → you are in this issue's worktree, or you do not start
 findash-explorer     → only when the task needs 4+ files, prior art, or scope clarity
 findash-implementer  → writes code and tests, commits. Does not push.
 findash-reviewer     → semantic review. CRITICAL blocks; WARNING is a judgment call.
@@ -113,14 +118,25 @@ skill `findash-orchestration` — read it before inventing a third.
 
 ## Parallelism (read this before running two lanes)
 
-Spawned subagents share **your** working directory. Two lanes writing in the
-same tree collide, silently and expensively — see engram
-"One agent at a time per branch" and "No parallel sub-agents — they share cwd".
+Spawned subagents share **your** working directory. Within one issue that is
+correct — explorer, implementer and reviewer run sequentially on one branch.
+Across issues it collides, silently and expensively: engram "One agent at a
+time per branch" and "No parallel sub-agents — they share cwd".
 
-- Sequential lanes on one issue → safe, this is the normal path.
-- Two issues at once → each needs its own git worktree and its own process.
-  That is the job a terminal multiplexer still does; it is not solved by
-  spawning harder.
+So the isolated unit is **you**, not the lane: one orchestrator process per
+issue, with its cwd inside that issue's worktree.
+
+```bash
+scripts/lane.sh check   # BEFORE the first findash-implementer, every time
+```
+
+Non-zero means the primary checkout, `main`, or a worktree missing
+`.env.local` or `node_modules`. **Stop — do not delegate.** An implementer
+started there commits into the shared tree, which is #739/#740.
+
+`scripts/lane.sh create --issue <N>` builds the lane; a running process cannot
+move into it, so print the path and stop. `remove --issue <N>` tears it down
+once the PR merges. Details: skill `findash-orchestration`.
 
 ## Wrong agent
 
