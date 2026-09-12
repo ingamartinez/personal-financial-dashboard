@@ -369,9 +369,15 @@ info "squash-merged and deleted $branch on the remote"
 # cleanup must not report it as a failed ship. The lane gets torn down anyway.
 step "Back to main"
 local_state="main"
-if git checkout --quiet main 2>/dev/null; then
+# `gh pr merge --delete-branch` already moves off the branch and deletes it
+# locally, so both steps below are normally no-ops. Treat "already done" as
+# success: a warning that fires on every clean run teaches whoever reads this
+# output to skim past the real ones sitting next to it.
+if [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] || git checkout --quiet main 2>/dev/null; then
   git pull --quiet --ff-only origin main || warn "could not fast-forward main"
-  git branch --quiet -D "$branch" 2>/dev/null || warn "local branch $branch kept"
+  if git show-ref --quiet --verify "refs/heads/$branch"; then
+    git branch -D "$branch" >/dev/null 2>&1 || warn "local branch $branch kept"
+  fi
   info "on main at $(git rev-parse --short HEAD)"
 else
   local_state="$branch (worktree — main is checked out elsewhere)"
