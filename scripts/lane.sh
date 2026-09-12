@@ -56,6 +56,7 @@
 #   scripts/lane.sh start  --dry-run                    # print the talk-mode launch line
 #   scripts/lane.sh remove --issue 949                  # worktree, branch, DB, directory
 #   scripts/lane.sh remove --issue 949 --force          # even with unmerged commits
+#   scripts/lane.sh remove --issue 949 --kill-procs     # also kill sessions pointed at it
 #   scripts/lane.sh check                               # am I in a lane? exit 1 if not
 #
 set -euo pipefail
@@ -114,6 +115,45 @@ drop_lane_databases() {
     dropdb --if-exists "$name" && info "dropped $name"
   done < <(lane_databases "$base")
   (( dropped )) || info "no database named $base"
+}
+
+# --------------------------------------------------------------- processes
+#
+# A lane outlives its teardown in one place git and postgres cannot see: the
+# processes pointed at it. After the #966 lane reported done, an `opencode run`
+# from one of its probes was still alive 34 minutes later, burning tokens, in
+# no report and raising no error (#970).
+#
+# `remove` therefore REPORTS them and does not kill by default. The match is a
+# substring of the command line — it has to be, because opencode takes the lane
+# both positionally (`opencode <dir>`) and as `--dir <dir>` — and a substring
+# match cannot tell a runaway session from the operator's own editor, shell or
+# `rg` with the same path on its argv. Killing a live session by accident is a
+# worse failure than the leak it fixes, so the loud list is the default and
+# `--kill-procs` is the opt-in.
+
+# Every ancestor of this script, so the report never names the shell it is
+# running inside — `lane.sh remove` is itself a process with the lane path on
+# its command line.
+ancestor_pids() {
+  local pid="${1:-$$}" out=""
+  while [[ -n "$pid" && "$pid" != "0" && "$pid" != "1" ]]; do
+    out+="$pid "
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  done
+  printf '%s' "$out"
+}
+
+# Processes whose command line points at <dir>. Prints "<pid>\t<argv>".
+lane_processes() {
+  local dir="$1" skip pid args
+  [[ -n "$dir" ]] || return 0
+  skip=" $(ancestor_pids) "
+  while IFS=' ' read -r pid args; do
+    [[ "$skip" == *" $pid "* ]] && continue
+    [[ "$args" == *"$dir"* ]] || continue
+    printf '%s\t%s\n' "$pid" "$args"
+  done < <(ps -eww -o pid=,args= 2>/dev/null)
 }
 
 # The worktree this lane owns, found by its branch rather than remembered in a
@@ -333,6 +373,37 @@ start_talk() {
   return 0
 }
 
+# ------------------------------------------------------------------ watchdog
+#
+# On #921 the worktree and branch were deleted while the session was live.
+# opencode went on waiting for a directory that no longer existed, `start` went
+# on waiting for opencode, and the post-exit teardown — the code that drops the
+# lane's database — never ran. `findash_test_921` was orphaned and nothing said
+# a word (#970).
+#
+# The detection has to run BESIDE the session rather than inside it: `start`
+# launches the INTERACTIVE tui, and a tui cannot be backgrounded — a script's
+# background job gets /dev/null on stdin, and a session with no keyboard is no
+# session. So this loop runs in the background and the tui keeps the terminal.
+#
+# It kills only its sibling: the opencode this shell started. Not the process
+# group, because this shell still has an outcome to report.
+watch_lane_dir() {
+  local dir="$1" parent="$2" me pid ppid args
+  me="$BASHPID"
+
+  while [[ -d "$dir" ]]; do
+    kill -0 "$parent" 2>/dev/null || return 0
+    sleep 5
+  done
+
+  while IFS=' ' read -r pid ppid args; do
+    [[ "$ppid" == "$parent" && "$pid" != "$me" && "$args" == *opencode* ]] || continue
+    kill "$pid" 2>/dev/null || true
+  done < <(ps -eww -o pid=,ppid=,args= 2>/dev/null)
+  return 0
+}
+
 # ---------------------------------------------------------------------- start
 
 cmd_start() {
@@ -451,10 +522,33 @@ cmd_start() {
     info "would run, with cwd $primary:"
     printf '\n    FINDASH_TEST_DB=%s %s\n\n' "$db" "$(printf '%q ' "${launch[@]}" | sed 's/ $//')"
   else
+    [[ -d "$dir" ]] \
+      || die "$dir does not exist — there is no lane to start a session in.
+     Clear what is left with 'scripts/lane.sh remove --issue $issue', then start again."
+
     info "FINDASH_TEST_DB=$db"
     info "opencode starts in $dir; this shell stays in $primary"
+    local watchdog=""
+    watch_lane_dir "$dir" "$$" & watchdog=$!
     FINDASH_TEST_DB="$db" "${launch[@]}" || rc=$?
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
     (( rc == 0 )) || warn "opencode exited $rc"
+  fi
+
+  # The lane can vanish under a live session (#921). Everything below reads git
+  # and GitHub for a branch whose checkout is gone and then decides on a
+  # teardown that has nothing left to tear down — so stop here instead, loudly,
+  # and name the database that is still on disk.
+  if (( ! dry_run )) && [[ ! -d "$dir" ]]; then
+    step "Lane vanished"
+    warn "$dir no longer exists — the session was waiting on a directory that is gone"
+    git -C "$primary" worktree prune 2>/dev/null || true
+    local leftover
+    leftover="$(lane_databases "$db")"
+    [[ -n "$leftover" ]] && info "still on disk: $(tr '\n' ' ' <<< "$leftover")"
+    die "the lane for #$issue is gone and nothing was torn down.
+     Clear what is left with 'scripts/lane.sh remove --issue $issue'."
   fi
 
   # --------------------------------------------------------- 3. the teardown
@@ -507,13 +601,14 @@ cmd_start() {
 # --------------------------------------------------------------------- remove
 
 cmd_remove() {
-  local issue="" force=0
+  local issue="" force=0 kill_procs=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --issue) issue="${2:?--issue needs a number}"; shift 2 ;;
-      --force) force=1; shift ;;
-      *)       die "unknown flag for remove: $1" ;;
+      --issue)      issue="${2:?--issue needs a number}"; shift 2 ;;
+      --force)      force=1; shift ;;
+      --kill-procs) kill_procs=1; shift ;;
+      *)            die "unknown flag for remove: $1" ;;
     esac
   done
 
@@ -564,6 +659,50 @@ cmd_remove() {
       | grep -q '^drizzle/' && migration_touched=1
   fi
 
+  # Before the worktree goes: a process pointed at a directory that still
+  # exists can be looked up and reasoned about; one pointed at a deleted path
+  # is just a pid with a story.
+  local left_running=0
+  local -a procs_report=()
+  if [[ -n "$dir" ]]; then
+    local -a pids=()
+    local line pid args
+    while IFS=$'\t' read -r pid args; do
+      [[ -n "$pid" ]] || continue
+      pids+=("$pid")
+      if (( kill_procs )); then
+        kill "$pid" 2>/dev/null || true
+        line="SIGTERM $pid  ${args:0:160}"
+      else
+        line="still running: $pid  ${args:0:160}"
+      fi
+      procs_report+=("$line")
+    done < <(lane_processes "$dir")
+
+    step "Processes"
+    if (( ${#pids[@]} == 0 )); then
+      info "nothing is still pointed at the lane"
+    else
+      for line in "${procs_report[@]}"; do
+        if (( kill_procs )); then info "$line"; else warn "$line"; fi
+      done
+      if (( kill_procs )); then
+        sleep 2
+        for pid in "${pids[@]}"; do
+          if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+            warn "$pid ignored SIGTERM — killed"
+          fi
+        done
+      else
+        left_running=${#pids[@]}
+        warn "the worktree is about to go; these outlive it and keep spending.
+    Check what they are, then 'kill ${pids[*]}' — or re-run with --kill-procs.
+    A path on a command line is not proof: your own editor or shell matches too."
+      fi
+    fi
+  fi
+
   step "Teardown"
   if [[ -n "$dir" ]]; then
     git -C "$primary" worktree remove --force "$dir" 2>/dev/null \
@@ -593,7 +732,14 @@ cmd_remove() {
   fi
 
   step "Lane gone"
-  printf '\n  Nothing left for issue #%s: no worktree, branch, database or directory.\n\n' "$issue"
+  printf '\n  Nothing left for issue #%s: no worktree, branch, database or directory.\n' "$issue"
+  # "Nothing left" has to be true, or the next reader stops looking.
+  if (( left_running )); then
+    printf '\n'
+    warn "except $left_running process(es) listed above, still running against a
+    directory that no longer exists. They are yours to kill."
+  fi
+  printf '\n'
 }
 
 # ---------------------------------------------------------------------- check
