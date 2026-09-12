@@ -30,7 +30,7 @@ budget this architecture exists to protect.
 gh issue (claim) → findash-explorer      (if 4+ files or scope unclear)
                  → findash-implementer   (ALWAYS — do not write code directly)
                  → findash-reviewer      (non-trivial: db, money, tenant, server actions)
-                 → scripts/ship.sh       (push + PR + CI; merge is a parent/human action)
+                 → scripts/ship.sh       (push + PR + CI; --merge squash-merges when the gate holds)
 ```
 
 Why: **the orchestrator does not know the 50+ gotchas** documented in engram for
@@ -274,12 +274,22 @@ scripts/ship.sh                       # infer issue and link word from the commi
 scripts/ship.sh --part-of             # epic-phase PR
 scripts/ship.sh --no-test             # a parallel lane already ran the suite
 scripts/ship.sh --dry-run             # gates only, push nothing
+scripts/ship.sh --merge               # squash-merge if the gate holds, then land on main
 ```
 
 It refuses to ship from `main`, refuses a dirty tree, refuses a non-conventional
-commit subject, and **never merges** — it prints whether `AGENTS.md` auto-merge
-conditions hold and stops. Multiple issue numbers across the commits
-automatically demote `Closes` to `Part of`.
+commit subject, and merges **only** under `--merge` and only when the
+`AGENTS.md` auto-merge conditions hold: CI green, `Closes` (not `Part of`), and
+`mergeable == MERGEABLE`. Any of those missing and it refuses — a human decides.
+Without `--merge` it reports the verdict and stops, as before. Multiple issue
+numbers across the commits automatically demote `Closes` to `Part of`, which
+also disqualifies the merge.
+
+The gate lives in the script, not in an agent's permission list, because a
+permission rule cannot read CI status — it can only allow `gh pr merge` and
+trust the model to have checked. That is the difference between a gate and a
+promise. Same reason the post-merge `git checkout main` runs here: the
+orchestrator needs a fresh base for the next lane, not a checkout permission.
 
 Run it from the lane's worktree with that lane's `FINDASH_TEST_DB` exported, or
 with `--no-test` if the implementer already ran the affected specs and no other
