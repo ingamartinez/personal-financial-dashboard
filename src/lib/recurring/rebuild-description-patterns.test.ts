@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -580,18 +580,51 @@ describe("rebuildDescriptionPatterns", () => {
       accountId,
       amountCents: BigInt(-230000000),
     });
-    const wrong = await seedTx(userId, accountId, {
-      occurredOn: "2026-09-08",
-      amountCents: BigInt(-800000),
-      description: "Transferencia recibida de ALEJANDRO MARTINEZ",
-    });
+    const wrongIds = await Promise.all([
+      seedTx(userId, accountId, {
+        occurredOn: "2026-01-08",
+        amountCents: BigInt(22800000),
+        description: "Transferencia recibida de PAOLA DIAZ",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-02-08",
+        amountCents: BigInt(50000000),
+        description: "Transferencia recibida de JORGE BLANCO",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-03-08",
+        amountCents: BigInt(-80000000),
+        description: "Transferencia a cuenta *78864674631",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-04-08",
+        amountCents: BigInt(-10000),
+        description: "Transferencia a cuenta *91241521350",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-07-08",
+        amountCents: BigInt(-2750000),
+        description: "Transferencia a cuenta *78856613568",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-09-08",
+        amountCents: BigInt(80000000),
+        description: "Transferencia recibida de ALEJANDRO MARTINEZ",
+      }),
+    ]);
     const report = await rebuildDescriptionPatterns({ userId, relink: true });
     expect(report.relinked).toBe(0);
-    const [row] = await db
+    const linkedRows = await db
       .select({ recurringId: transactions.recurringId })
       .from(transactions)
-      .where(eq(transactions.id, wrong));
-    expect(row.recurringId).toBeNull();
+      .where(inArray(transactions.id, wrongIds));
+    expect(linkedRows).toHaveLength(6);
+    expect(linkedRows.every((row) => row.recurringId === null)).toBe(true);
+    const [correctRow] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, correct));
+    expect(correctRow.recurringId).toBe(recId);
     expect(await patternsFor(userId, recId)).toEqual([]);
     expect((await rebuildDescriptionPatterns({ userId, relink: true })).changed).toBe(false);
   });

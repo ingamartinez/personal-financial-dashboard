@@ -112,6 +112,21 @@ async function main(): Promise<void> {
         },
         trx,
       );
+      await trx
+        .update(recurringGaps)
+        .set({
+          resolution: "linked",
+          resolutionTxId: repair.txId,
+          resolvedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(recurringGaps.userId, USER_ID),
+            eq(recurringGaps.recurringId, RECURRING_ID),
+            eq(recurringGaps.yearMonth, repair.yearMonth),
+            isNull(recurringGaps.resolution),
+          ),
+        );
     }
   });
   log.info(

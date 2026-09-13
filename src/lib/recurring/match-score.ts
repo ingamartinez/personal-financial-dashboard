@@ -205,6 +205,8 @@ export function scoreMatchCandidates(tx: MatchTx, candidates: MatchCandidate[]):
     return { winner: null, ambiguous: true };
   }
 
+  if (isGenericDescriptionToken(token)) return NO_MATCH;
+
   // No exact amount among token matches. #857: a unique candidate inside
   // 1% of the recurring's amount is an unambiguous leftover — take it.
   // Two or more inside 1% is genuine ambiguity: abstain. A tolerance that
