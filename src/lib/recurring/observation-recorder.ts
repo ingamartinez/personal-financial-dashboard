@@ -273,7 +273,7 @@ async function rederivePatternsFromObservations(
   userId: number,
   recurringId: number,
   database: DbOrTrx,
-  excludeTxId: number,
+  excludeTxId: number | null,
 ): Promise<void> {
   // #880: same union as loadSources() in rebuild-description-patterns.ts —
   // remaining observations ∪ non-deleted linked transactions — minus the
@@ -293,7 +293,7 @@ async function rederivePatternsFromObservations(
       and(
         eq(recurringLinkObservations.userId, userId),
         eq(recurringLinkObservations.recurringId, recurringId),
-        ne(recurringLinkObservations.txId, excludeTxId),
+        ...(excludeTxId === null ? [] : [ne(recurringLinkObservations.txId, excludeTxId)]),
       ),
     );
 
@@ -311,7 +311,7 @@ async function rederivePatternsFromObservations(
         eq(transactions.userId, userId),
         eq(transactions.recurringId, recurringId),
         notDeleted(transactions.deletedAt),
-        ne(transactions.id, excludeTxId),
+        ...(excludeTxId === null ? [] : [ne(transactions.id, excludeTxId)]),
       ),
     );
 
@@ -391,6 +391,14 @@ async function rederivePatternsFromObservations(
       lastObservedAt: v.lastObservedAt,
     })),
   );
+}
+
+/** Rebuild a recurring pattern from its current audit and live-link evidence. */
+export async function rederiveRecurringPatterns(
+  input: { userId: number; recurringId: number },
+  database: DbOrTrx = defaultDb,
+): Promise<void> {
+  await rederivePatternsFromObservations(input.userId, input.recurringId, database, null);
 }
 
 /**
