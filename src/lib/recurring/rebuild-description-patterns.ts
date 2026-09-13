@@ -27,7 +27,10 @@ import {
 } from "@/lib/db/schema";
 import { createLogger } from "@/lib/logger";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
-import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
+import {
+  isGenericDescriptionToken,
+  tokeniseDescription,
+} from "@/lib/recurring/observation-recorder";
 
 const log = createLogger({ module: "recurring/rebuild-description-patterns" });
 
@@ -90,7 +93,7 @@ export function computePatternsFromSources(sources: PatternSource[]): ComputedPa
   const acc = new Map<string, Acc>();
   for (const src of sources) {
     const token = tokeniseDescription(src.descriptionRaw);
-    if (token === null) continue;
+    if (token === null || isGenericDescriptionToken(token)) continue;
     const k = patternKey({ userId: src.userId, recurringId: src.recurringId, pattern: token });
     const existing = acc.get(k);
     if (!existing) {

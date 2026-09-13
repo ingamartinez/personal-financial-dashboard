@@ -18,7 +18,10 @@
 //     acceptable when the token is absent/unknown (not merely unmatched).
 //   - Same-account is a ranking bonus (tie-breaker), never a hard predicate.
 
-import { tokeniseDescription } from "@/lib/recurring/observation-recorder";
+import {
+  isGenericDescriptionToken,
+  tokeniseDescription,
+} from "@/lib/recurring/observation-recorder";
 import type { Currency } from "@/lib/types";
 
 export type MatchReason = "token" | "token+amount-exact" | "token+amount-nearest" | "amount-only";
@@ -160,6 +163,7 @@ export function scoreMatchCandidates(tx: MatchTx, candidates: MatchCandidate[]):
 
   if (tokenMatches.length === 1) {
     const c = tokenMatches[0]!;
+    if (isGenericDescriptionToken(token) && !isSameAmount(c, tx)) return NO_MATCH;
     return {
       winner: {
         recurringId: c.recurringId,
@@ -200,6 +204,8 @@ export function scoreMatchCandidates(tx: MatchTx, candidates: MatchCandidate[]):
     }
     return { winner: null, ambiguous: true };
   }
+
+  if (isGenericDescriptionToken(token)) return NO_MATCH;
 
   // No exact amount among token matches. #857: a unique candidate inside
   // 1% of the recurring's amount is an unambiguous leftover — take it.

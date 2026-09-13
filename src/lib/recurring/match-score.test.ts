@@ -214,6 +214,26 @@ describe("scoreMatchCandidates", () => {
       );
       expect(result.winner).toBeNull();
     });
+
+    it("generic TRANSFERENCIA needs an exact amount signal", () => {
+      const rent = candidate({
+        recurringId: 4,
+        amountCents: BigInt(-230000000),
+        patterns: ["TRANSFERENCIA"],
+      });
+      expect(
+        scoreMatchCandidates(
+          tx({ descriptionRaw: "Transferencia a cuenta *123", amountCents: BigInt(-1) }),
+          [rent],
+        ).winner,
+      ).toBeNull();
+      expect(
+        scoreMatchCandidates(
+          tx({ descriptionRaw: "Transferencia a cuenta *123", amountCents: BigInt(-230000000) }),
+          [rent],
+        ).winner?.recurringId,
+      ).toBe(4);
+    });
   });
 
   // ---------------------------------------------------------------------

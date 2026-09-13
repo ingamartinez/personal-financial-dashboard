@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -554,6 +554,79 @@ describe("rebuildDescriptionPatterns", () => {
       .from(transactions)
       .where(eq(transactions.id, overlap));
     expect(row.recurringId).toBeNull();
+  });
+
+  it("does not relink generic transfer boilerplate as confidence grows mid-run", async () => {
+    const userId = await seedUser("982-transferencia");
+    const accountId = await seedAccount(userId);
+    const recId = await seedRecurring(userId, accountId, {
+      label: `${TAG}-transferencia`,
+      amountCents: BigInt(-230000000),
+      dayOfMonth: 1,
+    });
+    const correct = await seedTx(userId, accountId, {
+      occurredOn: "2026-08-08",
+      amountCents: BigInt(-230000000),
+      description: "Transferencia a cuenta *78864674631",
+      recurringId: recId,
+      recurringYearMonth: "2026-08",
+    });
+    await seedObservation({
+      userId,
+      recurringId: recId,
+      txId: correct,
+      yearMonth: "2026-08",
+      description: "Transferencia a cuenta *78864674631",
+      accountId,
+      amountCents: BigInt(-230000000),
+    });
+    const wrongIds = await Promise.all([
+      seedTx(userId, accountId, {
+        occurredOn: "2026-01-08",
+        amountCents: BigInt(22800000),
+        description: "Transferencia recibida de PAOLA DIAZ",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-02-08",
+        amountCents: BigInt(50000000),
+        description: "Transferencia recibida de JORGE BLANCO",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-03-08",
+        amountCents: BigInt(-80000000),
+        description: "Transferencia a cuenta *78864674631",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-04-08",
+        amountCents: BigInt(-10000),
+        description: "Transferencia a cuenta *91241521350",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-07-08",
+        amountCents: BigInt(-2750000),
+        description: "Transferencia a cuenta *78856613568",
+      }),
+      seedTx(userId, accountId, {
+        occurredOn: "2026-09-08",
+        amountCents: BigInt(80000000),
+        description: "Transferencia recibida de ALEJANDRO MARTINEZ",
+      }),
+    ]);
+    const report = await rebuildDescriptionPatterns({ userId, relink: true });
+    expect(report.relinked).toBe(0);
+    const linkedRows = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(inArray(transactions.id, wrongIds));
+    expect(linkedRows).toHaveLength(6);
+    expect(linkedRows.every((row) => row.recurringId === null)).toBe(true);
+    const [correctRow] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, correct));
+    expect(correctRow.recurringId).toBe(recId);
+    expect(await patternsFor(userId, recId)).toEqual([]);
+    expect((await rebuildDescriptionPatterns({ userId, relink: true })).changed).toBe(false);
   });
 
   it("picks up a currently-linked tx that has no observation row", async () => {
