@@ -38,6 +38,7 @@ import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import {
   recordRecurringLinkObservation,
+  rederiveRecurringPatterns,
   retractRecurringLinkObservation,
 } from "@/lib/recurring/observation-recorder";
 import { createLogger } from "@/lib/logger";
@@ -1322,6 +1323,7 @@ export async function archiveTransaction(input: { txId: number }): Promise<Archi
       .select({
         id: transactions.id,
         transferGroupId: transactions.transferGroupId,
+        recurringId: transactions.recurringId,
       })
       .from(transactions)
       .where(
@@ -1336,6 +1338,16 @@ export async function archiveTransaction(input: { txId: number }): Promise<Archi
     if (!target) return [];
 
     if (target.transferGroupId) {
+      const linked = await trx
+        .select({ recurringId: transactions.recurringId })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.transferGroupId, target.transferGroupId),
+            notDeleted(transactions.deletedAt),
+          ),
+        );
       const rows = await trx
         .update(transactions)
         .set({ deletedAt: sql`NOW()`, updatedAt: new Date() })
@@ -1347,6 +1359,11 @@ export async function archiveTransaction(input: { txId: number }): Promise<Archi
           ),
         )
         .returning({ id: transactions.id });
+      for (const recurringId of new Set(
+        linked.flatMap((row) => (row.recurringId ? [row.recurringId] : [])),
+      )) {
+        await rederiveRecurringPatterns({ userId: session.id, recurringId }, trx);
+      }
       return rows.map((r) => r.id);
     }
 
@@ -1361,6 +1378,9 @@ export async function archiveTransaction(input: { txId: number }): Promise<Archi
         ),
       )
       .returning({ id: transactions.id });
+    if (target.recurringId !== null) {
+      await rederiveRecurringPatterns({ userId: session.id, recurringId: target.recurringId }, trx);
+    }
     return rows.map((r) => r.id);
   });
 
@@ -1388,6 +1408,7 @@ export async function restoreTransaction(input: { txId: number }): Promise<Archi
       .select({
         id: transactions.id,
         transferGroupId: transactions.transferGroupId,
+        recurringId: transactions.recurringId,
       })
       .from(transactions)
       .where(
@@ -1406,6 +1427,17 @@ export async function restoreTransaction(input: { txId: number }): Promise<Archi
     if (!target) return [];
 
     if (target.transferGroupId) {
+      const linked = await trx
+        .select({ recurringId: transactions.recurringId })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.userId, session.id),
+            eq(transactions.transferGroupId, target.transferGroupId),
+            isNotNull(transactions.deletedAt),
+            notMergeRetired(),
+          ),
+        );
       const rows = await trx
         .update(transactions)
         .set({ deletedAt: null, updatedAt: new Date() })
@@ -1420,6 +1452,11 @@ export async function restoreTransaction(input: { txId: number }): Promise<Archi
           ),
         )
         .returning({ id: transactions.id });
+      for (const recurringId of new Set(
+        linked.flatMap((row) => (row.recurringId ? [row.recurringId] : [])),
+      )) {
+        await rederiveRecurringPatterns({ userId: session.id, recurringId }, trx);
+      }
       return rows.map((r) => r.id);
     }
 
@@ -1435,6 +1472,9 @@ export async function restoreTransaction(input: { txId: number }): Promise<Archi
         ),
       )
       .returning({ id: transactions.id });
+    if (target.recurringId !== null) {
+      await rederiveRecurringPatterns({ userId: session.id, recurringId: target.recurringId }, trx);
+    }
     return rows.map((r) => r.id);
   });
 

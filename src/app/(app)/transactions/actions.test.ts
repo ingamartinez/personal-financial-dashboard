@@ -1627,6 +1627,13 @@ describe("archiveTransaction / restoreTransaction (#375)", () => {
     await db.execute(sql`
       DELETE FROM transactions WHERE external_id LIKE ${EXT_PREFIX + "%"}
     `);
+    await db.execute(sql`
+      DELETE FROM recurring_description_patterns
+      WHERE recurring_id IN (SELECT id FROM recurring_transactions WHERE label LIKE ${EXT_PREFIX + "%"})
+    `);
+    await db.execute(sql`
+      DELETE FROM recurring_transactions WHERE label LIKE ${EXT_PREFIX + "%"}
+    `);
   }
   beforeEach(archiveCleanup);
   afterEach(archiveCleanup);
@@ -1698,6 +1705,50 @@ describe("archiveTransaction / restoreTransaction (#375)", () => {
     });
     const result = await restoreTransaction({ txId });
     expect(result).toEqual({ status: "not-found" });
+  });
+
+  it("re-derives linked recurring pattern counts across archive and restore", async () => {
+    const [acc] = await db.execute<{ id: number }>(sql`
+      SELECT id FROM accounts WHERE name = 'Bancolombia Ahorros' LIMIT 1
+    `);
+    const [recurring] = await db.execute<{ id: number }>(sql`
+      INSERT INTO recurring_transactions (
+        user_id, account_id, label, amount_cents, currency, day_of_month, active
+      ) VALUES (${TEST_USER_ID}, ${acc.id}, ${EXT_PREFIX + ":recurring"}, -5000, 'COP', 15, true)
+      RETURNING id
+    `);
+    const tx1 = await seedTx({
+      counterpartyId: await seedBareCounterparty({ displayName: "test-cp-archive-pattern-1" }),
+      externalId: `${EXT_PREFIX}:pattern-1`,
+    });
+    const tx2 = await seedTx({
+      counterpartyId: await seedBareCounterparty({ displayName: "test-cp-archive-pattern-2" }),
+      externalId: `${EXT_PREFIX}:pattern-2`,
+    });
+    await db.execute(sql`
+      UPDATE transactions
+      SET recurring_id = ${recurring.id}, description_raw = 'WOMPI*SOMOS INTERNET'
+      WHERE id IN (${tx1}, ${tx2})
+    `);
+    await db.execute(sql`
+      INSERT INTO recurring_description_patterns
+        (user_id, recurring_id, pattern, observation_count)
+      VALUES (${TEST_USER_ID}, ${recurring.id}, 'WOMPI', 2)
+    `);
+
+    await archiveTransaction({ txId: tx1 });
+    const [afterArchive] = await db.execute<{ observation_count: number }>(sql`
+      SELECT observation_count FROM recurring_description_patterns
+      WHERE recurring_id = ${recurring.id} AND pattern = 'WOMPI'
+    `);
+    expect(afterArchive.observation_count).toBe(1);
+
+    await restoreTransaction({ txId: tx1 });
+    const [afterRestore] = await db.execute<{ observation_count: number }>(sql`
+      SELECT observation_count FROM recurring_description_patterns
+      WHERE recurring_id = ${recurring.id} AND pattern = 'WOMPI'
+    `);
+    expect(afterRestore.observation_count).toBe(2);
   });
 
   it("re-ingesting the same externalId after archive does NOT duplicate the row (unique index still sees archived)", async () => {
