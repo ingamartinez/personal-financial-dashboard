@@ -44,6 +44,13 @@ export type RecordLinkObservationInput = {
  */
 const PAYMENT_VERB_PREFIXES = new Set(["PAGO", "PAGASTE"]);
 
+/** Bank boilerplate is useful for amount confirmation, never as identity. */
+const GENERIC_DESCRIPTION_TOKENS = new Set(["TRANSFERENCIA"]);
+
+export function isGenericDescriptionToken(token: string): boolean {
+  return GENERIC_DESCRIPTION_TOKENS.has(token);
+}
+
 /**
  * Tokenise a raw description into a stable fingerprint token.
  *
@@ -87,7 +94,7 @@ export function tokeniseDescription(raw: string | null | undefined): string | nu
  */
 export async function recordRecurringLinkObservation(
   input: RecordLinkObservationInput,
-  database: DB = defaultDb,
+  database: DbOrTrx = defaultDb,
 ): Promise<void> {
   const { userId, recurringId, txId, yearMonth, manual } = input;
 
@@ -134,7 +141,7 @@ export async function recordRecurringLinkObservation(
 
   // 2. Upsert description fingerprint if we have a usable token.
   const pattern = tokeniseDescription(tx.descriptionRaw);
-  if (!pattern) return;
+  if (!pattern || isGenericDescriptionToken(pattern)) return;
 
   if (
     !(await shouldLearnPattern(
@@ -336,7 +343,7 @@ async function rederivePatternsFromObservations(
   const acc = new Map<string, { count: number; lastObservedAt: Date }>();
   for (const row of byTxId.values()) {
     const token = tokeniseDescription(row.descriptionRaw);
-    if (token === null) continue;
+    if (token === null || isGenericDescriptionToken(token)) continue;
     // #864 recompute-from-observations, but each token must still pass the
     // same foreign-owner check as first-learn. The raw observation row is
     // always kept (audit); only the fingerprint is gated. Without this, a

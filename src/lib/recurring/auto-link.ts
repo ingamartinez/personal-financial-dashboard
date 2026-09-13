@@ -10,6 +10,7 @@ import { notDeleted } from "@/lib/db/helpers";
 import { emit } from "@/lib/events/bus";
 import {
   recordRecurringLinkObservation,
+  isGenericDescriptionToken,
   tokeniseDescription,
 } from "@/lib/recurring/observation-recorder";
 import { scoreMatchCandidates, type MatchCandidate } from "@/lib/recurring/match-score";
@@ -211,7 +212,12 @@ async function resolveCandidate(
       // exists precisely to make a wrong guess cheap. Do NOT "fix" this by
       // requiring a learned pattern here — that would block every brand-new
       // recurring's bootstrap entirely (see engram: architecture/804-*).
-      if (!ownPatterns || ownPatterns.length === 0 || ownPatterns.includes(token)) {
+      if (
+        !ownPatterns ||
+        ownPatterns.length === 0 ||
+        (ownPatterns.includes(token) &&
+          (!isGenericDescriptionToken(token) || lone.amountCents === tx.amountCents))
+      ) {
         return { winner: lone, ambiguousCount: null };
       }
       // Extractable token contradicts this candidate's own learned
@@ -235,7 +241,10 @@ async function resolveCandidate(
     const exactAmount = pool.filter(
       (c) => c.currency === tx.currency && c.amountCents === tx.amountCents,
     );
-    if (exactAmount.length > 0) {
+    if (
+      exactAmount.length > 0 &&
+      !(isGenericDescriptionToken(siblingToken) && exactAmount.length > 1)
+    ) {
       const siblingMap = await fetchAmountConsistentTokens(
         userId,
         exactAmount.map((c) => c.recurringId),

@@ -556,6 +556,46 @@ describe("rebuildDescriptionPatterns", () => {
     expect(row.recurringId).toBeNull();
   });
 
+  it("does not relink generic transfer boilerplate as confidence grows mid-run", async () => {
+    const userId = await seedUser("982-transferencia");
+    const accountId = await seedAccount(userId);
+    const recId = await seedRecurring(userId, accountId, {
+      label: `${TAG}-transferencia`,
+      amountCents: BigInt(-230000000),
+      dayOfMonth: 1,
+    });
+    const correct = await seedTx(userId, accountId, {
+      occurredOn: "2026-08-08",
+      amountCents: BigInt(-230000000),
+      description: "Transferencia a cuenta *78864674631",
+      recurringId: recId,
+      recurringYearMonth: "2026-08",
+    });
+    await seedObservation({
+      userId,
+      recurringId: recId,
+      txId: correct,
+      yearMonth: "2026-08",
+      description: "Transferencia a cuenta *78864674631",
+      accountId,
+      amountCents: BigInt(-230000000),
+    });
+    const wrong = await seedTx(userId, accountId, {
+      occurredOn: "2026-09-08",
+      amountCents: BigInt(-800000),
+      description: "Transferencia recibida de ALEJANDRO MARTINEZ",
+    });
+    const report = await rebuildDescriptionPatterns({ userId, relink: true });
+    expect(report.relinked).toBe(0);
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, wrong));
+    expect(row.recurringId).toBeNull();
+    expect(await patternsFor(userId, recId)).toEqual([]);
+    expect((await rebuildDescriptionPatterns({ userId, relink: true })).changed).toBe(false);
+  });
+
   it("picks up a currently-linked tx that has no observation row", async () => {
     const userId = await seedUser("linked-only");
     const accountId = await seedAccount(userId);
