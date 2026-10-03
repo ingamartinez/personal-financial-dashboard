@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { PauseIcon, PencilIcon, PlayIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -213,20 +213,18 @@ export function RecurringManager({
                         >
                           <Money cents={cents} currency={r.currency} />
                         </td>
-                        <td className="p-2 text-xs">
-                          <button
+                        <td className="p-2">
+                          <Button
                             type="button"
+                            variant="outline"
+                            size="xs"
                             onClick={() => onToggle(r)}
                             disabled={pending}
-                            className={cn(
-                              "rounded px-1.5 py-0.5",
-                              r.active
-                                ? "bg-emerald-100 text-emerald-800"
-                                : "bg-muted text-muted-foreground",
-                            )}
+                            aria-label={`${r.active ? "Pause" : "Activate"} "${r.label}"`}
                           >
-                            {r.active ? "active" : "paused"}
-                          </button>
+                            {r.active ? <PauseIcon /> : <PlayIcon />}
+                            {r.active ? "Pause" : "Activate"}
+                          </Button>
                         </td>
                         <td className="p-2 text-right">
                           <div className="flex justify-end gap-1">

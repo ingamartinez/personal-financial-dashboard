@@ -316,3 +316,65 @@ describe("RecurringManager — account + active-only filters (#733)", () => {
     expect(routerPush).toHaveBeenLastCalledWith("/settings/recurring?category=arriendo&account=1");
   });
 });
+
+describe("RecurringManager — pause and activate control (#1001)", () => {
+  const item = {
+    id: 42,
+    accountId: 1,
+    accountName: "ARQ Ahorros",
+    label: "Arriendo",
+    amountCents: "-2300000",
+    currency: "COP" as const,
+    categorySlug: null,
+    dayOfMonth: 1,
+    active: true,
+    notes: null,
+  };
+
+  it("pauses an active recurring", async () => {
+    const user = userEvent.setup();
+    toggleRecurringActive.mockResolvedValueOnce(undefined);
+
+    render(
+      <RecurringManager
+        accounts={ACCOUNTS}
+        categories={CATEGORIES}
+        items={[item]}
+        activeCategory={null}
+      />,
+    );
+
+    const control = screen.getByRole("button", { name: 'Pause "Arriendo"' });
+    expect(control).toBeInTheDocument();
+
+    await user.click(control);
+
+    await waitFor(() => {
+      expect(toggleRecurringActive).toHaveBeenCalledWith(item.id, false);
+    });
+  });
+
+  it("activates a paused recurring", async () => {
+    const user = userEvent.setup();
+    toggleRecurringActive.mockResolvedValueOnce(undefined);
+    const pausedItem = { ...item, active: false };
+
+    render(
+      <RecurringManager
+        accounts={ACCOUNTS}
+        categories={CATEGORIES}
+        items={[pausedItem]}
+        activeCategory={null}
+      />,
+    );
+
+    const control = screen.getByRole("button", { name: 'Activate "Arriendo"' });
+    expect(control).toBeInTheDocument();
+
+    await user.click(control);
+
+    await waitFor(() => {
+      expect(toggleRecurringActive).toHaveBeenCalledWith(item.id, true);
+    });
+  });
+});
