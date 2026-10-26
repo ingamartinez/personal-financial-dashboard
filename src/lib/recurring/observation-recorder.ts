@@ -10,6 +10,7 @@
 // for the auto-link fallback path (Section D).
 
 import { eq, and, ne, sql } from "drizzle-orm";
+import { matchOpaqueGateway, type OpaqueGateway } from "@/lib/classification/opaque-gateways";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { notDeleted } from "@/lib/db/helpers";
 import {
@@ -44,8 +45,22 @@ export type RecordLinkObservationInput = {
  */
 const PAYMENT_VERB_PREFIXES = new Set(["PAGO", "PAGASTE"]);
 
+/**
+ * #1006: a named opaque gateway fronts many merchants, so its own word is never
+ * identity. "MERCADO PAGO*PASAREL" (EMI) and "MERCADO PAGO*MELIMAS" (Disney+)
+ * both fingerprinted as MERCADO and auto-link guessed between them by amount.
+ * The merchant lives in the `*SUFFIX`; without one, the line collapses to the
+ * gateway's canonical token, which is generic. `unknown_pasarela` is left out:
+ * its merchant sits BEFORE the `*`, so the first token is already right.
+ */
+const GATEWAY_TOKENS: Partial<Record<OpaqueGateway, string>> = {
+  mercado_pago: "MERCADOPAGO",
+  payu: "PAYU",
+  wompi: "WOMPI",
+};
+
 /** Bank boilerplate is useful for amount confirmation, never as identity. */
-const GENERIC_DESCRIPTION_TOKENS = new Set(["TRANSFERENCIA"]);
+const GENERIC_DESCRIPTION_TOKENS = new Set(["TRANSFERENCIA", ...Object.values(GATEWAY_TOKENS)]);
 
 export function isGenericDescriptionToken(token: string): boolean {
   return GENERIC_DESCRIPTION_TOKENS.has(token);
@@ -63,16 +78,32 @@ export function isGenericDescriptionToken(token: string): boolean {
  *   5. Take the first remaining significant token
  *   6. Return null if none found (including a description that is only verbs)
  *
+ * Named opaque gateways (#1006) take the first significant token after the
+ * `*` instead, or the gateway's generic canonical token when there is none.
+ *
  * Examples:
  *   "NETFLIX*DL"                          → "NETFLIX"
  *   "SPOTIFY P 12345"                     → "SPOTIFY"
  *   "GOOGLE *PLAY YOUTUBE"                → "GOOGLE"  (will clash — that's intentional)
  *   "Pago a EMPRESAS PUBLICAS DE MEDELLIN" → "EMPRESAS"
  *   "Pago a APORTES EN LINEA"             → "APORTES"
+ *   "MERCADO PAGO*PASAREL"                → "PASAREL"
+ *   "MERCADO PAGO LIMITAD"                → "MERCADOPAGO" (generic)
  *   "1234 5678"                           → null      (purely numeric)
  */
 export function tokeniseDescription(raw: string | null | undefined): string | null {
   if (!raw) return null;
+  const gateway = matchOpaqueGateway([raw]);
+  const gatewayToken = gateway ? GATEWAY_TOKENS[gateway] : undefined;
+  if (gatewayToken) {
+    const star = raw.indexOf("*");
+    const suffix = star === -1 ? null : firstSignificantToken(raw.slice(star + 1));
+    return suffix ?? gatewayToken;
+  }
+  return firstSignificantToken(raw);
+}
+
+function firstSignificantToken(raw: string): string | null {
   const upper = raw.toUpperCase().replace(/[^A-Z0-9 ]/g, " ");
   const tokens = upper.split(/\s+/).filter(Boolean);
   for (const tok of tokens) {
