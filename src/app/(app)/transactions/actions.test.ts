@@ -1733,20 +1733,20 @@ describe("archiveTransaction / restoreTransaction (#375)", () => {
     await db.execute(sql`
       INSERT INTO recurring_description_patterns
         (user_id, recurring_id, pattern, observation_count)
-      VALUES (${TEST_USER_ID}, ${recurring.id}, 'WOMPI', 2)
+      VALUES (${TEST_USER_ID}, ${recurring.id}, 'SOMOS', 2)
     `);
 
     await archiveTransaction({ txId: tx1 });
     const [afterArchive] = await db.execute<{ observation_count: number }>(sql`
       SELECT observation_count FROM recurring_description_patterns
-      WHERE recurring_id = ${recurring.id} AND pattern = 'WOMPI'
+      WHERE recurring_id = ${recurring.id} AND pattern = 'SOMOS'
     `);
     expect(afterArchive.observation_count).toBe(1);
 
     await restoreTransaction({ txId: tx1 });
     const [afterRestore] = await db.execute<{ observation_count: number }>(sql`
       SELECT observation_count FROM recurring_description_patterns
-      WHERE recurring_id = ${recurring.id} AND pattern = 'WOMPI'
+      WHERE recurring_id = ${recurring.id} AND pattern = 'SOMOS'
     `);
     expect(afterRestore.observation_count).toBe(2);
   });
