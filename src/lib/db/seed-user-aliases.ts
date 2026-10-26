@@ -41,7 +41,7 @@ type AliasSeedSpec = {
  *   - "Alejandro Martinez Maldonado" — plausible bank variant (drop second given name)
  *
  * NOT included — reasons documented:
- *   - "Alejandro Martinez": already matched via users.name in checkRecipientIsUser
+ *   - "Alejandro Martinez": already matched via users.name in isUserNameOrAlias
  *   - "Alejandro Rafael": no evidence in real data
  *   - "Rafael Martinez": collides with user's father's name; would mislabel
  *     third-party transfers as self-transfers

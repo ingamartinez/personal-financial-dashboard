@@ -254,7 +254,7 @@ async function pairArqLegToBancolombia(
   // Verify recipient matches the user (or an alias). Prevents pairing a legitimate
   // payment to a third party that happens to transit via PEXTO.
   if (arqMeta.recipientName !== null) {
-    const recipientIsUser = await checkRecipientIsUser(dbc, newTx.userId, arqMeta.recipientName);
+    const recipientIsUser = await isUserNameOrAlias(dbc, newTx.userId, arqMeta.recipientName);
     if (!recipientIsUser) {
       log.info(
         { txId: newTx.id, userId: newTx.userId, event: "pair_recipient_not_self" },
@@ -396,7 +396,7 @@ async function pairBancolombiaLegToArq(
   const partner = pickClosest(matching, newTx.occurredAt);
   const partnerArqMeta = extractArqMeta(partner.rawData as Record<string, unknown> | null);
   if (partnerArqMeta?.recipientName) {
-    const recipientIsUser = await checkRecipientIsUser(
+    const recipientIsUser = await isUserNameOrAlias(
       dbc,
       newTx.userId,
       partnerArqMeta.recipientName,
@@ -661,11 +661,16 @@ function buildPartnerFilter(partners: string[]): ReturnType<typeof sql> {
  * Returns true if `name` matches the user's own name (users.name) or any
  * of the aliases in user_aliases.
  *
+ * Exported so a counterparty can be judged at ingest time too: the ARQ email
+ * pipeline uses it to decide whether an inbound payment is income or the
+ * credit leg of a self-transfer (#1020), and the repair script that re-channels
+ * historical rows uses the same rule.
+ *
  * Tenant safety: both queries scope to userId.
  * Log-injection safety: `name` is NEVER interpolated into the log message
  * string — only passed as a structured field.
  */
-async function checkRecipientIsUser(dbc: DB, userId: number, name: string): Promise<boolean> {
+export async function isUserNameOrAlias(dbc: DB, userId: number, name: string): Promise<boolean> {
   const normalised = normaliseForMatch(name);
 
   // Check users.name.

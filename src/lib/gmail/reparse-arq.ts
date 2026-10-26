@@ -61,7 +61,10 @@ export type ArqReparseFailure = {
 export type ArqReparseReport = {
   considered: number;
   attempted: number;
+  /** Receipts that now point at a live transaction (inserted, linked or already there). */
   matched: number;
+  /** #1020: of `matched`, how many were linked to a transaction that already existed. */
+  linked: number;
   failed: number;
   failures: ArqReparseFailure[];
 };
@@ -163,6 +166,7 @@ export async function reparseArqReceipts(opts?: { userId?: number }): Promise<Ar
     considered: plan.candidates.length,
     attempted: 0,
     matched: 0,
+    linked: 0,
     failed: 0,
     failures: [],
   };
@@ -192,17 +196,24 @@ export async function reparseArqReceipts(opts?: { userId?: number }): Promise<Ar
       row.emailReceivedAt ?? row.createdAt,
     );
 
-    if (outcome.status === "inserted" || outcome.status === "duplicated") {
+    if (
+      outcome.status === "inserted" ||
+      outcome.status === "duplicated" ||
+      outcome.status === "linked"
+    ) {
       report.matched += 1;
+      if (outcome.status === "linked") report.linked += 1;
       log.info(
         {
           userId: row.userId,
           receiptId: row.id,
           status: outcome.status,
-          txId: outcome.status === "inserted" ? outcome.txId : null,
+          txId: outcome.status === "duplicated" ? null : outcome.txId,
           event: "arq_reparse_receipt_ingested",
         },
-        "reparsed ARQ receipt into a transaction",
+        outcome.status === "linked"
+          ? "reparsed ARQ receipt linked to an existing transaction"
+          : "reparsed ARQ receipt into a transaction",
       );
       continue;
     }

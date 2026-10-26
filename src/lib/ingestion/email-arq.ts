@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, emailReceipts, transactions } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
@@ -6,7 +6,7 @@ import { createLogger } from "@/lib/logger";
 import { emit } from "@/lib/events/bus";
 import { autoLinkTransaction } from "@/lib/recurring/auto-link";
 import { parseArqEmail, type ArqParseResult, type ParsedArqTx } from "@/lib/gmail/parsers/arq";
-import { pairIntraUserTransfer } from "@/lib/transfers/intra-user-pair";
+import { pairIntraUserTransfer, isUserNameOrAlias } from "@/lib/transfers/intra-user-pair";
 import { resolveCounterpartyByKey } from "@/lib/ingestion/sms-pipeline";
 import { normalizeName } from "@/lib/counterparties/alias-key";
 import { enqueueClassification } from "@/lib/classification/enqueue";
@@ -22,6 +22,8 @@ const log = createLogger({ module: "ingestion/email-arq" });
 // Label written to `transactions.source`. Keep in sync with txSource enum.
 const ARQ_SOURCE = "gmail_arq" as const;
 
+type ArqChannel = "bank" | "transfer";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -29,6 +31,9 @@ const ARQ_SOURCE = "gmail_arq" as const;
 export type IngestArqOutcome =
   | { status: "inserted"; txId: number }
   | { status: "duplicated" }
+  // #1020: the email's transaction already existed (logged by hand, or read
+  // from a Telegram OCR). The receipt was linked to it, nothing was inserted.
+  | { status: "linked"; txId: number }
   | { status: "skipped"; reason: string }
   | { status: "error"; reason: string };
 
@@ -110,6 +115,122 @@ function buildFxMetadata(parsed: ParsedArqTx): FxMetadata {
     fx.copAmountCents = parsed.copAmountCents.toString();
   }
   return fx;
+}
+
+// #1020: how far from the email's timestamp an already-existing transaction may
+// sit and still be considered the same event.
+const EXISTING_TX_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Find a live transaction that already represents this email (#1020).
+ *
+ * The reparse path (#1015) used to insert blindly, so a receipt whose payment
+ * the user had already logged (Telegram OCR, manual entry) produced a duplicate
+ * — one was found in prod and retired by hand (tx 3129 vs tx 2955).
+ *
+ * Match: same account, same direction, same exact amount, same payer, within
+ * ±1 day. The payer check is what keeps two real payments apart: two clients
+ * paying the same amount on the same day are two payments, and absorbing the
+ * second into the first deletes income. The row carrying this receipt's own
+ * `externalId` is excluded on purpose: that is the ON CONFLICT path below,
+ * which reports `duplicated`.
+ *
+ * Only `transfer_received` is checked. A `transfer_sent` leg must keep flowing
+ * through the insert path, because the intra-user pairer (#1017) only ever sees
+ * a transaction it can pair when one is created: linking an existing row
+ * instead would silently drop the pairing attempt and leave the other leg
+ * counting as income.
+ *
+ * Tenant safety: the query is scoped by userId AND accountId.
+ */
+async function findExistingArqDuplicate(input: {
+  userId: number;
+  accountId: number;
+  amountCents: bigint;
+  occurredAt: Date;
+  /** Parsed counterparty from the email — the payer we require a candidate to match. */
+  counterpartyName: string;
+  externalId: string;
+}): Promise<number | null> {
+  const windowStart = new Date(input.occurredAt.getTime() - EXISTING_TX_WINDOW_MS);
+  const windowEnd = new Date(input.occurredAt.getTime() + EXISTING_TX_WINDOW_MS);
+  const absAmount = input.amountCents < BigInt(0) ? -input.amountCents : input.amountCents;
+
+  const rows = await db
+    .select({
+      id: transactions.id,
+      occurredAt: transactions.occurredAt,
+      merchant: transactions.merchant,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, input.userId),
+        eq(transactions.accountId, input.accountId),
+        notDeleted(transactions.deletedAt),
+        sql`sign(${transactions.amountCents}) = sign(${input.amountCents})`,
+        sql`abs(${transactions.amountCents}) = ${absAmount}`,
+        gte(transactions.occurredAt, windowStart),
+        lte(transactions.occurredAt, windowEnd),
+        sql`${transactions.externalId} IS DISTINCT FROM ${input.externalId}`,
+      ),
+    )
+    .limit(10);
+
+  // Same payer only. A candidate without a `merchant` cannot be confirmed, and
+  // an unconfirmed candidate is never linked.
+  const payerKey = normalizeName(input.counterpartyName);
+  const samePayer = rows.filter(
+    (row) => row.merchant !== null && normalizeName(row.merchant) === payerKey,
+  );
+  if (samePayer.length === 0) return null;
+
+  // Several identical amounts from the same payer inside the window is not
+  // something to guess about beyond picking the nearest one — logging which is
+  // enough to audit.
+  const closest = samePayer.reduce((best, row) =>
+    Math.abs(row.occurredAt.getTime() - input.occurredAt.getTime()) <
+    Math.abs(best.occurredAt.getTime() - input.occurredAt.getTime())
+      ? row
+      : best,
+  );
+  if (samePayer.length > 1) {
+    log.warn(
+      {
+        userId: input.userId,
+        accountId: input.accountId,
+        candidateIds: samePayer.map((row) => row.id),
+        chosenTxId: closest.id,
+        event: "arq_email_duplicate_ambiguous",
+      },
+      "several live transactions match this ARQ email; linking the nearest one",
+    );
+  }
+  return closest.id;
+}
+
+// ---------------------------------------------------------------------------
+// channel selection
+// ---------------------------------------------------------------------------
+
+/**
+ * Channel for an ARQ email transaction (#1020).
+ *
+ * `transfer` is reserved for movements between the user's own accounts: the
+ * dashboard excludes that channel from income and spend (see
+ * `notInternalMovement` in src/lib/db/helpers.ts), so labelling an inbound
+ * third-party payment `transfer` silently hides it from the income totals.
+ *
+ *   - transfer_received from the user themselves (users.name or a
+ *     user_aliases row, the same rule the intra-user pairer applies) is the
+ *     credit leg of a self-transfer → `transfer`.
+ *   - transfer_received from anybody else is income → `bank`.
+ *   - transfer_sent is unchanged (`transfer`) — out of scope for #1020.
+ */
+async function resolveArqChannel(userId: number, parsed: ParsedArqTx): Promise<ArqChannel> {
+  if (parsed.txKind === "transfer_sent") return "transfer";
+  const isSelf = await isUserNameOrAlias(db, userId, parsed.counterpartyName);
+  return isSelf ? "transfer" : "bank";
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +413,36 @@ export async function ingestArqEmail(
 
   // --- Insert ---
   try {
+    // #1020: if a live tx for this payment already exists, link the receipt to
+    // it instead of inserting a duplicate. Checked before the counterparty
+    // resolver so a linked receipt creates no side effects of its own.
+    // Received only — a sent leg has to reach the pairer (#1017).
+    const existingTxId =
+      parsed.txKind === "transfer_received"
+        ? await findExistingArqDuplicate({
+            userId,
+            accountId: account.id,
+            amountCents: signedAmountCents,
+            occurredAt: parsed.occurredAt,
+            counterpartyName: parsed.counterpartyName,
+            externalId,
+          })
+        : null;
+    if (existingTxId !== null) {
+      await markReceiptMatched(receiptId, userId, existingTxId, parsed);
+      log.info(
+        {
+          userId,
+          receiptId,
+          txId: existingTxId,
+          amountCents: signedAmountCents.toString(),
+          event: "arq_email_linked_to_existing",
+        },
+        "ARQ email matches an existing live transaction; linked instead of inserting",
+      );
+      return { status: "linked", txId: existingTxId };
+    }
+
     // --- Counterparty resolution (#637) ---
     // Both transfer_received and transfer_sent populate counterpartyName.
     // Always kind="name" for ARQ — there is no account number or QR key
@@ -309,6 +460,10 @@ export async function ingestArqEmail(
       db,
     );
 
+    // #1020: `transfer` only for the user's own movements; third-party income
+    // must stay visible to the income/spend aggregates.
+    const channel = await resolveArqChannel(userId, parsed);
+
     const result = await db
       .insert(transactions)
       .values({
@@ -320,7 +475,7 @@ export async function ingestArqEmail(
         descriptionRaw,
         ...withCanonical(parsed.counterpartyName),
         source: ARQ_SOURCE,
-        channel: "transfer",
+        channel,
         externalId,
         rawData,
         counterpartyId: cpResolution.counterpartyId,
@@ -403,7 +558,7 @@ export async function ingestArqEmail(
         id: txId,
         userId,
         accountId: account.id,
-        channel: "transfer",
+        channel,
         amountCents: signedAmountCents,
         currency: "USD",
         occurredAt: parsed.occurredAt,
