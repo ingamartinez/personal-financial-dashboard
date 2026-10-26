@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -9,8 +9,10 @@ import {
   emailReceipts,
   gmailConnections,
   transactions,
+  userAliases,
   users,
 } from "@/lib/db/schema";
+import { getMonthlyFlow } from "@/lib/dashboard/queries";
 import { ingestArqEmail } from "./email-arq";
 
 const MARKER = "__email_arq_test";
@@ -21,12 +23,15 @@ let CONN_A = 0;
 let CONN_B = 0;
 let ARQ_ACCOUNT_A = 0;
 let ARQ_ACCOUNT_B = 0;
+// Second USD account for USER_A — the counterpart leg of a self-transfer.
+let OTHER_USD_ACCOUNT_A = 0;
 
 async function cleanup() {
   await db.execute(sql`DELETE FROM counterparty_aliases WHERE user_id IN (${USER_A}, ${USER_B})`);
   await db.execute(sql`DELETE FROM counterparties WHERE user_id IN (${USER_A}, ${USER_B})`);
   await db.execute(sql`DELETE FROM email_receipts WHERE user_id IN (${USER_A}, ${USER_B})`);
   await db.execute(sql`DELETE FROM transactions WHERE user_id IN (${USER_A}, ${USER_B})`);
+  await db.execute(sql`DELETE FROM user_aliases WHERE user_id IN (${USER_A}, ${USER_B})`);
 }
 
 beforeAll(async () => {
@@ -96,13 +101,31 @@ beforeAll(async () => {
     .returning({ id: accounts.id });
   ARQ_ACCOUNT_A = acctA.id;
   ARQ_ACCOUNT_B = acctB.id;
+
+  // Plain USD savings account (not ARQ-routable: institution_slug + no ARQ last4)
+  // used as the opposite leg of a self-transfer.
+  const [otherA] = await db
+    .insert(accounts)
+    .values({
+      userId: USER_A,
+      name: `${MARKER} USD Savings A`,
+      institution: "Bancolombia",
+      institutionSlug: "bancolombia",
+      type: "savings",
+      currency: "USD",
+      metadata: {},
+    })
+    .returning({ id: accounts.id });
+  OTHER_USD_ACCOUNT_A = otherA.id;
 });
 
 beforeEach(cleanup);
 afterEach(cleanup);
 
 afterAll(async () => {
-  await db.execute(sql`DELETE FROM accounts WHERE id IN (${ARQ_ACCOUNT_A}, ${ARQ_ACCOUNT_B})`);
+  await db.execute(
+    sql`DELETE FROM accounts WHERE id IN (${ARQ_ACCOUNT_A}, ${ARQ_ACCOUNT_B}, ${OTHER_USD_ACCOUNT_A})`,
+  );
   await db.execute(sql`DELETE FROM gmail_connections WHERE id IN (${CONN_A}, ${CONN_B})`);
   await db.execute(sql`DELETE FROM users WHERE id IN (${USER_A}, ${USER_B})`);
 });
@@ -469,7 +492,9 @@ describe("ingestArqEmail — COP payment received (#1015)", () => {
     // Income: positive, USDc cents from "$412.50 USDc".
     expect(tx.amountCents).toBe(BigInt(41250));
     expect(tx.currency).toBe("USD");
-    expect(tx.channel).toBe("transfer");
+    // #1020: an inbound payment from a third party is income, not an internal
+    // movement — `transfer` is reserved for the user's own account-to-account legs.
+    expect(tx.channel).toBe("bank");
 
     const rawData = tx.rawData as {
       fx: { trmSource: string; trmToAccountCurrency: number | null; copAmountCents?: string };
@@ -500,5 +525,96 @@ describe("ingestArqEmail — COP payment received (#1015)", () => {
     expect(receipt.matchStatus).toBe("matched");
     expect(receipt.matchedTransactionId).not.toBeNull();
     expect(receipt.amountCents).toBe(BigInt(41250));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1020 — `transfer` is reserved for movements between the user's own accounts.
+// ---------------------------------------------------------------------------
+describe("ingestArqEmail — received channel (#1020)", () => {
+  const APRIL = {
+    start: new Date("2026-04-01T00:00:00Z"),
+    end: new Date("2026-05-01T00:00:00Z"),
+  };
+  const SELF_ALIAS = "Alejandro Rafael Martinez";
+
+  const copPaymentReceivedHtml = () =>
+    readFileSync(
+      new URL("../gmail/parsers/fixtures/arq-cop-payment-received.html", import.meta.url),
+      "utf8",
+    );
+
+  it("external payer becomes income: channel=bank and it counts in dashboard income", async () => {
+    const html = copPaymentReceivedHtml();
+    const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-1020-external`, html);
+
+    const result = await ingestArqEmail(USER_A, receiptId, html, NOW);
+    expect(result.status).toBe("inserted");
+
+    const [tx] = await db
+      .select({
+        channel: transactions.channel,
+        amountCents: transactions.amountCents,
+        transferGroupId: transactions.transferGroupId,
+      })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+
+    expect(tx.channel).toBe("bank");
+    // Nothing to pair against: an inbound third-party payment is not a leg.
+    expect(tx.transferGroupId).toBeNull();
+
+    // The point of the fix: the money reaches the income total. 412.50 USDc
+    // at 4000 COP/USD = 1,650,000 COP.
+    const flow = await getMonthlyFlow(USER_A, 4000, APRIL);
+    expect(flow.incomeCopCents).toBe(BigInt(1_650_000_00));
+  });
+
+  it("self-transfer keeps channel=transfer, pairs, and stays out of income", async () => {
+    // The inbound leg names the user: `user_aliases` is the existing rule the
+    // intra-user pairer uses (#518/#1017), reused here at ingest time.
+    await db.insert(userAliases).values({ userId: USER_A, alias: SELF_ALIAS });
+
+    const [partner] = await db
+      .insert(transactions)
+      .values({
+        userId: USER_A,
+        accountId: OTHER_USD_ACCOUNT_A,
+        occurredAt: NOW,
+        amountCents: BigInt(-10000),
+        currency: "USD",
+        descriptionRaw: "Self transfer out",
+        source: "manual",
+        channel: "transfer",
+      })
+      .returning({ id: transactions.id });
+
+    const html = buildReceivedHtml(SELF_ALIAS, "100");
+    const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-1020-self`, html);
+
+    const result = await ingestArqEmail(USER_A, receiptId, html, NOW);
+    expect(result.status).toBe("inserted");
+
+    const [tx] = await db
+      .select({
+        channel: transactions.channel,
+        transferGroupId: transactions.transferGroupId,
+      })
+      .from(transactions)
+      .where(and(eq(transactions.userId, USER_A), eq(transactions.source, "gmail_arq")));
+
+    expect(tx.channel).toBe("transfer");
+    expect(tx.transferGroupId).not.toBeNull();
+
+    // Both legs of one movement share the group, so neither is income or expense.
+    const [partnerAfter] = await db
+      .select({ transferGroupId: transactions.transferGroupId })
+      .from(transactions)
+      .where(eq(transactions.id, partner.id));
+    expect(partnerAfter.transferGroupId).toBe(tx.transferGroupId);
+
+    const flow = await getMonthlyFlow(USER_A, 4000, APRIL);
+    expect(flow.incomeCopCents).toBe(BigInt(0));
+    expect(flow.expenseCopCents).toBe(BigInt(0));
   });
 });

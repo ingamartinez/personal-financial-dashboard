@@ -283,6 +283,124 @@ describe("reparseArqReceipts", () => {
   });
 });
 
+describe("reparseArqReceipts — existing-transaction linking (#1020)", () => {
+  // This block owns its ARQ account: another spec deletes the shared one to
+  // exercise the "parses but cannot be ingested" path.
+  let linkAccountId = 0;
+
+  beforeAll(async () => {
+    await db.execute(sql`
+      DELETE FROM accounts
+      WHERE user_id = ${USER_A} AND currency = 'USD' AND institution_slug = 'other'
+    `);
+    const [row] = await db
+      .insert(accounts)
+      .values({
+        userId: USER_A,
+        name: `${MARKER} ARQ Ahorros link`,
+        institution: "ARQ",
+        institutionSlug: "other",
+        type: "savings",
+        currency: "USD",
+        metadata: { last4s: ["7073"] },
+      })
+      .returning({ id: accounts.id });
+    linkAccountId = row.id;
+  });
+
+  afterAll(async () => {
+    await db.execute(sql`DELETE FROM accounts WHERE id = ${linkAccountId}`);
+  });
+
+  /** A live tx the user already had: e.g. logged by hand or read from a Telegram OCR. */
+  async function seedExistingTx(opts: {
+    occurredAt: Date;
+    amountCents: bigint;
+    source: "telegram" | "manual";
+  }): Promise<number> {
+    const [row] = await db
+      .insert(transactions)
+      .values({
+        userId: USER_A,
+        accountId: linkAccountId,
+        occurredAt: opts.occurredAt,
+        amountCents: opts.amountCents,
+        currency: "USD",
+        descriptionRaw: "ARQ incoming payment (OCR)",
+        merchant: "Test Sender",
+        source: opts.source,
+        channel: "bank",
+      })
+      .returning({ id: transactions.id });
+    return row.id;
+  }
+
+  it("links the receipt to the existing tx and inserts nothing", async () => {
+    // Same account, same direction, exact amount, same day as the email.
+    const existingTxId = await seedExistingTx({
+      occurredAt: new Date("2026-10-25T15:00:00Z"),
+      amountCents: BigInt(41250),
+      source: "telegram",
+    });
+    const receiptId = await seedUnmatchedReceipt(
+      USER_A,
+      CONN_A,
+      `${MARKER}-link-existing`,
+      COPRcvHtml(),
+      "unknown_arq_template",
+    );
+
+    const report = await reparseArqReceipts({ userId: USER_A });
+
+    expect(report.attempted).toBe(1);
+    expect(report.matched).toBe(1);
+    expect(report.linked).toBe(1);
+    expect(report.failed).toBe(0);
+
+    // Exactly the pre-existing row: the reparse inserted no duplicate.
+    const txRows = await db
+      .select({ id: transactions.id, externalId: transactions.externalId })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+    expect(txRows).toHaveLength(1);
+    expect(txRows[0].id).toBe(existingTxId);
+    expect(txRows[0].externalId).toBeNull();
+
+    // The receipt points at it, so the email is accounted for.
+    const row = await receiptRow(receiptId);
+    expect(row.matchStatus).toBe("matched");
+    expect(row.matchedTransactionId).toBe(existingTxId);
+  });
+
+  it("does not link a tx that is outside the ±1 day window", async () => {
+    await seedExistingTx({
+      occurredAt: new Date("2026-10-23T15:00:00Z"),
+      amountCents: BigInt(41250),
+      source: "manual",
+    });
+    await seedUnmatchedReceipt(
+      USER_A,
+      CONN_A,
+      `${MARKER}-link-too-old`,
+      COPRcvHtml(),
+      "unknown_arq_template",
+    );
+
+    const report = await reparseArqReceipts({ userId: USER_A });
+
+    expect(report.matched).toBe(1);
+    expect(report.linked).toBe(0);
+
+    // Two rows: the old one, plus the receipt's own new tx.
+    const txRows = await db
+      .select({ id: transactions.id, externalId: transactions.externalId })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+    expect(txRows).toHaveLength(2);
+    expect(txRows.filter((tx) => tx.externalId !== null)).toHaveLength(1);
+  });
+});
+
 describe("planArqReparse — filters", () => {
   it("ignores receipts that are already matched", async () => {
     await seedUnmatchedReceipt(USER_A, CONN_A, `${MARKER}-matched`, COPRcvHtml(), "unknown");
