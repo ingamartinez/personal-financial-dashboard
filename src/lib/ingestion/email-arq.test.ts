@@ -618,3 +618,126 @@ describe("ingestArqEmail — received channel (#1020)", () => {
     expect(flow.expenseCopCents).toBe(BigInt(0));
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1020 — an existing transaction is linked, never guessed at.
+// ---------------------------------------------------------------------------
+describe("ingestArqEmail — duplicate linking (#1020)", () => {
+  /** A tx the user already had: logged by hand or read from a Telegram OCR. */
+  async function seedExistingTx(opts: {
+    merchant: string;
+    amountCents: bigint;
+    occurredAt: Date;
+  }): Promise<number> {
+    const [row] = await db
+      .insert(transactions)
+      .values({
+        userId: USER_A,
+        accountId: ARQ_ACCOUNT_A,
+        occurredAt: opts.occurredAt,
+        amountCents: opts.amountCents,
+        currency: "USD",
+        descriptionRaw: `Pago recibido de ${opts.merchant}`,
+        merchant: opts.merchant,
+        source: "telegram",
+        channel: "bank",
+      })
+      .returning({ id: transactions.id });
+    return row.id;
+  }
+
+  async function ingest(msgId: string, html: string, occurredAt: Date = NOW) {
+    const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-${msgId}`, html);
+    const result = await ingestArqEmail(USER_A, receiptId, html, occurredAt);
+    const [receipt] = await db
+      .select({ matchedTransactionId: emailReceipts.matchedTransactionId })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receiptId));
+    return { result, matchedTransactionId: receipt.matchedTransactionId };
+  }
+
+  it("two same-amount payments from different payers on one day stay two transactions", async () => {
+    const first = await ingest("payer-a", buildReceivedHtml("Client Alpha", "500"));
+    const second = await ingest("payer-b", buildReceivedHtml("Client Beta", "500"));
+
+    expect(first.result.status).toBe("inserted");
+    // Same account, direction, exact amount and day, but a different payer: this
+    // is a second payment, not a duplicate. Linking it would delete 500 USD of
+    // income from the month.
+    expect(second.result.status).toBe("inserted");
+
+    const rows = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("links the receipt to a live tx from the same payer and inserts nothing", async () => {
+    const existingTxId = await seedExistingTx({
+      merchant: "Client Alpha",
+      amountCents: BigInt(50000),
+      occurredAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+    });
+
+    const { result, matchedTransactionId } = await ingest(
+      "same-payer",
+      buildReceivedHtml("Client Alpha", "500"),
+    );
+
+    expect(result.status).toBe("linked");
+    if (result.status === "linked") expect(result.txId).toBe(existingTxId);
+    expect(matchedTransactionId).toBe(existingTxId);
+
+    const rows = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("links at exactly ±24h and inserts one second past it", async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    await seedExistingTx({
+      merchant: "Client Alpha",
+      amountCents: BigInt(50000),
+      occurredAt: new Date(NOW.getTime() - dayMs),
+    });
+    const inside = await ingest("edge-inside", buildReceivedHtml("Client Alpha", "500"));
+    expect(inside.result.status).toBe("linked");
+
+    await seedExistingTx({
+      merchant: "Client Beta",
+      amountCents: BigInt(70000),
+      occurredAt: new Date(NOW.getTime() - dayMs - 1000),
+    });
+    const outside = await ingest("edge-outside", buildReceivedHtml("Client Beta", "700"));
+    expect(outside.result.status).toBe("inserted");
+  });
+
+  it("an outgoing ARQ payment keeps channel=transfer and still inserts", async () => {
+    // Out of scope on purpose (#1020): flipping `transfer_sent` to `bank` would
+    // retroactively move every historical payout into expense totals.
+    const existingTxId = await seedExistingTx({
+      merchant: "Contractor Z",
+      amountCents: BigInt(-30000),
+      occurredAt: NOW,
+    });
+
+    const { result } = await ingest("sent", buildSentHtml("Contractor Z", "300"));
+    expect(result.status).toBe("inserted");
+
+    const [sent] = await db
+      .select({ channel: transactions.channel, transferGroupId: transactions.transferGroupId })
+      .from(transactions)
+      .where(and(eq(transactions.userId, USER_A), eq(transactions.source, "gmail_arq")));
+    expect(sent.channel).toBe("transfer");
+
+    // The pre-existing row is untouched: the sent path never links.
+    const [existing] = await db
+      .select({ id: transactions.id, amountCents: transactions.amountCents })
+      .from(transactions)
+      .where(eq(transactions.id, existingTxId));
+    expect(existing.amountCents).toBe(BigInt(-30000));
+  });
+});

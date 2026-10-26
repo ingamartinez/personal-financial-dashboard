@@ -128,9 +128,12 @@ const EXISTING_TX_WINDOW_MS = 24 * 60 * 60 * 1000;
  * the user had already logged (Telegram OCR, manual entry) produced a duplicate
  * — one was found in prod and retired by hand (tx 3129 vs tx 2955).
  *
- * Match: same account, same direction, same exact amount, within ±1 day. The
- * row carrying this receipt's own `externalId` is excluded on purpose: that is
- * the ON CONFLICT path below, which reports `duplicated`.
+ * Match: same account, same direction, same exact amount, same payer, within
+ * ±1 day. The payer check is what keeps two real payments apart: two clients
+ * paying the same amount on the same day are two payments, and absorbing the
+ * second into the first deletes income. The row carrying this receipt's own
+ * `externalId` is excluded on purpose: that is the ON CONFLICT path below,
+ * which reports `duplicated`.
  *
  * Only `transfer_received` is checked. A `transfer_sent` leg must keep flowing
  * through the insert path, because the intra-user pairer (#1017) only ever sees
@@ -145,6 +148,8 @@ async function findExistingArqDuplicate(input: {
   accountId: number;
   amountCents: bigint;
   occurredAt: Date;
+  /** Parsed counterparty from the email — the payer we require a candidate to match. */
+  counterpartyName: string;
   externalId: string;
 }): Promise<number | null> {
   const windowStart = new Date(input.occurredAt.getTime() - EXISTING_TX_WINDOW_MS);
@@ -152,7 +157,11 @@ async function findExistingArqDuplicate(input: {
   const absAmount = input.amountCents < BigInt(0) ? -input.amountCents : input.amountCents;
 
   const rows = await db
-    .select({ id: transactions.id, occurredAt: transactions.occurredAt })
+    .select({
+      id: transactions.id,
+      occurredAt: transactions.occurredAt,
+      merchant: transactions.merchant,
+    })
     .from(transactions)
     .where(
       and(
@@ -166,24 +175,31 @@ async function findExistingArqDuplicate(input: {
         sql`${transactions.externalId} IS DISTINCT FROM ${input.externalId}`,
       ),
     )
-    .limit(5);
+    .limit(10);
 
-  if (rows.length === 0) return null;
+  // Same payer only. A candidate without a `merchant` cannot be confirmed, and
+  // an unconfirmed candidate is never linked.
+  const payerKey = normalizeName(input.counterpartyName);
+  const samePayer = rows.filter(
+    (row) => row.merchant !== null && normalizeName(row.merchant) === payerKey,
+  );
+  if (samePayer.length === 0) return null;
 
-  // Several identical amounts inside the window is not something to guess
-  // about beyond picking the nearest one — logging which is enough to audit.
-  const closest = rows.reduce((best, row) =>
+  // Several identical amounts from the same payer inside the window is not
+  // something to guess about beyond picking the nearest one — logging which is
+  // enough to audit.
+  const closest = samePayer.reduce((best, row) =>
     Math.abs(row.occurredAt.getTime() - input.occurredAt.getTime()) <
     Math.abs(best.occurredAt.getTime() - input.occurredAt.getTime())
       ? row
       : best,
   );
-  if (rows.length > 1) {
+  if (samePayer.length > 1) {
     log.warn(
       {
         userId: input.userId,
         accountId: input.accountId,
-        candidateIds: rows.map((row) => row.id),
+        candidateIds: samePayer.map((row) => row.id),
         chosenTxId: closest.id,
         event: "arq_email_duplicate_ambiguous",
       },
@@ -408,6 +424,7 @@ export async function ingestArqEmail(
             accountId: account.id,
             amountCents: signedAmountCents,
             occurredAt: parsed.occurredAt,
+            counterpartyName: parsed.counterpartyName,
             externalId,
           })
         : null;

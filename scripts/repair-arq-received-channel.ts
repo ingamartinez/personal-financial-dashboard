@@ -252,8 +252,10 @@ export async function repairArqReceivedChannel(opts: RepairOptions): Promise<Rep
     return { rows, changed: 0 };
   }
 
-  // Single guarded UPDATE. `channel = 'transfer'` makes a re-run a no-op and
-  // protects a row another process re-channelled between the read and here.
+  // Single guarded UPDATE. Every predicate is repeated here so a row that
+  // changed between the read and the write is left alone: a leg that gained a
+  // `transfer_group_id` (pairer), was soft-deleted, or was already re-channelled
+  // by another process must not be flipped.
   const updated = await db
     .update(transactions)
     .set({ channel: RIGHT_CHANNEL, updatedAt: sql`now()` })
@@ -263,7 +265,11 @@ export async function repairArqReceivedChannel(opts: RepairOptions): Promise<Rep
           transactions.id,
           rows.map((row) => row.txId),
         ),
+        eq(transactions.source, ARQ_SOURCE),
         eq(transactions.channel, WRONG_CHANNEL),
+        isNull(transactions.deletedAt),
+        isNull(transactions.transferGroupId),
+        sql`${transactions.amountCents} > 0`,
       ),
     )
     .returning({ id: transactions.id });
