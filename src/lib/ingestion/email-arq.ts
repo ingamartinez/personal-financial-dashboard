@@ -73,9 +73,18 @@ function resolveArqAccount(allAccounts: ArqAccount[]): ArqAccount | null {
 /**
  * Build the fx metadata block.
  *
- * ARQ Ahorros is USD-pure; USDc ≡ USD 1:1. For transfer_received there is no
- * COP leg, so trmSource='1_to_1'. For transfer_sent the email exposes both
- * USDc debited and COP sent, so we compute the implied TRM.
+ * ARQ Ahorros is USD-pure; USDc ≡ USD 1:1. For transfer_received the account
+ * leg is always USDc (1:1), whatever COP amount the sender's email mentions:
+ * an inbound payment's COP side belongs to the sender, it is not a second leg
+ * of the user's own transfer. For transfer_sent the email exposes both USDc
+ * debited and COP sent, so we compute the implied TRM.
+ *
+ * Deliberate: a received tx must NOT get `fx.copAmountCents`. #518's pairer
+ * treats the presence of that field as "this is the cross-currency ARQ leg of
+ * a self-transfer" (`isCrossCurrencyArq` in intra-user-pair.ts). Incoming
+ * money from a third party would then be paired against a Bancolombia COP
+ * credit and stop counting as income. The COP leg of an inbound payment is
+ * persisted under `rawData.arq` instead — informational, inert for pairing.
  *
  * This shape is canonical per the #508 design — #519 will consume it uniformly
  * regardless of whether it is a trivial 1:1 case or has a real TRM.
@@ -268,6 +277,15 @@ export async function ingestArqEmail(
       // #518: cross-channel pairing will use recipient_name to match PEXTO
       // COLOMBIA Bancolombia transfers. Always populated regardless of txKind.
       recipient_name: parsed.counterpartyName,
+      // #1015: inbound COP payments expose the sender's COP leg and the TRM it
+      // implies. Kept out of `fx` on purpose (see buildFxMetadata) — this is
+      // audit/reconciliation data, not a pairing signal.
+      ...(parsed.copAmountCents !== null
+        ? { cop_amount_cents: parsed.copAmountCents.toString() }
+        : {}),
+      ...(parsed.impliedTrmCopPerUsdc !== null
+        ? { implied_trm_cop_per_usdc: parsed.impliedTrmCopPerUsdc }
+        : {}),
     },
     fx: fxMetadata,
   };

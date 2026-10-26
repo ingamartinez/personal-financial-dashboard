@@ -387,3 +387,95 @@ describe("parseArqEmail — FROM display name tolerance", () => {
     expect(r.txKind).toBe("transfer_received");
   });
 });
+
+describe("parseArqEmail — transfer_received (COP payment received, issue #1015)", () => {
+  // Real prod receipts 2485 (25 Oct 2026) and 2409 (2 Oct 2026) of user 1 fell
+  // through to needs_review('unknown_arq_template'): the template has no <title>
+  // and says "$X USDc has been added to your balance", which the title-driven
+  // received parser never saw. Both receipts are real income missing from ARQ.
+  const COP_PAYMENT_RECEIVED_FIXTURE = () =>
+    readFileSync(new URL("./fixtures/arq-cop-payment-received.html", import.meta.url), "utf8");
+
+  it("parses the redacted real template: USDc added to balance, sender, COP leg and implied TRM", () => {
+    const r = parseArqEmail(COP_PAYMENT_RECEIVED_FIXTURE(), { occurredAt: RECEIVED_AT });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.txKind).toBe("transfer_received");
+    // "$412.50 USDc has been added to your balance" → 41250 cents
+    expect(r.amountUsdcCents).toBe(BigInt(41250));
+    expect(r.counterpartyName).toBe("Test Sender");
+    expect(r.occurredAt).toEqual(RECEIVED_AT);
+    // "Amount Received 1,250,000 COP" → 125000000 cents
+    expect(r.copAmountCents).toBe(BigInt(125000000));
+    // implied TRM: 125_000_000 / 41_250 ≈ 3030.3 COP per USDc
+    expect(r.impliedTrmCopPerUsdc).toBeCloseTo(125000000 / 41250, 1);
+  });
+
+  it("takes the sender from the From detail label, not from the greeting", () => {
+    // Regression guard for #921's class of bug: the greeting says "Hi Test User,"
+    // and the money came from "Test Sender". The label wins.
+    const r = parseArqEmail(COP_PAYMENT_RECEIVED_FIXTURE(), { occurredAt: RECEIVED_AT });
+    if (r.kind !== "parsed") throw new Error(`expected parsed, got ${r.kind}`);
+    expect(r.counterpartyName).toBe("Test Sender");
+    expect(r.counterpartyName).not.toBe("Test User");
+  });
+
+  it("falls back to the prose sentence when the detail labels are absent", () => {
+    const html = `<!DOCTYPE html><html><head><style>body{}</style></head>
+<body>
+  <h1>COP payment received</h1>
+  <p>Hello Test User, You have received 1,250,000 COP from Test Sender. $412.50 USDc has been added to your balance.</p>
+</body></html>`;
+    const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
+    if (r.kind !== "parsed")
+      throw new Error(`expected parsed, got ${r.kind}: ${JSON.stringify(r)}`);
+    expect(r.amountUsdcCents).toBe(BigInt(41250));
+    expect(r.counterpartyName).toBe("Test Sender");
+    expect(r.copAmountCents).toBe(BigInt(125000000));
+  });
+
+  it("returns needs_review when no USDc added-to-balance amount can be found", () => {
+    const html = `<!DOCTYPE html><html><head><style>body{}</style></head>
+<body><h1>COP payment received</h1><p>From</p><p>Test Sender</p></body></html>`;
+    const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("no_usdc_added_amount");
+  });
+
+  it("returns needs_review when the balance amount is not USDc", () => {
+    const html = `<!DOCTYPE html><html><head><style>body{}</style></head>
+<body>
+  <h1>COP payment received</h1>
+  <p>From</p><p>Test Sender</p>
+  <p>Amount Added to Balance</p><p>$412.50 USDT</p>
+</body></html>`;
+    const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("invalid_usdc_added_amount");
+  });
+
+  it("returns needs_review when the From label has no value of its own", () => {
+    // An empty/absent value must not fall through to the next label as if it
+    // were a name — that is how the greeting bug came back the first time.
+    const html = `<!DOCTYPE html><html><head><style>body{}</style></head>
+<body>
+  <h1>COP payment received</h1>
+  <p>From</p>
+  <p>Amount Received</p><p>1,250,000 COP</p>
+  <p>Amount Added to Balance</p><p>$412.50 USDc</p>
+</body></html>`;
+    const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("no_sender_name");
+  });
+
+  it("does not treat marketing mail that mentions the marker in CSS as a transfer", () => {
+    const html = `<html><head>
+  <style>.hero::before { content: "COP payment received"; }</style>
+  <title>New features are here</title>
+</head><body><p>Discover what is new in the ARQ app this month.</p></body></html>`;
+    const r = parseArqEmail(html, { occurredAt: RECEIVED_AT });
+    expect(r.kind).toBe("needs_review");
+    if (r.kind === "needs_review") expect(r.reason).toBe("unknown_arq_template");
+  });
+});

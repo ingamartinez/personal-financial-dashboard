@@ -17,6 +17,13 @@ import { extractVisibleText } from "./_text";
 //      Body contains "We've credited X.XX USDc to your balance".
 //      Covers salary (CODEBRANCH LLC) and other inbound USD transfers.
 //
+//   4. "COP payment received" transfer_received (#1015): no <title>; an
+//      <h1> reads "COP payment received" and the body says "You have received
+//      N COP from {name}. $M USDc has been added to your balance." Detail
+//      labels (From / Amount Received / Amount Added to Balance / Date) follow.
+//      Incoming COP payments converted to USDc — real income that the
+//      title-driven received path never saw.
+//
 // Design decisions (ratified in issue #508 body, 2026-04-26):
 //   - ARQ Ahorros is USD-pure. USDc ≡ USD 1:1 in this account.
 //   - metadata.fx is always written, even for trivial USD↔USDc cases
@@ -133,6 +140,36 @@ const AMOUNT_SENT_RE = /Amount\s+sent\s*:\s*([\d,]+(?:\.\d+)?)\s+(COP|USD|USDc)/
 
 // Marker for template 1 (no-title sent).
 const NO_TITLE_SENT_MARKER = /COP\s+transfer\s+sent/i;
+
+// --- Template 4: "COP payment received" (#1015) --------------------------
+
+// No <title>; the identifying marker is the <h1> section heading.
+const COP_PAYMENT_RECEIVED_MARKER = /COP\s+payment\s+received/i;
+
+// Prose sentence of the same template, used as a fallback when the detail
+// labels are absent:
+//   "You have received 1,250,000 COP from Test Sender. $412.50 USDc has been
+//    added to your balance."
+const COP_RECEIVED_SENTENCE_RE =
+  /You\s+have\s+received\s+([\d,]+(?:\.\d+)?)\s+COP\s+from\s+([^.$]+?)\s*[.$]/i;
+const USD_ADDED_TO_BALANCE_RE =
+  /\$\s*([\d,]+(?:\.\d+)?)\s+USDc\s+has\s+been\s+added\s+to\s+your\s+balance/i;
+
+// Detail labels, rendered as adjacent <p> elements (label, then value).
+const LABEL_FROM_RE = /^From$/i;
+const LABEL_AMOUNT_RECEIVED_RE = /^Amount\s+Received$/i;
+const LABEL_AMOUNT_ADDED_RE = /^Amount\s+Added\s+to\s+Balance$/i;
+const ARQ_DETAIL_LABEL_RES: ReadonlyArray<RegExp> = [
+  LABEL_FROM_RE,
+  LABEL_AMOUNT_RECEIVED_RE,
+  LABEL_AMOUNT_ADDED_RE,
+  /^Date$/i,
+];
+
+// Detail values. The balance leg is the authoritative ledger amount and must be
+// USDc — anything else is a template change we refuse to guess about.
+const USDC_DETAIL_VALUE_RE = /^\$?\s*([\d,]+(?:\.\d+)?)\s+USDc$/i;
+const COP_DETAIL_VALUE_RE = /^([\d,]+(?:\.\d+)?)\s+COP$/i;
 
 // ---------------------------------------------------------------------------
 // Per-template parsers
@@ -262,6 +299,101 @@ function parseTitledSent(title: string, visibleText: string, occurredAt: Date): 
 }
 
 /**
+ * Return the paragraph that follows `label` in document order, or undefined
+ * when the label is absent, its value slot is empty, or the next paragraph is
+ * another detail label.
+ *
+ * Real ARQ emails render detail labels and values as adjacent <p> elements.
+ * #921 shipped a fix that fell back to the greeting text when the expected
+ * label was missing and silently read the account owner as the counterparty;
+ * refusing here is what keeps that class of bug from coming back.
+ */
+function findDetailValue(paragraphs: string[], label: RegExp): string | undefined {
+  const index = paragraphs.findIndex((paragraph) => label.test(paragraph));
+  if (index < 0) return undefined;
+  const value = paragraphs[index + 1]?.trim();
+  if (!value) return undefined;
+  if (ARQ_DETAIL_LABEL_RES.some((detailLabel) => detailLabel.test(value))) return undefined;
+  return value;
+}
+
+/**
+ * Parse template 4 — COP payment received (#1015).
+ *
+ * Expected visible-text structure:
+ *   "... COP payment received ... Hello {owner}, You have received {COP} COP
+ *    from {sender}. ${USDc} USDc has been added to your balance ...
+ *    From | {sender} | Amount Received | {COP} COP |
+ *    Amount Added to Balance | ${USDc} USDc | Date | {dd/mm/yyyy hh:mm}"
+ *
+ * The balance leg (USDc) is the transaction amount; the COP leg is the sender's
+ * side and is kept only to derive the implied TRM.
+ */
+function parseCopPaymentReceived(
+  visibleText: string,
+  paragraphs: string[],
+  occurredAt: Date,
+): ArqParseResult {
+  const sentence = visibleText.match(COP_RECEIVED_SENTENCE_RE);
+
+  // --- USDc added to balance (the ledger amount) ---
+  const addedValue = findDetailValue(paragraphs, LABEL_AMOUNT_ADDED_RE);
+  let amountUsdcCents: bigint | null = null;
+  if (addedValue !== undefined) {
+    const m = addedValue.match(USDC_DETAIL_VALUE_RE);
+    if (!m) {
+      return { kind: "needs_review", reason: "invalid_usdc_added_amount", raw: visibleText };
+    }
+    amountUsdcCents = parseAmountToCents(m[1]);
+  } else {
+    const m = visibleText.match(USD_ADDED_TO_BALANCE_RE);
+    if (m) amountUsdcCents = parseAmountToCents(m[1]);
+  }
+  if (amountUsdcCents === null || amountUsdcCents <= BigInt(0)) {
+    return {
+      kind: "needs_review",
+      reason: addedValue === undefined ? "no_usdc_added_amount" : "invalid_usdc_added_amount",
+      raw: visibleText,
+    };
+  }
+
+  // --- Sender: From detail label first, prose sentence second ---
+  const fromValue = findDetailValue(paragraphs, LABEL_FROM_RE);
+  const counterpartyName = (fromValue ?? sentence?.[2] ?? "").replace(/\s+/g, " ").trim();
+  if (!counterpartyName) {
+    return { kind: "needs_review", reason: "no_sender_name", raw: visibleText };
+  }
+
+  // --- COP leg (sender's side): optional, but never guessed ---
+  const copValue = findDetailValue(paragraphs, LABEL_AMOUNT_RECEIVED_RE);
+  let copAmountCents: bigint | null = null;
+  if (copValue !== undefined) {
+    const m = copValue.match(COP_DETAIL_VALUE_RE);
+    copAmountCents = m ? parseAmountToCents(m[1]) : null;
+    if (copAmountCents === null) {
+      return { kind: "needs_review", reason: "invalid_cop_amount_received", raw: visibleText };
+    }
+  } else if (sentence?.[1]) {
+    copAmountCents = parseAmountToCents(sentence[1]);
+  }
+
+  let impliedTrmCopPerUsdc: number | null = null;
+  if (copAmountCents !== null && amountUsdcCents > BigInt(0)) {
+    impliedTrmCopPerUsdc = Number(copAmountCents) / Number(amountUsdcCents);
+  }
+
+  const parsed: ParsedArqTx = {
+    txKind: "transfer_received",
+    amountUsdcCents,
+    counterpartyName,
+    occurredAt,
+    copAmountCents,
+    impliedTrmCopPerUsdc,
+  };
+  return { kind: "parsed", ...parsed };
+}
+
+/**
  * Parse template 3 — transfer_received.
  * <title>You received {amount} USD from {name}</title>
  */
@@ -336,6 +468,20 @@ export function parseArqEmail(rawHtml: string, opts: { occurredAt: Date }): ArqP
   // Template 2: titled transfer_sent
   if (title && TITLED_SENT_RE.test(title)) {
     return parseTitledSent(title, visibleText, occurredAt);
+  }
+
+  // Template 4: "COP payment received" (no <title>, #1015). Requires the
+  // heading AND real detail structure, so a marketing email that merely
+  // mentions the phrase still falls through to needs_review below.
+  if (COP_PAYMENT_RECEIVED_MARKER.test(visibleText)) {
+    // Extraction runs once and is shared with the parser below.
+    const paragraphs = extractParagraphTexts(rawHtml);
+    const hasDetailStructure = paragraphs.some((paragraph) =>
+      ARQ_DETAIL_LABEL_RES.some((label) => label.test(paragraph)),
+    );
+    if (hasDetailStructure || USD_ADDED_TO_BALANCE_RE.test(visibleText)) {
+      return parseCopPaymentReceived(visibleText, paragraphs, occurredAt);
+    }
   }
 
   // Template 1: no-title COP transfer sent (47% of corpus — dominant case)
