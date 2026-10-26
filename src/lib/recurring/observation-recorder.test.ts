@@ -15,6 +15,7 @@ import {
 } from "@/lib/db/schema";
 import { copyCategorySeedsToUser, copyRuleSeedsToUser } from "@/lib/auth/signup";
 import {
+  isGenericDescriptionToken,
   recordRecurringLinkObservation,
   retractRecurringLinkObservation,
   tokeniseDescription,
@@ -197,11 +198,35 @@ describe("tokeniseDescription", () => {
   });
 
   it("does not skip a merchant token that merely contains PAGO", () => {
-    // "MERCADO PAGO*MELIMAS" returns MERCADO even with the skip removed,
-    // because MERCADO is already the first significant token. An over-eager
-    // startsWith("PAGO") / includes("PAGO") skip would drop MERCADOPAGO.
+    // An over-eager startsWith("PAGO") / includes("PAGO") skip would drop
+    // MERCADOPAGO, and a non-gateway merchant must keep its first token.
     expect(tokeniseDescription("MERCADOPAGO COLOMBIA")).toBe("MERCADOPAGO");
-    expect(tokeniseDescription("Pago a MERCADO PAGO")).toBe("MERCADO");
+    expect(tokeniseDescription("PAGOS INMEDIATOS SAS")).toBe("PAGOS");
+  });
+
+  // #1006: every Mercado Pago line used to fingerprint as MERCADO, so EMI,
+  // Disney+, Max and Paramount shared one token and auto-link guessed.
+  it("fingerprints a named gateway by the merchant after the *", () => {
+    expect(tokeniseDescription("MERCADO PAGO*PASAREL")).toBe("PASAREL");
+    expect(tokeniseDescription("MERCADO PAGO*MELIMAS")).toBe("MELIMAS");
+    expect(tokeniseDescription("MERCADO PAGO*PARAMOU")).toBe("PARAMOU");
+    expect(tokeniseDescription("MERCPAGO*MAX")).toBe("MAX");
+    expect(tokeniseDescription("Mercado Pago*PASARELAE")).toBe("PASARELAE");
+  });
+
+  it("collapses a suffix-less gateway line to its generic canonical token", () => {
+    for (const raw of ["MERCADO PAGO LIMITAD", "Pago a MERCADO PAGO", "MERCADO PAGO*"]) {
+      const token = tokeniseDescription(raw);
+      expect(token).toBe("MERCADOPAGO");
+      expect(isGenericDescriptionToken(token!)).toBe(true);
+    }
+    expect(isGenericDescriptionToken(tokeniseDescription("PAYU-WOMPI-12345")!)).toBe(true);
+  });
+
+  it("leaves non-gateway and unknown-pasarela descriptions on the first token", () => {
+    expect(tokeniseDescription("MERCADO ZAPATOCA")).toBe("MERCADO");
+    expect(tokeniseDescription("ACME*PASARELA PAGOS")).toBe("ACME");
+    expect(isGenericDescriptionToken("NETFLIX")).toBe(false);
   });
 });
 

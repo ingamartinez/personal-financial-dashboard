@@ -42,7 +42,7 @@ describe("scoreMatchCandidates", () => {
   // ---------------------------------------------------------------------
   describe("four-way -4490000 COP collision — distinct tokens separate them", () => {
     const appleICloud = candidate({ recurringId: 1, accountId: 10, patterns: ["APPLE"] });
-    const ml6Disney = candidate({ recurringId: 2, accountId: 10, patterns: ["MERCADO"] });
+    const ml6Disney = candidate({ recurringId: 2, accountId: 10, patterns: ["MELIMAS"] });
     const netflix = candidate({ recurringId: 3, accountId: 10, patterns: ["NETFLIX"] });
     const googleOne = candidate({ recurringId: 4, accountId: 10, patterns: ["GOOGLE", "DLO"] });
     const allFour = [appleICloud, ml6Disney, netflix, googleOne];
@@ -445,6 +445,48 @@ describe("scoreMatchCandidates", () => {
       );
       expect(result.winner?.recurringId).toBe(10);
       expect(result.winner?.reason).toBe("token+amount-exact");
+    });
+  });
+
+  // #1006 prod scenario: four recurrings all charged through Mercado Pago.
+  // They used to share the MERCADO token, so a Disney+ charge landed on Max.
+  describe("recurrings behind one gateway — the *suffix separates them", () => {
+    const emi = candidate({
+      recurringId: 15,
+      amountCents: BigInt(-15280000),
+      patterns: ["PASAREL"],
+    });
+    const max = candidate({ recurringId: 26, amountCents: BigInt(-2093000), patterns: ["MAX"] });
+    const disney = candidate({ recurringId: 27, patterns: ["MELIMAS"] });
+    const paramount = candidate({
+      recurringId: 25,
+      amountCents: BigInt(-1645000),
+      patterns: ["PARAMOU"],
+    });
+    const all = [emi, max, disney, paramount];
+
+    it("routes each suffixed charge to its own recurring", () => {
+      const cases: [string, bigint, number][] = [
+        ["MERCADO PAGO*PASAREL", BigInt(-15280000), 15],
+        ["MERCADO PAGO*MELIMAS", BigInt(-4490000), 27],
+        ["MERCPAGO*MAX", BigInt(-2093000), 26],
+        ["MERCADO PAGO*PARAMOU", BigInt(-1645000), 25],
+      ];
+      for (const [descriptionRaw, amountCents, expected] of cases) {
+        const result = scoreMatchCandidates(tx({ descriptionRaw, amountCents }), all);
+        expect(result.winner?.recurringId).toBe(expected);
+      }
+    });
+
+    it("never guesses a suffix-less gateway line, even on an exact amount", () => {
+      const twins = [emi, candidate({ ...emi, recurringId: 99, patterns: ["OTHER"] })];
+      for (const pool of [all, twins]) {
+        const result = scoreMatchCandidates(
+          tx({ descriptionRaw: "MERCADO PAGO LIMITAD", amountCents: BigInt(-15280000) }),
+          pool,
+        );
+        expect(result.winner).toBeNull();
+      }
     });
   });
 });
