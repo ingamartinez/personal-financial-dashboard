@@ -223,6 +223,26 @@ describe("tokeniseDescription", () => {
     expect(isGenericDescriptionToken(tokeniseDescription("PAYU-WOMPI-12345")!)).toBe(true);
   });
 
+  // #1010: ARQ boilerplate made every USDC send fingerprint as YOU and every
+  // card purchase as ARQ, so a rent paid in USDC claimed unrelated sends.
+  it("fingerprints an ARQ line by the counterparty it wraps", () => {
+    expect(tokeniseDescription("You sent USDc to Maria Eugenia Giraldo")).toBe("MARIA");
+    expect(tokeniseDescription("You received 206000 USDc from CODEBRANCH LLC")).toBe("CODEBRANCH");
+    expect(tokeniseDescription("ARQ purchase: Rappi")).toBe("RAPPI");
+    expect(tokeniseDescription("ARQ purchase: PAYU*SOMOS INTERNET")).toBe("SOMOS");
+    expect(tokeniseDescription("ARQ sent to Alejandro Rafael Martinez")).toBe("ALEJANDRO");
+    expect(tokeniseDescription("ARQ received from CODEBRANCH LLC")).toBe("CODEBRANCH");
+    expect(tokeniseDescription("ARQ P2P transfer: Dilan Dario")).toBe("DILAN");
+    expect(tokeniseDescription("ARQ fee: Compra USDc comisión")).toBe("COMPRA");
+    expect(tokeniseDescription("ARQ reward: Cashback")).toBe("CASHBACK");
+  });
+
+  it("returns null for a bare ARQ wrapper and keeps other ARQ/YOU text intact", () => {
+    expect(tokeniseDescription("ARQ purchase:")).toBeNull();
+    expect(tokeniseDescription("ARQUITECTURA SAS")).toBe("ARQUITECTURA");
+    expect(tokeniseDescription("YOUTUBE PREMIUM")).toBe("YOUTUBE");
+  });
+
   it("leaves non-gateway and unknown-pasarela descriptions on the first token", () => {
     expect(tokeniseDescription("MERCADO ZAPATOCA")).toBe("MERCADO");
     expect(tokeniseDescription("ACME*PASARELA PAGOS")).toBe("ACME");

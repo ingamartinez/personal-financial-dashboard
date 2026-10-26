@@ -59,6 +59,16 @@ const GATEWAY_TOKENS: Partial<Record<OpaqueGateway, string>> = {
   wompi: "WOMPI",
 };
 
+/**
+ * #1010: ARQ wraps the counterparty in boilerplate — "You sent USDc to <name>"
+ * (gmail_arq) and "ARQ purchase: <merchant>" (arq_statement). Taking the first
+ * token made every USDC send fingerprint as YOU, so a rent paid in USDC
+ * claimed sends to the user's own account. Strip the wrapper, then tokenize
+ * what it wraps (gateway rules included: "ARQ purchase: PAYU*SOMOS").
+ */
+const ARQ_WRAPPER =
+  /^\s*(?:ARQ\s+(?:purchase|fee|reward|P2P\s+transfer)\s*:|ARQ\s+(?:sent\s+to|received\s+from)\s|You\s+(?:sent|received)\s+(?:[\d.,]+\s+)?USDc\s+(?:to|from)\s)/i;
+
 /** Bank boilerplate is useful for amount confirmation, never as identity. */
 const GENERIC_DESCRIPTION_TOKENS = new Set(["TRANSFERENCIA", ...Object.values(GATEWAY_TOKENS)]);
 
@@ -78,8 +88,9 @@ export function isGenericDescriptionToken(token: string): boolean {
  *   5. Take the first remaining significant token
  *   6. Return null if none found (including a description that is only verbs)
  *
- * Named opaque gateways (#1006) take the first significant token after the
- * `*` instead, or the gateway's generic canonical token when there is none.
+ * ARQ wrappers (#1010) are stripped first. Named opaque gateways (#1006) take
+ * the first significant token after the `*` instead, or the gateway's generic
+ * canonical token when there is none.
  *
  * Examples:
  *   "NETFLIX*DL"                          → "NETFLIX"
@@ -89,18 +100,20 @@ export function isGenericDescriptionToken(token: string): boolean {
  *   "Pago a APORTES EN LINEA"             → "APORTES"
  *   "MERCADO PAGO*PASAREL"                → "PASAREL"
  *   "MERCADO PAGO LIMITAD"                → "MERCADOPAGO" (generic)
+ *   "You sent USDc to Maria Giraldo"      → "MARIA"
  *   "1234 5678"                           → null      (purely numeric)
  */
 export function tokeniseDescription(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  const gateway = matchOpaqueGateway([raw]);
+  const text = raw.replace(ARQ_WRAPPER, "");
+  const gateway = matchOpaqueGateway([text]);
   const gatewayToken = gateway ? GATEWAY_TOKENS[gateway] : undefined;
   if (gatewayToken) {
-    const star = raw.indexOf("*");
-    const suffix = star === -1 ? null : firstSignificantToken(raw.slice(star + 1));
+    const star = text.indexOf("*");
+    const suffix = star === -1 ? null : firstSignificantToken(text.slice(star + 1));
     return suffix ?? gatewayToken;
   }
-  return firstSignificantToken(raw);
+  return firstSignificantToken(text);
 }
 
 function firstSignificantToken(raw: string): string | null {
