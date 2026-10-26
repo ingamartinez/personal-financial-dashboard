@@ -178,7 +178,10 @@ export async function reparseArqReceipts(opts?: { userId?: number }): Promise<Ar
       createdAt: emailReceipts.createdAt,
     })
     .from(emailReceipts)
-    .where(inArray(emailReceipts.id, eligibleIds));
+    .where(inArray(emailReceipts.id, eligibleIds))
+    // Deterministic order: ingest in receipt order so a report reads the same
+    // way twice and a partial run leaves a predictable prefix behind.
+    .orderBy(emailReceipts.id);
 
   for (const row of rows) {
     report.attempted += 1;

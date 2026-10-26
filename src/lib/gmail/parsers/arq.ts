@@ -331,10 +331,9 @@ function findDetailValue(paragraphs: string[], label: RegExp): string | undefine
  */
 function parseCopPaymentReceived(
   visibleText: string,
-  rawHtml: string,
+  paragraphs: string[],
   occurredAt: Date,
 ): ArqParseResult {
-  const paragraphs = extractParagraphTexts(rawHtml);
   const sentence = visibleText.match(COP_RECEIVED_SENTENCE_RE);
 
   // --- USDc added to balance (the ledger amount) ---
@@ -475,12 +474,13 @@ export function parseArqEmail(rawHtml: string, opts: { occurredAt: Date }): ArqP
   // heading AND real detail structure, so a marketing email that merely
   // mentions the phrase still falls through to needs_review below.
   if (COP_PAYMENT_RECEIVED_MARKER.test(visibleText)) {
+    // Extraction runs once and is shared with the parser below.
     const paragraphs = extractParagraphTexts(rawHtml);
     const hasDetailStructure = paragraphs.some((paragraph) =>
       ARQ_DETAIL_LABEL_RES.some((label) => label.test(paragraph)),
     );
     if (hasDetailStructure || USD_ADDED_TO_BALANCE_RE.test(visibleText)) {
-      return parseCopPaymentReceived(visibleText, rawHtml, occurredAt);
+      return parseCopPaymentReceived(visibleText, paragraphs, occurredAt);
     }
   }
 
