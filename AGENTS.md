@@ -7,13 +7,14 @@ repo. Multiple agents may run in parallel; the rules below prevent collisions.
 `.claude/skills/` — opencode reads that directory natively, so one set of
 definitions serves every runtime.
 
-| Skill                   | Load it before                                                               |
-| ----------------------- | ---------------------------------------------------------------------------- |
-| `findash-tech-baseline` | writing or reviewing any code in `src/`, `scripts/`, `instrumentation.ts`    |
-| `findash-testing`       | running the suite, adding a test, creating a worktree lane                   |
-| `findash-github`        | any `gh` command beyond a read, pushing over HTTPS, labelling an issue       |
-| `findash-review`        | reviewing a diff, or self-reviewing before opening a PR                      |
-| `findash-orchestration` | delegating work to lanes, or any `lane.sh` / `ship.sh` flag not listed below |
+| Skill                   | Load it before                                                                |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| `findash-tech-baseline` | writing or reviewing any code in `src/`, `scripts/`, `instrumentation.ts`     |
+| `findash-testing`       | running the suite, adding a test, creating a worktree lane                    |
+| `findash-github`        | any `gh` command beyond a read, pushing over HTTPS, labelling an issue        |
+| `findash-review`        | reviewing a diff, or self-reviewing before opening a PR                       |
+| `findash-orchestration` | delegating work to lanes, or any `lane.sh` / `ship.sh` flag not listed below  |
+| `findash-finance-agent` | answering a question about the user's money from prod, or repairing prod data |
 
 ## Source of truth
 
