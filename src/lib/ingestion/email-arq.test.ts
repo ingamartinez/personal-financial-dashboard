@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -436,5 +437,68 @@ describe("ingestArqEmail — counterparty linking", () => {
     expect(txA.counterpartyId).not.toBeNull();
     expect(txB.counterpartyId).not.toBeNull();
     expect(txA.counterpartyId).not.toBe(txB.counterpartyId);
+  });
+});
+
+describe("ingestArqEmail — COP payment received (#1015)", () => {
+  // Real redacted template: no <title>, "COP payment received" heading,
+  // "$412.50 USDc has been added to your balance" and detail labels.
+  const copPaymentReceivedHtml = () =>
+    readFileSync(
+      new URL("../gmail/parsers/fixtures/arq-cop-payment-received.html", import.meta.url),
+      "utf8",
+    );
+
+  it("inserts income in USDc and keeps the COP leg out of the pairing signal", async () => {
+    const html = copPaymentReceivedHtml();
+    const receiptId = await seedReceipt(USER_A, CONN_A, `msg-${MARKER}-cop-received`, html);
+
+    const result = await ingestArqEmail(USER_A, receiptId, html, NOW);
+    expect(result.status).toBe("inserted");
+
+    const [tx] = await db
+      .select({
+        amountCents: transactions.amountCents,
+        currency: transactions.currency,
+        channel: transactions.channel,
+        rawData: transactions.rawData,
+      })
+      .from(transactions)
+      .where(eq(transactions.userId, USER_A));
+
+    // Income: positive, USDc cents from "$412.50 USDc".
+    expect(tx.amountCents).toBe(BigInt(41250));
+    expect(tx.currency).toBe("USD");
+    expect(tx.channel).toBe("transfer");
+
+    const rawData = tx.rawData as {
+      fx: { trmSource: string; trmToAccountCurrency: number | null; copAmountCents?: string };
+      arq: { recipient_name: string; cop_amount_cents?: string; implied_trm_cop_per_usdc?: number };
+    };
+
+    // The account leg is USDc 1:1 and must stay that way: writing the sender's
+    // COP leg into fx.copAmountCents would make #518's pairer treat this income
+    // as one leg of a self-transfer.
+    expect(rawData.fx.trmSource).toBe("1_to_1");
+    expect(rawData.fx.trmToAccountCurrency).toBe(1);
+    expect(rawData.fx.copAmountCents).toBeUndefined();
+
+    // The COP leg is still recorded, under the inert arq namespace.
+    expect(rawData.arq.recipient_name).toBe("Test Sender");
+    expect(rawData.arq.cop_amount_cents).toBe("125000000");
+    expect(rawData.arq.implied_trm_cop_per_usdc).toBeCloseTo(125000000 / 41250, 1);
+
+    // Receipt is matched in one pass, so the cron stops retrying it.
+    const [receipt] = await db
+      .select({
+        matchStatus: emailReceipts.matchStatus,
+        matchedTransactionId: emailReceipts.matchedTransactionId,
+        amountCents: emailReceipts.amountCents,
+      })
+      .from(emailReceipts)
+      .where(eq(emailReceipts.id, receiptId));
+    expect(receipt.matchStatus).toBe("matched");
+    expect(receipt.matchedTransactionId).not.toBeNull();
+    expect(receipt.amountCents).toBe(BigInt(41250));
   });
 });

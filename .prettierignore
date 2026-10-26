@@ -35,3 +35,6 @@ pnpm-lock.yaml
 
 # Data dumps
 MovimientosTusCuentasBancolombia*.xlsx
+
+# Email parser fixtures: real redacted gateway HTML, not formatted code
+src/lib/gmail/parsers/fixtures/
