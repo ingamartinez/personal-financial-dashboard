@@ -20,7 +20,14 @@ export interface ExistingTxnForMatch {
 
 export type MatchAction = "match" | "insert_new" | "near_match";
 export type MatchReason =
-  "amount_date_exact" | "amount_date_fuzzy_merchant" | "near_match_fuzzy_amount" | "no_match";
+  | "amount_date_exact"
+  | "amount_date_fuzzy_merchant"
+  // #1023 — the amount differs by at most one currency unit and the dates are
+  // at most a day apart: the capturing channel rounded to the peso, so this is
+  // the same movement and commit links it instead of inserting a duplicate.
+  | "amount_rounding"
+  | "near_match_fuzzy_amount"
+  | "no_match";
 
 export interface MatchDecision {
   statementRowIndex: number;
@@ -36,9 +43,11 @@ export interface MatchDecision {
   matchScore: number;
   matchReason: MatchReason;
   /**
-   * Populated only for near-match decisions so the preview UI can annotate
+   * Populated for near-match decisions so the preview UI can annotate
    * the diff without re-deriving it from candidate + parsed row. Serialized
-   * as string since MatchingPlan crosses the RSC boundary intact.
+   * as string since MatchingPlan crosses the RSC boundary intact. A
+   * cent-rounding `match` carries the same three fields: the diff is the
+   * reason it linked.
    */
   amountDiffCents?: string;
   dateDiffDays?: number;

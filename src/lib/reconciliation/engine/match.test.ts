@@ -138,7 +138,8 @@ describe("matchStatement — currency / amount / direction rules", () => {
   it("different magnitude never reaches exact match (can fall through to near_match)", () => {
     const plan = matchStatement({
       parsedRows: [parsedRow({ occurredAt: date, amountCents: BigInt(10_000) })],
-      existingTxns: [existingTxn({ id: 1, occurredAt: date, amountCents: BigInt(-9_900) })],
+      // 10 pesos off: past the #1023 cent-rounding window, still a near-match.
+      existingTxns: [existingTxn({ id: 1, occurredAt: date, amountCents: BigInt(-9_000) })],
     });
     // Exact match is rejected on amount mismatch. The near-match fallback
     // may or may not pick it up depending on thresholds; we only care that
@@ -489,7 +490,9 @@ describe("matchStatement — near-match fallback", () => {
         existingTxn({
           id: 1,
           occurredAt: date,
-          amountCents: BigInt(-9_50),
+          // 1,50 pesos off — outside the #1023 rounding window, so this test
+          // keeps isolating the similarity cutoff.
+          amountCents: BigInt(-8_50),
           descriptionRaw: "ALPHA ZULU OMEGA SIGMA LAMBDA", // 1/5 overlap = 0.2
         }),
       ],
@@ -513,7 +516,9 @@ describe("matchStatement — near-match fallback", () => {
         existingTxn({
           id: 1,
           occurredAt: date,
-          amountCents: BigInt(-99_00),
+          // 10 pesos off — outside the #1023 rounding window, so the guard
+          // below is the only thing standing between the pair and a match.
+          amountCents: BigInt(-90_00),
           descriptionRaw: "PAGO", // 1-token SMS, default guard rejects
         }),
       ],
@@ -521,5 +526,90 @@ describe("matchStatement — near-match fallback", () => {
       config: { nearMatch: { minTokensInSmallerSet: 1 } },
     });
     expect(plan.decisions[0].action).toBe("near_match");
+  });
+});
+
+// #1023 — the SMS rounds to the peso, the bank prints the exact figure. Up to
+// one currency unit (100 cents) on the same-or-next day is the same movement,
+// so the engine must emit `match` and let commit link it. Emitting
+// `near_match` inserted the statement row and duplicated the movement.
+describe("matchStatement — cent-rounding promotion (#1023)", () => {
+  const date = new Date("2026-10-26T05:00:00Z");
+
+  // The prod shape from the issue: `Pago TC *7291` on savings, SMS-captured
+  // and statement rows 70 cents apart.
+  function pagoRow(amountCents: bigint): ParsedStatementRow {
+    return parsedRow({
+      occurredAt: date,
+      amountCents,
+      direction: "out",
+      descriptionRaw: "PAGO TC *7291",
+    });
+  }
+  function pagoTxn(id: number, amountCents: bigint, occurredAt = date): ExistingTxnForMatch {
+    return existingTxn({ id, occurredAt, amountCents, descriptionRaw: "PAGO TC *7291" });
+  }
+
+  it("promotes a same-day cent-rounding difference to match / amount_rounding", () => {
+    const plan = matchStatement({
+      parsedRows: [pagoRow(BigInt(1_459_70))],
+      existingTxns: [pagoTxn(1459, BigInt(-1_459_00))],
+    });
+
+    expect(plan.decisions).toHaveLength(1);
+    expect(plan.decisions[0].action).toBe("match");
+    expect(plan.decisions[0].matchReason).toBe("amount_rounding");
+    expect(plan.decisions[0].matchedTxnId).toBe(1459);
+    expect(plan.summary).toEqual({
+      matched: 1,
+      newInserts: 0,
+      nearMatches: 0,
+      flaggedExisting: 0,
+    });
+    // Consumed: nothing is left behind for a post-Apply manual merge.
+    expect(plan.flaggedExisting).toEqual([]);
+  });
+
+  it("promotes exactly one currency unit (100 cents) of difference", () => {
+    const plan = matchStatement({
+      parsedRows: [pagoRow(BigInt(1_101_00))],
+      existingTxns: [pagoTxn(1100, BigInt(-1_100_00))],
+    });
+    expect(plan.decisions[0].action).toBe("match");
+    expect(plan.decisions[0].matchReason).toBe("amount_rounding");
+  });
+
+  it("keeps near_match one cent past the unit (a rounding rule, not a bulk merger)", () => {
+    const plan = matchStatement({
+      parsedRows: [pagoRow(BigInt(1_101_01))],
+      existingTxns: [pagoTxn(1100, BigInt(-1_100_00))],
+    });
+    expect(plan.decisions[0].action).toBe("near_match");
+    expect(plan.decisions[0].matchReason).toBe("near_match_fuzzy_amount");
+    expect(plan.summary.matched).toBe(0);
+    expect(plan.summary.nearMatches).toBe(1);
+  });
+
+  it("keeps near_match when the rounding-sized pair is more than a day apart", () => {
+    const plan = matchStatement({
+      parsedRows: [pagoRow(BigInt(1_459_70))],
+      existingTxns: [pagoTxn(1459, BigInt(-1_459_00), new Date(date.getTime() - 2 * DAY_MS))],
+    });
+    expect(plan.decisions[0].action).toBe("near_match");
+    expect(plan.decisions[0].matchReason).toBe("near_match_fuzzy_amount");
+  });
+
+  it("prefers the rounding candidate when a farther-off candidate scores the same", () => {
+    // Same day, same description, so both candidates score 100. The order in
+    // the input array must not decide which one is linked: the cent-rounding
+    // pair is the movement, the 20-peso-apart one is noise.
+    const plan = matchStatement({
+      parsedRows: [pagoRow(BigInt(1_459_70))],
+      existingTxns: [pagoTxn(2, BigInt(-1_439_70)), pagoTxn(1459, BigInt(-1_459_00))],
+    });
+    expect(plan.decisions[0].action).toBe("match");
+    expect(plan.decisions[0].matchReason).toBe("amount_rounding");
+    expect(plan.decisions[0].matchedTxnId).toBe(1459);
+    expect(plan.flaggedExisting).toEqual([{ txnId: 2, reason: "no_statement_match" }]);
   });
 });

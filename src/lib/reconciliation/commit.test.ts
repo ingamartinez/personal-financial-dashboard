@@ -14,6 +14,7 @@ import { notDeleted } from "@/lib/db/helpers";
 import { listTransactions } from "@/lib/transactions/queries";
 import { notMergeRetired } from "./merge-retired";
 import { commitReconciliation, hashFileBuffer, recordReconciliationDecision } from "./commit";
+import { matchStatement } from "./engine/match";
 import type { ParsedStatement, ParsedStatementRow } from "./parsers/types";
 import type { MatchingPlan } from "./engine/types";
 
@@ -45,6 +46,7 @@ async function createExistingTxn(
   accountId: number,
   amountCents: bigint,
   occurredAt: Date,
+  descriptionRaw = `${TAG} existing`,
 ): Promise<number> {
   const [row] = await db
     .insert(transactions)
@@ -54,7 +56,7 @@ async function createExistingTxn(
       occurredAt,
       amountCents,
       currency: "COP",
-      descriptionRaw: `${TAG} existing`,
+      descriptionRaw,
       source: "manual",
       channel: "bank",
     })
@@ -206,6 +208,78 @@ describe("commitReconciliation — integration against findash_test", () => {
     expect(updated.reconciliationStatus).toBe("matched");
     expect(updated.reconciledAt).not.toBeNull();
     expect(updated.statementImportId).toBe(result.statementImportId);
+  });
+
+  // #1023 — the engine promotes a cent-rounding pair to `match`; this proves
+  // the commit side of that decision: the existing row is reconciled and
+  // nothing is inserted, so the movement is counted once instead of twice.
+  it("links a cent-rounding match onto the existing tx and inserts nothing", async () => {
+    const date = new Date("2026-10-26T05:00:00Z");
+    const existingId = await createExistingTxn(
+      userId,
+      accountId,
+      BigInt(-1_459_00), // SMS: rounded to the peso
+      date,
+      "PAGO TC *7291",
+    );
+
+    const parsed = buildParsed([
+      {
+        occurredAt: date,
+        amountCents: BigInt(1_459_70), // statement: the exact figure
+        currency: "COP",
+        direction: "out",
+        descriptionRaw: "PAGO TC *7291",
+        rawData: {},
+        isMetadata: false,
+      },
+    ]);
+    const plan = matchStatement({
+      parsedRows: parsed.rows,
+      existingTxns: [
+        {
+          id: existingId,
+          occurredAt: date,
+          amountCents: BigInt(-1_459_00),
+          currency: "COP",
+          descriptionRaw: "PAGO TC *7291",
+          merchant: null,
+          channel: "bank",
+          isAdjustment: false,
+          reconciliationStatus: "unreconciled",
+        },
+      ],
+    });
+    expect(plan.decisions[0].action).toBe("match");
+    expect(plan.decisions[0].matchReason).toBe("amount_rounding");
+
+    const result = await commitReconciliation({
+      userId,
+      account: { id: accountId, currency: "COP" },
+      parsed,
+      plan,
+      fileHash: hashFileBuffer(Buffer.from(`${TAG}-rounding-match`)),
+    });
+    expect(result.status).toBe("applied");
+    expect(result.matched).toBe(1);
+    expect(result.inserted).toBe(0);
+    expect(result.insertedIds).toEqual([]);
+
+    const [updated] = await db.select().from(transactions).where(eq(transactions.id, existingId));
+    expect(updated.reconciliationStatus).toBe("matched");
+    expect(updated.reconciledAt).not.toBeNull();
+    expect(updated.statementImportId).toBe(result.statementImportId);
+    // Linking does not rewrite money: the row keeps the amount it was captured
+    // with. Re-declaring the account balance after the repair is the user's
+    // step, not this commit's.
+    expect(updated.amountCents).toBe(BigInt(-1_459_00));
+
+    // Exactly one row carries the import, and it is the pre-existing one.
+    const linked = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.statementImportId, result.statementImportId));
+    expect(linked).toEqual([{ id: existingId }]);
   });
 
   it("flags existing txns listed in flaggedExisting without linking them to the statement", async () => {
