@@ -25,6 +25,14 @@ const NEAR_MATCH_DEFAULTS = {
   // 1% — scales the floor for larger transactions where absolute rounding
   // noise is proportional.
   amountPercentTolerance: 0.01,
+  // #1023 — the capturing channel rounds to the peso (SMS) while the bank
+  // prints the exact figure, so a pair this tight is not a "maybe": up to one
+  // currency unit (100 minor units) on the same-or-next day is the same
+  // movement. Such a pair is promoted to `match` below so commit links it;
+  // emitting `near_match` inserted the statement row and counted the movement
+  // twice. Anything wider stays `near_match`.
+  roundingToleranceCents: BigInt(100),
+  roundingDateToleranceDays: 1,
 };
 
 export function matchStatement(input: MatchingInput): MatchingPlan {
@@ -86,9 +94,12 @@ export function matchStatement(input: MatchingInput): MatchingPlan {
   }
 
   // Second pass: for each insert_new decision, look for a near-match among
-  // the remaining unmatched candidates. Near-match is a UI hint — the
-  // candidate is NOT consumed, so it still flows to flaggedExisting and the
-  // user merges post-Apply via the picker from #301.
+  // the remaining unmatched candidates. Two outcomes:
+  //   - a cent-rounding pair (#1023) becomes a real `match`, consumed, so
+  //     commit links the existing row instead of inserting a duplicate;
+  //   - a wider near-match is a UI hint — the candidate is NOT consumed, so it
+  //     still flows to flaggedExisting and the user merges post-Apply via the
+  //     picker from #301.
   const nearMatchCfg = { ...NEAR_MATCH_DEFAULTS, ...(input.config?.nearMatch ?? {}) };
   const nearDateToleranceMs = nearMatchCfg.dateToleranceDays * MS_PER_DAY;
 
@@ -100,13 +111,17 @@ export function matchStatement(input: MatchingInput): MatchingPlan {
     const parsedSignedCents = parsed.direction === "in" ? parsed.amountCents : -parsed.amountCents;
     const parsedTokens = tokenize(parsed.descriptionRaw);
 
-    let best: {
+    type NearCandidate = {
       txnId: number;
       score: number;
       amountDiffCents: bigint;
       dateDiffDays: number;
       similarity: number;
-    } | null = null;
+    };
+    // Kept apart on purpose: a rounding-sized pair wins even when a wider one
+    // scores the same, so the order of `existingTxns` never decides the link.
+    let bestRounding: NearCandidate | null = null;
+    let bestNear: NearCandidate | null = null;
 
     for (const candidate of eligibleExisting) {
       if (consumed.has(candidate.id)) continue;
@@ -139,29 +154,55 @@ export function matchStatement(input: MatchingInput): MatchingPlan {
       if (similarity < nearMatchCfg.descriptionSimilarityMin) continue;
 
       const score = scoreMatch(deltaMs, similarity);
-      if (!best || score > best.score) {
-        best = {
-          txnId: candidate.id,
-          score,
-          amountDiffCents: amountDiff,
-          dateDiffDays: Math.round(deltaMs / MS_PER_DAY),
-          similarity,
-        };
+      const dateDiffDays = Math.round(deltaMs / MS_PER_DAY);
+      const found: NearCandidate = {
+        txnId: candidate.id,
+        score,
+        amountDiffCents: amountDiff,
+        dateDiffDays,
+        similarity,
+      };
+
+      const isRounding =
+        amountDiff <= nearMatchCfg.roundingToleranceCents &&
+        dateDiffDays <= nearMatchCfg.roundingDateToleranceDays;
+      if (isRounding) {
+        if (!bestRounding || score > bestRounding.score) bestRounding = found;
+      } else if (!bestNear || score > bestNear.score) {
+        bestNear = found;
       }
     }
 
-    if (best) {
+    const best = bestRounding ?? bestNear;
+    if (!best) continue;
+
+    if (bestRounding) {
+      // Same movement: link the existing row and consume it, so commit marks it
+      // matched and inserts nothing (#1023).
+      consumed.add(bestRounding.txnId);
       decisions[i] = {
-        ...decision,
-        action: "near_match",
-        matchedTxnId: best.txnId,
-        matchScore: best.score,
-        matchReason: "near_match_fuzzy_amount",
-        amountDiffCents: best.amountDiffCents.toString(),
-        dateDiffDays: best.dateDiffDays,
-        descriptionSimilarity: best.similarity,
+        statementRowIndex: decision.statementRowIndex,
+        action: "match",
+        matchedTxnId: bestRounding.txnId,
+        matchScore: bestRounding.score,
+        matchReason: "amount_rounding",
+        amountDiffCents: bestRounding.amountDiffCents.toString(),
+        dateDiffDays: bestRounding.dateDiffDays,
+        descriptionSimilarity: bestRounding.similarity,
       };
+      continue;
     }
+
+    decisions[i] = {
+      ...decision,
+      action: "near_match",
+      matchedTxnId: best.txnId,
+      matchScore: best.score,
+      matchReason: "near_match_fuzzy_amount",
+      amountDiffCents: best.amountDiffCents.toString(),
+      dateDiffDays: best.dateDiffDays,
+      descriptionSimilarity: best.similarity,
+    };
   }
 
   const periodStartMs = input.period?.start.getTime();
