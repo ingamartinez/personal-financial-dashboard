@@ -135,6 +135,34 @@ async function seedPair(
   return { pair: { flaggedTxnId, statementTxnId }, flaggedTxnId, statementTxnId };
 }
 
+/** A pair whose amount/date deltas are exactly what a window test needs. */
+async function seedWindowPair(
+  userId: number,
+  accountId: number,
+  amountDeltaCents: bigint,
+  daysApart: number,
+): Promise<CentRoundingPair> {
+  const statementImportId = await createStatementImport(userId, accountId);
+  return {
+    flaggedTxnId: await seedTxn({
+      userId,
+      accountId,
+      amountCents: BigInt(-1_459_00),
+      descriptionRaw: "Pago TC *7291",
+      reconciliationStatus: "flagged",
+    }),
+    statementTxnId: await seedTxn({
+      userId,
+      accountId,
+      amountCents: BigInt(-1_459_00) - amountDeltaCents,
+      occurredAt: new Date(OCURRED_AT.getTime() + daysApart * DAY_MS),
+      descriptionRaw: "PAGO TC *7291 BANCOLOMBIA",
+      reconciliationStatus: "imported_from_statement",
+      statementImportId,
+    }),
+  };
+}
+
 async function readTxn(id: number) {
   const [row] = await db.select().from(transactions).where(eq(transactions.id, id));
   return row;
@@ -404,11 +432,13 @@ describe("repairCentRoundingDuplicates (#1023)", () => {
       .set({ reconciliationStatus: "matched" })
       .where(eq(transactions.id, bad.flaggedTxnId));
 
+    // The invalid pair is LAST on purpose: with it first, a mutation that
+    // planned and applied pair by pair would still pass this test.
     await expect(
-      repairCentRoundingDuplicates({ dryRun: false, userId, pairs: [bad.pair, good.pair] }),
+      repairCentRoundingDuplicates({ dryRun: false, userId, pairs: [good.pair, bad.pair] }),
     ).rejects.toThrow(/rounding_repair_flagged_status/);
 
-    // The valid pair that came after it was not applied either: planning
+    // The valid pair planned before it was not applied either: planning
     // completes for every pair before the first write.
     const untouched = await readTxn(good.flaggedTxnId);
     expect(untouched.reconciliationStatus).toBe("flagged");
@@ -416,36 +446,72 @@ describe("repairCentRoundingDuplicates (#1023)", () => {
     expect(await decisionsFor([bad.flaggedTxnId, good.flaggedTxnId])).toEqual([]);
   });
 
-  it("aborts on a pair outside the rounding window or outside the date window", async () => {
+  it("accepts the edge of both windows and refuses one cent or one day past it", async () => {
     const userId = await createUser();
     const accountId = await createAccount(userId);
-    const statementImportId = await createStatementImport(userId, accountId);
-    const window = async (amountDelta: bigint, daysApart: number) => ({
-      flaggedTxnId: await seedTxn({
-        userId,
-        accountId,
-        amountCents: BigInt(-1_459_00),
-        descriptionRaw: "Pago TC *7291",
-        reconciliationStatus: "flagged",
-      }),
-      statementTxnId: await seedTxn({
-        userId,
-        accountId,
-        amountCents: BigInt(-1_459_00) - amountDelta,
-        occurredAt: new Date(OCURRED_AT.getTime() + daysApart * DAY_MS),
-        descriptionRaw: "PAGO TC *7291 BANCOLOMBIA",
-        reconciliationStatus: "imported_from_statement",
-        statementImportId,
-      }),
+
+    // The edge itself is in scope: 100 cents and 2 days.
+    const report = await repairCentRoundingDuplicates({
+      dryRun: true,
+      userId,
+      pairs: [await seedWindowPair(userId, accountId, BigInt(100), 2)],
     });
+    expect(report.pairs[0]).toMatchObject({ amountDiffCents: "-100", dateDiffDays: 2 });
 
     await expect(
-      repairCentRoundingDuplicates({ dryRun: true, userId, pairs: [await window(BigInt(500), 0)] }),
+      repairCentRoundingDuplicates({
+        dryRun: true,
+        userId,
+        pairs: [await seedWindowPair(userId, accountId, BigInt(101), 0)],
+      }),
     ).rejects.toThrow(/rounding_repair_amount_out_of_window/);
 
     await expect(
-      repairCentRoundingDuplicates({ dryRun: true, userId, pairs: [await window(BigInt(70), 3)] }),
+      repairCentRoundingDuplicates({
+        dryRun: true,
+        userId,
+        pairs: [await seedWindowPair(userId, accountId, BigInt(500), 0)],
+      }),
+    ).rejects.toThrow(/rounding_repair_amount_out_of_window/);
+
+    await expect(
+      repairCentRoundingDuplicates({
+        dryRun: true,
+        userId,
+        pairs: [await seedWindowPair(userId, accountId, BigInt(70), 3)],
+      }),
     ).rejects.toThrow(/rounding_repair_date_out_of_window/);
+  });
+
+  it("refuses a batch that shares a txn id or a transfer group", async () => {
+    const userId = await createUser();
+    const accountId = await createAccount(userId);
+    const a = await seedPair(userId, accountId);
+    const b = await seedPair(userId, accountId);
+
+    // Same flagged leg in two pairs: the second plan would be built from state
+    // the first one already changed.
+    await expect(
+      repairCentRoundingDuplicates({
+        dryRun: true,
+        userId,
+        pairs: [a.pair, { ...b.pair, flaggedTxnId: a.flaggedTxnId }],
+      }),
+    ).rejects.toThrow(/rounding_repair_duplicate_txn/);
+
+    // Two pairs inside one transfer group: merging either invalidates the
+    // other's plan, and a verify failure at the end would leave the batch
+    // half-applied.
+    const groupId = randomUUID();
+    const grouped = await seedPair(userId, accountId, { flaggedGroupId: groupId });
+    const groupedToo = await seedPair(userId, accountId, { flaggedGroupId: groupId });
+    await expect(
+      repairCentRoundingDuplicates({
+        dryRun: true,
+        userId,
+        pairs: [grouped.pair, groupedToo.pair],
+      }),
+    ).rejects.toThrow(/rounding_repair_duplicate_transfer_group/);
   });
 
   it("aborts when both legs already claim a transfer group", async () => {

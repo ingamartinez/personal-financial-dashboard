@@ -9,8 +9,13 @@
  * "merged_into" })`: the flagged row survives (it keeps its category,
  * counterparty and notes) and adopts the statement's bank-authoritative fields,
  * and the statement row is soft-deleted. `transfer_group_id` and recurring
- * links are carried so the surviving row stays inside its group, and every
- * touched group is left summing to zero.
+ * links are carried so the surviving row stays inside its group.
+ *
+ * Groups are NOT balanced by this repair, on purpose. A real Pago TC group is
+ * a cross-currency transfer — savings COP debit plus a TC leg in COP or USD, so
+ * its live legs do not sum to zero and no amount here may pretend otherwise.
+ * The script enforces group integrity instead: membership unchanged, no leg
+ * created or retired, and no leg amount written except the survivor's own.
  *
  * Usage:
  *   bun scripts/repair-cent-rounding-duplicates.ts --dry-run
@@ -371,9 +376,26 @@ export async function repairCentRoundingDuplicates(opts: {
 
   const rows = await loadPairRows(userId, pairs);
   // Plan up front: the first unexpected row throws and nothing has been written.
+  // A batch that shares a txn id or a transfer group is refused here rather
+  // than half-applied: the second plan would be built from state the first one
+  // already changed, which is exactly how a verify-at-the-end failure turns
+  // into a partial repair over money.
+  const seenTxnIds = new Set<number>();
+  const seenGroups = new Set<string>();
   const plans: PairPlan[] = [];
   for (const pair of pairs) {
-    plans.push(await planPair({ userId, pair, rows }));
+    for (const txnId of [pair.flaggedTxnId, pair.statementTxnId]) {
+      if (seenTxnIds.has(txnId)) fail(`rounding_repair_duplicate_txn:${txnId}`);
+      seenTxnIds.add(txnId);
+    }
+    const plan = await planPair({ userId, pair, rows });
+    if (plan.transferGroupId !== null) {
+      if (seenGroups.has(plan.transferGroupId)) {
+        fail(`rounding_repair_duplicate_transfer_group:${plan.transferGroupId}`);
+      }
+      seenGroups.add(plan.transferGroupId);
+    }
+    plans.push(plan);
   }
 
   if (!opts.dryRun) {

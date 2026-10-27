@@ -599,6 +599,41 @@ describe("matchStatement — cent-rounding promotion (#1023)", () => {
     expect(plan.decisions[0].matchReason).toBe("near_match_fuzzy_amount");
   });
 
+  it("promotes a pair exactly a day apart and closes the window past the rounded day", () => {
+    const HOUR = 3_600_000;
+    const at = (hours: number) => new Date(date.getTime() + hours * HOUR);
+    const plan = (hours: number) =>
+      matchStatement({
+        parsedRows: [pagoRow(BigInt(1_459_70))],
+        existingTxns: [pagoTxn(1459, BigInt(-1_459_00), at(hours))],
+      });
+
+    expect(plan(24).decisions[0]).toMatchObject({
+      action: "match",
+      matchReason: "amount_rounding",
+      dateDiffDays: 1,
+    });
+    // Every day figure in this engine is Math.round(delta / day) — including
+    // the near-match `dateDiffDays` the repair script reads — so the window
+    // closes past 36h, not at exactly 24h. Pinned so the leniency is a
+    // decision rather than an accident.
+    expect(plan(34).decisions[0].action).toBe("match");
+    expect(plan(36).decisions[0]).toMatchObject({
+      action: "near_match",
+      matchReason: "near_match_fuzzy_amount",
+    });
+  });
+
+  it("never lets two statement rows consume the same rounding candidate", () => {
+    const plan = matchStatement({
+      parsedRows: [pagoRow(BigInt(1_459_70)), pagoRow(BigInt(1_459_50))],
+      existingTxns: [pagoTxn(7, BigInt(-1_459_00))],
+    });
+    expect(plan.decisions.map((d) => d.action)).toEqual(["match", "insert_new"]);
+    expect(plan.decisions[0].matchedTxnId).toBe(7);
+    expect(plan.decisions[1].matchedTxnId).toBeNull();
+  });
+
   it("prefers the rounding candidate when a farther-off candidate scores the same", () => {
     // Same day, same description, so both candidates score 100. The order in
     // the input array must not decide which one is linked: the cent-rounding
