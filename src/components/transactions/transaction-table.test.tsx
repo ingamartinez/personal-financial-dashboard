@@ -44,6 +44,7 @@ vi.mock("@/components/transactions/needs-review-badge", () => ({
 
 // Import AFTER mocks are registered.
 import { TransactionTable } from "./transaction-table";
+import type { ForecastOccurrence } from "@/lib/recurring/expected-occurrences";
 import { MoneyModeProvider } from "@/components/display/money-mode-provider";
 import type { TxRow } from "@/lib/types";
 import {
@@ -664,5 +665,46 @@ describe("TransactionTable — #788 recurring badge CheckCircle2 icon", () => {
 
     const badges = screen.getAllByTestId("recurring-badge");
     expect(badges[0]).toHaveAttribute("title", "Recurrente");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1034: forecast rows paid from an account findash does not track get their
+// own badge — neither "Esperado" nor "Linkeado".
+// ---------------------------------------------------------------------------
+
+function makeForecastOccurrence(overrides: Partial<ForecastOccurrence> = {}): ForecastOccurrence {
+  return {
+    recurringId: 940,
+    label: "Seguridad Social Aida",
+    accountId: 1,
+    amountCents: BigInt(-1500000),
+    currency: "COP",
+    categorySlug: null,
+    expectedDate: new Date("2026-11-15T00:00:00Z"),
+    expectedDateIso: "2026-11-15T00:00:00.000Z",
+    status: "paid-external",
+    accountName: "Bancolombia Ahorros (COP)",
+    accountCurrency: "COP",
+    ...overrides,
+  };
+}
+
+describe("TransactionTable — #1034 paid-external forecast badge", () => {
+  it("renders the 'Pagado externo' badge with its own class", () => {
+    render(
+      <TransactionTable
+        rows={[]}
+        {...TABLE_PROPS}
+        forecastOccurrences={[makeForecastOccurrence()]}
+      />,
+    );
+
+    const labels = screen.getAllByText("Pagado externo");
+    expect(labels.length).toBeGreaterThanOrEqual(1);
+    expect(labels[0]!.className).toMatch(/border-violet-300/);
+    expect(labels[0]!.className).toMatch(/text-violet-700/);
+    expect(screen.queryByText("Esperado")).not.toBeInTheDocument();
+    expect(screen.queryByText("Linkeado")).not.toBeInTheDocument();
   });
 });

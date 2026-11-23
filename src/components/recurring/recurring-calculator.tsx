@@ -30,6 +30,8 @@ interface RecurringCalculatorProps {
   // #804: matched transaction id per recurring, for the "Deshacer match" undo
   // affordance in the compact list.
   matchedTxIdByRecurringId?: Record<number, number | null>;
+  /** #1034: month the slot statuses refer to (injectable for tests). */
+  slotYearMonth?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +352,7 @@ export function RecurringCalculator({
   annualTotals,
   slotStatusByRecurringId,
   matchedTxIdByRecurringId,
+  slotYearMonth,
 }: RecurringCalculatorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set());
@@ -478,6 +481,7 @@ export function RecurringCalculator({
               isCalculatorOpen={isOpen}
               slotStatusById={slotStatusByRecurringId}
               matchedTxIdById={matchedTxIdByRecurringId}
+              slotYearMonth={slotYearMonth}
               onToggleExcluded={handleToggle}
             />
           </AccordionContent>
@@ -490,6 +494,7 @@ export function RecurringCalculator({
               rows={rows}
               slotStatusById={slotStatusByRecurringId}
               matchedTxIdById={matchedTxIdByRecurringId}
+              slotYearMonth={slotYearMonth}
             />
           </AccordionContent>
         </AccordionItem>

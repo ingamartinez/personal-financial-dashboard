@@ -35,6 +35,8 @@ const statusStyles: Record<UpcomingItem["status"], string> = {
   overdue: "bg-rose-100 text-rose-800",
   matched: "bg-emerald-100 text-emerald-800",
   dismissed: "bg-muted text-muted-foreground",
+  // #1034: covered from an account findash does not track — no transaction.
+  "paid-external": "bg-violet-100 text-violet-800",
 };
 
 const statusLabels: Record<UpcomingItem["status"], string> = {
@@ -42,6 +44,7 @@ const statusLabels: Record<UpcomingItem["status"], string> = {
   overdue: "atrasado",
   matched: "pagado",
   dismissed: "omitido",
+  "paid-external": "pagado externo",
 };
 
 type DialogSlot = {

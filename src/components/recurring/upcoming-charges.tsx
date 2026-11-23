@@ -28,6 +28,8 @@ const STATUS_DOT_CLASS: Record<UpcomingStatus, string | null> = {
   upcoming: "bg-sky-500",
   overdue: "bg-rose-600",
   dismissed: null,
+  // #1034: covered from an untracked account.
+  "paid-external": "bg-violet-500",
 };
 
 // ---------------------------------------------------------------------------

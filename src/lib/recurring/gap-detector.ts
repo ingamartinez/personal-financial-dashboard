@@ -1,6 +1,12 @@
 import { and, asc, between, eq, gte, inArray, isNull, lt } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
-import { recurringGaps, recurringTransactions, transactions, users } from "@/lib/db/schema";
+import {
+  GAP_RESOLUTION_PAID_EXTERNAL,
+  recurringGaps,
+  recurringTransactions,
+  transactions,
+  users,
+} from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import { emitNotification } from "@/lib/notifications/emit";
@@ -30,6 +36,8 @@ export type DetectResult = {
   skippedIntentionally: number;
   gapsCreated: number;
   gapsAlreadyOpen: number;
+  /** #1034: occurrences already marked paid from an untracked account. */
+  paidExternal: number;
 };
 
 function parseYearMonth(ym: string): { year: number; month: number } {
@@ -828,6 +836,7 @@ export async function detectGapsForMonth(
     skippedIntentionally: 0,
     gapsCreated: 0,
     gapsAlreadyOpen: 0,
+    paidExternal: 0,
   };
 
   if (recurrings.length === 0) return result;
@@ -847,6 +856,23 @@ export async function detectGapsForMonth(
     );
   const linkedSet = new Set(existingLinks.map((l) => l.recurringId as number));
 
+  // #1034: an occurrence the user marked as paid from an account findash does
+  // not track is closed exactly like a linked one. Fetched next to the links
+  // because both close a slot before any candidate is considered — this is not
+  // a third mechanism, it is the same "already covered" early exit.
+  const paidExternalSlots = await database
+    .select({ recurringId: recurringGaps.recurringId })
+    .from(recurringGaps)
+    .where(
+      and(
+        eq(recurringGaps.userId, userId),
+        inArray(recurringGaps.recurringId, recurringIds),
+        eq(recurringGaps.yearMonth, yearMonth),
+        eq(recurringGaps.resolution, GAP_RESOLUTION_PAID_EXTERNAL),
+      ),
+    );
+  const paidExternalSet = new Set(paidExternalSlots.map((g) => g.recurringId));
+
   const toProcess: ToProcessRow[] = [];
   for (const r of recurrings) {
     if (linkedSet.has(r.id)) {
@@ -860,6 +886,15 @@ export async function detectGapsForMonth(
     // it before considering any candidate.
     if ((r.skippedMonths ?? []).includes(yearMonth)) {
       result.skippedIntentionally += 1;
+      continue;
+    }
+    // #1034: marked paid from an untracked account — covered, never pending.
+    // Excluded from toProcess so the bijective passes and the near-amount
+    // protocol cannot claim a look-alike transaction for it either, which is
+    // what keeps resolution_tx_id NULL (S6/S11). Removing the mark nulls the
+    // resolution, which re-admits the occurrence on the next run (S4).
+    if (paidExternalSet.has(r.id)) {
+      result.paidExternal += 1;
       continue;
     }
     toProcess.push({

@@ -324,6 +324,25 @@ describe("getExpectedOccurrencesForMonth — integration", () => {
     expect(mine!.status).toBe("skipped");
   });
 
+  it("returns 'paid-external' for a gap with resolution=paid-external", async () => {
+    const accountId = await seedAccount();
+    const recurringId = await seedRecurring(accountId, {
+      label: `${TEST_LABEL_PREFIX}seguridad_social`,
+      amountCents: BigInt(-1500000),
+      dayOfMonth: 15,
+    });
+    const gapId = await seedGap(recurringId, "2026-11", { resolution: "paid-external" });
+
+    const today = new Date("2026-11-20T12:00:00Z");
+    const result = await getExpectedOccurrencesForMonth(TEST_USER_ID, "2026-11", today);
+    const mine = result.find((o) => o.recurringId === recurringId);
+    expect(mine).toBeDefined();
+    // Its own state: covered, but never a linked/synthetic tx (there is none).
+    expect(mine!.status).toBe("paid-external");
+    expect(mine!.linkedTxId).toBeUndefined();
+    expect(mine!.gapId).toBe(gapId);
+  });
+
   it("clamps day=30 in February (non-leap year)", async () => {
     const accountId = await seedAccount();
     const recurringId = await seedRecurring(accountId, {

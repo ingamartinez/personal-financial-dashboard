@@ -8,6 +8,12 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { unlinkTxFromRecurring } from "@/app/(app)/transactions/actions";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import {
+  canMarkPaidExternal,
+  currentSlotYearMonth,
+  PaidExternalStateLine,
+  PaidExternalToggle,
+} from "./paid-external-toggle";
 import type { PriceHike, RecurringRow } from "@/app/(app)/recurring/queries";
 import type { UpcomingStatus } from "@/lib/recurring/upcoming";
 
@@ -16,6 +22,9 @@ const STATUS_DOT_CLASS: Record<UpcomingStatus, string | null> = {
   upcoming: "bg-sky-500",
   overdue: "bg-rose-600",
   dismissed: null,
+  // #1034: covered, but from an account findash does not track — same family
+  // as "covered", visibly distinct from a real matched payment.
+  "paid-external": "bg-violet-500",
 };
 
 // ---------------------------------------------------------------------------
@@ -88,9 +97,13 @@ export function UndoMatchButton({ txId, label }: { txId: number; label: string }
 function SubDetailContent({
   row,
   matchedTxId,
+  status,
+  slotYearMonth,
 }: {
   row: RecurringRow;
   matchedTxId?: number | null;
+  status?: UpcomingStatus;
+  slotYearMonth: string;
 }) {
   const absDisplayCents = absCents(row.displayAmount.cents);
 
@@ -118,6 +131,15 @@ function SubDetailContent({
       </div>
 
       {matchedTxId != null && <UndoMatchButton txId={matchedTxId} label={row.label} />}
+
+      {status === "paid-external" ? (
+        <div className="flex flex-col gap-1.5">
+          <PaidExternalStateLine yearMonth={slotYearMonth} />
+          <PaidExternalToggle recurringId={row.id} yearMonth={slotYearMonth} marked />
+        </div>
+      ) : canMarkPaidExternal(status) ? (
+        <PaidExternalToggle recurringId={row.id} yearMonth={slotYearMonth} marked={false} />
+      ) : null}
     </div>
   );
 }
@@ -132,6 +154,7 @@ interface CompactPillProps {
   isExcluded: boolean;
   status?: UpcomingStatus;
   matchedTxId?: number | null;
+  slotYearMonth: string;
   onToggle?: (id: number) => void;
 }
 
@@ -141,6 +164,7 @@ function CompactPill({
   isExcluded,
   status,
   matchedTxId,
+  slotYearMonth,
   onToggle,
 }: CompactPillProps) {
   const absDisplayCents = absCents(row.displayAmount.cents);
@@ -211,7 +235,12 @@ function CompactPill({
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" className="w-64">
-        <SubDetailContent row={row} matchedTxId={status === "matched" ? matchedTxId : null} />
+        <SubDetailContent
+          row={row}
+          matchedTxId={status === "matched" ? matchedTxId : null}
+          status={status}
+          slotYearMonth={slotYearMonth}
+        />
       </PopoverContent>
     </Popover>
   );
@@ -229,6 +258,8 @@ export interface RecurringListProps {
   // #804: matched transaction id per recurring — powers the one-tap "Deshacer
   // match" undo affordance on a matched pill's popover.
   matchedTxIdById?: Record<number, number | null>;
+  // #1034: month the slot statuses refer to (injectable for tests).
+  slotYearMonth?: string;
   onToggleExcluded?: (id: number) => void;
 }
 
@@ -238,6 +269,7 @@ export function RecurringList({
   isCalculatorOpen,
   slotStatusById,
   matchedTxIdById,
+  slotYearMonth = currentSlotYearMonth(),
   onToggleExcluded,
 }: RecurringListProps) {
   if (rows.length === 0) return null;
@@ -255,6 +287,7 @@ export function RecurringList({
           isExcluded={excludedIds.has(row.id)}
           status={slotStatusById?.[row.id]}
           matchedTxId={matchedTxIdById?.[row.id]}
+          slotYearMonth={slotYearMonth}
           onToggle={onToggleExcluded}
         />
       ))}

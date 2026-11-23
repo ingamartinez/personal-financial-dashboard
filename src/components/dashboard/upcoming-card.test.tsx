@@ -146,6 +146,16 @@ describe("UpcomingCard", () => {
     expect(screen.getByText("pendiente")).toBeInTheDocument();
   });
 
+  it("renders the paid-external badge with its own label and class (#1034)", () => {
+    const item = makeItem({ status: "paid-external", label: "Seguridad Social Aida" });
+    render(<UpcomingCard items={[item]} />);
+
+    const badge = screen.getByText("pagado externo");
+    expect(badge).toBeInTheDocument();
+    expect(badge.className).toMatch(/bg-violet-100/);
+    expect(badge.className).toMatch(/text-violet-800/);
+  });
+
   it("renders windowLabel in card description when provided", () => {
     render(<UpcomingCard items={[]} windowLabel="±5d desde hoy" />);
     expect(screen.getByText(/±5d desde hoy/)).toBeInTheDocument();

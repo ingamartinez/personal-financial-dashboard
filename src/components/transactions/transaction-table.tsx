@@ -186,6 +186,12 @@ const forecastStatusConfig: Record<OccurrenceStatus, { label: string; className:
     label: "Sintético",
     className: "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-400",
   },
+  // #1034: paid from an account findash does not track — covered, with no
+  // transaction, so it is neither "esperado" nor "linkeado".
+  "paid-external": {
+    label: "Pagado externo",
+    className: "border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400",
+  },
 };
 
 function ForecastStatusBadge({ status }: { status: OccurrenceStatus }) {

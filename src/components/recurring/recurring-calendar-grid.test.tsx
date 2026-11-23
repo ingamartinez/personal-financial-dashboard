@@ -9,13 +9,25 @@ import userEvent from "@testing-library/user-event";
 // UndoMatchButton, which imports the real "use server" actions.ts — mock it
 // out, matching recurring-list.test.tsx.
 // ---------------------------------------------------------------------------
-const { unlinkTxFromRecurring, toastSuccess, toastError } = vi.hoisted(() => ({
+const {
+  unlinkTxFromRecurring,
+  markOccurrencePaidExternal,
+  unmarkOccurrencePaidExternal,
+  toastSuccess,
+  toastError,
+} = vi.hoisted(() => ({
   unlinkTxFromRecurring: vi.fn(),
+  markOccurrencePaidExternal: vi.fn(),
+  unmarkOccurrencePaidExternal: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
 }));
 
 vi.mock("@/app/(app)/transactions/actions", () => ({ unlinkTxFromRecurring }));
+vi.mock("@/app/(app)/settings/recurring/actions", () => ({
+  markOccurrencePaidExternal,
+  unmarkOccurrencePaidExternal,
+}));
 vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
 
 import { RecurringCalendarGrid } from "./recurring-calendar-grid";
@@ -378,5 +390,48 @@ describe("RecurringCalendarGrid — #804 undo affordance", () => {
 
     await user.click(screen.getByTestId("overflow-chip"));
     expect(screen.getByRole("button", { name: /deshacer match/i })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1034: the default-open Calendario surface must show the paid-external state
+// too, and offer the same toggle.
+// ---------------------------------------------------------------------------
+
+describe("RecurringCalendarGrid — #1034 paid from an untracked account", () => {
+  it("renders a violet dot for a paid-external slot", () => {
+    nextId = 170;
+    const row = makeRow({ id: 170, label: "Seguridad Social Aida", dayOfMonth: 15 });
+
+    render(
+      <RecurringCalendarGrid
+        rows={[row]}
+        today={TODAY}
+        slotStatusById={{ 170: "paid-external" }}
+      />,
+    );
+
+    expect(screen.getByTestId("status-dot")).toHaveClass("bg-violet-500");
+  });
+
+  it("shows the state line and the unmark toggle in the pill popover", async () => {
+    const user = userEvent.setup();
+    nextId = 171;
+    const row = makeRow({ id: 171, label: "Seguridad Social Aida", dayOfMonth: 15 });
+
+    render(
+      <RecurringCalendarGrid
+        rows={[row]}
+        today={TODAY}
+        slotStatusById={{ 171: "paid-external" }}
+        slotYearMonth="2026-11"
+      />,
+    );
+
+    await user.click(screen.getByTestId("sub-pill"));
+
+    expect(screen.getByTestId("paid-external-state")).toHaveTextContent("2026-11");
+    expect(screen.queryByRole("button", { name: /deshacer match/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /desmarcar/i })).toBeInTheDocument();
   });
 });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // ---------------------------------------------------------------------------
@@ -9,13 +9,25 @@ import userEvent from "@testing-library/user-event";
 // "use server" actions.ts transitively imports next-auth, which fails to
 // resolve under jsdom.
 // ---------------------------------------------------------------------------
-const { unlinkTxFromRecurring, toastSuccess, toastError } = vi.hoisted(() => ({
+const {
+  unlinkTxFromRecurring,
+  markOccurrencePaidExternal,
+  unmarkOccurrencePaidExternal,
+  toastSuccess,
+  toastError,
+} = vi.hoisted(() => ({
   unlinkTxFromRecurring: vi.fn(),
+  markOccurrencePaidExternal: vi.fn(),
+  unmarkOccurrencePaidExternal: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
 }));
 
 vi.mock("@/app/(app)/transactions/actions", () => ({ unlinkTxFromRecurring }));
+vi.mock("@/app/(app)/settings/recurring/actions", () => ({
+  markOccurrencePaidExternal,
+  unmarkOccurrencePaidExternal,
+}));
 vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
 
 import { RecurringList } from "./recurring-list";
@@ -309,5 +321,80 @@ describe("RecurringList", () => {
     await user.click(screen.getByRole("button", { name: /deshacer match/i }));
 
     expect(unlinkTxFromRecurring).toHaveBeenCalledWith({ txId: 777 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1034: an occurrence paid from an untracked account gets its own state —
+// covered, but visibly different from a matched payment (no transaction).
+// ---------------------------------------------------------------------------
+
+describe("RecurringList — #1034 paid from an untracked account", () => {
+  it("renders a violet dot, never the matched emerald one", () => {
+    nextId = 100;
+    const row = makeRow({ id: 100, label: "Seguridad Social Aida" });
+
+    render(
+      <RecurringList
+        rows={[row]}
+        excludedIds={new Set()}
+        isCalculatorOpen={false}
+        slotStatusById={{ 100: "paid-external" }}
+      />,
+    );
+
+    const dot = screen.getByTestId("status-dot");
+    expect(dot).toHaveClass("bg-violet-500");
+    expect(dot).not.toHaveClass("bg-emerald-600");
+  });
+
+  it("shows the unpaid-elsewhere state and the unmark toggle, never 'Deshacer match'", async () => {
+    const user = userEvent.setup();
+    nextId = 101;
+    const row = makeRow({ id: 101, label: "Seguridad Social Aida" });
+
+    render(
+      <RecurringList
+        rows={[row]}
+        excludedIds={new Set()}
+        isCalculatorOpen={false}
+        slotStatusById={{ 101: "paid-external" }}
+        matchedTxIdById={{ 101: 555 }}
+        slotYearMonth="2026-11"
+      />,
+    );
+
+    await user.click(screen.getByTestId("recurring-list-pill"));
+
+    expect(screen.getByTestId("paid-external-state")).toHaveTextContent("2026-11");
+    expect(screen.queryByRole("button", { name: /deshacer match/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /desmarcar/i })).toBeInTheDocument();
+  });
+
+  it("lets the user mark a pending month from the pill popover", async () => {
+    markOccurrencePaidExternal.mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    nextId = 102;
+    const row = makeRow({ id: 102, label: "Seguridad Social Alejo" });
+
+    render(
+      <RecurringList
+        rows={[row]}
+        excludedIds={new Set()}
+        isCalculatorOpen={false}
+        slotStatusById={{ 102: "overdue" }}
+        slotYearMonth="2026-11"
+      />,
+    );
+
+    await user.click(screen.getByTestId("recurring-list-pill"));
+    await user.click(screen.getByRole("button", { name: /marcar pagado/i }));
+
+    await waitFor(() =>
+      expect(markOccurrencePaidExternal).toHaveBeenCalledWith({
+        recurringId: 102,
+        yearMonth: "2026-11",
+      }),
+    );
   });
 });
