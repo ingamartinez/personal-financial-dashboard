@@ -8,6 +8,7 @@ import {
   accounts,
   categories,
   currency as currencyEnum,
+  GAP_RESOLUTION_PAID_EXTERNAL,
   recurringGaps,
   recurringTransactions,
   transactions,
@@ -39,6 +40,16 @@ function revalidate() {
   revalidatePath("/");
   revalidatePath("/transactions");
   revalidatePath("/settings/recurring");
+}
+
+/**
+ * #1034: the paid-external toggle also lives on /recurring, which `revalidate()`
+ * does not cover. Kept separate so the pre-existing actions keep invalidating
+ * exactly the paths they always did.
+ */
+function revalidateSlots() {
+  revalidate();
+  revalidatePath("/recurring");
 }
 
 export async function upsertRecurring(input: RecurringInput) {
@@ -208,6 +219,125 @@ export async function undismissUpcoming(input: z.input<typeof dismissSchema>) {
       and(eq(recurringTransactions.userId, session.id), eq(recurringTransactions.id, recurringId)),
     );
   revalidate();
+}
+
+const paidExternalSchema = z.object({
+  recurringId: z.coerce.number().int().positive(),
+  yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+});
+
+export type PaidExternalInput = z.input<typeof paidExternalSchema>;
+
+/**
+ * #1034: mark an occurrence as paid from an account findash deliberately does
+ * not track (prod: Seguridad Social Aida/Alejo). This is NOT the same fact as
+ * `skipped_months` ("this month did not happen") — it happened and was paid
+ * elsewhere, so the slot is resolved while `resolution_tx_id` stays NULL: no
+ * transaction exists and none will.
+ *
+ * Mirrors dismissUpcoming's shape (resolve the slot for one (recurring, month))
+ * with the paid-external resolution instead of dropping the row. Idempotent:
+ * re-marking an already-marked slot is a no-op, not a duplicate row.
+ */
+export async function markOccurrencePaidExternal(input: PaidExternalInput) {
+  const session = await getSessionUser();
+  const { recurringId, yearMonth: ym } = paidExternalSchema.parse(input);
+
+  await db.transaction(async (trx) => {
+    const [recurring] = await trx
+      .select({ id: recurringTransactions.id })
+      .from(recurringTransactions)
+      .where(
+        and(
+          eq(recurringTransactions.userId, session.id),
+          eq(recurringTransactions.id, recurringId),
+          notDeleted(recurringTransactions.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!recurring) throw new Error("Recurring not found");
+
+    // A real transaction already covering this month means the occurrence was
+    // actually matched; "paid elsewhere" would contradict the link. Same shape
+    // the fixed-id repair script refuses (S7).
+    const [linked] = await trx
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, session.id),
+          eq(transactions.recurringId, recurringId),
+          eq(transactions.recurringYearMonth, ym),
+          notDeleted(transactions.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (linked) throw new Error(`Already covered this month by tx #${linked.id}`);
+
+    // Idempotent: a slot already in this state is left exactly as it is (same
+    // resolvedAt, no write) — the same early-return shape unlinkTxFromRecurring
+    // uses.
+    const [existing] = await trx
+      .select({ resolution: recurringGaps.resolution })
+      .from(recurringGaps)
+      .where(
+        and(
+          eq(recurringGaps.userId, session.id),
+          eq(recurringGaps.recurringId, recurringId),
+          eq(recurringGaps.yearMonth, ym),
+        ),
+      )
+      .limit(1);
+    if (existing?.resolution === GAP_RESOLUTION_PAID_EXTERNAL) return;
+
+    const resolvedAt = new Date();
+    await trx
+      .insert(recurringGaps)
+      .values({
+        userId: session.id,
+        recurringId,
+        yearMonth: ym,
+        resolution: GAP_RESOLUTION_PAID_EXTERNAL,
+        resolvedAt,
+        resolutionTxId: null,
+      })
+      .onConflictDoUpdate({
+        target: [recurringGaps.recurringId, recurringGaps.yearMonth],
+        set: {
+          resolution: GAP_RESOLUTION_PAID_EXTERNAL,
+          resolvedAt,
+          resolutionTxId: null,
+        },
+      });
+  });
+
+  revalidateSlots();
+}
+
+/**
+ * #1034: undo a paid-external mark, returning the slot to open so the detector
+ * treats the occurrence as uncovered again on its next run. Mirrors
+ * unlinkTxFromRecurring: only a slot currently resolved with exactly this
+ * resolution is reopened, any other resolution is left untouched, and a second
+ * call is a no-op.
+ */
+export async function unmarkOccurrencePaidExternal(input: PaidExternalInput) {
+  const session = await getSessionUser();
+  const { recurringId, yearMonth: ym } = paidExternalSchema.parse(input);
+
+  await db
+    .update(recurringGaps)
+    .set({ resolution: null, resolutionTxId: null, resolvedAt: null })
+    .where(
+      and(
+        eq(recurringGaps.userId, session.id),
+        eq(recurringGaps.recurringId, recurringId),
+        eq(recurringGaps.yearMonth, ym),
+        eq(recurringGaps.resolution, GAP_RESOLUTION_PAID_EXTERNAL),
+      ),
+    );
+
+  revalidateSlots();
 }
 
 const promoteSchema = z.object({
