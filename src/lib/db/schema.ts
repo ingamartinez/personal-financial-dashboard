@@ -1058,7 +1058,7 @@ export const recurringGaps = pgTable(
     detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
     // #621: resolution tracking — set when a gap is closed via manual link,
     // promote, dismiss, or auto-link. NULL means the gap is still open.
-    // Values: 'linked' | 'synthetic' | 'skipped' | 'auto-linked'
+    // Values: 'linked' | 'synthetic' | 'skipped' | 'auto-linked' | 'paid-external'
     resolution: varchar("resolution", { length: 20 }),
     resolutionTxId: integer("resolution_tx_id").references((): AnyPgColumn => transactions.id, {
       onDelete: "set null",
@@ -1074,6 +1074,13 @@ export const recurringGaps = pgTable(
       .where(sql`${t.resolution} IS NULL`),
   ],
 );
+
+// #1034: the occurrence was paid from an account findash deliberately does not
+// track. There is NO transaction behind it, so a slot resolved this way keeps
+// resolution_tx_id NULL. Storage stays a free varchar on purpose — adding a
+// value must never need a migration (S1), so this constant is the only shared
+// definition; do not add an enum or a check constraint.
+export const GAP_RESOLUTION_PAID_EXTERNAL = "paid-external";
 
 // #633: Learning loop — observation + fingerprint + proposal tables.
 // Architecture invariant: transactions table = facts only. Observations and
