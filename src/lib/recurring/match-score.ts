@@ -24,7 +24,8 @@ import {
 } from "@/lib/recurring/observation-recorder";
 import type { Currency } from "@/lib/types";
 
-export type MatchReason = "token" | "token+amount-exact" | "token+amount-nearest" | "amount-only";
+export type MatchReason =
+  "token" | "token+amount-exact" | "token+amount-nearest" | "token-prefix" | "amount-only";
 
 export type MatchTx = {
   descriptionRaw: string | null | undefined;
@@ -112,6 +113,26 @@ export function isWithinAmountTolerance(
 }
 
 /**
+ * #1029: minimum shared prefix for the prefix-family rule. Bank descriptors
+ * truncate the same merchant suffix at different lengths —
+ * "MERCADO PAGO*PASAREL" taught PASAREL, November's charge fingerprinted as
+ * PASARELAEMI. Five characters is the shortest shared run that is still a
+ * merchant identity rather than a gateway stub; anything shorter says nothing.
+ */
+const MIN_PREFIX_FAMILY_LENGTH = 5;
+
+/**
+ * True when one of the two strings is a PROPER prefix of the other and the
+ * shared run is at least `MIN_PREFIX_FAMILY_LENGTH` characters. Equal strings
+ * are not a prefix family — they are an exact token match, handled earlier.
+ */
+function isPrefixFamily(pattern: string, token: string): boolean {
+  const [shorter, longer] = pattern.length <= token.length ? [pattern, token] : [token, pattern];
+  if (shorter.length < MIN_PREFIX_FAMILY_LENGTH) return false;
+  return shorter.length < longer.length && longer.startsWith(shorter);
+}
+
+/**
  * Narrow a tied pool of candidates by same-account bonus. Returns the single
  * winner if exactly one candidate shares the tx's account; otherwise null
  * (still ambiguous).
@@ -154,6 +175,30 @@ export function scoreMatchCandidates(tx: MatchTx, candidates: MatchCandidate[]):
   const tokenMatches = candidates.filter((c) => c.patterns.includes(token));
 
   if (tokenMatches.length === 0) {
+    // #1029: the merchant may be the same one seen under a differently
+    // truncated gateway suffix. Take that ONLY when a single candidate across
+    // the whole set matches by prefix family AND its amount is inside the 1%
+    // band — two or more prefix matches is a genuine collision, and an
+    // out-of-band amount is a different obligation. Anything else keeps the
+    // KFC/SmartFit rule below: an extractable-but-unmatched token means "this
+    // description doesn't look like anything we know", regardless of amount
+    // collisions.
+    const prefixMatches = candidates.filter((c) =>
+      c.patterns.some((pattern) => isPrefixFamily(pattern, token)),
+    );
+    if (prefixMatches.length === 1) {
+      const c = prefixMatches[0]!;
+      if (isWithinAmountTolerance(c.amountCents, tx.amountCents, c.currency, tx.currency)) {
+        return {
+          winner: {
+            recurringId: c.recurringId,
+            reason: "token-prefix",
+            sameAccount: c.accountId === tx.accountId,
+          },
+          ambiguous: false,
+        };
+      }
+    }
     // Token is extractable but matches nothing we've learned. Per the
     // KFC/SmartFit prod counter-examples, this BLOCKS amount-only fallback
     // entirely — an extractable-but-unmatched token means "this description
