@@ -489,6 +489,73 @@ describe("scoreMatchCandidates", () => {
       }
     });
   });
+
+  // ---------------------------------------------------------------------
+  // #1029: one counterparty, two descriptor spellings. "MERCADO PAGO*PASAREL"
+  // taught the pattern PASAREL; November's charge fingerprinted as
+  // PASARELAEMI. Neither token equals the other's pattern, so the exact-token
+  // path sees nothing and the KFC/SmartFit rule refuses amount-only — even
+  // though the amount matches to the cent and only one recurring is plausible.
+  // Bank descriptors truncate the same suffix at different lengths, so a
+  // shared prefix of >= 5 chars is the signal — bounded by uniqueness and the
+  // 1% amount band.
+  // ---------------------------------------------------------------------
+  describe("#1029 prefix family — one counterparty, two suffix spellings", () => {
+    const emi = candidate({
+      recurringId: 15,
+      accountId: 1,
+      amountCents: BigInt(-15280000),
+      patterns: ["PASAREL"],
+    });
+    const pasarelaEmi = tx({
+      descriptionRaw: "MERCADO PAGO*PASARELAEMI",
+      amountCents: BigInt(-15280000),
+      accountId: 1,
+    });
+
+    it("links on a shared prefix with its own token-prefix reason", () => {
+      expect(scoreMatchCandidates(pasarelaEmi, [emi])).toEqual({
+        winner: { recurringId: 15, reason: "token-prefix", sameAccount: true },
+        ambiguous: false,
+      });
+    });
+
+    it("does not match when the shared prefix is shorter than 5 characters", () => {
+      const shortPattern = candidate({
+        recurringId: 15,
+        accountId: 1,
+        amountCents: BigInt(-15280000),
+        patterns: ["PASA"],
+      });
+      expect(scoreMatchCandidates(pasarelaEmi, [shortPattern])).toEqual({
+        winner: null,
+        ambiguous: false,
+      });
+    });
+
+    it("abstains when two candidates prefix-match the token", () => {
+      const sibling = candidate({
+        recurringId: 99,
+        accountId: 1,
+        amountCents: BigInt(-15280000),
+        patterns: ["PASARELA"],
+      });
+      expect(scoreMatchCandidates(pasarelaEmi, [emi, sibling])).toEqual({
+        winner: null,
+        ambiguous: false,
+      });
+    });
+
+    it("abstains when the prefix-matched candidate's amount is out of band", () => {
+      // -16_000_000 is 4.7% above the recurring's -15_280_000 — outside 1%.
+      const drifted = tx({
+        descriptionRaw: "MERCADO PAGO*PASARELAEMI",
+        amountCents: BigInt(-16000000),
+        accountId: 1,
+      });
+      expect(scoreMatchCandidates(drifted, [emi])).toEqual({ winner: null, ambiguous: false });
+    });
+  });
 });
 
 describe("isWithinAmountTolerance", () => {
