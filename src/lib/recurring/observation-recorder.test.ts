@@ -211,6 +211,12 @@ describe("tokeniseDescription", () => {
     expect(tokeniseDescription("MERCADO PAGO*MELIMAS")).toBe("MELIMAS");
     expect(tokeniseDescription("MERCADO PAGO*PARAMOU")).toBe("PARAMOU");
     expect(tokeniseDescription("MERCPAGO*MAX")).toBe("MAX");
+    // #1029: the bank also truncates the aggregator as MERPAGO (one C short).
+    // Before this alias the token was MERPAGO — the gateway itself — which both
+    // hid the merchant and, once learned, would let any MERCADO PAGO line win
+    // the unique-token path with no amount check.
+    expect(tokeniseDescription("MERPAGO*PASARELAEMI")).toBe("PASARELAEMI");
+    expect(tokeniseDescription("MERPAGO*PASAREL")).toBe("PASAREL");
     expect(tokeniseDescription("Mercado Pago*PASARELAE")).toBe("PASARELAE");
   });
 

@@ -45,8 +45,9 @@ export type OpaqueGateway = (typeof OPAQUE_GATEWAYS)[number] | "unknown_pasarela
 
 const OPAQUE_GATEWAY_PATTERNS: { gateway: (typeof OPAQUE_GATEWAYS)[number]; pattern: RegExp }[] = [
   // Covers "MERCADOPAGO COLOMBIA", "MERCADO PAGO LIMITAD", "MERCPAGO*PASARELAEMI",
+  // "MERPAGO*PASARELAEMI" (a second bank truncation, #1029) and
   // "Mercado Pago*PASARELAE" (case-insensitive via the .toUpperCase() below).
-  { gateway: "mercado_pago", pattern: /MERCADOPAGO|MERCADO\s+PAGO|MERCPAGO/ },
+  { gateway: "mercado_pago", pattern: /MERCADOPAGO|MERCADO\s+PAGO|MERCPAGO|MERPAGO/ },
   { gateway: "payu", pattern: /\bPAYU\b/ },
   { gateway: "wompi", pattern: /\bWOMPI\b/ },
 ];
