@@ -1,6 +1,13 @@
 import { and, asc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
-import { accounts, categories, recurringTransactions, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  categories,
+  GAP_RESOLUTION_PAID_EXTERNAL,
+  recurringGaps,
+  recurringTransactions,
+  transactions,
+} from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { formatAccountLabel } from "@/lib/accounts/format";
 import { createLogger } from "@/lib/logger";
@@ -33,7 +40,7 @@ function tokenConflictsWithPatterns(
 export const UPCOMING_WINDOW_BEFORE_DAYS = 5;
 export const UPCOMING_WINDOW_AFTER_DAYS = 5;
 
-export type UpcomingStatus = "matched" | "upcoming" | "overdue" | "dismissed";
+export type UpcomingStatus = "matched" | "upcoming" | "overdue" | "dismissed" | "paid-external";
 
 export type UpcomingItem = {
   recurringId: number;
@@ -166,6 +173,24 @@ export async function getUpcomingForMonth(
     if (e.recurringId !== null) explicitMap.set(e.recurringId, e.id);
   }
 
+  // #1034: occurrences the user marked as paid from an account findash does
+  // not track. Fetched next to the explicit links because both are "already
+  // covered" — this one has no transaction behind it, so it must never be
+  // reported as a match, and a same-amount transaction landing in the window
+  // must not turn it back into one (S6/S11).
+  const paidExternalLinks = await database
+    .select({ recurringId: recurringGaps.recurringId })
+    .from(recurringGaps)
+    .where(
+      and(
+        eq(recurringGaps.userId, userId),
+        inArray(recurringGaps.recurringId, recurringIds),
+        eq(recurringGaps.yearMonth, ym),
+        eq(recurringGaps.resolution, GAP_RESOLUTION_PAID_EXTERNAL),
+      ),
+    );
+  const paidExternalSet = new Set(paidExternalLinks.map((g) => g.recurringId));
+
   // Heuristic fallback for txs that ingestion hasn't auto-linked yet (e.g.
   // current-month brand-new SMS before the cron runs). Only considers txs
   // with no recurringId — anything linked is already authoritative above.
@@ -212,19 +237,28 @@ export async function getUpcomingForMonth(
 
     const ownPatterns = patternsByRecurringId.get(r.id) ?? [];
     const explicitMatchTxId = explicitMap.get(r.id);
-    const match = explicitMatchTxId
-      ? { id: explicitMatchTxId }
-      : monthTxs.find(
-          (tx) =>
-            tx.amountCents === r.amountCents &&
-            tx.occurredAt >= win.start &&
-            tx.occurredAt < win.endExclusive &&
-            !tokenConflictsWithPatterns(tx.descriptionRaw, ownPatterns),
-        );
+    const isPaidExternal = paidExternalSet.has(r.id);
+    const match =
+      explicitMatchTxId !== undefined || isPaidExternal
+        ? undefined
+        : monthTxs.find(
+            (tx) =>
+              tx.amountCents === r.amountCents &&
+              tx.occurredAt >= win.start &&
+              tx.occurredAt < win.endExclusive &&
+              !tokenConflictsWithPatterns(tx.descriptionRaw, ownPatterns),
+          );
 
     let status: UpcomingStatus;
     let matchedTransactionId: number | null = null;
-    if (match) {
+    if (explicitMatchTxId !== undefined) {
+      status = "matched";
+      matchedTransactionId = explicitMatchTxId;
+    } else if (isPaidExternal) {
+      // Covered, but there is no transaction: its own state, never "matched"
+      // (S5) and never pending, with matchedTransactionId left null (S6).
+      status = "paid-external";
+    } else if (match) {
       status = "matched";
       matchedTransactionId = match.id;
     } else if (isDismissed) {
@@ -236,7 +270,9 @@ export async function getUpcomingForMonth(
     }
 
     if (status === "dismissed" && !includeDismissed) continue;
-    if (status === "matched" && !includeMatched) continue;
+    // A paid-external slot is covered exactly like a matched one, so the
+    // "only pending" callers must not see it either.
+    if (!includeMatched && (status === "matched" || status === "paid-external")) continue;
 
     items.push({
       recurringId: r.id,
@@ -404,6 +440,21 @@ async function getUpcomingForWindowImpl(
     }
   }
 
+  // #1034: months marked paid from an untracked account are covered, so this
+  // "only pending slots" query must not surface them as overdue/upcoming.
+  const paidExternalLinks = await database
+    .select({ recurringId: recurringGaps.recurringId, yearMonth: recurringGaps.yearMonth })
+    .from(recurringGaps)
+    .where(
+      and(
+        eq(recurringGaps.userId, userId),
+        inArray(recurringGaps.recurringId, recurringIds),
+        inArray(recurringGaps.yearMonth, ymStrings),
+        eq(recurringGaps.resolution, GAP_RESOLUTION_PAID_EXTERNAL),
+      ),
+    );
+  const paidExternalKeys = new Set(paidExternalLinks.map((g) => `${g.recurringId}:${g.yearMonth}`));
+
   // Heuristic: unlinked txs in a broad range around the window for fallback
   // matching. #804: wide enough to cover any per-recurring occurrence window
   // (slot.ts) — up to grace days before, and up to a month + grace after.
@@ -453,6 +504,9 @@ async function getUpcomingForWindowImpl(
       // Check explicit link.
       const explicitTxId = explicitMap.get(`${r.id}:${ym}`);
       if (explicitTxId !== undefined) continue; // already matched — skip
+
+      // Covered elsewhere, with no transaction to show (#1034).
+      if (paidExternalKeys.has(`${r.id}:${ym}`)) continue;
 
       // Heuristic fallback: same amount, any account, within the slot-claim
       // window (#804 — see src/lib/recurring/slot.ts), guarded by the same

@@ -4,10 +4,11 @@ import { db } from "@/lib/db";
 import {
   accounts,
   recurringDescriptionPatterns,
+  recurringGaps,
   recurringTransactions,
   transactions,
 } from "@/lib/db/schema";
-import { getUpcomingForMonth } from "./upcoming";
+import { getUpcomingForMonth, getUpcomingForWindow } from "./upcoming";
 
 const TEST_USER_ID = 1;
 
@@ -149,5 +150,99 @@ describe("getUpcomingForMonth — #804 WARNING fix: status-dot heuristic token g
     const item = items.find((i) => i.recurringId === recurringId);
     expect(item).toBeDefined();
     expect(item!.status).toBe("matched");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1034 — a slot marked "paid from an account findash does not track" is
+// covered, but it is neither a matched payment (there is no transaction) nor
+// pending. The read model reports it as its own state.
+// ---------------------------------------------------------------------------
+
+describe("getUpcomingForMonth — #1034 paid from an untracked account", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function seedPaidExternalSlot(recurringId: number, ym: string) {
+    await db.insert(recurringGaps).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      yearMonth: ym,
+      resolution: "paid-external",
+      resolvedAt: new Date(),
+      resolutionTxId: null,
+    });
+  }
+
+  it("reports 'paid-external' with no matchedTransactionId and no claimed paid amount (S10)", async () => {
+    const accountId = await seedAccount("_paid_external");
+    const recurringId = await seedRecurring(accountId, {
+      label: "__upmonth seguridad social",
+      amountCents: BigInt(-1500000),
+      dayOfMonth: 15,
+    });
+    await seedPaidExternalSlot(recurringId, "2026-11");
+
+    const items = await getUpcomingForMonth({
+      userId: TEST_USER_ID,
+      year: 2026,
+      month: 11,
+      today: new Date("2026-11-20T12:00:00Z"),
+    });
+    const item = items.find((i) => i.recurringId === recurringId);
+
+    expect(item).toBeDefined();
+    expect(item!.status).toBe("paid-external");
+    expect(item!.status).not.toBe("matched");
+    expect(item!.matchedTransactionId).toBeNull();
+    // Nothing claims a payment amount for this slot — the only amount reported
+    // is the recurring's own expected one.
+    expect(item!.amountCents).toBe(BigInt(-1500000));
+    expect(item).not.toHaveProperty("paidAmountCents");
+    expect(item).not.toHaveProperty("matchedAmountCents");
+  });
+
+  it("a transaction that happens to land near the amount does not turn it into a match (S11)", async () => {
+    const accountId = await seedAccount("_paid_external_tx");
+    const recurringId = await seedRecurring(accountId, {
+      label: "__upmonth seguridad social tx",
+      amountCents: BigInt(-1500000),
+      dayOfMonth: 15,
+    });
+    await seedPaidExternalSlot(recurringId, "2026-11");
+    await seedTx(accountId, {
+      occurredOn: "2026-11-15",
+      amountCents: BigInt(-1500000),
+      description: "__upmonth unrelated but same amount",
+    });
+
+    const items = await getUpcomingForMonth({
+      userId: TEST_USER_ID,
+      year: 2026,
+      month: 11,
+      today: new Date("2026-11-20T12:00:00Z"),
+    });
+    const item = items.find((i) => i.recurringId === recurringId);
+
+    expect(item).toBeDefined();
+    expect(item!.status).toBe("paid-external");
+    expect(item!.matchedTransactionId).toBeNull();
+  });
+
+  it("getUpcomingForWindow never surfaces a paid-external slot as pending", async () => {
+    const accountId = await seedAccount("_paid_external_window");
+    const recurringId = await seedRecurring(accountId, {
+      label: "__upmonth seguridad social window",
+      amountCents: BigInt(-1500000),
+      dayOfMonth: 15,
+    });
+    await seedPaidExternalSlot(recurringId, "2026-11");
+
+    const items = await getUpcomingForWindow({
+      userId: TEST_USER_ID,
+      today: new Date("2026-11-14T12:00:00Z"),
+    });
+
+    expect(items.find((i) => i.recurringId === recurringId)).toBeUndefined();
   });
 });

@@ -7,7 +7,13 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { notDeleted } from "@/lib/db/helpers";
-import { accounts, recurringGaps, recurringTransactions, transactions } from "@/lib/db/schema";
+import {
+  accounts,
+  GAP_RESOLUTION_PAID_EXTERNAL,
+  recurringGaps,
+  recurringTransactions,
+  transactions,
+} from "@/lib/db/schema";
 import type { Currency } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
 import { formatAccountLabel } from "@/lib/accounts/format";
@@ -23,6 +29,7 @@ export type OccurrenceStatus =
   | "atrasado" // open gap, past the auto-link window (expectedDate < today - 5d)
   | "linkeado" // covered by a real tx (source != 'recurring')
   | "synthetic" // covered by a synthetic tx (source == 'recurring')
+  | "paid-external" // covered from an account findash does not track: no tx at all
   | "skipped"; // user dismissed this month
 
 export type ExpectedOccurrence = {
@@ -208,6 +215,11 @@ export async function getExpectedOccurrencesForMonth(
       let status: OccurrenceStatus;
       if (gapEntry.resolution === "skipped") {
         status = "skipped";
+      } else if (gapEntry.resolution === GAP_RESOLUTION_PAID_EXTERNAL) {
+        // #1034: covered from an untracked account — its own state. There is
+        // no transaction, so `linkedTxId` stays unset and the slot must not be
+        // painted as esperado/atrasado (that is what fired the false alerts).
+        status = "paid-external";
       } else if (gapEntry.resolution === null) {
         // Open gap — atrasado if past the window.
         status = expectedDate.getTime() < todayUtc.getTime() - atrasadoMs ? "atrasado" : "esperado";
