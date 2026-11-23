@@ -6,6 +6,7 @@ import {
   categories,
   counterparties,
   counterpartyAliases,
+  ingestionLogs,
   parserEvents,
   reconciliationDecisions,
   recurringTransactions,
@@ -15,6 +16,10 @@ import {
 import { ingestParsed } from "./sms-pipeline";
 import type { ParseResult } from "./sms-bancolombia";
 import { parseSmsBancolombia } from "./sms-bancolombia";
+import {
+  applySmsParseErrorBackfill,
+  planSmsParseErrorBackfill,
+} from "../../../scripts/backfill-sms-parse-errors";
 
 // Covers parser telemetry to parser_events:
 //   - #257 AI-fallback branch: parse_needs_review (disabled), ai_fallback_success,
@@ -1076,5 +1081,204 @@ describe("transfer_received_to_savings resolves counterparty and auto-links recu
     expect(tx.counterpartyId).toBe(counterpartyId);
     // recurringId must be set — auto-link matched the savings account + amount.
     expect(tx.recurringId).toBe(recurringId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1036 — Bre-B/llave keys, card notices, and the SMS parse-error backfill.
+//
+// S6/S7 parser assertions live in sms-bancolombia.test.ts; these cover what
+// only the wire path can show: the signed amount, the generated description and
+// the -05:00 occurrence, plus the outcome an errored log must (not) produce.
+// ---------------------------------------------------------------------------
+
+const TAG_1036 = "+bre-b-1036@findash.local";
+
+const EPM_QR_SMS =
+  "Bancolombia: ALEJANDRO RAFAEL MARTINEZ MALDONADO pagaste $600,026.00 por codigo QR desde tu cuenta *6126 a la llave @bcr8909049961epmb el 22/11/2026 a las 22:37. Con codigo QR es facil y de una. Dudas al 018000912345";
+
+// A body no template and no skip pattern matches — the inbox must keep
+// surfacing text the pipeline cannot read (S10).
+const UNKNOWN_SMS =
+  "Bancolombia: Recibiste un mensaje nuevo de tu banco. Consulta la app para mas detalles. 22/11/2026";
+
+async function setupBreBUser(): Promise<{ userId: number; accountId: number }> {
+  const [u] = await db
+    .insert(users)
+    .values({
+      email: `${crypto.randomUUID()}${TAG_1036}`,
+      name: "Bre-B test",
+      role: "user",
+      active: true,
+      googleSub: `sub-${crypto.randomUUID()}`,
+    })
+    .returning({ id: users.id });
+  const [a] = await db
+    .insert(accounts)
+    .values({
+      userId: u.id,
+      institution: "Bancolombia",
+      name: "Ahorros *6126",
+      type: "savings",
+      currency: "COP",
+      active: true,
+      metadata: { last4s: ["6126"] },
+    })
+    .returning({ id: accounts.id });
+  return { userId: u.id, accountId: a.id };
+}
+
+async function cleanup1036(): Promise<void> {
+  const rows = await db.select({ id: users.id, email: users.email }).from(users);
+  const ids = rows.filter((r) => r.email.endsWith(TAG_1036)).map((r) => r.id);
+  if (ids.length === 0) return;
+  await db.delete(ingestionLogs).where(inArray(ingestionLogs.userId, ids));
+  await db.delete(transactions).where(inArray(transactions.userId, ids));
+  await db.delete(parserEvents).where(inArray(parserEvents.userId, ids));
+  await db.delete(counterpartyAliases).where(inArray(counterpartyAliases.userId, ids));
+  await db.delete(counterparties).where(inArray(counterparties.userId, ids));
+  await db.delete(accounts).where(inArray(accounts.userId, ids));
+  await db.delete(users).where(inArray(users.id, ids));
+}
+
+describe("#1036 — Bre-B/llave SMS templates reach the ledger", () => {
+  beforeEach(cleanup1036);
+  afterEach(cleanup1036);
+
+  it("S6: EPM QR SMS inserts -60002600 cents from *6126 at 22:37 -05:00", async () => {
+    const { userId, accountId } = await setupBreBUser();
+
+    const parsed = parseSmsBancolombia(EPM_QR_SMS);
+    expect(parsed.kind).toBe("qr_payment");
+
+    const outcome = await ingestParsed(userId, parsed);
+    expect(outcome.status).toBe("inserted");
+
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(txs).toHaveLength(1);
+    const tx = txs[0];
+    expect(tx.accountId).toBe(accountId);
+    expect(tx.amountCents).toBe(BigInt(-60002600));
+    expect(tx.currency).toBe("COP");
+    // buildTxFields renders the Bre-B key verbatim — @-prefix included, because
+    // the recurring fingerprint (S11) and the manual link (S5) read this line.
+    expect(tx.descriptionRaw).toBe("Pago QR a llave @bcr8909049961epmb");
+    expect(tx.occurredAt.toISOString()).toBe("2026-11-23T03:37:00.000Z");
+    expect(tx.source).toBe("sms");
+  });
+
+  it("S9: card notices are skipped as non_transactional and create no tx", async () => {
+    const { userId } = await setupBreBUser();
+    const notices = [
+      "Bancolombia: Encendiste tu tarjeta credito *7291. Ya puedes usarla en tus compras con la app Mi Bancolombia. 22/11/2026 a las 10:04.",
+      "Bancolombia: Apagaste tu tarjeta de credito *7291. Puedes volver a encenderla cuando quieras en app Mi Bancolombia. 20/11/2026 a las 18:31.",
+    ];
+
+    for (const body of notices) {
+      const outcome = await ingestParsed(userId, parseSmsBancolombia(body));
+      expect(outcome.status).toBe("skipped");
+      if (outcome.status !== "skipped") throw new Error("type guard");
+      expect(outcome.reason).toBe("parser: non_transactional");
+    }
+
+    expect(await db.select().from(transactions).where(eq(transactions.userId, userId))).toEqual([]);
+  });
+
+  it("S10: a genuinely unknown template still errors and inserts nothing", async () => {
+    const { userId } = await setupBreBUser();
+
+    const parsed = parseSmsBancolombia(UNKNOWN_SMS);
+    expect(parsed.kind).toBe("needs_review");
+
+    const outcome = await ingestParsed(userId, parsed);
+    expect(outcome.status).toBe("error");
+    if (outcome.status !== "error") throw new Error("type guard");
+    expect(outcome.reason).toContain("unknown_pattern");
+
+    expect(await db.select().from(transactions).where(eq(transactions.userId, userId))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1036 S4/S12 — the backfill that re-parses dropped SMS out of
+// ingestion_logs.payload. Exercised through the script's exported plan/apply
+// functions (same DB fixtures as the wire-path specs above) so the dry run,
+// the insert and the second-run no-op are all proven against a real database.
+// ---------------------------------------------------------------------------
+
+async function seedErrorSmsLog(userId: number, body: string): Promise<number> {
+  const [row] = await db
+    .insert(ingestionLogs)
+    .values({
+      userId,
+      source: "sms",
+      status: "error",
+      itemsReceived: 1,
+      errorMessage: "parser: unknown_pattern (ai fallback disabled)",
+      payload: { sender: "Bancolombia", body, parsed: { kind: "needs_review" } },
+      finishedAt: new Date(),
+    })
+    .returning({ id: ingestionLogs.id });
+  return row.id;
+}
+
+describe("#1036 — backfill-sms-parse-errors", () => {
+  beforeEach(cleanup1036);
+  afterEach(cleanup1036);
+
+  it("S12: dry run lists exactly the recoverable rows; apply inserts once", async () => {
+    const { userId, accountId } = await setupBreBUser();
+    const recoverableId = await seedErrorSmsLog(userId, EPM_QR_SMS);
+    const unknownId = await seedErrorSmsLog(userId, UNKNOWN_SMS);
+
+    const plan = await planSmsParseErrorBackfill({ userId });
+    expect(plan.rows.map((row) => row.logId)).toEqual([recoverableId]);
+    expect(plan.notRecoverable).toBe(1);
+    expect(plan.rows[0]).toMatchObject({
+      kind: "qr_payment",
+      amountCents: "60002600",
+      occurredOn: "2026-11-22",
+      occurredTime: "22:37",
+    });
+
+    // Dry run writes nothing: no tx, no resolution.
+    expect(await db.select().from(transactions).where(eq(transactions.userId, userId))).toEqual([]);
+    const [stillErrored] = await db
+      .select()
+      .from(ingestionLogs)
+      .where(eq(ingestionLogs.id, recoverableId));
+    expect(stillErrored.resolvedAt).toBeNull();
+
+    const first = await applySmsParseErrorBackfill({ userId });
+    expect(first).toMatchObject({ planned: 1, inserted: 1, failed: 0 });
+
+    const txs = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(txs).toHaveLength(1);
+    expect(txs[0].accountId).toBe(accountId);
+    expect(txs[0].amountCents).toBe(BigInt(-60002600));
+    expect(txs[0].descriptionRaw).toBe("Pago QR a llave @bcr8909049961epmb");
+
+    const [resolved] = await db
+      .select()
+      .from(ingestionLogs)
+      .where(eq(ingestionLogs.id, recoverableId));
+    expect(resolved.resolution).toBe("retried_success");
+    expect(resolved.resolvedTxnId).toBe(txs[0].id);
+    expect(resolved.resolvedAt).not.toBeNull();
+
+    // Second apply: idempotent — nothing to insert.
+    const second = await applySmsParseErrorBackfill({ userId });
+    expect(second).toMatchObject({ planned: 0, inserted: 0, failed: 0 });
+    expect(
+      await db.select().from(transactions).where(eq(transactions.userId, userId)),
+    ).toHaveLength(1);
+
+    // The unreadable row stays unresolved so the inbox keeps surfacing it (S10).
+    const [stillOpen] = await db
+      .select()
+      .from(ingestionLogs)
+      .where(eq(ingestionLogs.id, unknownId));
+    expect(stillOpen.status).toBe("error");
+    expect(stillOpen.resolvedAt).toBeNull();
   });
 });

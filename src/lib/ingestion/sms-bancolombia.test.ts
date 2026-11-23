@@ -322,6 +322,24 @@ describe("parseSmsBancolombia — bre_b_transfer (named recipient + key)", () =>
     expect(r.toKey).toBe("3001112233");
   });
 
+  // #1036 S7: real Bre-B keys are `@`-prefixed alphanumerics, not digits. The
+  // prod SMS (ingestion_logs id 1846) never matched because the key group was
+  // `(\d+)` only, so the $118.500 was never recorded.
+  it("parses a Bre-b transfer to an @-prefixed alphanumeric key", () => {
+    const body =
+      "Bancolombia: ALEJANDRO, transferiste $118,500.00 a la llave @pcl112 desde tu cuenta *6126 a PALOMA VALENTINA CLAVIJO LOPEZ el 05/11/2026 a las 09:12. Con Bre-b es de una y gratis. Dudas al 018000912345.";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("bre_b_transfer");
+    if (r.kind !== "bre_b_transfer") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(11850000));
+    expect(r.currency).toBe("COP");
+    expect(r.fromLast4).toBe("6126");
+    expect(r.toKey).toBe("@pcl112");
+    expect(r.recipientName).toBe("PALOMA VALENTINA CLAVIJO LOPEZ");
+    expect(r.occurredOn).toBe("2026-11-05");
+    expect(r.occurredTime).toBe("09:12");
+  });
+
   it("does NOT regress regular transfer_sent (which has no 'a la llave' segment)", () => {
     const body =
       "Bancolombia: Transferiste $30,000.00 desde tu cuenta 6126 a la cuenta *3137898857 el 15/04/2026 a las 15:01. ¿Dudas? Llamanos al 018000931987. Estamos cerca.";
@@ -358,6 +376,37 @@ describe("parseSmsBancolombia — QR payment", () => {
       expect(r.amountCents).toBe(cents);
       expect(r.toKey).toBe(key);
     }
+  });
+
+  // #1036 S6: the exact prod body from ingestion_logs id 1851 — the November
+  // EPM bill. It fell to `unknown_pattern` because the key group was `(\d+)`.
+  it("parses QR payment with an @-prefixed alphanumeric key (EPM $600.026)", () => {
+    const body =
+      "Bancolombia: ALEJANDRO RAFAEL MARTINEZ MALDONADO pagaste $600,026.00 por codigo QR desde tu cuenta *6126 a la llave @bcr8909049961epmb el 22/11/2026 a las 22:37. Con codigo QR es facil y de una. Dudas al 018000912345";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("qr_payment");
+    if (r.kind !== "qr_payment") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(60002600));
+    expect(r.currency).toBe("COP");
+    expect(r.fromLast4).toBe("6126");
+    expect(r.toKey).toBe("@bcr8909049961epmb");
+    expect(r.occurredOn).toBe("2026-11-22");
+    expect(r.occurredTime).toBe("22:37");
+    expect(r.externalId).toMatch(/^bcol-sms:[a-f0-9]{24}$/);
+  });
+
+  // #1036 S8: widening the key group must not change the numeric form.
+  it("keeps parsing the numeric llave key identically", () => {
+    const body =
+      "Bancolombia: ALEJANDRO RAFAEL MARTINEZ MALDONADO pagaste $600,026.00 por codigo QR desde tu cuenta *6126 a la llave 0093649954 el 22/11/2026 a las 22:37. Con codigo QR es facil y de una. Dudas al 018000912345";
+    const r = parseSmsBancolombia(body);
+    expect(r.kind).toBe("qr_payment");
+    if (r.kind !== "qr_payment") throw new Error("type guard");
+    expect(r.amountCents).toBe(BigInt(60002600));
+    expect(r.fromLast4).toBe("6126");
+    expect(r.toKey).toBe("0093649954");
+    expect(r.occurredOn).toBe("2026-11-22");
+    expect(r.occurredTime).toBe("22:37");
   });
 });
 
@@ -642,6 +691,22 @@ describe("parseSmsBancolombia — skip reasons", () => {
     const bodies = [
       "Bancolombia: Muy pronto cobraremos una suscripción asociada a tu tarjeta. Asegúrate de tener saldo suficiente. Verifícalo fácil en tu app. Contamos contigo.",
       "Bancolombia: Muy bien. Inscribiste la cuenta de un tercero desde APP Bancolombia. Si no fuiste tu, llamanos ahora: 6045109095 o 018000931987. Juntos en cada paso.",
+    ];
+    for (const body of bodies) {
+      const r = parseSmsBancolombia(body);
+      expect(r.kind).toBe("skip");
+      if (r.kind !== "skip") throw new Error("type guard");
+      expect(r.reason).toBe("non_transactional");
+    }
+  });
+
+  // #1036 S2/S9: turning a card on or off moves no money. These used to fall
+  // through to `needs_review` → `error`, which is reserved for "money we failed
+  // to record" (prod ingestion_logs 1829, 1825).
+  it("skips card enable/disable notices as non_transactional", () => {
+    const bodies = [
+      "Bancolombia: Encendiste tu tarjeta credito *7291. Ya puedes usarla en tus compras con la app Mi Bancolombia. 22/11/2026 a las 10:04.",
+      "Bancolombia: Apagaste tu tarjeta de credito *7291. Puedes volver a encenderla cuando quieras en app Mi Bancolombia. 20/11/2026 a las 18:31.",
     ];
     for (const body of bodies) {
       const r = parseSmsBancolombia(body);
