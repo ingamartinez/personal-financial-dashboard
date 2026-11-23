@@ -139,6 +139,10 @@ export const UNIVERSAL_SKIP_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: S
   { pattern: /recordatorio\s+de\s+pago/i, reason: "non_transactional" },
   { pattern: /muy\s+pronto\s+cobraremos/i, reason: "non_transactional" },
   { pattern: /inscribiste\s+la\s+cuenta\s+de\s+un\s+tercero/i, reason: "non_transactional" },
+  // #1036: turning a card on/off is a state change, not money. These used to
+  // fall through to `needs_review` and were logged as `error`, which must mean
+  // "money we failed to record" (prod ingestion_logs 1829, 1825).
+  { pattern: /(?:encendiste|apagaste)\s+tu\s+tarjeta/i, reason: "non_transactional" },
 ];
 
 // -----------------------------------------------------------------------------
@@ -285,9 +289,15 @@ const TRANSFER_SENT = new RegExp(
   "i",
 );
 
-// QR payment: "<NAME> pagaste AMOUNT por codigo QR desde tu cuenta *NNNN a la llave NNNN el DATE a las TIME"
+// QR payment: "<NAME> pagaste AMOUNT por codigo QR desde tu cuenta *NNNN a la llave KEY el DATE a las TIME"
+//
+// #1036: the key is either a numeric alias ("0093649954") or a Bre-B alias
+// ("@bcr8909049961epmb"): an optional `@` followed by alphanumerics. The old
+// `(\d+)` rejected every `@`-prefixed key, so real payments fell through to
+// `unknown_pattern` and were never recorded. Nothing else in the pattern moved.
+const BRE_B_KEY_GROUP = /(@?[A-Za-z0-9]+)/.source;
 const QR_PAYMENT = new RegExp(
-  `pagaste\\s+${AMOUNT_GROUP}\\s+por\\s+codigo\\s+QR\\s+desde\\s+tu\\s+cuenta\\s+\\*?(\\d{4,})\\s+a\\s+la\\s+llave\\s+(\\d+)\\s+el\\s+${DATE_TIME}`,
+  `pagaste\\s+${AMOUNT_GROUP}\\s+por\\s+codigo\\s+QR\\s+desde\\s+tu\\s+cuenta\\s+\\*?(\\d{4,})\\s+a\\s+la\\s+llave\\s+${BRE_B_KEY_GROUP}\\s+el\\s+${DATE_TIME}`,
   "i",
 );
 
@@ -334,9 +344,10 @@ const TC_CREDIT_RECEIVED = new RegExp(
   "i",
 );
 
-// Bre-b transfer: "<USER>, transferiste AMOUNT a la llave NNNN desde tu cuenta *NNNN a <RECIPIENT_NAME> el DATE a las TIME..."
+// Bre-b transfer: "<USER>, transferiste AMOUNT a la llave KEY desde tu cuenta *NNNN a <RECIPIENT_NAME> el DATE a las TIME..."
+// #1036: same key group as QR_PAYMENT (numeric or `@`-prefixed Bre-B alias).
 const BRE_B_TRANSFER = new RegExp(
-  `transferiste\\s+${AMOUNT_GROUP}\\s+a\\s+la\\s+llave\\s+(\\d+)\\s+desde\\s+tu\\s+cuenta\\s+\\*?(\\d{4,})\\s+a\\s+(.+?)\\s+el\\s+${DATE_TIME}`,
+  `transferiste\\s+${AMOUNT_GROUP}\\s+a\\s+la\\s+llave\\s+${BRE_B_KEY_GROUP}\\s+desde\\s+tu\\s+cuenta\\s+\\*?(\\d{4,})\\s+a\\s+(.+?)\\s+el\\s+${DATE_TIME}`,
   "i",
 );
 
