@@ -1824,3 +1824,192 @@ describe("detectGapsForMonth #1028 — drifted twins across accounts", () => {
     expect(row.recurringId).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1034 — an occurrence marked "paid from an account findash does not track"
+// is closed exactly like a linked one: it never reaches `toProcess`, so no gap
+// row is inserted, no notification fires, and a later cron run cannot re-open
+// it. Removing the mark frees the slot again.
+// ---------------------------------------------------------------------------
+
+describe("detectGapsForMonth #1034 — paid from an untracked account", () => {
+  const PAID_EXTERNAL = "paid-external";
+
+  async function seedPaidExternalSlot(recurringId: number, ym: string) {
+    await db.insert(recurringGaps).values({
+      userId: TEST_USER_ID,
+      recurringId,
+      yearMonth: ym,
+      resolution: PAID_EXTERNAL,
+      resolvedAt: new Date(),
+      resolutionTxId: null,
+    });
+  }
+
+  async function readSlots(recurringId: number) {
+    return db
+      .select({
+        yearMonth: recurringGaps.yearMonth,
+        resolution: recurringGaps.resolution,
+        resolutionTxId: recurringGaps.resolutionTxId,
+      })
+      .from(recurringGaps)
+      .where(
+        and(eq(recurringGaps.userId, TEST_USER_ID), eq(recurringGaps.recurringId, recurringId)),
+      );
+  }
+
+  beforeEach(async () => {
+    await cleanup();
+    mocks.emitNotification.mockClear();
+  });
+  afterEach(cleanup);
+
+  it("creates no gap and emits no notification, while the following month still gaps (S8)", async () => {
+    const accountId = await seedAccount("_paid_external");
+    const recurringId = await seedRecurring(accountId, {
+      label: "__gap_test seguridad social",
+      amountCents: BigInt(-1500000),
+      dayOfMonth: 15,
+    });
+    await seedPaidExternalSlot(recurringId, "2026-11");
+
+    const november = await detectGapsForMonth(TEST_USER_ID, "2026-11");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(november.paidExternal).toBe(1);
+    expect(november.gapsCreated).toBe(0);
+    expect(mocks.emitNotification).not.toHaveBeenCalled();
+
+    const slots = await readSlots(recurringId);
+    expect(slots).toHaveLength(1);
+    expect(slots[0]!.yearMonth).toBe("2026-11");
+    expect(slots[0]!.resolution).toBe(PAID_EXTERNAL);
+    expect(slots[0]!.resolutionTxId).toBeNull();
+
+    // A closed month must not swallow the next one.
+    const december = await detectGapsForMonth(TEST_USER_ID, "2026-12");
+    expect(december.gapsCreated).toBe(1);
+    expect(december.paidExternal).toBe(0);
+
+    const after = await readSlots(recurringId);
+    expect(after.map((s) => `${s.yearMonth}:${s.resolution ?? "open"}`).sort()).toEqual([
+      "2026-11:paid-external",
+      "2026-12:open",
+    ]);
+  });
+
+  it("re-opens the occurrence on the next run after the mark is removed (S9)", async () => {
+    const accountId = await seedAccount("_paid_external_undo");
+    const recurringId = await seedRecurring(accountId, {
+      label: "__gap_test seguridad social undo",
+      amountCents: BigInt(-1500000),
+      dayOfMonth: 15,
+    });
+    await seedPaidExternalSlot(recurringId, "2026-11");
+
+    const closed = await detectGapsForMonth(TEST_USER_ID, "2026-11");
+    expect(closed.gapsCreated).toBe(0);
+
+    // Exactly the state unmarkOccurrencePaidExternal leaves behind (S2).
+    await db
+      .update(recurringGaps)
+      .set({ resolution: null, resolutionTxId: null, resolvedAt: null })
+      .where(
+        and(
+          eq(recurringGaps.userId, TEST_USER_ID),
+          eq(recurringGaps.recurringId, recurringId),
+          eq(recurringGaps.yearMonth, "2026-11"),
+        ),
+      );
+
+    const reopened = await detectGapsForMonth(TEST_USER_ID, "2026-11");
+
+    // The exclusion is gone: the occurrence is no longer reported as covered.
+    expect(reopened.paidExternal).toBe(0);
+    // The slot stays as an OPEN row (S2 returns the slot to open, it does not
+    // delete it — same shape as unlinkTxFromRecurring), so the detector finds a
+    // live gap rather than inserting a second row for the same unique slot.
+    expect(reopened.gapsAlreadyOpen).toBe(1);
+    expect(reopened.gapsCreated).toBe(0);
+
+    const slots = await readSlots(recurringId);
+    expect(slots).toHaveLength(1);
+    expect(slots[0]!.resolution).toBeNull();
+
+    // And the month is claimable again: once a real payment shows up, the
+    // detector links it (the mark is not silently absorbing the occurrence).
+    const txId = await seedTx(accountId, {
+      occurredOn: "2026-11-15",
+      amountCents: BigInt(-1500000),
+      description: "__gap_test seguridad social paid now",
+    });
+    const relinked = await detectGapsForMonth(TEST_USER_ID, "2026-11");
+    expect(relinked.autoLinked).toBe(1);
+
+    const [tx] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, txId));
+    expect(tx.recurringId).toBe(recurringId);
+  });
+
+  it("does not let a later same-amount transaction overwrite the resolution (S11)", async () => {
+    const accountId = await seedAccount("_paid_external_tx");
+    const recurringId = await seedRecurring(accountId, {
+      label: "__gap_test seguridad social tx",
+      amountCents: BigInt(-1500000),
+      dayOfMonth: 15,
+    });
+    await seedPaidExternalSlot(recurringId, "2026-11");
+
+    const laterTxId = await seedTx(accountId, {
+      occurredOn: "2026-11-15",
+      amountCents: BigInt(-1500000),
+      description: "__gap_test later unrelated charge",
+    });
+
+    await detectGapsForMonth(TEST_USER_ID, "2026-11");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const slots = await readSlots(recurringId);
+    expect(slots).toHaveLength(1);
+    expect(slots[0]!.resolution).toBe(PAID_EXTERNAL);
+    expect(slots[0]!.resolutionTxId).toBeNull();
+
+    const [tx] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, laterTxId));
+    expect(tx.recurringId).toBeNull();
+    expect(mocks.emitNotification).not.toHaveBeenCalled();
+  });
+
+  it("only closes the marked recurring — a sibling recurring keeps its gap", async () => {
+    const accountId = await seedAccount("_paid_external_sibling");
+    const paidId = await seedRecurring(accountId, {
+      label: "__gap_test paid sibling",
+      amountCents: BigInt(-1500000),
+      dayOfMonth: 15,
+    });
+    const openId = await seedRecurring(accountId, {
+      label: "__gap_test open sibling",
+      amountCents: BigInt(-900000),
+      dayOfMonth: 20,
+    });
+    await seedPaidExternalSlot(paidId, "2026-11");
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-11");
+
+    expect(result.paidExternal).toBe(1);
+    expect(result.gapsCreated).toBe(1);
+
+    const paidSlots = await readSlots(paidId);
+    expect(paidSlots[0]!.resolution).toBe(PAID_EXTERNAL);
+
+    const openSlots = await readSlots(openId);
+    expect(openSlots).toHaveLength(1);
+    expect(openSlots[0]!.yearMonth).toBe("2026-11");
+    expect(openSlots[0]!.resolution).toBeNull();
+  });
+});
