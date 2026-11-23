@@ -1,10 +1,11 @@
-import { and, asc, eq, gte, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, between, eq, gte, inArray, isNull, lt } from "drizzle-orm";
 import { db as defaultDb, type DB } from "@/lib/db";
 import { recurringGaps, recurringTransactions, transactions, users } from "@/lib/db/schema";
 import { notDeleted } from "@/lib/db/helpers";
 import { createLogger } from "@/lib/logger";
 import { emitNotification } from "@/lib/notifications/emit";
 import {
+  AMOUNT_TOLERANCE_BPS,
   isWithinAmountTolerance,
   pickTxForRecurring,
   type TxCandidate,
@@ -253,7 +254,7 @@ async function resolveTxWinner(
 // already excluded from `members` by the caller).
 // ---------------------------------------------------------------------------
 
-type ToProcessRow = {
+export type ToProcessRow = {
   id: number;
   accountId: number;
   amountCents: bigint;
@@ -357,6 +358,216 @@ async function resolveBijectiveGroups(
 }
 
 // ---------------------------------------------------------------------------
+// #1028: identical-fingerprint twins whose amounts drifted inside the 1% band,
+// and whose payer account differs. Prod shape: "Plan Tigo Aida" / "Plan Tigo
+// Alejo", both $47.900 on account 5 with the single fingerprint UNE; the
+// November charges were $48.239 each FROM ACCOUNT 6 and neither linked, while
+// every byte-identical month did.
+//
+// This is a SECOND pass, not a loosening of the one above: the exact pass keeps
+// its byte-identical contract, and this pass only ever sees the rows it
+// declined. Every existing pairing is therefore reproduced unchanged.
+//
+// Why pairing is still correct: `members` are indistinguishable by
+// construction — same currency, same learned fingerprint set, amounts inside one
+// tolerance band — so any pairing between them is equally correct. That is the
+// same argument the exact pass already rests on (#804). What this pass must NOT
+// do is invent distinctions:
+//   - a candidate tx inside the band of TWO different groups is dropped rather
+//     than assigned to whichever group sorts first;
+//   - a tx whose own token contradicts the shared fingerprint is never eligible
+//     (the KFC guard, same as above);
+//   - bootstrap is excluded: a group with zero learned patterns has "nothing to
+//     contradict", which is acceptable for a same-account exact-amount first
+//     month but not for crossing accounts on a tolerance.
+// ---------------------------------------------------------------------------
+
+export type RelaxedTxCandidate = {
+  id: number;
+  occurredAt: Date;
+  amountCents: bigint;
+  currency: Currency;
+  descriptionRaw: string | null;
+};
+
+export type RelaxedTwinGroup = {
+  /** Tolerance anchor: the group's first member by amount, then id. */
+  anchorAmountCents: bigint;
+  currency: Currency;
+  patterns: Set<string>;
+  members: ToProcessRow[];
+  windowStart: Date;
+  windowEndExclusive: Date;
+};
+
+/**
+ * Pure planner for #1028, exported so cross-group abstention is testable
+ * without a database. Returns the pairs to claim; the caller writes them.
+ */
+export function assignRelaxedTwins(
+  groups: RelaxedTwinGroup[],
+  candidates: RelaxedTxCandidate[],
+): Array<{ memberId: number; txId: number }> {
+  if (groups.length === 0 || candidates.length === 0) return [];
+
+  // A tx accepted by more than one group is genuine ambiguity, not a pairing.
+  const acceptedBy = new Map<number, Set<number>>();
+
+  const eligibleByGroup = groups.map((group, groupIndex) => {
+    if (group.patterns.size === 0) return [];
+    const eligible = candidates.filter((tx) => {
+      if (tx.currency !== group.currency) return false;
+      if (
+        !txInOccurrenceWindow(tx.occurredAt, {
+          start: group.windowStart,
+          endExclusive: group.windowEndExclusive,
+        })
+      ) {
+        return false;
+      }
+      if (
+        !isWithinAmountTolerance(
+          group.anchorAmountCents,
+          tx.amountCents,
+          group.currency,
+          tx.currency,
+        )
+      ) {
+        return false;
+      }
+      const token = tokeniseDescription(tx.descriptionRaw);
+      return token !== null && group.patterns.has(token);
+    });
+    for (const tx of eligible) {
+      const owners = acceptedBy.get(tx.id) ?? new Set<number>();
+      owners.add(groupIndex);
+      acceptedBy.set(tx.id, owners);
+    }
+    return eligible;
+  });
+
+  const pairs: Array<{ memberId: number; txId: number }> = [];
+  groups.forEach((group, groupIndex) => {
+    const usable = eligibleByGroup[groupIndex]!.filter((tx) => acceptedBy.get(tx.id)?.size === 1);
+    if (usable.length === 0) return;
+
+    const sortedTxs = [...usable].sort(
+      (a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.id - b.id,
+    );
+    const sortedMembers = [...group.members].sort(
+      (a, b) => a.dayOfMonth - b.dayOfMonth || a.id - b.id,
+    );
+
+    const pairCount = Math.min(sortedTxs.length, sortedMembers.length);
+    for (let i = 0; i < pairCount; i++) {
+      pairs.push({ txId: sortedTxs[i]!.id, memberId: sortedMembers[i]!.id });
+    }
+  });
+
+  return pairs;
+}
+
+function toleranceAbs(amountCents: bigint): bigint {
+  const abs = amountCents < BigInt(0) ? -amountCents : amountCents;
+  return (abs * AMOUNT_TOLERANCE_BPS) / BigInt(10000);
+}
+
+async function resolveRelaxedBijectiveGroups(
+  userId: number,
+  year: number,
+  month: number,
+  yearMonth: string,
+  toProcess: ToProcessRow[],
+  database: DB,
+): Promise<{ handled: Set<number>; autoLinked: number }> {
+  const handled = new Set<number>();
+  let autoLinked = 0;
+  if (toProcess.length < 2) return { handled, autoLinked };
+
+  const patternMap = await fetchPatterns(
+    userId,
+    toProcess.map((r) => r.id),
+    database,
+  );
+
+  // Members must be BYTE-IDENTICAL in amount to be interchangeable. A drift
+  // between two recurrings is the #857 case, where pairing is a guess and the
+  // answer is to abstain (an existing test pins exactly that). Only the incoming
+  // TRANSACTION may drift inside the band, and only it may come from another
+  // account. An empty pattern set is the bootstrap case and stays out of this
+  // pass on purpose.
+  const buckets = new Map<string, ToProcessRow[]>();
+  for (const row of toProcess) {
+    const patterns = [...(patternMap.get(row.id) ?? [])].sort();
+    if (patterns.length === 0) continue;
+    const key = `${row.accountId}:${row.currency}:${row.amountCents}:${patterns.join(",")}`;
+    const arr = buckets.get(key) ?? [];
+    arr.push(row);
+    buckets.set(key, arr);
+  }
+
+  const groups: RelaxedTwinGroup[] = [];
+  for (const members of buckets.values()) {
+    if (members.length < 2) continue;
+    const windows = members.map((m) => occurrenceWindow(year, month, m.dayOfMonth));
+    const anchor = members[0]!;
+    groups.push({
+      anchorAmountCents: anchor.amountCents,
+      currency: anchor.currency,
+      patterns: new Set(patternMap.get(anchor.id) ?? []),
+      members,
+      windowStart: new Date(Math.min(...windows.map((w) => w.start.getTime()))),
+      windowEndExclusive: new Date(Math.max(...windows.map((w) => w.endExclusive.getTime()))),
+    });
+  }
+  if (groups.length === 0) return { handled, autoLinked };
+
+  const rangeStart = new Date(Math.min(...groups.map((g) => g.windowStart.getTime())));
+  const rangeEnd = new Date(Math.max(...groups.map((g) => g.windowEndExclusive.getTime())));
+  const currencies = [...new Set(groups.map((g) => g.currency))];
+
+  // One query for every group: the cross-group abstention needs a shared
+  // candidate pool, since that is exactly the decision it makes.
+  const bandLow = groups
+    .map((g) => g.anchorAmountCents - toleranceAbs(g.anchorAmountCents))
+    .reduce((a, b) => (a < b ? a : b));
+  const bandHigh = groups
+    .map((g) => g.anchorAmountCents + toleranceAbs(g.anchorAmountCents))
+    .reduce((a, b) => (a > b ? a : b));
+
+  const candidates = await database
+    .select({
+      id: transactions.id,
+      occurredAt: transactions.occurredAt,
+      amountCents: transactions.amountCents,
+      currency: transactions.currency,
+      descriptionRaw: transactions.descriptionRaw,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        isNull(transactions.recurringId),
+        inArray(transactions.currency, currencies),
+        between(transactions.amountCents, bandLow, bandHigh),
+        gte(transactions.occurredAt, rangeStart),
+        lt(transactions.occurredAt, rangeEnd),
+        notDeleted(transactions.deletedAt),
+      ),
+    )
+    .orderBy(asc(transactions.occurredAt), asc(transactions.id));
+
+  for (const pair of assignRelaxedTwins(groups, candidates)) {
+    const claimed = await claimUnlinkedTx(userId, pair.txId, pair.memberId, yearMonth, database);
+    if (!claimed) continue;
+    autoLinked += 1;
+    handled.add(pair.memberId);
+  }
+
+  return { handled, autoLinked };
+}
+
+// ---------------------------------------------------------------------------
 // #857: exact-then-near leftover matching for drifted amounts when twins
 // share a description fingerprint.
 //
@@ -415,7 +626,7 @@ function tokenCompatibleNear(patterns: string[], descriptionRaw: string | null):
  *
  * Commit-only. Never called from a preview / dry-run path.
  */
-async function claimUnlinkedTx(
+export async function claimUnlinkedTx(
   userId: number,
   txId: number,
   recurringId: number,
@@ -670,6 +881,12 @@ export async function detectGapsForMonth(
     database,
   );
   result.autoLinked += bijectiveAutoLinked;
+
+  const exactLeftover = toProcess.filter((r) => !handled.has(r.id));
+  const { handled: relaxedHandled, autoLinked: relaxedAutoLinked } =
+    await resolveRelaxedBijectiveGroups(userId, year, month, yearMonth, exactLeftover, database);
+  for (const id of relaxedHandled) handled.add(id);
+  result.autoLinked += relaxedAutoLinked;
 
   const leftover = toProcess.filter((r) => !handled.has(r.id));
   const {

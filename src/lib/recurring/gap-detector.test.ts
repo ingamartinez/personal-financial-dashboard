@@ -11,11 +11,15 @@ import {
   users,
 } from "@/lib/db/schema";
 import {
+  assignRelaxedTwins,
   closePreviousMonth,
   closePreviousMonthForAllUsers,
   detectGapsForMonth,
   previousYearMonth,
   reconcileOpenGaps,
+  type RelaxedTwinGroup,
+  type RelaxedTxCandidate,
+  type ToProcessRow,
 } from "./gap-detector";
 
 // ---------------------------------------------------------------------------
@@ -1609,3 +1613,214 @@ describe("detectGapsForMonth #873 — proven-sibling cross-account", () => {
 
 // Keep the `and` import live — drizzle barrel exports trip tree-shakers.
 void and;
+
+// ---------------------------------------------------------------------------
+// #1028: identical-fingerprint twins must also pair when the amount drifts
+// inside the existing 1% band and the payer account differs. Prod shape:
+// "Plan Tigo Aida" / "Plan Tigo Alejo", both $47.900 on account 5, single
+// fingerprint UNE; November charges were $48.239 each FROM ACCOUNT 6 (tx
+// 3220/3221) and neither linked, while every exact-amount month did.
+//
+// This is a SEPARATE pass from the exact-amount bijective grouping above,
+// which stays untouched: the exact pass keeps its byte-identical contract,
+// and this one only ever sees the leftovers it declined.
+// ---------------------------------------------------------------------------
+describe("detectGapsForMonth #1028 — drifted twins across accounts", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  async function seedTwins(accountId: number) {
+    const recA = await seedRecurring(accountId, {
+      label: "__gap_test tigo drift aida",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 10,
+    });
+    const recB = await seedRecurring(accountId, {
+      label: "__gap_test tigo drift alejo",
+      amountCents: BigInt(-4790000),
+      dayOfMonth: 12,
+    });
+    await db.insert(recurringDescriptionPatterns).values([
+      { userId: TEST_USER_ID, recurringId: recA, pattern: "UNE", observationCount: 2 },
+      { userId: TEST_USER_ID, recurringId: recB, pattern: "UNE", observationCount: 2 },
+    ]);
+    return { recA, recB };
+  }
+
+  it("two pattern-identical twins at -4790000 + two txs at -4823900 on ANOTHER account → both link, one each", async () => {
+    const ownerAccount = await seedAccount("_tigo_owner");
+    const payerAccount = await seedAccount("_tigo_payer");
+    const { recA, recB } = await seedTwins(ownerAccount);
+
+    const tx1 = await seedTx(payerAccount, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-4823900),
+      description: "UNE TELCO UNE PAGO 1",
+    });
+    const tx2 = await seedTx(payerAccount, {
+      occurredOn: "2026-04-12",
+      amountCents: BigInt(-4823900),
+      description: "UNE TELCO UNE PAGO 2",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(2);
+
+    const [row1] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, tx1));
+    const [row2] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, tx2));
+
+    expect(row1.recurringId).not.toBeNull();
+    expect(row2.recurringId).not.toBeNull();
+    expect(row1.recurringId).not.toBe(row2.recurringId);
+    expect(new Set([row1.recurringId, row2.recurringId])).toEqual(new Set([recA, recB]));
+  });
+
+  it("a drift OUTSIDE the 1% band still does not pair (no new guessing)", async () => {
+    const ownerAccount = await seedAccount("_tigo_far_owner");
+    const payerAccount = await seedAccount("_tigo_far_payer");
+    await seedTwins(ownerAccount);
+
+    await seedTx(payerAccount, {
+      occurredOn: "2026-04-10",
+      amountCents: BigInt(-5000000),
+      description: "UNE TELCO UNE PAGO 1",
+    });
+    await seedTx(payerAccount, {
+      occurredOn: "2026-04-12",
+      amountCents: BigInt(-5000000),
+      description: "UNE TELCO UNE PAGO 2",
+    });
+
+    const result = await detectGapsForMonth(TEST_USER_ID, "2026-04");
+    expect(result.autoLinked).toBe(0);
+  });
+
+  // Cross-group abstention is a property of the PLANNER, not of the whole-month
+  // run: a tx this pass declines can still be claimed downstream by design, so
+  // asserting it through detectGapsForMonth would pin the wrong thing.
+  it("a tx inside the band of TWO different twin groups is paired with neither", () => {
+    const windowStart = new Date("2026-04-01T00:00:00.000Z");
+    const windowEndExclusive = new Date("2026-05-01T00:00:00.000Z");
+    const member = (id: number, amountCents: bigint): ToProcessRow => ({
+      id,
+      accountId: 1,
+      amountCents,
+      currency: "COP",
+      dayOfMonth: 10,
+      skippedMonths: [],
+    });
+
+    const groups: RelaxedTwinGroup[] = [
+      {
+        anchorAmountCents: BigInt(-4790000),
+        currency: "COP",
+        patterns: new Set(["UNE", "TIGO"]),
+        members: [member(1, BigInt(-4790000)), member(2, BigInt(-4790000))],
+        windowStart,
+        windowEndExclusive,
+      },
+      {
+        anchorAmountCents: BigInt(-4850000),
+        currency: "COP",
+        patterns: new Set(["UNE", "MOVISTAR"]),
+        members: [member(3, BigInt(-4850000)), member(4, BigInt(-4850000))],
+        windowStart,
+        windowEndExclusive,
+      },
+    ];
+
+    // -4820000 sits inside 1% of BOTH anchors (-4790000 and -4850000), and its
+    // token UNE belongs to both fingerprint sets: no signal can choose.
+    const candidates: RelaxedTxCandidate[] = [
+      {
+        id: 10,
+        occurredAt: new Date("2026-04-11T00:00:00.000Z"),
+        amountCents: BigInt(-4820000),
+        currency: "COP",
+        descriptionRaw: "UNE TELCO UNE PAGO",
+      },
+    ];
+
+    expect(assignRelaxedTwins(groups, candidates)).toEqual([]);
+  });
+
+  it("planner pairs one tx per twin when only one group accepts them, in stable order", () => {
+    const windowStart = new Date("2026-04-01T00:00:00.000Z");
+    const windowEndExclusive = new Date("2026-05-01T00:00:00.000Z");
+    const groups: RelaxedTwinGroup[] = [
+      {
+        anchorAmountCents: BigInt(-4790000),
+        currency: "COP",
+        patterns: new Set(["UNE"]),
+        members: [
+          {
+            id: 22,
+            accountId: 1,
+            amountCents: BigInt(-4790000),
+            currency: "COP",
+            dayOfMonth: 12,
+            skippedMonths: [],
+          },
+          {
+            id: 21,
+            accountId: 1,
+            amountCents: BigInt(-4790000),
+            currency: "COP",
+            dayOfMonth: 10,
+            skippedMonths: [],
+          },
+        ],
+        windowStart,
+        windowEndExclusive,
+      },
+    ];
+    const candidates: RelaxedTxCandidate[] = [
+      {
+        id: 102,
+        occurredAt: new Date("2026-04-12T00:00:00.000Z"),
+        amountCents: BigInt(-4823900),
+        currency: "COP",
+        descriptionRaw: "UNE TELCO UNE PAGO 2",
+      },
+      {
+        id: 101,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+        amountCents: BigInt(-4823900),
+        currency: "COP",
+        descriptionRaw: "UNE TELCO UNE PAGO 1",
+      },
+    ];
+
+    // tx 101 (04-10) → member 21 (day 10); tx 102 (04-12) → member 22 (day 12).
+    expect(assignRelaxedTwins(groups, candidates)).toEqual([
+      { txId: 101, memberId: 21 },
+      { txId: 102, memberId: 22 },
+    ]);
+  });
+
+  it("a near-amount tx whose token contradicts the shared fingerprint stays unlinked (KFC guard)", async () => {
+    const ownerAccount = await seedAccount("_tigo_token_owner");
+    const payerAccount = await seedAccount("_tigo_token_payer");
+    await seedTwins(ownerAccount);
+
+    const kfc = await seedTx(payerAccount, {
+      occurredOn: "2026-04-11",
+      amountCents: BigInt(-4823900),
+      description: "KFC UNICENTRO MEDELL",
+    });
+
+    await detectGapsForMonth(TEST_USER_ID, "2026-04");
+
+    const [row] = await db
+      .select({ recurringId: transactions.recurringId })
+      .from(transactions)
+      .where(eq(transactions.id, kfc));
+    expect(row.recurringId).toBeNull();
+  });
+});
