@@ -234,6 +234,30 @@ describe("scoreMatchCandidates", () => {
         ).winner?.recurringId,
       ).toBe(4);
     });
+
+    // #1036: the QR/llave boilerplate is generic for the same reason. Numeric
+    // keys carry no alphabetical identity, so the token is LLAVE and only an
+    // exact amount may link — the #1029 shape (any QR payment claiming the
+    // recurring by token alone) stays closed even against poisoned data.
+    it("generic LLAVE needs an exact amount signal", () => {
+      const epm = candidate({
+        recurringId: 13,
+        amountCents: BigInt(-60002600),
+        patterns: ["LLAVE"],
+      });
+      expect(
+        scoreMatchCandidates(
+          tx({ descriptionRaw: "Pago QR a llave 0093649954", amountCents: BigInt(-11850000) }),
+          [epm],
+        ).winner,
+      ).toBeNull();
+      expect(
+        scoreMatchCandidates(
+          tx({ descriptionRaw: "Pago QR a llave 0093649954", amountCents: BigInt(-60002600) }),
+          [epm],
+        ).winner?.recurringId,
+      ).toBe(13);
+    });
   });
 
   // ---------------------------------------------------------------------

@@ -254,6 +254,24 @@ describe("tokeniseDescription", () => {
     expect(tokeniseDescription("ACME*PASARELA PAGOS")).toBe("ACME");
     expect(isGenericDescriptionToken("NETFLIX")).toBe(false);
   });
+
+  // #1036 S3/S11: the QR/llave templates render "Pago QR a llave <KEY>".
+  // `llave` is the preposition the key hangs off — bank boilerplate, the same
+  // wrapper role PAGO/PAGASTE play for "Pago a <merchant>". Fingerprinting it
+  // makes every QR payment share one token, and the first manual link then
+  // teaches LLAVE as a recurring's identity (#1029 poisoning shape).
+  it("skips the llave boilerplate so the Bre-B key becomes the fingerprint", () => {
+    expect(tokeniseDescription("Pago QR a llave @bcr8909049961epmb")).toBe("BCR8909049961EPMB");
+    expect(tokeniseDescription("pago qr a llave @pcl112")).toBe("PCL112");
+    // A numeric key has no alphabetic identity at all. The boilerplate token is
+    // returned (not null) so the generic gate below refuses it — null would
+    // silently fall through to amount-only auto-link.
+    expect(tokeniseDescription("Pago QR a llave 0093649954")).toBe("LLAVE");
+    expect(isGenericDescriptionToken(tokeniseDescription("Pago QR a llave 0093649954")!)).toBe(
+      true,
+    );
+    expect(isGenericDescriptionToken("LLAVE")).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -410,6 +428,37 @@ describe("recordRecurringLinkObservation", () => {
       .where(eq(recurringLinkObservations.txId, txId));
 
     expect(rows).toHaveLength(0);
+  });
+
+  it("#1036: linking a QR/llave payment never stores LLAVE as a pattern", async () => {
+    // The description buildTxFields generates for a qr_payment after #1036.
+    const txId = await seedTx(
+      userAId,
+      accountAId,
+      "Pago QR a llave @bcr8909049961epmb",
+      BigInt(-60002600),
+    );
+    await recordRecurringLinkObservation({
+      userId: userAId,
+      recurringId: recurringAId,
+      txId,
+      yearMonth: "2026-11",
+      manual: true,
+    });
+
+    const patterns = await db
+      .select({ pattern: recurringDescriptionPatterns.pattern })
+      .from(recurringDescriptionPatterns)
+      .where(
+        and(
+          eq(recurringDescriptionPatterns.userId, userAId),
+          eq(recurringDescriptionPatterns.recurringId, recurringAId),
+        ),
+      );
+
+    // The learned fingerprint is the llave itself, never the boilerplate.
+    expect(patterns.map((p) => p.pattern)).toEqual(["BCR8909049961EPMB"]);
+    expect(patterns.some((p) => p.pattern === "LLAVE")).toBe(false);
   });
 
   it("#873: does not learn a fingerprint another recurring owns with a materially higher count when amounts differ", async () => {

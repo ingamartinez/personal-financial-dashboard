@@ -70,7 +70,30 @@ const ARQ_WRAPPER =
   /^\s*(?:ARQ\s+(?:purchase|fee|reward|P2P\s+transfer)\s*:|ARQ\s+(?:sent\s+to|received\s+from)\s|You\s+(?:sent|received)\s+(?:[\d.,]+\s+)?USDc\s+(?:to|from)\s)/i;
 
 /** Bank boilerplate is useful for amount confirmation, never as identity. */
-const GENERIC_DESCRIPTION_TOKENS = new Set(["TRANSFERENCIA", ...Object.values(GATEWAY_TOKENS)]);
+const GENERIC_DESCRIPTION_TOKENS = new Set([
+  "TRANSFERENCIA",
+  // #1036: "Pago QR a llave <KEY>" / "Transferencia Bre-b a <NAME>" — see
+  // BOILERPLATE_TOKENS below for why `llave` is also skipped while tokenising.
+  "LLAVE",
+  ...Object.values(GATEWAY_TOKENS),
+]);
+
+/**
+ * #1036: `llave` is the preposition the Bre-B key hangs off in the generated
+ * "Pago QR a llave @bcr8909049961epmb" line — the same wrapper role
+ * PAGO/PAGASTE play for "Pago a <merchant>". Skipping it while tokenising lets
+ * the key itself become the fingerprint instead of collapsing every QR payment
+ * onto LLAVE, which is the #1029 poisoning shape: the first manual link would
+ * teach LLAVE as a recurring's identity and any QR payment could then claim it.
+ *
+ * Unlike PAGO/PAGASTE it stays in GENERIC_DESCRIPTION_TOKENS, and if nothing
+ * else in the description is usable the token returned IS the boilerplate: a
+ * null token would silently re-enable the amount-only auto-link fallback,
+ * whereas a generic token is refused by isGenericDescriptionToken at every
+ * call site. A numeric llave key has no alphabetic identity, so it keeps
+ * landing here by design.
+ */
+const BOILERPLATE_TOKENS: ReadonlySet<string> = new Set(["LLAVE"]);
 
 export function isGenericDescriptionToken(token: string): boolean {
   return GENERIC_DESCRIPTION_TOKENS.has(token);
@@ -98,6 +121,8 @@ export function isGenericDescriptionToken(token: string): boolean {
  *   "GOOGLE *PLAY YOUTUBE"                → "GOOGLE"  (will clash — that's intentional)
  *   "Pago a EMPRESAS PUBLICAS DE MEDELLIN" → "EMPRESAS"
  *   "Pago a APORTES EN LINEA"             → "APORTES"
+ *   "Pago QR a llave @bcr8909049961epmb"  → "BCR8909049961EPMB"
+ *   "Pago QR a llave 0093649954"          → "LLAVE"  (generic — no identity)
  *   "MERCADO PAGO*PASAREL"                → "PASAREL"
  *   "MERCADO PAGO LIMITAD"                → "MERCADOPAGO" (generic)
  *   "You sent USDc to Maria Giraldo"      → "MARIA"
@@ -119,12 +144,19 @@ export function tokeniseDescription(raw: string | null | undefined): string | nu
 function firstSignificantToken(raw: string): string | null {
   const upper = raw.toUpperCase().replace(/[^A-Z0-9 ]/g, " ");
   const tokens = upper.split(/\s+/).filter(Boolean);
+  let boilerplate: string | null = null;
   for (const tok of tokens) {
     if (tok.length < 3 || !/[A-Z]/.test(tok)) continue;
     if (PAYMENT_VERB_PREFIXES.has(tok)) continue;
+    if (BOILERPLATE_TOKENS.has(tok)) {
+      boilerplate ??= tok;
+      continue;
+    }
     return tok;
   }
-  return null;
+  // Only wrappers/boilerplate present: return one so the generic gate can
+  // refuse it (never null, which would mean "no token" → amount-only link).
+  return boilerplate;
 }
 
 /**
