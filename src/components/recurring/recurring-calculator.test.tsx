@@ -8,6 +8,11 @@ import userEvent from "@testing-library/user-event";
 // server" actions.ts for its undo affordance (#804), which transitively
 // imports next-auth — mock it out, matching recurring-list.test.tsx.
 vi.mock("@/app/(app)/transactions/actions", () => ({ unlinkTxFromRecurring: vi.fn() }));
+// #1034: the paid-external toggle imports the settings server actions.
+vi.mock("@/app/(app)/settings/recurring/actions", () => ({
+  markOccurrencePaidExternal: vi.fn(),
+  unmarkOccurrencePaidExternal: vi.fn(),
+}));
 
 import { RecurringCalculator } from "./recurring-calculator";
 import type { RecurringRow } from "@/app/(app)/recurring/queries";
