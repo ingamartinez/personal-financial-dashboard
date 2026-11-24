@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -29,6 +29,21 @@ import {
 //     SLO #1 to compute from parser_events.
 
 const TAG = "+pipeline-test@findash.local";
+
+// The classify-tx enqueue is fire-and-forget from this file's point of view:
+// no assertion here is about the queue, and the #1040 test below needs to
+// simulate a Redis that never settles. Mocking `createQueue` keeps every test
+// in this file on Postgres rows instead of a shared Redis.
+const queueMocks = vi.hoisted(() => ({ add: vi.fn() }));
+
+vi.mock("@/lib/queue", () => ({
+  createQueue: vi.fn(() => ({ add: queueMocks.add })),
+}));
+
+beforeEach(() => {
+  queueMocks.add.mockReset();
+  queueMocks.add.mockResolvedValue({ id: "job-test" });
+});
 
 function fakeMessageResponse(payload: unknown): Record<string, unknown> {
   return {
@@ -1281,4 +1296,54 @@ describe("#1036 — backfill-sms-parse-errors", () => {
     expect(stillOpen.status).toBe("error");
     expect(stillOpen.resolvedAt).toBeNull();
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1040 — a blocked Redis makes every ingest hang forever on the classify-tx
+// enqueue. `maxRetriesPerRequest: null` (required by BullMQ) means ioredis
+// never rejects while Redis is down: without a call-site bound the await below
+// never returns, even though the tx row was already persisted (7h36m in prod).
+// ---------------------------------------------------------------------------
+
+describe("#1040 — ingest completes when the classify queue never settles", () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  it("S9: ingestParsed returns the inserted outcome instead of waiting on queue.add", async () => {
+    const { userId, accountId } = await setupUserWithAccount(undefined);
+
+    // Redis down, no rejection: this promise never settles. The pipeline must
+    // still return — it must not rely on the HTTP layer giving up (S5).
+    queueMocks.add.mockImplementationOnce(() => new Promise(() => {}));
+
+    const purchaseInput: ParseResult = {
+      kind: "purchase",
+      amountCents: BigInt(4500000),
+      currency: "COP",
+      merchant: "RAPPI",
+      cardLast4: "2575",
+      cardKind: "credit",
+      occurredOn: "2026-04-15",
+      occurredTime: "19:30",
+      externalId: "bcol-sms:bounded-enqueue-test",
+      raw: "Bancolombia: Compraste $45.000,00 en RAPPI con tu T.Cred *2575, el 15/04/2026 19:30",
+    };
+
+    const startedAt = Date.now();
+    const outcome = await ingestParsed(userId, purchaseInput);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(outcome.status).toBe("inserted");
+    // The enqueue really was attempted and really did hang.
+    expect(queueMocks.add).toHaveBeenCalledOnce();
+    // Bounded at the call site (5s default), not by the HTTP layer.
+    expect(elapsedMs).toBeLessThan(9_000);
+
+    // The money stays recorded even though classification was deferred: the
+    // classify sweep owns the reminder, the ingest owns the row.
+    const [tx] = await db.select().from(transactions).where(eq(transactions.userId, userId));
+    expect(tx).toBeDefined();
+    expect(tx.accountId).toBe(accountId);
+    expect(tx.amountCents).toBe(BigInt("-4500000"));
+  }, 12_000);
 });

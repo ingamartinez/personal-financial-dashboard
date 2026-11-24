@@ -76,27 +76,101 @@ export async function classifyByRuleThenEnqueue(userId: number, txIds: number[])
 }
 
 /**
+ * S1 (#1040): how long `enqueueClassification` waits for `queue.add` before it
+ * declares the job deferred. The connection keeps `maxRetriesPerRequest: null`
+ * (BullMQ requires it), so a `queue.add` against a down Redis never rejects —
+ * the bound has to live at this call site.
+ */
+export const DEFAULT_ENQUEUE_TIMEOUT_MS = 5_000;
+
+export type EnqueueClassificationOptions = {
+  /** Override the call-site bound, in milliseconds. */
+  timeoutMs?: number;
+};
+
+const DEFERRED = Symbol("classify-enqueue-deferred");
+
+/**
+ * Race `add` against an unref'd, always-cleared timer.
+ *
+ * The timer resolves instead of rejecting: a pending `queue.add` is not a
+ * failure, it is a job we are no longer waiting for. Clearing it in `finally`
+ * keeps the happy path (S3) at zero added latency, and `unref()` stops a
+ * pending bound from holding the process — or a Vitest worker — alive (the
+ * same discipline as #1039's backfill row timeout).
+ */
+async function settleWithin<T>(add: Promise<T>, timeoutMs: number): Promise<T | typeof DEFERRED> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof DEFERRED>((resolve) => {
+    timer = setTimeout(() => resolve(DEFERRED), timeoutMs);
+    timer.unref();
+  });
+
+  try {
+    return await Promise.race([add, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * Fire-and-forget: enqueue a classify-tx job for the given userId + txIds.
  *
  * Rules-based classification must have already run for these txs — this
  * helper enqueues only what the rule engine could NOT classify, so the AI
  * worker handles the remainder.
  *
- * Failure mode: if queue.add throws (Redis down, network blip) we log the
- * error and swallow it. The import already succeeded; the txs remain in
- * "unclassified" state and can be retried via the "Classify All Pending"
- * button (#592). Import correctness MUST NOT depend on Redis being up.
+ * Failure modes (import correctness MUST NOT depend on Redis being up):
+ * - `queue.add` rejects (Redis explicitly down, bad payload) → log the error
+ *   and swallow it. The txs stay "unclassified" and can be retried via the
+ *   "Classify All Pending" button (#592).
+ * - `queue.add` never settles (#1040) → `maxRetriesPerRequest: null` means
+ *   ioredis just waits while Redis is unreachable. The call is bounded by
+ *   `timeoutMs` (default `DEFAULT_ENQUEUE_TIMEOUT_MS`) and resolves as
+ *   **deferred**: the tx is already persisted and the classify sweep picks it
+ *   up later. Deferred is logged as a warning, never as an error — reporting a
+ *   deferral as a failure would page someone over correctly-recorded money.
+ *
+ * There is deliberately no retry loop here: retrying a `queue.add` that never
+ * settles only multiplies the hang (#1039, L3).
  */
-export async function enqueueClassification(userId: number, txIds: number[]): Promise<void> {
+export async function enqueueClassification(
+  userId: number,
+  txIds: number[],
+  opts: EnqueueClassificationOptions = {},
+): Promise<void> {
   if (txIds.length === 0) return;
+
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_ENQUEUE_TIMEOUT_MS;
+  const startedAt = Date.now();
 
   try {
     const queue = createQueue<ClassifyTxJobData>("classify-tx");
-    await queue.add("classify-tx", { userId, mode: "specific", txIds });
+    const result = await settleWithin(
+      queue.add("classify-tx", { userId, mode: "specific", txIds }),
+      timeoutMs,
+    );
+
+    if (result === DEFERRED) {
+      log.warn(
+        {
+          event: "classify_enqueue_deferred",
+          outcome: "deferred",
+          userId,
+          txIds,
+          count: txIds.length,
+          timeoutMs,
+          elapsedMs: Date.now() - startedAt,
+        },
+        "classify-tx enqueue still pending after the bound — txs deferred to the classify sweep",
+      );
+      return;
+    }
+
     log.info({ event: "classify_enqueued", userId, count: txIds.length }, "classify-tx enqueued");
   } catch (err) {
     log.error(
-      { err, event: "classify_enqueue_failed", userId, count: txIds.length },
+      { err, event: "classify_enqueue_failed", outcome: "failed", userId, count: txIds.length },
       "failed to enqueue classify-tx — txs remain pending (graceful degrade)",
     );
     // Intentionally NOT re-throwing. Import success must not depend on Redis.
