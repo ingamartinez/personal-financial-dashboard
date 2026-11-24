@@ -12,6 +12,12 @@ const { mockQueueAdd, mockSelectWhere, mockUpdateWhere, mockClassifyByRule } = v
   mockClassifyByRule: vi.fn(),
 }));
 
+const { mockLogInfo, mockLogWarn, mockLogError } = vi.hoisted(() => ({
+  mockLogInfo: vi.fn(),
+  mockLogWarn: vi.fn(),
+  mockLogError: vi.fn(),
+}));
+
 vi.mock("@/lib/queue", () => ({
   createQueue: vi.fn(() => ({ add: mockQueueAdd })),
 }));
@@ -56,13 +62,24 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("@/lib/logger", () => ({
   createLogger: () => ({
-    info: vi.fn(),
-    error: vi.fn(),
-    warn: vi.fn(),
+    info: mockLogInfo,
+    warn: mockLogWarn,
+    error: mockLogError,
   }),
 }));
 
-import { enqueueClassification, classifyByRuleThenEnqueue, enqueueAskUser } from "./enqueue";
+import {
+  enqueueClassification,
+  classifyByRuleThenEnqueue,
+  enqueueAskUser,
+  DEFAULT_ENQUEUE_TIMEOUT_MS,
+} from "./enqueue";
+
+beforeEach(() => {
+  mockLogInfo.mockReset();
+  mockLogWarn.mockReset();
+  mockLogError.mockReset();
+});
 
 // ---------------------------------------------------------------------------
 // enqueueClassification
@@ -93,6 +110,100 @@ describe("enqueueClassification", () => {
     mockQueueAdd.mockRejectedValueOnce(new Error("Redis down"));
     // Should resolve without throwing.
     await expect(enqueueClassification(1, [1])).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1040 — the call site is bounded, not the BullMQ client
+//
+// `maxRetriesPerRequest: null` (BullMQ requires it) means ioredis never
+// rejects a queued command while Redis is down; the await simply never
+// returns. The bound therefore belongs here: resolve as "deferred", log it as
+// a deferral (never as a failure) and let the caller proceed — the tx is
+// already persisted and the classify sweep picks it up later.
+// ---------------------------------------------------------------------------
+
+describe("enqueueClassification — bounded enqueue (#1040)", () => {
+  beforeEach(() => {
+    mockQueueAdd.mockReset();
+  });
+
+  it("S1: defaults the bound to 5 seconds", () => {
+    expect(DEFAULT_ENQUEUE_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it("S6: resolves when queue.add never settles (Redis down, no rejection)", async () => {
+    mockQueueAdd.mockImplementationOnce(() => new Promise(() => {}));
+
+    const startedAt = Date.now();
+    await expect(enqueueClassification(7, [501, 502], { timeoutMs: 20 })).resolves.toBeUndefined();
+    const elapsedMs = Date.now() - startedAt;
+
+    // Bounded by the timeout, not by the (never-arriving) resolution.
+    expect(elapsedMs).toBeGreaterThanOrEqual(15);
+    expect(elapsedMs).toBeLessThan(1_000);
+    // The attempt happened; we did not silently skip the enqueue.
+    expect(mockQueueAdd).toHaveBeenCalledOnce();
+  }, 3_000);
+
+  it("S7: logs the deferral with user id, tx ids and elapsed time — not a failure", async () => {
+    mockQueueAdd.mockImplementationOnce(() => new Promise(() => {}));
+
+    await enqueueClassification(9, [601, 602], { timeoutMs: 20 });
+
+    expect(mockLogWarn).toHaveBeenCalledOnce();
+    const [fields, message] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(fields).toMatchObject({
+      event: "classify_enqueue_deferred",
+      outcome: "deferred",
+      userId: 9,
+      txIds: [601, 602],
+      count: 2,
+      timeoutMs: 20,
+    });
+    expect(typeof fields.elapsedMs).toBe("number");
+    expect(fields.elapsedMs as number).toBeGreaterThanOrEqual(15);
+    expect(message).toContain("deferred");
+
+    // A persisted-but-unclassified tx is not an error; paging on it would lie.
+    expect(mockLogError).not.toHaveBeenCalled();
+    expect(mockLogInfo).not.toHaveBeenCalled();
+  }, 3_000);
+
+  it("S7: a rejected queue.add is still reported as a failure, not a deferral", async () => {
+    mockQueueAdd.mockRejectedValueOnce(new Error("Redis down"));
+
+    await enqueueClassification(9, [601]);
+
+    expect(mockLogError).toHaveBeenCalledOnce();
+    const [fields] = mockLogError.mock.calls[0] as [Record<string, unknown>];
+    expect(fields).toMatchObject({
+      event: "classify_enqueue_failed",
+      outcome: "failed",
+      userId: 9,
+      count: 1,
+    });
+    expect(mockLogWarn).not.toHaveBeenCalled();
+    expect(mockLogInfo).not.toHaveBeenCalled();
+  });
+
+  it("S8: a normal enqueue is unchanged — resolves fast, logs enqueued, no deferral", async () => {
+    mockQueueAdd.mockResolvedValueOnce({ id: "job-fast" });
+
+    const startedAt = Date.now();
+    // Long bound on purpose: a fast resolution must not wait for it.
+    await enqueueClassification(11, [701], { timeoutMs: 5_000 });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(mockLogInfo).toHaveBeenCalledOnce();
+    expect(mockLogInfo.mock.calls[0][0]).toMatchObject({
+      event: "classify_enqueued",
+      userId: 11,
+      count: 1,
+    });
+    expect(mockLogWarn).not.toHaveBeenCalled();
+    expect(mockLogError).not.toHaveBeenCalled();
   });
 });
 
