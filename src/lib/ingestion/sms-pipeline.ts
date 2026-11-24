@@ -367,6 +367,10 @@ async function ingestParsedBancolombia(
     // classify. Transfers and rule-matched txs are already handled; only
     // "unclassified" goes to the queue. Failure to enqueue must not abort
     // the import — see enqueueClassification for the graceful-degrade policy.
+    // #1040: this await is bounded (default 5s) even when Redis never answers.
+    // A hang here used to keep the whole ingest alive after the row was
+    // already inserted (7h36m in prod); the call now resolves as "deferred"
+    // and the classify sweep picks the tx up later.
     if (finalMethod === "unclassified") {
       await enqueueClassification(userId, [txId]);
     }
